@@ -3,18 +3,51 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from astrbot.api.message_components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 
+from companion_v2.conversation.location_context import sanitize_activity_note
 from companion_v2.conversation.text_processing import strip_internal_expression_protocol
 from companion_v2.execution.models import TaskError, digest, encode, require
 from companion_v2.foundation.refs import OperationRef, SourceRef, VersionRef
 from companion_v2.sources.models import SourceRecord
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
+
+
+def _location_place_changed(before, after):
+    """Return True only when a previously known place substantively changed.
+
+    In-flight AMap reverse geocoding may populate ``area_label`` on the exact
+    same GPS sample while persona/context checks await. Filling an originally
+    empty area label enriches the same location rather than moving it.
+    """
+    before_place = before if isinstance(before, dict) else {}
+    after_place = after if isinstance(after, dict) else {}
+    if bool(before_place.get("matched")) != bool(after_place.get("matched")):
+        return True
+    for field in ("name", "kind", "parent_name"):
+        if str(before_place.get(field) or "").strip() != str(after_place.get(field) or "").strip():
+            return True
+    before_area = str(before_place.get("area_label") or "").strip()
+    after_area = str(after_place.get("area_label") or "").strip()
+    if before_area and before_area != after_area:
+        return True
+    return False
+
+
+def _location_changed(before, after):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return True
+    if not after.get("available"):
+        return True
+    if any(after.get(key) != before.get(key) for key in ("captured_at", "latitude", "longitude")):
+        return True
+    return _location_place_changed(before.get("place"), after.get("place"))
 
 
 class RealityHostDelivery:
@@ -111,6 +144,10 @@ class RealityHostDelivery:
             preferences = application.contact_schedule._diagnostic_preferences(preferences)
         elif preferences.reason("environment"):
             return {"accepted": False, "reason": preferences.reason("environment")}
+        else:
+            values = getattr(preferences, "values", None)
+            if isinstance(values, Mapping) and values.get("automatic_enabled") is False:
+                return {"accepted": False, "reason": "contact_automatic_disabled"}
         place = location.get("place") if isinstance(location.get("place"), dict) else {}
         label = str((place.get("name") if place.get("matched") else None)
                     or place.get("area_label") or location.get("label") or "").strip()[:120]
@@ -121,21 +158,46 @@ class RealityHostDelivery:
         prior = application.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (key,))
         if not diagnostic and prior is not None and prior["value"] == fingerprint:
             return {"accepted": False, "reason": "reality_location_unchanged"}
-        background = await self.contexts.realtime(user_id, purpose="手机前台上报位置变化")
+        if diagnostic:
+            background = await self.contexts.realtime(user_id, purpose="手机前台上报位置变化")
+            role_instruction = background["prompt"]
+        else:
+            await self.contexts.verified_persona(original, user_id)
+            role_instruction = ""
         self.contexts.recheck(original, user_id)
         if "reality.snapshot.read" not in {tool.action for tool in application.external.catalog_for(context)}:
             return {"accepted": False, "reason": "reality_location_not_authorized"}
         current = runtime.mobile_context(user_id)
         current_location = current.get("location") if isinstance(current.get("location"), dict) else {}
-        if (not current.get("available") or any(current_location.get(key) != location.get(key)
-                for key in ("captured_at", "latitude", "longitude", "place"))):
+        if not current.get("available") or _location_changed(location, current_location):
             return {"accepted": False, "reason": "reality_location_changed"}
         at = application.now()
         reference = SourceRef("reality-location-" + uuid4().hex, "reality.location", context.scope,
             VersionRef("location-" + uuid4().hex, 1), at, at + timedelta(minutes=5))
-        payload = encode({"event": "authorized_mobile_place_changed", "place": label,
-            "captured_at": location.get("captured_at"), "source": "android_foreground_location",
-            "meaning": "手机经授权上报的位置标签，仅供自然关心的参考；不是用户行为、心情或安全状态的证明。"})
+        automatic_origin = None
+        if not diagnostic:
+            schedule = getattr(application, "contact_schedule", None)
+            if schedule is None:
+                return {"accepted": False, "reason": "contact_schedule_unavailable"}
+            try:
+                automatic_origin, batch, _event = schedule.reality_location_origin(
+                    context, at, captured_at=location.get("captured_at"),
+                    source_id=reference.source_id, place_fingerprint=fingerprint)
+            except TaskError as error:
+                return {"accepted": False, "reason": error.code}
+            role_instruction = batch["role_instruction"]
+        payload_data = {
+            "event": "authorized_mobile_place_changed",
+            "place": label,
+            "captured_at": location.get("captured_at"),
+            "source": "android_foreground_location",
+            "meaning": "手机经授权上报的位置标签，仅供自然关心的参考；不是用户行为、心情或安全状态的证明。",
+        }
+        activity_note = sanitize_activity_note(
+            current_location.get("activity_note") or location.get("activity_note"), require_prefix=False)
+        if activity_note:
+            payload_data["activity_note"] = activity_note
+        payload = encode(payload_data)
         require(application.proactive.sources.publish(SourceRecord(reference, context.audience,
             digest(payload), payload), observed_at=at))
         opportunity = Opportunity("reality-location-" + digest([context.key, reference.source_id]),
@@ -151,7 +213,7 @@ class RealityHostDelivery:
         else:
             candidate_fingerprint = ""
         candidate = {"accepted": True, "opportunity": opportunity,
-            "intents": (ContactIntent("environment", thought),), "role_instruction": background["prompt"],
+            "intents": (ContactIntent("environment", thought),), "role_instruction": role_instruction,
             "route": {"id": "reality_location_event", "label": "手机陪伴终端地点来源",
                       "variant": "mobile_location"},
             "stages": [{"stage": "mobile_location_fetch", "state": "passed"}]}
@@ -163,6 +225,7 @@ class RealityHostDelivery:
                     "captured_at": location.get("captured_at"), "source_id": reference.source_id,
                     "place_fingerprint": fingerprint}}
         else:
+            candidate["automatic_origin"] = automatic_origin
             candidate["application"] = application
             candidate["context"] = context
         return candidate
@@ -177,8 +240,13 @@ class RealityHostDelivery:
             return candidate
         application, context = candidate.pop("application"), candidate.pop("context")
         fingerprint = candidate.pop("place_fingerprint", "")
-        result = await application.proactive.contact(context, candidate["opportunity"], candidate["intents"],
-            role_instruction=candidate["role_instruction"], selection_seed=candidate["opportunity"].opportunity_id)
+        automatic_origin = candidate.pop("automatic_origin")
+        result = await application.proactive.contact(
+            context, candidate["opportunity"], candidate["intents"],
+            role_instruction=candidate["role_instruction"],
+            selection_seed=candidate["opportunity"].opportunity_id,
+            automatic_origin=automatic_origin,
+        )
         if result.is_success and fingerprint:
             # 只有这里真的把这次到达交给主动联系之后才记指纹：被额度、静默
             # 时段或去重挡下时，下一次同一个地点还要能重新尝试。

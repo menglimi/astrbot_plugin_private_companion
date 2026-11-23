@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from datetime import datetime
 import json
 from typing import Mapping
@@ -48,7 +49,9 @@ class ConfigurationService:
         self.policy = ObjectAccessPolicy(runtime)
         self.operations = OperationRepository(self.store)
         self._active_generations: dict[str, int] = {}
-        self._owners: dict[str, ConfigurationOwner] = {self.OWNER: SparseConfigurationOwner(self.store)}
+        default_owner = SparseConfigurationOwner(self.runtime)
+        default_owner.store = self.store
+        self._owners: dict[str, ConfigurationOwner] = {self.OWNER: default_owner}
         for owner in owners:
             if owner.owner_id in self._owners:
                 raise ValueError("configuration owners must be unique")
@@ -106,12 +109,13 @@ class ConfigurationService:
             raise ConfigurationError("configuration_scope_not_supported", "group is not available at this configuration layer")
         owner = self._owners[definitions[0].owner_id]
         owned = owner.read(target, definitions)
-        layers = target.chain()
-        placeholders = ",".join("?" for _ in layers)
+        from companion_v2.relationships.account_link_settings import change_keys
+        keys = change_keys(self.runtime, target, group_id)
+        placeholders = ",".join("?" for _ in keys)
         sequence = self.store.read_one(
             f"""SELECT COALESCE(MAX(sequence), 0) AS n FROM configuration_changes
                 WHERE target_key IN ({placeholders}) AND group_id = ? AND changed = 1""",
-            (*(layer.key for layer in layers), group_id),
+            (*keys, group_id),
         )["n"]
         effective = owned.fields
         resolution = fingerprint({
@@ -153,10 +157,19 @@ class ConfigurationService:
         reset_to_inherit: tuple[str, ...] = (), observed_at: datetime,
     ) -> Outcome[ConfigurationReceipt]:
         try:
-            with self.store.transaction() as connection:
+            definitions = self.registry.group(group_id)
+            owner = self._owners[definitions[0].owner_id]
+            needs_main_runtime = self.store is not self.runtime and (
+                getattr(owner, "store_independent", False)
+                or getattr(owner, "writes_main_runtime", False)
+            )
+            # Enforce the global runtime -> store lock order whenever an owner
+            # writes to the main runtime (grants or store-independent tables).
+            with ExitStack() as stack:
+                if needs_main_runtime:
+                    stack.enter_context(self.runtime.transaction())
+                connection = stack.enter_context(self.store.transaction())
                 snapshot = self._snapshot(actor, target, group_id, observed_at, "configuration.write")
-                definitions = self.registry.group(group_id)
-                owner = self._owners[definitions[0].owner_id]
                 if operation.scope != target.authorization_scope:
                     raise ConfigurationError("operation_scope_mismatch", "operation is not owned by this configuration target")
                 if operation.owner != owner.owner_id:
@@ -249,13 +262,14 @@ class ConfigurationService:
                 raise ConfigurationError("invalid_configuration_cursor", "expected a nonnegative cursor and limit 1..100")
             with self.store.read_snapshot():
                 self._snapshot(actor, target, group_id, observed_at)
-                layers = target.chain()
-                placeholders = ",".join("?" for _ in layers)
+                from companion_v2.relationships.account_link_settings import change_keys
+                keys = change_keys(self.runtime, target, group_id)
+                placeholders = ",".join("?" for _ in keys)
                 rows = self.store.read_all(
                     f"""SELECT sequence FROM configuration_changes
                         WHERE target_key IN ({placeholders}) AND group_id = ? AND changed = 1 AND sequence > ?
                         ORDER BY sequence LIMIT ?""",
-                    (*(layer.key for layer in layers), group_id, after, limit + 1),
+                    (*keys, group_id, after, limit + 1),
                 )
                 sequences = tuple(row["sequence"] for row in rows[:limit])
                 return Outcome.success(ConfigurationChanges(

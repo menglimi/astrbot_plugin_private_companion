@@ -7,7 +7,8 @@
       "enabled": {
         "description": "启用游戏页面服务",
         "type": "bool",
-        "default": true
+        "default": true,
+        "hint": "开启后，聊天开局可签发实时网页棋盘链接，手机与电脑均可接续同一局。"
       },
       "host": {
         "description": "监听地址",
@@ -25,6 +26,8 @@
         "description": "首选监听端口",
         "type": "int",
         "default": 6331,
+        "minimum": 1,
+        "maximum": 65535,
         "hint": "冲突时只尝试后续十个端口，不会占用或关闭已有服务。"
       },
       "public_base_url": {
@@ -49,7 +52,7 @@
         "description": "cloudflared 可执行文件路径",
         "type": "string",
         "default": "",
-        "hint": "留空时按系统 PATH、插件目录和插件托管目录依次查找。"
+        "hint": "留空时按系统 PATH、插件托管目录与内置目录依次查找。"
       },
       "allow_cloudflared_download": {
         "description": "允许管理台下载 cloudflared",
@@ -68,290 +71,53 @@
   "native_v2": {
     "description": "V2 原生聊天游戏",
     "type": "object",
-    "hint": "仅控制 V2 宿主中的聊天内游戏，不启动或开放旧网页房间；仍须由 V2 宿主授权。",
+    "hint": "控制 V2 宿主中的聊天与网页共用游戏；仍须由 V2 宿主启用并按窗口授权。",
     "items": {
       "tictactoe_enabled": {
-        "description": "启用 V2 井字棋",
-        "type": "bool",
-        "default": false
-      },
-      "gomoku_enabled": {
-        "description": "启用 V2 五子棋",
-        "hint": "独立于旧网页房间和旧五子棋开关；在 V2 聊天中与当前身份的 Bot 下棋。",
-        "type": "bool",
-        "default": false
-      },
-      "pig_dice_enabled": {
-        "description": "启用 V2 掷骰竞分",
-        "hint": "独立于旧网页房间；当前聊天身份先达到 50 分获胜。",
-        "type": "bool",
-        "default": false
-      },
-      "blackjack_enabled": {
-        "description": "启用 V2 二十一点",
-        "hint": "单人对局，角色做庄家；不含下注，独立于旧网页房间。",
-        "type": "bool",
-        "default": false
-      },
-      "xiangqi_enabled": {
-        "description": "启用 V2 中国象棋",
-        "hint": "独立于旧网页房间；需要已安装 Pikafish 引擎，不会因开启此项自动下载。",
-        "type": "bool",
-        "default": false
-      },
-      "turtle_soup_enabled": {
-        "description": "启用 V2 海龟汤",
-        "hint": "聊天内开局与推理；汤底通过专用裁判工具隔离。",
-        "type": "bool",
-        "default": false
-      },
-      "turtle_soup_content_level": {
-        "description": "V2 海龟汤内容等级",
-        "type": "string",
-        "default": "normal",
-        "options": [
-          "all_ages",
-          "normal",
-          "unrestricted"
-        ]
-      },
-      "turtle_soup_max_hints": {
-        "description": "V2 海龟汤每题最多提示",
-        "type": "int",
-        "default": 3
-      },
-      "draw_guess_enabled": {
-        "description": "启用 V2 你画我猜",
-        "hint": "用户在聊天发送画作，角色根据图片猜词；答案由执行端校验。",
-        "type": "bool",
-        "default": false
-      },
-      "draw_guess_max_guesses": {
-        "description": "V2 你画我猜最多猜测次数",
-        "type": "int",
-        "default": 5
-      },
-      "draw_guess_duration_seconds": {
-        "description": "V2 你画我猜限时秒数",
-        "type": "int",
-        "default": 120
-      }
-    }
-  },
-  "logging": {
-    "description": "插件日志",
-    "type": "object",
-    "items": {
-      "level": {
-        "description": "日志等级",
-        "type": "string",
-        "default": "inherit",
-        "hint": "默认跟随 AstrBot 全局日志等级；可填写 inherit、debug、info、warning 或 error，自定义等级只影响本插件。"
-      }
-    }
-  },
-  "identity": {
-    "description": "网页身份绑定",
-    "type": "object",
-    "hint": "受信任浏览器只在配置固定 HTTPS 外部地址时生效；临时隧道仍使用每房间一次性令牌。",
-    "items": {
-      "enable_trusted_browser": {
-        "description": "允许记住浏览器身份",
-        "type": "bool",
-        "default": false,
-        "hint": "开启后，用户首次通过 QQ 令牌确认时可选择记住当前浏览器。不会自动加入玩家席或恢复房间。"
-      },
-      "trusted_browser_ttl_days": {
-        "description": "受信任浏览器有效天数",
-        "type": "int",
-        "default": 30,
-        "hint": "范围 1-365；过期后需要重新通过 QQ 令牌绑定。每个 QQ 最多保留 8 台设备。"
-      }
-    }
-  },
-  "context": {
-    "description": "QQ 游戏事实衔接",
-    "type": "object",
-    "hint": "只向对应的私聊单玩家临时提供只读游戏事实；不注入 WebUI 对话，不写入普通聊天历史，群聊始终隔离。",
-    "items": {
-      "enable_private_qq_game_context": {
-        "description": "私聊中提供游戏事实",
-        "type": "bool",
-        "default": true,
-        "hint": "让 Bot 在私聊中回答当前游戏、比分、执子和最近结果；所有游戏操作仍只能在 WebUI 完成。"
-      },
-      "recent_game_result_ttl_minutes": {
-        "description": "房间关闭后保留最近结果分钟数",
-        "type": "int",
-        "default": 30,
-        "hint": "范围 0-1440；0 表示房间关闭后立即删除。结果只保存在内存中，插件重载后不恢复。"
-      }
-    }
-  },
-  "rooms": {
-    "description": "房间权限与并行数量",
-    "type": "object",
-    "items": {
-      "enable_group_rooms": {
-        "description": "允许群聊创建房间",
-        "type": "bool",
-        "default": true
-      },
-      "enable_private_rooms": {
-        "description": "允许私聊创建房间",
-        "type": "bool",
-        "default": true
-      },
-      "allow_non_admin_group_creation": {
-        "description": "允许非游戏管理员在群聊创建房间",
-        "type": "bool",
-        "default": false,
-        "hint": "关闭时仅管理员可创建，且固定为管理员房间；开启后所有人默认创建普通房间，管理员明确提出时才创建管理员房间。"
-      },
-      "game_admin_qq_ids": {
-        "description": "游戏管理员 QQ 号",
-        "type": "text",
-        "default": "",
-        "hint": "每行一个或使用逗号分隔。不继承 AstrBot 管理员。"
-      },
-      "max_group_rooms": {
-        "description": "全部群聊合计最大房间数",
-        "type": "int",
-        "default": 1,
-        "hint": "0 表示无限制；创建后即占用名额。"
-      },
-      "max_private_rooms": {
-        "description": "全部私聊合计最大房间数",
-        "type": "int",
-        "default": 1,
-        "hint": "0 表示无限制；创建后即占用名额。"
-      },
-      "empty_player_timeout_seconds": {
-        "description": "玩家席无人自动销毁秒数",
-        "type": "int",
-        "default": 60,
-        "hint": "0 表示关闭该项自动销毁。"
-      },
-      "idle_timeout_seconds": {
-        "description": "房间无有效操作自动销毁秒数",
-        "type": "int",
-        "default": 300,
-        "hint": "0 表示关闭该项自动销毁；页面刷新和心跳不算有效操作。"
-      }
-    }
-  },
-  "game": {
-    "description": "局内节奏",
-    "type": "object",
-    "items": {
-      "commentary_cooldown_seconds": {
-        "description": "战术节点人格回复冷却秒数",
-        "type": "int",
-        "default": 45,
-        "hint": "普通落子和掷骰不触发模型，只在明显威胁、连续冒险或高分爆掉等关键节点表达。"
-      }
-    }
-  },
-  "multiplayer": {
-    "description": "多人席位",
-    "type": "object",
-    "hint": "当前由海龟汤使用；席位、轮换和交换协议也可供后续多人游戏复用。",
-    "items": {
-      "turn_timeout_seconds": {
-        "description": "每位玩家回合秒数",
-        "type": "int",
-        "default": 60,
-        "hint": "0 表示关闭回合倒计时；模型处理期间自动暂停。"
-      },
-      "swap_request_cooldown_seconds": {
-        "description": "观众交换申请冷却秒数",
-        "type": "int",
-        "default": 30,
-        "hint": "按申请者计时；0 表示不限制发送频率，但仍只能有一条待处理申请。"
-      },
-      "swap_request_expiry_seconds": {
-        "description": "交换申请有效秒数",
-        "type": "int",
-        "default": 20,
-        "hint": "过期申请由服务端自动清理。"
-      }
-    }
-  },
-  "gomoku": {
-    "description": "五子棋",
-    "type": "object",
-    "items": {
-      "enabled": {
-        "description": "启用五子棋",
-        "type": "bool",
-        "default": true
-      }
-    }
-  },
-  "xiangqi": {
-    "description": "中国象棋引擎",
-    "type": "object",
-    "hint": "象棋使用独立 Pikafish 进程。引擎不可用时只禁用象棋，不影响五子棋。",
-    "items": {
-      "enabled": {
-        "description": "启用中国象棋",
-        "type": "bool",
-        "default": true
-      },
-      "engine_path": {
-        "description": "Pikafish 可执行文件路径",
-        "type": "string",
-        "default": "",
-        "hint": "留空时使用游戏管理台安装的托管版本。可执行文件同目录必须包含 pikafish.nnue。"
-      },
-      "allow_engine_download": {
-        "description": "允许管理台下载 Pikafish",
-        "type": "bool",
-        "default": true
-      },
-      "auto_download_engine": {
-        "description": "首次创建象棋房间时自动下载",
-        "type": "bool",
-        "default": false,
-        "hint": "默认关闭。推荐在游戏管理台确认后按需安装。"
-      },
-      "download_proxy": {
-        "description": "Pikafish 下载代理",
-        "type": "string",
-        "default": "",
-        "hint": "例如 http://127.0.0.1:7890；留空时继承 HTTPS_PROXY 或 HTTP_PROXY。"
-      }
-    }
-  },
-  "tictactoe": {
-    "description": "井字棋",
-    "type": "object",
-    "items": {
-      "enabled": {
         "description": "启用井字棋",
         "type": "bool",
         "default": true
-      }
-    }
-  },
-  "turtle_soup": {
-    "description": "海龟汤",
-    "type": "object",
-    "hint": "题目默认由当前会话的 Bot 生成并进行隐藏校验；模型不可用时使用内置兜底题。",
-    "items": {
-      "enabled": {
-        "description": "启用海龟汤",
+      },
+      "gomoku_enabled": {
+        "description": "启用五子棋",
+        "hint": "15×15 标准棋盘，支持棋盘点选、自由摆子与聊天同步。",
         "type": "bool",
         "default": true
       },
-      "max_hints": {
-        "description": "每题最多提示次数",
-        "type": "int",
-        "default": 3,
-        "hint": "范围 0-8；0 表示不额外限制，可依次查看该题全部预生成提示。"
+      "pig_dice_enabled": {
+        "description": "启用掷骰竞分",
+        "hint": "继续冒险或及时收手，先达到目标分数获胜。",
+        "type": "bool",
+        "default": true
       },
-      "content_level": {
-        "description": "题目内容等级",
+      "pig_dice_target_score": {
+        "description": "掷骰竞分目标分数",
+        "type": "int",
+        "default": 50,
+        "minimum": 20,
+        "maximum": 200,
+        "hint": "范围 20-200；新一局中先达到该分数的一方获胜。"
+      },
+      "blackjack_enabled": {
+        "description": "启用二十一点",
+        "hint": "单人对局，角色做庄家，不含下注。",
+        "type": "bool",
+        "default": true
+      },
+      "xiangqi_enabled": {
+        "description": "启用中国象棋",
+        "hint": "需要已安装 Pikafish 引擎，可在上方「引擎与公网管理」一键下载或指定路径。",
+        "type": "bool",
+        "default": true
+      },
+      "turtle_soup_enabled": {
+        "description": "启用海龟汤",
+        "hint": "支持动态 AI 出题与内置题库兜底，汤底通过专用裁判工具隔离。",
+        "type": "bool",
+        "default": true
+      },
+      "turtle_soup_content_level": {
+        "description": "海龟汤内容等级",
         "type": "string",
         "default": "normal",
         "options": [
@@ -366,113 +132,93 @@
         ],
         "hint": "all_ages 为全年龄，normal 为普通悬疑，unrestricted 允许更沉重题材但仍遵守安全限制。"
       },
-      "max_players": {
-        "description": "海龟汤最大玩家席数",
+      "turtle_soup_max_hints": {
+        "description": "海龟汤每题最多提示",
         "type": "int",
-        "default": 6,
-        "hint": "0 表示不限制；普通房间可自行加入空席，管理员房间仍由游戏管理台安排。"
-      }
-    }
-  },
-  "pig_dice": {
-    "description": "贪心骰子",
-    "type": "object",
-    "items": {
-      "enabled": {
-        "description": "启用贪心骰子",
-        "type": "bool",
-        "default": true
+        "default": 3,
+        "minimum": 0,
+        "maximum": 8,
+        "hint": "范围 0-8；0 表示不额外限制，可依次查看该题全部渐进提示。"
       },
-      "target_score": {
-        "description": "获胜目标分数",
-        "type": "int",
-        "default": 50,
-        "hint": "范围 20-200；新一局中先达到目标分数的一方获胜。"
-      }
-    }
-  },
-  "draw_guess": {
-    "description": "你画我猜",
-    "type": "object",
-    "hint": "用户在 WebUI 画画，Bot 只在点击猜测时调用一次视觉模型；答案由服务端隐藏保存。",
-    "items": {
-      "enabled": {
+      "draw_guess_enabled": {
         "description": "启用你画我猜",
+        "hint": "作画方在网页画布看题作画，猜测方（陪伴者）看不到题词，仅凭画作猜词。",
         "type": "bool",
         "default": true
       },
-      "duration_seconds": {
-        "description": "作画倒计时秒数",
-        "type": "int",
-        "default": 120,
-        "hint": "范围 10-600；倒计时结束后本轮自动结算。"
-      },
-      "max_guesses": {
-        "description": "Bot 最大猜测次数",
+      "draw_guess_max_guesses": {
+        "description": "你画我猜最多猜测次数",
         "type": "int",
         "default": 5,
-        "hint": "范围 1-10；每次点击“让 Bot 猜”消耗一次。"
-      }
-    }
-  },
-  "blackjack": {
-    "description": "二十一点",
-    "type": "object",
-    "hint": "Bot 担任庄家。默认只允许一名用户单独对局，开放多人后每位玩家各持一手牌依次操作。",
-    "items": {
-      "enabled": {
-        "description": "启用二十一点",
-        "type": "bool",
-        "default": true
+        "minimum": 1,
+        "maximum": 10,
+        "hint": "范围 1-10。"
       },
-      "max_players": {
-        "description": "最大玩家席",
+      "draw_guess_duration_seconds": {
+        "description": "你画我猜限时秒数",
         "type": "int",
-        "default": 1,
-        "hint": "范围 1-6；1 表示用户只能单独和 Bot 对局，大于 1 时允许多人各自对庄。"
+        "default": 120,
+        "minimum": 10,
+        "maximum": 600,
+        "hint": "范围 10-600。"
       }
     }
   },
-  "memory": {
-    "description": "陪伴记忆",
+  "xiangqi": {
+    "description": "中国象棋引擎",
     "type": "object",
+    "hint": "象棋使用独立 Pikafish 进程。引擎不可用时只禁用象棋，不影响其他游戏。",
     "items": {
-      "record_shared_experience": {
-        "description": "记录确认身份后的完整游戏经历",
+      "engine_path": {
+        "description": "Pikafish 可执行文件路径",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用管理台安装的托管版本。可执行文件同目录必须包含 pikafish.nnue。"
+      },
+      "allow_engine_download": {
+        "description": "允许管理台下载 Pikafish",
         "type": "bool",
         "default": true,
-        "hint": "只在房间销毁时写一条摘要；不会保存逐步棋谱。"
+        "hint": "关闭后管理台不能下载或更新托管版 Pikafish，仍可使用上方指定的自定义路径。"
+      },
+      "download_proxy": {
+        "description": "Pikafish 下载代理",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://127.0.0.1:7890；留空时继承 HTTPS_PROXY 或 HTTP_PROXY。"
       }
     }
   },
-  "companion_integration": {
-    "description": "我会永远陪着你联动",
+  "context": {
+    "description": "QQ 游戏事实衔接",
     "type": "object",
-    "hint": "需要安装支持游戏事件扩展 API 的 astrbot_plugin_private_companion；未安装或版本较旧时自动降级，不影响游戏本身。",
+    "hint": "只向对应的私聊单玩家临时提供只读游戏事实；不注入普通聊天历史，群聊始终隔离。",
     "items": {
-      "enable_emotional_afterglow": {
-        "description": "启用游戏情绪余韵",
+      "enable_private_qq_game_context": {
+        "description": "私聊中提供游戏事实",
         "type": "bool",
-        "default": false,
-        "hint": "每局结束后按已绑定玩家分别上报结构化结果，由陪伴人格决定胜负在意程度、叠加上限、持续时间和后续语气。"
+        "default": true,
+        "hint": "让角色在私聊中了解当前游戏、比分、执子和最近结果。"
       },
-      "enable_proactive_invites": {
-        "description": "允许陪伴主动邀请游戏",
-        "type": "bool",
-        "default": false,
-        "hint": "向陪伴插件注册可选主动能力；是否真正邀请仍由陪伴人格、日程、关系、免打扰和主动消息额度共同决定。"
-      },
-      "proactive_invite_probability_percent": {
-        "description": "主动邀请候选权重百分比",
+      "recent_game_result_ttl_minutes": {
+        "description": "对局结束后保留最近结果分钟数",
         "type": "int",
-        "default": 18,
-        "hint": "范围 0-100，仅影响该能力进入主动动作选择时的相对权重，不代表固定发送概率。"
-      },
-      "proactive_invite_cooldown_hours": {
-        "description": "主动邀请冷却小时",
-        "type": "int",
-        "default": 24,
-        "hint": "由陪伴插件统一执行冷却；0 表示不增加该能力自己的额外冷却。"
+        "default": 30,
+        "minimum": 0,
+        "maximum": 1440,
+        "hint": "范围 0-1440；0 表示对局结束后不再注入临时最近结果。"
+      }
+    }
+  },
+  "logging": {
+    "description": "插件日志",
+    "type": "object",
+    "items": {
+      "level": {
+        "description": "日志等级",
+        "type": "string",
+        "default": "inherit",
+        "hint": "默认跟随 AstrBot 全局日志等级；可填写 inherit、debug、info、warning 或 error，自定义等级只影响本模块。"
       }
     }
   }

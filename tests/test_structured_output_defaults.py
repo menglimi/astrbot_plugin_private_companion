@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider
-from companion_v2.configuration.models import ConfigLayer, ConfigTarget, EffectiveValue
+from companion_v2.configuration.models import ApplyMode, ConfigLayer, ConfigTarget, ConfigurationSnapshot, EffectiveValue
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.configuration.service import ConfigurationService
 from companion_v2.execution.models import Lane, TaskError
@@ -72,7 +72,9 @@ class OutputDefaultTableTests(unittest.TestCase):
         for kind in ("conversation.reply", "proactive.judge", "role.journal.select"):
             with self.subTest(kind=kind):
                 self.assertEqual(output_defaults.default_output_tokens(kind, 2048), 2048)
-        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 128), 128)
+        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 128), 4096)
+        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 128, maximum=2048), 2048)
+        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 8192), 8192)
 
 
 class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase):
@@ -102,17 +104,17 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
         profiles = session.application.router.profiles
         self.assertLessEqual(set(profiles), set(THINKING_MARGIN))
         expected = {
-            "role.expression.learn": 8192,
-            "role.self_review": 8192,
-            "memory.reflect": 8192,
-            "content.authoring.draft": 8192,
-            "role.expression.review": 4096,
-            "role.state.maintain": 4096,
-            "proactive.compose": 4096,
-            "calendar.plan": 4096,
-            "screen.interpretation": 4096,
+            "role.expression.learn": 30000,
+            "role.self_review": 30000,
+            "memory.reflect": 30000,
+            "content.authoring.draft": 30000,
+            "role.expression.review": 30000,
+            "role.state.maintain": 30000,
+            "proactive.compose": 30000,
+            "calendar.plan": 30000,
+            "screen.interpretation": 30000,
             "conversation.reply": 2048,
-            "conversation.poke_reply": 128,
+            "conversation.poke_reply": 4096,
             "proactive.judge": 2048,
         }
         for kind, tokens in expected.items():
@@ -123,7 +125,7 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
         session = self.staging_with_global_budget()
         group = "model.role.expression.learn"
         field = self.snapshot_field(session, group)
-        self.assertEqual(field.value, 8192)
+        self.assertEqual(field.value, 30000)
         self.assertIsNone(field.source)
         self.assertFalse(field.explicit)
         self.assertIsNone(self.runtime.read_one(
@@ -137,7 +139,7 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
         field = self.snapshot_field(session, group)
         self.assertEqual(field.value, 4096)
         self.assertTrue(field.explicit)
-        self.assertEqual(session.application.router.profiles[group.removeprefix("model.")].max_output_tokens, 8192)
+        self.assertEqual(session.application.router.profiles[group.removeprefix("model.")].max_output_tokens, 30000)
 
 
 class StagingRegistrationTests(StagingFixture, unittest.IsolatedAsyncioTestCase):
@@ -274,7 +276,7 @@ class OutputCeilingProjectionTests(unittest.TestCase):
         manager.context = SimpleNamespace(
             scope=SimpleNamespace(installation_id=INSTALLATION, bot_id=SCOPE.bot_id),
             role_binding=SimpleNamespace(role=ROLE))
-        manager._snapshots = lambda operator, profile, layer=None: (snapshot, snapshot, None)
+        manager._snapshots = lambda operator, profile, layer=None: (snapshot, snapshot, None, None, snapshot, snapshot)
         manager._prompt_sections = lambda *a, **k: []
         return manager, ModelTaskProfile(kind="role.expression.learn", lane=Lane.BACKGROUND,
                                          default_provider="primary", default_prompt="任务提示",
@@ -309,21 +311,30 @@ class InheritedDefaultSaveTests(unittest.TestCase):
         self.profile = ModelTaskProfile(kind="role.expression.learn", lane=Lane.BACKGROUND,
                                         default_provider="primary", default_prompt="任务提示",
                                         default_fallback="fallback", max_output_tokens=8192)
-        self.definitions = configuration_fields((self.profile,))
-        self.snapshot = SimpleNamespace(fields={
-            item.field_id: EffectiveValue(item.default, None, False) for item in self.definitions})
+        definitions = configuration_fields((self.profile,))
+        registry = FieldRegistry(version="inherited-output-defaults.v1", fields=definitions)
+        self.snapshot = ConfigurationSnapshot(
+            target=ConfigTarget(INSTALLATION, ConfigLayer.WINDOW, ROLE, SCOPE),
+            group_id=self.profile.group, schema_version=registry.version,
+            revision=0, change_sequence=0, edit_token="edit", resolution_token="resolution",
+            fields={item.field_id: EffectiveValue(item.default, None, False) for item in definitions},
+            consumer_id="model_gateway", apply_mode=ApplyMode.NEXT_TASK,
+        )
         self.manager = object.__new__(ModelManagement)
-        self.manager.app = SimpleNamespace(router=SimpleNamespace(providers={
-            provider: SimpleNamespace(maximum_output_tokens=4096, capabilities=("text",))
-            for provider in ("primary", "fallback")}))
+        self.manager.context = None
+        providers = tuple(
+            SimpleNamespace(binding=SimpleNamespace(provider=provider),
+                            maximum_output_tokens=4096, capabilities=("text",))
+            for provider in ("primary", "fallback")
+        )
+        router = ModelRouter(SimpleNamespace(registry=registry), (self.profile,), providers)
+        self.manager.app = SimpleNamespace(router=router)
 
     def saved_limit(self, source):
         """A snapshot whose output limit was saved at ``source`` on an outer layer."""
         field_id = self.profile.group + ".max_output_tokens"
-        return SimpleNamespace(fields={
-            item.field_id: EffectiveValue(item.default,
-                source if item.field_id == field_id else None, False)
-            for item in self.definitions})
+        return replace(self.snapshot, fields={**self.snapshot.fields,
+            field_id: replace(self.snapshot.fields[field_id], source=source)})
 
     def changes(self, current=None, inherited=None, **changes):
         return self.manager._changes(self.profile, {"changes": changes, "reset": []},

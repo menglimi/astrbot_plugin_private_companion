@@ -6,9 +6,11 @@ from dataclasses import replace
 from companion_v2.execution.models import TaskError, TaskSpec, encode, digest, require
 from .foreground import PromptMaterial
 from .messages import source_from_document
+from .tool_failures import failure_guidance, retry_disposition_for
 
 
 PREFIX = "astrbot.core-tool."
+PREFIX_END = PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1)
 
 
 def operation_row(runtime, invocation_id):
@@ -29,7 +31,8 @@ def operation_row(runtime, invocation_id):
         "descriptor_json": native["provider_json"], "provider_json": encode(descriptor["binding"]),
         "result_source_json": encode(native.get("source")), "result_hash": native.get("source_hash"),
         "operation_id": result.get("operation_id"), "receipt_ref": result.get("receipt_ref"),
-        "error_code": result.get("code"), "created_at": task["created_at"],
+        "error_code": result.get("code"), "retry_disposition": result.get("retry_disposition"),
+        "created_at": task["created_at"],
         "finished_at": task["updated_at"] if native["state"] in ("succeeded", "failed", "unknown") else None}
 
 
@@ -43,10 +46,10 @@ def operation_rows(runtime, context, actions, *, after=0, limit=128, newest_firs
                     + ",".join("?" for _ in states) + ")") if states else ""
     order = "DESC" if newest_first else "ASC"
     rows = runtime.read_all(f"""SELECT rowid AS scan_id, json_extract(value, '$.invocation_id') AS invocation_id
-        FROM runtime_metadata WHERE substr(key, 1, ?) = ? AND rowid > ?
+        FROM runtime_metadata WHERE key >= ? AND key < ? AND rowid > ?
         AND json_extract(value, '$.origin_key') = ? AND json_extract(value, '$.action') IN ({placeholders})
         AND json_extract(value, '$.task_id') IS NOT NULL{state_filter} ORDER BY rowid {order} LIMIT ?""",
-        (len(PREFIX), PREFIX, after, context.key, *actions, *states, limit))
+        (PREFIX, PREFIX_END, after, context.key, *actions, *states, limit))
     return tuple({**operation_row(runtime, row["invocation_id"]), "scan_id": row["scan_id"]} for row in rows)
 
 
@@ -54,6 +57,16 @@ def snapshot(external, row, context, at):
     current = operation_row(external.runtime, row["invocation_id"])
     if current is None or current != {key: value for key, value in row.items() if key != "scan_id"}:
         raise TaskError("external_invocation_unavailable", "the native operation changed")
+    saved = external.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (PREFIX + row["invocation_id"],))
+    native = json.loads(saved["value"]) if saved is not None else {}
+    native_result = native.get("result")
+    if (current["state"] in ("succeeded", "failed") or native_result is not None) and (
+            not isinstance(native_result, dict)
+            or (native_result.get("state"), native_result.get("effect"), native_result.get("invocation_id"),
+                native_result.get("operation_id"), native_result.get("receipt_ref")) != (
+                    current["state"], current["effect"], current["invocation_id"],
+                    current["operation_id"], current["receipt_ref"])):
+        raise TaskError("external_invocation_unavailable", "the native receipt changed")
     descriptor = external._descriptor(current)
     external.admit(descriptor, context, at)
     if current["origin_key"] != context.key:
@@ -70,11 +83,16 @@ def snapshot(external, row, context, at):
         raise TaskError("external_task_mismatch", "the native task belongs to another operation")
     state = current["state"] if current["state"] in ("succeeded", "failed") else "unknown"
     result = {key: current[key] for key in ("invocation_id", "effect", "operation_id", "receipt_ref")}
-    result.update(state=state, code=current["error_code"])
+    result.update(state=state, code=current["error_code"],
+                  retry_disposition=current.get("retry_disposition") or
+                  retry_disposition_for(current["error_code"], state))
+    result.update(failure_guidance(current["error_code"], state, action=current["action"]))
     material = None
     if state == "succeeded":
-        if (task["state"], data["effect"], data.get("operation_id"), data.get("result_ref")) != (
-                "succeeded", current["effect"], current["operation_id"], current["invocation_id"]):
+        if (task["state"], data["effect"], data.get("operation_id"), data.get("result_ref"),
+                data.get("receipt_ref")) != (
+                "succeeded", current["effect"], current["operation_id"], current["invocation_id"],
+                current["receipt_ref"]):
             raise TaskError("external_task_unresolved", "the native task has not accepted its final receipt")
         from .external_tools import _SourceAccess
         reference = source_from_document(json.loads(current["result_source_json"]))

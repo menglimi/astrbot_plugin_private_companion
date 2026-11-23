@@ -17,6 +17,22 @@ from tests.test_role_tool_loop import answered
 
 
 class ContactSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_offline_account_skips_planning_without_retiring_its_conversation(self):
+        host, batch_id = await self.scheduled()
+        app = host.application
+        connected = False
+        app.contact_schedule.bind_connection_gate(lambda _: connected)
+        row = app.contact_schedule._legacy_rows(0)[0]
+        self.assertEqual(row["batch_id"], batch_id)
+        with patch.object(app.contact_schedule, "_begin_tick", return_value=(self.clock.now(), (row,), 1, 1, 0)), \
+                patch.object(app.contact_schedule, "_plan_one", return_value=None) as plan:
+            await app.contact_schedule.advance_async()
+            plan.assert_not_called()
+            self.assertEqual(self.contacts(app), ())
+            connected = True
+            await app.contact_schedule.advance_async()
+            plan.assert_called_once()
+
     async def test_synthetic_diagnostic_uses_ephemeral_event_and_keeps_real_persona_anchor(self):
         host, batch_id = await self.scheduled(automatic=False)
         app = host.application
@@ -631,13 +647,14 @@ class ContactSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
         self.model_behavior = held
         first = asyncio.create_task(self.contact(app))
         await asyncio.wait_for(entered.wait(), 3)
-        second = (await self.contact(app, self.opportunity("busy"))).unwrap().task
-        self.assertEqual(second.state, "cancelled")
+        second_outcome = await self.contact(app, self.opportunity("busy"))
+        self.assertEqual(second_outcome.failure.code, "task_lane_full")
         self.assertEqual(len(self.called), 1)
         release.set()
         task = (await first).unwrap().task
         await self.delivery_state(app, task.task_id, "delivered")
-        self.assertEqual((await self.contact(app, self.opportunity("busy"))).unwrap().task.task_id, second.task_id)
+        replayed = (await self.contact(app, self.opportunity("busy"))).unwrap().task
+        self.assertEqual(replayed.state, "cancelled")
         self.assertEqual(len(self.called), 1)
 
     async def test_known_delivery_releases_its_allowance_at_the_rolling_boundary(self):

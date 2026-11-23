@@ -30,6 +30,17 @@
         "type": "string",
         "default": ""
       },
+      "auto_backup_enabled": {
+        "description": "启用自动滚动备份",
+        "type": "bool",
+        "default": false
+      },
+      "auto_backup_interval_minutes": {
+        "description": "自动备份间隔（分钟）",
+        "hint": "1–43200 分钟，默认 1440（24 小时）。",
+        "type": "int",
+        "default": 1440
+      },
       "retention_count": {
         "description": "保留最近备份数量",
         "type": "int",
@@ -444,6 +455,13 @@
         "default": false,
         "invisible": true
       },
+      "singsing_enabled": {
+        "description": "普通回复自主唱歌",
+        "type": "bool",
+        "default": false,
+        "invisible": true,
+        "hint": "保持 AstrBot 与本会话的 TTS 开启，将当前配置预设的自动转语音概率设为 0，以避免通常的自动 TTS。要让正文不转为图片，请关闭 T2I。唱歌仅支持已选的 Fish Audio Drama 3；不影响主动联系。"
+      },
       "trigger_mode": {
         "description": "语音触发",
         "type": "string",
@@ -564,7 +582,7 @@
       "timeout_seconds": {
         "description": "合成超时秒数",
         "type": "int",
-        "default": 30
+        "default": 120
       },
       "trigger_keywords": {
         "description": "请求触发词",

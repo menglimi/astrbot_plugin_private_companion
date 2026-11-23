@@ -19,8 +19,10 @@ from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from .capability_role_selection import (
     AUTO_ROLE_EXTENSIONS,
     enable_role,
+    lifecycle_role_context,
     lifecycle_role_identity,
 )
+from .content_access import ensure_content_access
 from .management_identity import dashboard_operator
 from .integration_registry import UnifiedCompanionExtensionAPI
 from .native_extensions.builtins import MANAGED_EXTENSIONS
@@ -81,7 +83,7 @@ class IntegrationWebAPI:
                         action="memory.manage",
                         observed_at=controller.now(),
                     ))
-                data = UnifiedCompanionExtensionAPI(controller).manifest()
+                data = UnifiedCompanionExtensionAPI(controller, claim=False).manifest()
                 data["nai"] = NAIImageBackend(controller.context, Path(controller.data_root) / "nai").status()
                 return {"status": "ok", "message": "", "data": data}
         except TaskError as error:
@@ -187,6 +189,10 @@ class IntegrationWebAPI:
                     if identity is not None:
                         role, bot_id = identity
                         role_selection = enable_role(runtime, extension_id, role, bot_id, observed_at)
+                if action in ("assemble", "update", "resume") and extension_id == "content":
+                    context = lifecycle_role_context(controller, role_id=role_id, target_id=target_id)
+                    if context is not None:
+                        ensure_content_access(runtime, context, observed_at=observed_at)
                 installation = require(CapabilityRepository(runtime).installation(extension_id=extension_id))
                 return outcome_response(Outcome.success({"receipt": receipt, "installation": installation,
                     "role_selection": role_selection, "runtime": registry.status(extension_id)}))

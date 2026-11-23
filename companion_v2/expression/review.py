@@ -99,7 +99,7 @@ class ExpressionDraftReview:
         rules = tuple(material for material in request.context.materials if material.purpose == "expression_style_rule")
         # A background contact must not wait for a child in its own lane: the
         # configured single background slot would be held by the parent forever.
-        contact = parent_run.task.spec.kind == "proactive.compose"
+        contact = parent_run.task.spec.kind in ("proactive.compose", "proactive.judge")
         kind, runner = (CONTACT_KIND, self.contact_runner) if contact and self.app is not None else (
             KIND, self.runner if self.app is not None else None)
         if (self.closed or self.app is None or not original or not rules or kind not in self.gateway.router.profiles):
@@ -147,6 +147,7 @@ class ExpressionDraftReview:
             SealedForegroundContext((PromptMaterial(OWNER, "expression_review_input", encode_prompt(material)),), (), ()),
             PROMPT, context.role_binding, output_format="role_expression_review")
         completion = None
+        succeeded = False
         try:
             completion = await self.gateway.generate(run, request)
             require(self.validate(run.task.spec, self.tasks.now()))
@@ -154,9 +155,10 @@ class ExpressionDraftReview:
                 return TaskResult("failed", result_ref=job["batch_id"])
             self.results[run.task.task_id] = reviewed_text(completion.draft.text, draft.text, draft.claims,
                                                           job["protected_statements"])
+            succeeded = True
             return TaskResult("succeeded", result_ref=job["batch_id"])
         finally:
-            if completion is not None:
+            if completion is not None and not succeeded:
                 self.gateway.ledger.discard(completion.call_id)
 
     async def close(self):

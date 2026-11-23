@@ -11,6 +11,8 @@ import unicodedata
 from uuid import uuid4
 
 from companion_v2.execution.models import TaskError, digest, encode
+from companion_v2.storage.sqlite_path import file_uri
+from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
 
 
 def sqlite_code(error):
@@ -44,6 +46,7 @@ class SearchIndex:
 
     def __init__(self, data_root):
         self.path = data_root / "memory-search.sqlite3"
+        self._profile = tuning_profile()
         self._ready = False
         try:
             self._ensure_ready()
@@ -69,8 +72,14 @@ class SearchIndex:
 
     def _initialize(self):
         with closing(self._connect()) as db, db:
+            mode = db.execute("PRAGMA journal_mode").fetchone()
+            in_wal = mode is not None and str(mode[0]).lower() == "wal"
             if db.execute("PRAGMA user_version").fetchone()[0] == self.FORMAT:
+                if not in_wal:
+                    db.execute("PRAGMA journal_mode = WAL")
                 return
+            if not in_wal:
+                db.execute("PRAGMA journal_mode = WAL")
             # Normal construction reads the format marker, not every cache page.
             # Legacy initialization and its marker commit atomically.
             db.execute("BEGIN IMMEDIATE")
@@ -102,8 +111,20 @@ class SearchIndex:
     def _connect(self):
         # This cache is optional recall. Waiting here would hold the synchronous
         # host loop (and the caller's authoritative transaction) for seconds.
-        db = sqlite3.connect(str(self.path), timeout=0, uri=True)
+        target = str(self.path)
+        if target == ":memory:":
+            db = sqlite3.connect(target, timeout=0)
+        else:
+            db = sqlite3.connect(file_uri(self.path), timeout=0, uri=True)
         db.row_factory = sqlite3.Row
+        apply_sidecar_pragmas(
+            db,
+            profile=self._profile,
+            enable_wal=False,
+            read_only=False,
+            busy_timeout_ms=None,
+            foreign_keys=False,
+        )
         return db
 
     def _open(self):
@@ -216,18 +237,19 @@ class SearchIndex:
                 if (not model or not isinstance(vector, tuple) or not 1 <= len(vector) <= 4096
                         or any(type(v) not in (int, float) or not math.isfinite(v) for v in vector)):
                     raise ValueError("query embedding needs a model/version and finite dimensions")
-                norm = math.sqrt(sum(v * v for v in vector))
-                if not norm:
+                norm = math.hypot(*vector)
+                if not norm or not math.isfinite(norm):
                     raise ValueError("query embedding cannot be a zero vector")
-                candidates = []
-                for row in db.execute("""SELECT v.* FROM vectors v JOIN documents d ON d.id = v.id AND d.owner = v.owner
+                unit_query = tuple(v / norm for v in vector)
+                row_ids, blobs = [], []
+                for row in db.execute("""SELECT v.id, v.vector FROM vectors v JOIN documents d ON d.id = v.id AND d.owner = v.owner
                         WHERE d.owner = ? AND v.model = ? AND v.hash = d.hash AND v.dimensions = ?""", (owner, model, len(vector))):
-                    if row["id"] not in allowed:
-                        continue
-                    values = struct.unpack('<' + 'f' * row["dimensions"], row["vector"])
-                    denominator = norm * math.sqrt(sum(v * v for v in values))
-                    if denominator:
-                        candidates.append((sum(a * b for a, b in zip(values, vector)) / denominator, row["id"]))
+                    if row["id"] in allowed:
+                        row_ids.append(row["id"])
+                        blobs.append(row["vector"])
+                from .recall_vectors import batch_cosines_f32
+                candidates = [(cosine, identifier) for identifier, cosine in batch_cosines_f32(
+                    unit_query, row_ids, blobs, len(vector))]
                 for position, (_, identifier) in enumerate(sorted(candidates, key=lambda item: (-item[0], item[1])), 1):
                     ranks[identifier] = ranks.get(identifier, 0) + 1 / (60 + position)
                 mode, coverage = "hybrid", {"embedded": len(candidates), "eligible": len(allowed), "model": model}

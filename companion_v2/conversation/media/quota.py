@@ -66,6 +66,9 @@ class ImageQuotaGate:
         """Apply the configured limits to a new core tool call without a reply task."""
         self._admit(context, self._classify_context(context), at)
 
+    def admit_proactive(self, context, at):
+        self._admit(context, "proactive", at)
+
     def _admit(self, context, scope, at):
         from .output_settings import effective_settings, image_request_denial
         settings = effective_settings(self.runtime, context)
@@ -139,7 +142,13 @@ class ImageQuotaGate:
             AND i.state = 'succeeded' AND i.created_at >= ?
             AND {' AND '.join(predicates)}""", tuple(parameters))
         if scope == "proactive":
-            return row[0]
+            from companion_v2.references.daily_outfit import KIND as OUTFIT_KIND
+            outfits = self.runtime.read_one("""SELECT COUNT(*) FROM execution_tasks
+                WHERE kind=? AND state='succeeded' AND created_at>=?
+                AND json_extract(record_json, '$.spec.context.role_binding.scope.bot_id')=?
+                AND json_extract(record_json, '$.spec.context.role_binding.role.subject_id')=?""",
+                (OUTFIT_KIND, cutoff, context.scope.bot_id, context.role_binding.role.subject_id))
+            return row[0] + outfits[0]
         # Native operations have their own real child task. They share the role,
         # requester and local-day limits with legacy user image requests, but are
         # never counted as proactive composition or as a fabricated reply batch.

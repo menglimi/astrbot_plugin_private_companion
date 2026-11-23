@@ -15,8 +15,9 @@ from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.adapters.astrbot.memory_providers import (
-    ExternalMemoryProviderRegistry, PROVIDER_API_VERSION, memory_provider_registry)
+    PROVIDER_API_VERSION, shared_memory_provider_registry)
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
+from .content_access import CONTENT_EXTENSION, content_authorization_status
 from .memory_page_api import MemoryPageAPI
 from .integration_catalog import BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS
 
@@ -53,7 +54,8 @@ class IntegrationRegistry:
             identity = {item.get("plugin_id"), item.get("package_id"), item.get("extension_id")}
             if conflicts.intersection(value for value in identity if value):
                 item.update(integration_state="degraded", execution_issue="capability_descriptor_conflict",
-                    reason="能力声明与保留版本冲突，当前不能在对话中调用。请更新模块版本后重新确认启用。")
+                    reason="能力声明或模块代码校验哈希与同版本已登记记录冲突，当前不能在对话中调用。"
+                           "若刚本地修改或热修了模块文件，请递增插件版本号或更新完整安装包后重载并重新启用。")
         host = dict(host_status or {})
         core = [{**item, "routes": list(item["routes"]), "owner": "companion_v2",
                  "implementation": "included", "runtime_state": getattr(application, "state", "unloaded")}
@@ -134,12 +136,24 @@ class IntegrationRegistry:
             if runtime_status["state"] == "failed":
                 item.update(integration_state="degraded", execution_issue=runtime_status.get("error_code"),
                             reason="模块启动失败，请检查该模块设置后保存并重试")
-            elif runtime_status["state"] == "starting":
-                item.update(integration_state="connected", reason="模块正在后台启动")
-            elif getattr(application, "state", None) != "running":
+            elif getattr(application, "state", None) != "running" and runtime_status["state"] != "starting":
                 item.update(integration_state="stopped", reason="模块已装配，等待 V2 启动")
             else:
-                item.update(integration_state="connected", reason="V2 原生模块已启用")
+                if extension_id == CONTENT_EXTENSION:
+                    authorization = content_authorization_status(runtime)
+                    item["authorization"] = authorization
+                    if not authorization["ready"]:
+                        reason = (
+                            "模块已装配，但尚未对角色启用 Content 权限；请保存创作设置或在私聊中自动补齐授权"
+                            if authorization["issue"] == "capability_role_not_enabled"
+                            else "模块已装配且角色已启用，但尚无已授权的私聊会话；请保存创作设置或在私聊中完成授权"
+                        )
+                        item.update(integration_state="waiting", reason=reason)
+                        return item
+                if runtime_status["state"] == "starting":
+                    item.update(integration_state="connected", reason="模块正在后台启动")
+                else:
+                    item.update(integration_state="connected", reason="V2 原生模块已启用")
         elif installed.desired_state is CapabilityDesiredState.PAUSED:
             item.update(integration_state="disabled", reason="拓展已暂停")
         else:
@@ -225,7 +239,7 @@ class UnifiedCompanionExtensionAPI:
     api_version = "companion.product.v1"
     memory_provider_api_version = PROVIDER_API_VERSION
 
-    def __init__(self, controller):
+    def __init__(self, controller, *, claim=False):
         self.controller = controller
         self._memory_page = MemoryPageAPI(controller)
         from .mobile_together import MobileTogetherBridge
@@ -236,31 +250,34 @@ class UnifiedCompanionExtensionAPI:
         from .native_extensions.reality.host_delivery import RealityHostDelivery
         self._reality_context = RealityHostContext(controller, self._mobile_together)
         self._reality_delivery = RealityHostDelivery(self._reality_context)
-        self._memory_providers = self._memory_provider_registry()
-
-    def _memory_provider_registry(self):
-        """Resolve the context-shared registry used by all facades on this host."""
-        registry = memory_provider_registry(self.controller.context)
-        if registry is None or getattr(registry, "_closed", False):
-            registry = ExternalMemoryProviderRegistry(self.controller.context,
-                host_active=lambda: not getattr(self.controller, "_terminated", False))
-        return registry
+        # Only active host startup should claim and replace a live registry owned
+        # by another controller (claim=True). Lazy or secondary facades default to
+        # claim=False, and later register/unregister/list/close calls stay bound to
+        # this instance so a stale or draining controller never overwrites a newer
+        # host's active registry.
+        self._memory_providers = shared_memory_provider_registry(
+            self.controller.context,
+            host_active=lambda: not getattr(self.controller, "_terminated", False),
+            owner=self.controller,
+            claim=claim,
+        )
 
     def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,
                                  display_name="", priority=0, handles_model_memory=False,
-                                 is_active=None, timeout_seconds=5.0):
+                                 is_active=None, timeout_seconds=5.0, linked_memory_read=False):
         """Register callbacks owned by a live Star; return an opaque removal token."""
         if getattr(self.controller, "_terminated", False):
             raise ValueError("memory provider host is stopped")
-        return self._memory_provider_registry().register(provider_id, plugin=plugin, read=read,
+        return self._memory_providers.register(provider_id, plugin=plugin, read=read,
             write=write, summary=summary, display_name=display_name, priority=priority,
-            handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds)
+            handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds,
+            linked_memory_read=linked_memory_read)
 
     def unregister_memory_provider(self, registration_id):
-        return self._memory_provider_registry().unregister(registration_id)
+        return self._memory_providers.unregister(registration_id)
 
     def list_memory_providers(self):
-        return self._memory_provider_registry().snapshot()
+        return self._memory_providers.snapshot()
 
     def close_memory_providers(self):
         # A stale facade may shut down after a replacement registry is installed.
@@ -413,23 +430,38 @@ class UnifiedCompanionExtensionAPI:
 
     async def companion_v2_mobile_together_create(self, session_token: str, request_id: str, mode: str,
                                                   *, via_mobile_gateway: bool = False):
-        result = await self._mobile_together.invoke(session_token, request_id=request_id,
-                                                    operation="create", arguments={"mode": mode})
+        result = await self._mobile_together.invoke(
+            session_token,
+            request_id=request_id,
+            operation="create",
+            arguments={"mode": mode},
+            via_mobile_gateway=via_mobile_gateway,
+        )
         return self._mobile_together.mobile_result("create", result)
 
     async def companion_v2_mobile_together_invite(self, session_token: str, request_id: str,
                                                   expires_in_seconds: int | None = None,
                                                   *, via_mobile_gateway: bool = False):
         arguments = {} if expires_in_seconds is None else {"expires_in_seconds": expires_in_seconds}
-        result = await self._mobile_together.invoke(session_token, request_id=request_id,
-                                                    operation="invite", arguments=arguments)
+        result = await self._mobile_together.invoke(
+            session_token,
+            request_id=request_id,
+            operation="invite",
+            arguments=arguments,
+            via_mobile_gateway=via_mobile_gateway,
+        )
         return self._mobile_together.mobile_result("invite", result)
 
     async def companion_v2_mobile_together_join(self, session_token: str, request_id: str,
                                                 invitation_id: str,
                                                 *, via_mobile_gateway: bool = False):
-        result = await self._mobile_together.invoke(session_token, request_id=request_id,
-            operation="join", arguments={"invitation_id": invitation_id})
+        result = await self._mobile_together.invoke(
+            session_token,
+            request_id=request_id,
+            operation="join",
+            arguments={"invitation_id": invitation_id},
+            via_mobile_gateway=via_mobile_gateway,
+        )
         return self._mobile_together.mobile_result("join", result)
 
     def manifest(self):

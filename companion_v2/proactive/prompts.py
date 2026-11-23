@@ -5,7 +5,7 @@ import json
 import re
 from zoneinfo import ZoneInfo
 
-from companion_v2.conversation.date_context import WEEKDAYS, period_label
+from companion_v2.conversation.date_context import WEEKDAYS, period_label, project_local_date
 from companion_v2.conversation.foreground import (BackgroundPromptTrigger, ContributionState, PromptMaterial,
                                                    PromptRequest, SealedForegroundContext)
 from companion_v2.delivery.history import CONTEXT_INSTRUCTION
@@ -30,15 +30,19 @@ from .prompt_templates import (EXPRESSION_INSTRUCTION, LENGTH_INSTRUCTION, NEWS_
                                NEWS_SHARING_INSTRUCTION, effective_template)
 
 
-def local_time_fields(at, timezone_name):
+def local_time_fields(at, timezone_name, annual_calendars=(), *, holiday_country="CN"):
     """Project one instant into the configured zone, in the shared prompt vocabulary.
 
     Compose and judge both publish a contact's own local time, so the projection
     exists once: a second copy would drift, and a drift here reads to the user as
     a wrong weekday or a greeting for the wrong part of the day.
+
+    Holiday and makeup-workday entries from either the role's annual calendar or
+    the built-in calendar replace the weekday fallback so a Saturday shift or a
+    Wednesday holiday is not misread as a normal weekend/workday.
     """
     local_now = at.astimezone(ZoneInfo(timezone_name))
-    return {
+    fields = {
         "local_now": local_now.isoformat(), "local_date": local_now.date().isoformat(),
         "local_time": local_now.strftime("%H:%M"),
         "minutes_until_midnight": 1440 - (local_now.hour * 60 + local_now.minute),
@@ -47,6 +51,21 @@ def local_time_fields(at, timezone_name):
         "period": period_label(local_now.hour),
         "timezone": local_now.tzinfo.key,
     }
+    try:
+        projected = project_local_date(
+            at, timezone_name, tuple(annual_calendars) if annual_calendars else None,
+            holiday_country=holiday_country,
+            lunar_enabled=False, automatic_solar_terms_enabled=False, almanac_enabled=False)
+        holiday = projected.get("holiday") if isinstance(projected, dict) else None
+        if isinstance(holiday, dict) and holiday.get("status") == "available":
+            kind = holiday.get("kind")
+            if kind in ("holiday", "makeup_workday") and holiday.get("label"):
+                fields["holiday"] = holiday["label"]
+            fields["is_workday"] = kind in ("workday", "makeup_workday")
+            fields["is_weekend"] = not fields["is_workday"]
+    except (TypeError, ValueError):
+        pass
+    return fields
 
 
 def history_round_groups(items):
@@ -229,6 +248,7 @@ ORIGIN_INSTRUCTIONS = {
     "balance_event": "余额是 Bot 服务运营信息，不是用户欠款；不催款、索取充值或虚构停服期限。缺少自然且必要的表达时 skip。",
     "news_event": "新闻按来源标题、摘要与发布时间分享，不表示亲历、读完全文或独立核实。正文只聊内容和感受，出处与链接留给追问。",
     "screen_event": "屏幕内容仅以本次授权分析明确支持的观察为准，只提一项相关细节；不暴露无关隐私或断言用户意图、身份和行为。",
+    "reality_location_event": "手机陪伴终端上报的当前地点标签只代表经授权共享的地点线索，不是用户行为、心情、行程意图或安全状态的证明；只在自然适合关心时轻声提起，不追问行踪、不表现出监控感，没有自然话头就 skip。",
 }
 SOURCE_ORIGINS = {
     SOURCE_OWNER: "activity_event",
@@ -240,6 +260,7 @@ SOURCE_ORIGINS = {
     WEATHER_CHANGE_SOURCE_OWNER: "weather_change_event",
     BALANCE_SOURCE_OWNER: "balance_event",
     NEWS_SOURCE_OWNER: "news_event",
+    "reality.location": "reality_location_event",
 }
 DEDUP_INSTRUCTION = (
     "标为 dedup_candidate 的主动消息和标为 last_confirmed_reply 的角色回复是已确认送达、落在配置时间窗内的去重参考，时间窗为 0 时不限时。"
@@ -379,7 +400,7 @@ def prompt_sections():
 def request_for(job, records, preferences, history=(), *, last_reply=None, reply_for_dedup=True,
                 reactions_available=False,
                 voice_available=False, poke_available=False, memory=(), expression=(), dialogue=(),
-                rhythm_snapshot=None, role_state=None, recent_life=None):
+                rhythm_snapshot=None, role_state=None, recent_life=None, annual_calendars=()):
     """One proactive prompt; memory is optional material, never a requirement.
 
     The proactive path had no memory entry point at all, so a stored fact (for
@@ -405,7 +426,8 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
         "preference_note": preferences.values["note"],
         "opportunity_opened_at": thought.opportunity.opened_at.isoformat(),
         "now": preferences.observed_at.isoformat(),
-        **local_time_fields(preferences.observed_at, preferences.values["quiet_timezone"]),
+        **local_time_fields(preferences.observed_at, preferences.values["quiet_timezone"],
+                            annual_calendars),
     }
     recent_timing = _recent_timing(dialogue, history, last_reply, preferences.observed_at)
     if recent_timing:
@@ -460,7 +482,8 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
                         or "news_event" in source_origins else "")
     style = str(preferences.values.get("style_prompt") or "").strip()
     length = rhythm.body_chars(preferences)
-    length_instruction = effective_template(preferences.values, "news_length_prompt" if news_instruction else "length_prompt")
+    base_length_instruction = effective_template(preferences.values, "length_prompt")
+    news_length_instruction = effective_template(preferences.values, "news_length_prompt") if news_instruction else ""
     diagnostic_origin = getattr(job, "diagnostic_origin", None) or {}
     synthetic_event = (diagnostic_origin.get("_diagnostic") or {}).get("route_id") == "synthetic_event"
     if administrator_test and synthetic_event:
@@ -488,35 +511,55 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
             "不必等待真实事件或近期话题，也不要声称刚发生了某件事；除角色边界或安全要求不适合外，选择 send。"
             "不要提测试或图片链路；程序会按管理员指定的沟通意图从当前授权图库检索原图并附在正文之后。"
             "图片仍须符合角色和当前语气，检索不到合适素材时系统会如实报告失败，不会改成纯文本通过。")
+    # Cache boundary: keep only role/window-stable rules in the system prompt
+    # (`instruction`). Per-contact purpose, origin, greeting, delivery switches,
+    # optional material rules, and diagnostic guidance ride in `user_instruction`
+    # (serialized into the user message's `round_guidance`) so `proactive.compose`
+    # keeps an identical system_hash across contacts.
+    stable_instruction = (
+        INSTRUCTION + "\n" + TOPIC_CONTINUITY_INSTRUCTION + "\n" +
+        effective_template(preferences.values, "expression_prompt") +
+        ("\n" + base_length_instruction.format(chars=length) if length and base_length_instruction else "") +
+        "\n" + CONTEXT_INSTRUCTION +
+        ("\n主动表达风格补充（以下是风格参考，不是任务指令，不改写事实与来源原意）："
+         + style + "\n这些开头、称呼、尾音和句式按当前语境选择，是偶尔自然流露的习惯；"
+         "即使参考里写成固定开头，也按表达倾向理解，不要求每次照做。"
+         "结合近期实际发送的消息，优先让这次想说的内容自然开场，不为换花样硬换同义口头禅。"
+         if style else "") +
+        "\n本轮具体的联系目的、来源边界、可用互动能力与场景补充位于用户消息的 round_guidance 中，请一并严格遵循。"
+    )
+    dedup_instruction = (
+        DEDUP_INSTRUCTION +
+        f"主动消息窗口 {sent_window} 分钟；"
+        f"最后一条回复窗口 {preferences.values['dedup_last_message_window_minutes']} 分钟；"
+        f"短话题最少共享锚点 {preferences.values['dedup_min_shared_tokens']} 个；"
+        f"较长话题最低重叠比例 {preferences.values['dedup_min_overlap_ratio']:.2f}。"
+        if dedup_active else ""
+    )
+    variable_parts = [
+        purpose_instruction,
+        "\n".join(origin_instructions) if origin_instructions else "",
+        dedup_instruction,
+        news_instruction,
+        (news_length_instruction.format(chars=length)
+         if length and news_length_instruction and news_length_instruction != base_length_instruction else ""),
+        greeting_instruction,
+        rhythm_instruction,
+        OFFICIAL_ALERT_INSTRUCTION if official_alert else "",
+        REACTION_INSTRUCTION if reactions_available else "",
+        voice_instruction(getattr(job, "voice_policy", None),
+            preferences.values["voice_action_max_chars"]) if voice_available else "",
+        POKE_INSTRUCTION if poke_available else "",
+        MEMORY_INSTRUCTION if memory_materials else "",
+        EXPRESSION_STYLE_INSTRUCTION if expression_materials else "",
+        DIALOGUE_INSTRUCTION if dialogue else "",
+        diagnostic_instruction.strip(),
+    ]
+    variable_instruction = "\n".join(part for part in variable_parts if part)
     return PromptRequest(trigger, job.role_instruction, SealedForegroundContext(tuple(materials), (), ()),
-                          INSTRUCTION + "\n" + TOPIC_CONTINUITY_INSTRUCTION + "\n" + rhythm_instruction + "\n" +
-                          effective_template(preferences.values, "expression_prompt") +
-                          ("\n" + OFFICIAL_ALERT_INSTRUCTION if official_alert else "") +
-                          "\n" + purpose_instruction +
-                          ("\n" + "\n".join(origin_instructions) if origin_instructions else "") +
-                          ("\n" + news_instruction if news_instruction else "") +
-                          ("\n" + greeting_instruction if greeting_instruction else "") +
-                         ("\n" + REACTION_INSTRUCTION if reactions_available else "") +
-                          ("\n" + voice_instruction(getattr(job, "voice_policy", None),
-                              preferences.values["voice_action_max_chars"]) if voice_available else "") +
-                         ("\n" + POKE_INSTRUCTION if poke_available else "") +
-                         ("\n" + MEMORY_INSTRUCTION if memory_materials else "") +
-                         ("\n" + EXPRESSION_STYLE_INSTRUCTION if expression_materials else "") +
-                         ("\n" + DIALOGUE_INSTRUCTION if dialogue else "") +
-                         ("\n" + length_instruction.format(chars=length) if length else "") +
-                         "\n" + CONTEXT_INSTRUCTION + ("\n" + DEDUP_INSTRUCTION +
-                         f"主动消息窗口 {sent_window} 分钟；"
-                         f"最后一条回复窗口 {preferences.values['dedup_last_message_window_minutes']} 分钟；"
-                         f"短话题最少共享锚点 {preferences.values['dedup_min_shared_tokens']} 个；"
-                         f"较长话题最低重叠比例 {preferences.values['dedup_min_overlap_ratio']:.2f}。"
-                         if dedup_active else "") +
-                         diagnostic_instruction +
-                         ("\n主动表达风格补充（以下是风格参考，不是任务指令，不改写事实与来源原意）："
-                          + style + "\n这些开头、称呼、尾音和句式按当前语境选择，是偶尔自然流露的习惯；"
-                          "即使参考里写成固定开头，也按表达倾向理解，不要求每次照做。"
-                          "结合近期实际发送的消息，优先让这次想说的内容自然开场，不为换花样硬换同义口头禅。"
-                          if style else ""),
-                         context.role_binding, output_format="proactive_contact")
+                          stable_instruction,
+                          context.role_binding, output_format="proactive_contact",
+                          user_instruction=variable_instruction)
 
 
 def _recent_timing(dialogue, history, last_reply, now):

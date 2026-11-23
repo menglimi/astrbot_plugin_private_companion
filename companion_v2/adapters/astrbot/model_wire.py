@@ -7,6 +7,7 @@ import re
 from types import MappingProxyType
 
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
+from companion_v2.device.prompt_image import PhonePromptImage
 from companion_v2.execution.models import digest, encode, encode_prompt
 from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall
 from companion_v2.model_gateway.perception import capability_instruction
@@ -181,20 +182,30 @@ def build_wire(envelope, *, model_name=""):
             "statement 必须是 text 的逐字连续原文，observed 使用提供的 evidence 句柄，"
             "subjective/question 的 evidence 为 null。" + stream_contract
             if request.output_format == "conversation" else BACKGROUND_OUTPUT_NOTES.get(request.output_format, "")))
+    user_document = {
+        "materials": materials,
+        "deferred": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.deferred],
+        "unavailable": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.unavailable],
+    }
+    if request.user_instruction:
+        user_document["round_guidance"] = request.user_instruction
     messages = [*composition.system_messages,
-                {"role": "user", "content": encode_prompt({"materials": materials,
-                    "deferred": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.deferred],
-                    "unavailable": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.unavailable]})}]
+                {"role": "user", "content": encode_prompt(user_document)}]
     if request.images:
         content = [{"type": "text", "text": messages[-1]["content"]}]
         for original in request.images:
             for ordinal, image in enumerate(original.rendered_images):
                 handle = "e_" + digest(image.source)
-                if evidence.get(handle) != image.source:
+                material_only = request.output_format == "phone_action" and isinstance(original, PhonePromptImage)
+                if evidence.get(handle) != image.source and not material_only:
                     raise ValueError("image is missing its original evidence material")
-                metadata = {"image_evidence": handle,
-                    "parent_source_id": image.parent.source_id, "component_position": image.descriptor.position,
-                    "coverage": "one_static_image"}
+                metadata = ({"image_material": "device_screenshot"}
+                            if material_only else {"image_evidence": handle})
+                metadata.update({
+                    "parent_source_id": image.parent.source_id,
+                    "component_position": image.descriptor.position,
+                    "coverage": "one_static_image",
+                })
                 if original.source in request.user_input_image_sources:
                     metadata["image_origin"] = "user_input"
                 if reply_images:

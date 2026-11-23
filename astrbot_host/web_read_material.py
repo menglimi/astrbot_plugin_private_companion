@@ -171,7 +171,7 @@ async def _read_page_local(session, url: str, *, max_chars: int = MAX_CHARS,
         if content_type == "application/pdf":
             from .files.parsing import extract_document
             try:
-                document = extract_document(raw, 0, "page.pdf", maximum_chars=max_chars)
+                document = await asyncio.to_thread(extract_document, raw, 0, "page.pdf", maximum_chars=max_chars)
             except Exception as error:  # noqa: BLE001
                 return {"url": current, "status": "unsupported",
                         "reason": getattr(error, "code", type(error).__name__)}

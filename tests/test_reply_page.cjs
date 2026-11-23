@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -27,6 +27,8 @@ const DEFAULTS = {
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',
   group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]', group_tool_profile: 'full',
+  private_tool_profile: 'full',
+  private_tool_groups: 'agenda、calendar、memory、records、interaction、media、diagnostics、relay、extensions',
   group_wakeup_interest_probability: 0.18, group_wakeup_question_threshold: 65,
   group_wakeup_cold_group_enabled: false, group_wakeup_cold_group_threshold: 65,
   group_wakeup_cold_group_idle_minutes: 25, group_wakeup_cooldown_seconds: 90,
@@ -56,7 +58,10 @@ const DEFAULTS = {
   private_image_vision_wait_seconds: 8, private_image_provider_failure_cooldown_seconds: 60,
   video_understanding_enabled: true, video_understanding_max_chars: 2400,
   video_understanding_private_enabled: true, video_understanding_group_enabled: true,
-  video_understanding_wait_seconds: 20, video_understanding_prompt: '',
+  video_understanding_wait_seconds: 20, video_understanding_target_mb: 10,
+  video_understanding_max_duration_seconds: 120, video_understanding_oversize_action: 'compress',
+  video_understanding_quoted_enabled: true, video_understanding_qa_enabled: true,
+  video_understanding_prompt: '',
   file_understanding_enabled: false, file_understanding_formats: 'text_and_documents',
   file_understanding_format_groups: '["文本","PDF","Word（DOCX）","Excel（XLSX）","PowerPoint（PPTX）"]',
   file_understanding_private_enabled: true, file_understanding_group_enabled: true,
@@ -104,6 +109,7 @@ const LIMITS = {
   private_image_vision_cache_max_items: [0, 2000], private_image_vision_max_chars: [120, 4000],
   private_image_vision_wait_seconds: [1, 30], private_image_provider_failure_cooldown_seconds: [0, 3600],
   video_understanding_max_chars: [200, 6000], video_understanding_wait_seconds: [1, 60],
+  video_understanding_target_mb: [1, 18], video_understanding_max_duration_seconds: [10, 1800],
   file_understanding_max_size_mb: [1, 16], file_understanding_max_chars: [1000, 48000],
   file_understanding_timeout_seconds: [1, 30],
   reply_diagnostic_limit: [10, 300],
@@ -245,7 +251,7 @@ function harness() {
     setTimeout, clearTimeout, URLSearchParams, Math, Number, Object, JSON, Array, String};
   vm.runInNewContext(workbench, sandbox);
   vm.runInNewContext(adapter, sandbox);
-  return {page: window.CompanionReplyPage, workbench: window.CompanionWorkbench,
+  return {page: window.CompanionReplyPage, workbench: window.CompanionWorkbench, product: window.CompanionProduct,
     root, slots, requests, store, listeners, previewInputs, exampleButtons,
     get previewHtml() { return inner.preview || ''; }};
 }
@@ -335,7 +341,7 @@ test('prompt style offers free, guided, and constraint modes and saves the role 
 
 test('group wakeup controls keep the selected group override', async () => {
   const harnessed = await loaded(harness(), 'decision');
-  assert.match(harnessed.root.innerHTML, /群唤醒设置跟随角色/);
+  assert.match(harnessed.root.innerHTML, /角色默认供各群继承；选中具体群时编辑本群覆盖/);
   const instance = live(harnessed);
   assert.deepEqual(instance.state.container.fields.group_wakeup_enabled.editable, ['role', 'window']);
   assert.equal(instance.state.container.fields.group_wakeup_enabled.writeLayer, 'window');
@@ -372,8 +378,9 @@ test('the card is split into labelled groups but keeps one save', async () => {
   const instance = live(harnessed);
   /* vm 上下文里的数组与宿主 realm 不同，比较前先过 plain()。 */
   const ids = plain(instance.state.container.groups.map(group => group.id));
-  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'voice_channels', 'components', 'checks']);
-  assert.ok(plain(instance.state.container.groups.find(group => group.id === 'voice').fields)
+  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'voice_render', 'voice_engine',
+    'voice_limits', 'voice_primary', 'voice_extra', 'voice_channels', 'components', 'checks']);
+  assert.ok(plain(instance.state.container.groups.find(group => group.id === 'voice_engine').fields)
     .includes('voice_provider_id'));
   assert.ok(!ids.some(id => ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group',
     'wakeup_fatigue', 'silence_policy', 'group_air_guard', 'group_content_safety'].includes(id)));
@@ -389,6 +396,8 @@ test('the card is split into labelled groups but keeps one save', async () => {
   /* 段落只是阅读顺序：仍然只有一个 edit_token、一次保存。 */
   assert.equal(instance.state.container.fields.enabled.editable.includes('window'), true);
   assert.equal(instance.state.container.fields.group_tool_profile, undefined);
+  assert.equal(instance.state.container.fields.private_tool_profile, undefined);
+  assert.equal(instance.state.container.fields.private_tool_groups, undefined);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'segment').fields)
     .includes('part_gap_mode'), 'message spacing is part of the segmentation workspace');
   assert.equal(harnessed.page.selectSection('timing'), true, 'the old timing jump resolves to segmentation');
@@ -545,7 +554,9 @@ test('expression modules render only their own navigation and panels after every
   const h = await loaded(harness());
   const instance = live(h);
   h.page.setExpressionModule('expression-text');
-  assert.match(h.slots.scope.innerHTML, /文字表达设置/);
+  assert.match(h.slots.scope.innerHTML, /text-hero/);
+  assert.match(h.slots.scope.innerHTML, /分段回复已关闭/);
+  assert.match(h.slots.scope.innerHTML, /立即预览/);
   let html = h.slots.settings.innerHTML;
   assert.match(html, /data-wb-section="segment"/);
   assert.match(html, /data-wb-section="style"/);
@@ -565,17 +576,35 @@ test('expression modules render only their own navigation and panels after every
   assert.equal(instance.state.activeGroupId, 'checks');
 
   h.page.setExpressionModule('expression-voice');
-  assert.match(h.slots.scope.innerHTML, /语音朗读设置/);
-  assert.match(h.slots.scope.innerHTML, /音色与 TTS 合成后端在「模型与连接」中配置/);
+  assert.match(h.slots.scope.innerHTML, /voice-hero/);
+  assert.match(h.slots.scope.innerHTML, /朗读预览/);
+  assert.match(h.slots.scope.innerHTML, /语音朗读已关闭/);
   assert.doesNotMatch(h.slots.scope.innerHTML, /核心回复|历史兼容|群唤醒/);
   html = h.slots.settings.innerHTML;
-  assert.match(html, /data-wb-section="voice"/);
-  assert.match(html, /data-wb-section="voice_channels"/);
-  assert.match(html, /data-wb-section-panel="voice_channels"/);
-  assert.equal(instance.state.activeGroupId, 'voice');
+  for (const id of ['voice', 'voice_render', 'voice_engine', 'voice_limits',
+    'voice_primary', 'voice_extra', 'voice_channels']) {
+    assert.match(html, new RegExp(`data-wb-group="${id}"`));
+  }
   assert.match(html, /data-wb-row="voice_enabled"/);
-  assert.doesNotMatch(html, /data-wb-section="segment"|data-wb-section="components"|data-wb-section="checks"/);
-  assert.doesNotMatch(html, /data-wb-row="reply_quote_enabled"|data-wb-row="enabled"/);
+  assert.match(html, /data-wb-row="voice_private_zh_provider_id"/);
+  assert.doesNotMatch(html, /data-wb-section="segment"|data-wb-row="reply_quote_enabled"|data-wb-row="enabled"/);
+  h.page.unmount();
+});
+
+test('voice hero follows the draft and warns when voice is off', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-voice');
+  const instance = live(h);
+  assert.match(h.slots.scope.innerHTML, /语音朗读已关闭/);
+  instance.state.draft.voice_enabled = true;
+  instance.state.draft.voice_provider_id = 'tts-a';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_enabled'}}});
+  assert.match(h.slots.scope.innerHTML, /下一轮可能带上朗读/);
+  assert.match(h.slots.scope.innerHTML, /tts-a/);
+  assert.doesNotMatch(h.slots.scope.innerHTML, /语音朗读已关闭/);
+  instance.state.draft.voice_probability = 0;
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_probability'}}});
+  assert.match(h.slots.scope.innerHTML, /触发概率为 0/);
   h.page.unmount();
 });
 
@@ -584,7 +613,7 @@ test('voice channel overrides are reachable and save from the voice module', asy
   h.page.setExpressionModule('expression-voice');
   assert.equal(h.page.selectSection('voice_channels'), true);
   const instance = live(h);
-  assert.equal(instance.state.activeGroupId, 'voice_channels');
+  assert.ok(['voice', 'voice_channels'].includes(instance.state.activeGroupId));
   const overrides = ['voice_private_zh_provider_id', 'voice_private_ja_provider_id',
     'voice_private_en_provider_id', 'voice_group_zh_provider_id',
     'voice_group_ja_provider_id', 'voice_group_en_provider_id'];
@@ -750,8 +779,15 @@ test('reply expression, perception, and decision settings partition every field 
   const decisionState = live(decisionHarness).state.container;
   const decision = plain(decisionState.groups.flatMap(group => group.fields));
   assert.ok(decision.includes('group_tool_profile'));
+  assert.ok(decision.includes('private_tool_profile'));
+  assert.ok(decision.includes('private_tool_groups'));
   assert.deepEqual(plain(decisionState.fields.group_tool_profile.choices),
     {full: '完整工具', standard: '常用工具', lean: '精简工具'});
+  assert.deepEqual(plain(decisionState.fields.private_tool_profile.choices),
+    {full: '完整工具', lean: '精简工具', custom: '按组自选', none: '关闭陪伴工具'});
+  assert.equal(decisionState.fields.private_tool_groups.input, 'chips');
+  assert.deepEqual(plain(decisionState.fields.private_tool_groups.chipOptions.options),
+    ['agenda', 'calendar', 'memory', 'records', 'interaction', 'media', 'diagnostics', 'relay', 'extensions']);
   assert.deepEqual(plain(decisionState.groups.map(group => group.id)),
     ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group', 'wakeup_fatigue',
       'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'private_closing', 'group_content_safety']);
@@ -772,8 +808,11 @@ test('reply expression, perception, and decision settings partition every field 
     'private_image_vision_cache_max_items', 'private_image_vision_custom_prompt',
     'private_image_vision_max_chars', 'private_image_vision_wait_seconds',
     'private_image_provider_failure_cooldown_seconds',
-    'video_understanding_enabled', 'video_understanding_max_chars',
-    'video_understanding_wait_seconds', 'video_understanding_prompt',
+    'video_understanding_enabled', 'video_understanding_target_mb',
+    'video_understanding_max_duration_seconds', 'video_understanding_oversize_action',
+    'video_understanding_quoted_enabled', 'video_understanding_qa_enabled',
+    'video_understanding_max_chars', 'video_understanding_wait_seconds',
+    'video_understanding_prompt',
     'file_understanding_enabled',
     'file_understanding_format_groups', 'file_understanding_max_size_mb',
     'file_understanding_max_chars', 'file_understanding_timeout_seconds', 'file_understanding_prompt',
@@ -782,6 +821,14 @@ test('reply expression, perception, and decision settings partition every field 
   assert.equal(perceptionHarness.page.selectSection('context_image'), true);
   assert.equal(perceptionHarness.page.selectSection('forwards'), true);
   perceptionHarness.page.unmount();
+});
+
+test('expression view edits segmentation without the reply diagnostics panel', async () => {
+  const harnessed = await loaded(harness(), 'expression');
+  assert.match(harnessed.root.innerHTML, /data-reply-part="settings"/);
+  assert.doesNotMatch(harnessed.root.innerHTML, /data-reply-part="diagnostics"/);
+  assert.match(harnessed.root.innerHTML, /data-reply-part="preview"/);
+  harnessed.page.unmount();
 });
 
 test('decision view edits the same reply route and omits expression-only tools', async () => {
@@ -923,14 +970,19 @@ test('the perception view edits image, native video and file understanding witho
       'private_image_vision_cache_max_items', 'private_image_vision_custom_prompt',
       'private_image_vision_max_chars', 'private_image_vision_wait_seconds',
       'private_image_provider_failure_cooldown_seconds',
-      'video_understanding_enabled', 'video_understanding_max_chars',
-      'video_understanding_wait_seconds', 'video_understanding_prompt',
+      'video_understanding_enabled', 'video_understanding_target_mb',
+      'video_understanding_max_duration_seconds', 'video_understanding_oversize_action',
+      'video_understanding_quoted_enabled', 'video_understanding_qa_enabled',
+      'video_understanding_max_chars', 'video_understanding_wait_seconds',
+      'video_understanding_prompt',
       'file_understanding_enabled',
       'file_understanding_format_groups', 'file_understanding_max_size_mb',
       'file_understanding_max_chars', 'file_understanding_timeout_seconds', 'file_understanding_prompt',
       'forward_message_adaptation_enabled']);
   assert.equal(harnessed.page.selectSection('image_narration'), true);
   assert.equal(harnessed.page.selectSection('video_narration'), true);
+  assert.match(harnessed.slots.settings.innerHTML, /压缩目标上限（MB）/);
+  assert.match(harnessed.slots.settings.innerHTML, /处理引用消息中的视频/);
   assert.equal(harnessed.page.selectSection('file_understanding'), true);
   assert.equal(live(harnessed).state.container.fields.file_understanding_format_groups.listPolicy.minItems, 1);
   assert.equal(live(harnessed).state.container.fields.file_understanding_format_groups.listPolicy.quickAddLabel, '支持格式');
@@ -971,7 +1023,7 @@ test('expression voice tab hosts the shared reply editor with only TTS settings 
     'voice_private_ja_provider_id', 'voice_group_ja_provider_id']) {
     assert.ok(adapter.includes(field), `missing TTS setting ${field}`);
   }
-  assert.match(adapter, /私聊 \/ 群聊语音覆盖/);
+  assert.match(adapter, /私聊 \/ 群聊覆盖/);
 });
 
 test('the TTS provider catalog comes from the read result, not a page-local list', async () => {
@@ -1313,3 +1365,97 @@ test('a route outside the plugin prefix is refused instead of half-mounting', as
   assert.equal(requests.length, 0);
   assert.match(node.innerHTML, /没有可用的回复设置工作区/);
 });
+
+test('未选窗口时不展示代表私聊的回复诊断', async () => {
+  const h = harness();
+  h.product.selection = () => ({target_id: null, bot_id: 'bot-a', role_id: 'role-a'});
+  h.page.mount(h.root, {view: 'decision'}); await drains();
+  const value = status();
+  value.recent = [{state: 'failed', failure_code: 'private-window-marker', created_at: '2026-01-01T00:00:00Z'}];
+  h.requests[0].resolve(value); await drains();
+  assert.match(h.slots.diagnostics.innerHTML, /先选择当前角色的窗口/);
+  assert.doesNotMatch(h.slots.diagnostics.innerHTML, /private-window-marker/);
+  h.page.unmount();
+});
+
+
+test('text hero follows the segmentation draft', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-text');
+  const instance = live(h);
+  assert.match(h.slots.scope.innerHTML, /分段回复已关闭/);
+  instance.state.draft.enabled = true;
+  instance.state.draft.streaming = true;
+  instance.state.draft.streaming_mode = 'incremental';
+  instance.state.draft.llm_controlled = true;
+  instance.state.draft.max_segments = 4;
+  h.listeners['root:input']({target: {dataset: {wbField: 'enabled'}}});
+  assert.match(h.slots.scope.innerHTML, /会先把回复分段再发送/);
+  assert.match(h.slots.scope.innerHTML, /模型 \+ 规则/);
+  assert.match(h.slots.scope.innerHTML, /最多 4 条/);
+  assert.match(h.slots.scope.innerHTML, /边生成边分段发送/);
+  h.page.unmount();
+});
+
+test('switching between text, voice and platform dynamically toggles navigationLimit without hiding voice groups', async () => {
+  const h = harness();
+  h.page.mount(h.root, {view: 'expression', expressionModule: 'expression-text'});
+  await drains();
+  h.requests[0].resolve(status());
+  await drains();
+  const instance = live(h);
+  assert.ok(instance.state.container.navigationLimit > 0, 'text module starts with sidebar navigation');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-sidebar"/);
+
+  h.page.setExpressionModule('expression-voice');
+  assert.equal(instance.state.container.navigationLimit, 0, 'voice module clears navigationLimit to expand all groups');
+  let html = h.slots.settings.innerHTML;
+  assert.doesNotMatch(html, /class="wb-section-layout"/);
+  assert.doesNotMatch(html, /class="wb-section-sidebar"/);
+  assert.doesNotMatch(html, /data-wb-section-panel/);
+  for (const id of ['voice', 'voice_render', 'voice_engine', 'voice_limits',
+    'voice_primary', 'voice_extra', 'voice_channels']) {
+    assert.match(html, new RegExp(`<section class="wb-group" data-wb-group="${id}">`));
+  }
+
+  /* Saving or refreshing while on voice must keep navigationLimit === 0. */
+  instance.state.draft.voice_enabled = true;
+  const saving = instance.save(false);
+  await drains();
+  h.requests.at(-1).resolve({
+    result: {operation_id: 'voice-keep-flat', replayed: false},
+    status: status({voice_enabled: true}, 'e'.repeat(64)),
+  });
+  await saving;
+  await drains();
+  assert.equal(instance.state.container.navigationLimit, 0, 'save rebuild keeps voice groups expanded');
+  assert.doesNotMatch(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+
+  /* Switching back to text or platform restores section sidebar navigation. */
+  h.page.setExpressionModule('expression-platform');
+  assert.ok(instance.state.container.navigationLimit > 0, 'platform module restores navigationLimit');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="components"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="checks"/);
+
+  h.page.setExpressionModule('expression-text');
+  assert.ok(instance.state.container.navigationLimit > 0, 'text module restores navigationLimit');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="segment"/);
+  h.page.unmount();
+
+  /* Direct deep-link into voice also restores sidebar when switching away to text. */
+  const direct = harness();
+  direct.page.mount(direct.root, {view: 'expression', expressionModule: 'expression-voice'});
+  await drains();
+  direct.requests[0].resolve(status());
+  await drains();
+  assert.equal(live(direct).state.container.navigationLimit, 0);
+  assert.doesNotMatch(direct.slots.settings.innerHTML, /class="wb-section-layout"/);
+  direct.page.setExpressionModule('expression-text');
+  assert.ok(live(direct).state.container.navigationLimit > 0);
+  assert.match(direct.slots.settings.innerHTML, /class="wb-section-layout"/);
+  direct.page.unmount();
+});
+

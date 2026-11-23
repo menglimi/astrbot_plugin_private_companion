@@ -30,7 +30,7 @@ function harness() {
     ${section("  function codeOf(", "  async function api(")}
     ${section("  function renderStatus(", "  async function readStatus(")}
     ${section("  function publicError(", "  function toggleTopologyPin(")}
-    globalThis.page = {unwrap, publicError, render(value) { status = value; renderStatus(); }};
+    globalThis.page = {unwrap, publicError, render(value, options) { status = value; renderStatus(options); }};
   })();`, context);
   return {page: context.page, notices, nodes};
 }
@@ -59,6 +59,15 @@ test("a successful status read identifies an earlier startup failure", () => {
   assert.match(h.notices.at(-1).message, /上次启动失败.*会话服务设置/);
   h.page.render({enabled: true, state: "running", accepting: true, last_failure: null});
   assert.equal(h.notices.at(-1).message, "");
+});
+
+test("a background status refresh keeps the latest operation feedback", () => {
+  const h = harness();
+  h.notices.push({message: "角色映射已保存", kind: "success"});
+  h.page.render({enabled: true, state: "running", accepting: true}, {showNotice: false});
+  assert.equal(h.notices.length, 1);
+  assert.equal(h.notices[0].message, "角色映射已保存");
+  assert.equal(h.nodes.get("accepting").textContent, "正在运行");
 });
 
 test("invalid legacy policy fields show the exact backend reason", () => {

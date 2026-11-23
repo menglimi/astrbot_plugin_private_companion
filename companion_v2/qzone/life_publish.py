@@ -30,12 +30,15 @@ from .topics import QzoneScene, QzoneTopic
 
 KIND = "qzone.life_publish.v1"
 ATTEMPT_KEY = "life_publish_attempt"
+RETRY_KEY = "life_publish_retry_at"
 TOPIC = QzoneTopic.LIFE_DOCUMENTARY
 SCENE = QzoneScene.ROLE_ACTIVITY
 MAX_TEXT_CHARS = 300
 MAX_PROFILE_CHARS = 1200
 MAX_DIARY_CHARS = 800
 MAX_STYLE_CHARS = 512
+MAX_RECENT_POSTS = 5
+MAX_RECENT_POST_CHARS = 120
 
 
 @dataclass(frozen=True)
@@ -73,12 +76,22 @@ def decide(settings, state, *, now, day=None):
         cap = max(1, int(settings.get("life_publish_max_daily") or 1))
     except (TypeError, ValueError):
         cap = 1
-    if state.publish_day == day and state.publish_count >= cap:
+    if (settings.get("daily_limits_enabled", True) and state.publish_day == day
+            and state.publish_count >= cap):
         return Decision(False, "daily_limit", day)
+    # A failed draft/publish gets a short, explicit retry window instead of
+    # occupying the full publishing interval.  Unknown publish results use a
+    # long retry window (set by the host), so they are still never replayed.
+    retry_at = _moment(state.last_action_at.get(RETRY_KEY))
+    last_publish = _moment(state.last_action_at.get("publish"))
+    if retry_at is not None and (last_publish is None or last_publish < retry_at):
+        if at < retry_at:
+            return Decision(False, "retry_wait", day)
+        return Decision(True, "due", day)
     try:
-        hours = max(1, int(settings.get("life_publish_min_interval_hours") or 24))
+        hours = max(1, int(settings.get("life_publish_min_interval_hours") or 6))
     except (TypeError, ValueError):
-        hours = 24
+        hours = 6
     last = _last_attempt(state)
     if last is not None and at - last < timedelta(hours=hours):
         return Decision(False, "interval", day)
@@ -124,7 +137,18 @@ def profile_line(profile):
     return _clean("；".join(parts), MAX_PROFILE_CHARS)
 
 
-def build_request(profile, diary, *, now, style=""):
+def _recent_posts_block(recent_publish_texts):
+    if not recent_publish_texts or isinstance(recent_publish_texts, (str, bytes)):
+        return ""
+    snippets = []
+    for item in tuple(recent_publish_texts)[-MAX_RECENT_POSTS:]:
+        cleaned = _clean(item, MAX_RECENT_POST_CHARS)
+        if cleaned:
+            snippets.append(f"- {cleaned}")
+    return "\n".join(snippets)
+
+
+def build_request(profile, diary, *, now, style="", recent_publish_texts=()):
     """The drafting prompt: pure text in, pure text out."""
     at = normalize_utc(now, field="qzone life publish clock")
     system = ("你就是这个人，用自己的口吻写 QQ 空间说说。只写你真实经历过或正在经历的"
@@ -137,6 +161,9 @@ def build_request(profile, diary, *, now, style=""):
     memory = _clean(diary, MAX_DIARY_CHARS)
     if memory:
         fragments.append("最近日记（仅作生活素材，不要照抄，也不要提到日记本身）：" + memory)
+    recent_block = _recent_posts_block(recent_publish_texts)
+    if recent_block:
+        fragments.append("最近已经发过的说说（请避开重复的话题、句式和用词，写点新的日常）：\n" + recent_block)
     fragments.append("现在是 " + at.astimezone().strftime("%Y-%m-%d %H:%M"))
     extra = _clean(style, MAX_STYLE_CHARS)
     if extra:

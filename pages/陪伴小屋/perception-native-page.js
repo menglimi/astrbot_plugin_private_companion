@@ -42,6 +42,7 @@ window.CompanionNativePerceptionPage = (() => {
       ["platform_enabled","标明当前平台","bool",""],
       ["model_route_enabled","标明模型路由","bool",""],
       ["configured_modalities_enabled","标明已配置的输入模态","bool","不授予图像、语音或视频权限。"],
+      ["screen_context_enabled","私聊注入近期屏幕摘要","bool","仅在已授权同一主人私聊中注入 15 分钟内最近 1 条脱敏屏幕解读摘要，群聊与其他用户严格隔离。"],
       ["guidance","感知表达偏好","textarea","最多 2 KiB。"],
     ],
     news:[
@@ -53,15 +54,27 @@ window.CompanionNativePerceptionPage = (() => {
       ["news_source_url","RSS / JSON 地址","text","仅在来源选择 RSS / Atom 或 HTTPS JSON 时填写地址。"],
     ],
   };
-  let nodes = null, path = "", scope = "", status = null, drafts = {}, notices = {}, busy = false;
+  let nodes = null, path = "", scope = "", status = null, drafts = {}, notices = {}, busy = false, loading = false, refreshing = false, refreshedAt = "";
   let generation = 0, abort = null;
   let refreshTimer = null;
   const subscribers = new Set();
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  const createOperationKey = () => (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+    ? crypto.randomUUID()
+    : `native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const anyConnected = () => Boolean(nodes && Object.values(nodes).some(node => node?.isConnected));
   /* 工作区会随路由卸载，已读取的配置与未提交的普通字段草稿按角色范围
      留在当前页面内存。这里不写 localStorage，也不缓存天气凭据（本页没有
      凭据字段）；宿主返回新 revision 后 merge 会自然替换对应快照。 */
   const stateByScope = new Map();
   const cacheKey = () => `${scope}:${path}`;
+  function selectedWindowRole() {
+    const selected=product.selection?.(),target=product.target?.();
+    if(!selected?.target_id||target?.scope_kind!=="private"||target.target_id!==selected.target_id
+      ||target.bot_id!==selected.bot_id)return null;
+    const role=product.windowRole?.();
+    return role?.role_id===selected.role_id?role:null;
+  }
   function rememberState() {
     if (status) stateByScope.set(cacheKey(), {status, drafts});
   }
@@ -106,18 +119,20 @@ window.CompanionNativePerceptionPage = (() => {
         || typeof value.environment.sources.weather_provider === "string")
       && typeof value[section].edit_token === "string"
       && fields[section].every(([name, , type]) =>
-        ((name === "health_enabled" || name === "health_proactive_enabled") && value[section].settings[name] === undefined)
+        ((name === "health_enabled" || name === "health_proactive_enabled" || name === "screen_context_enabled")
+          && value[section].settings[name] === undefined)
         || typeof value[section].settings[name] === (type === "bool" ? "boolean" : type === "number" ? "number" : "string")));
   }
   function publicSnapshot() {
     if (!status) return {ready:false, loading:!notices.load, error:notices.load || ""};
     const environment = status.environment.settings || {}, model = status.model.settings || {};
-    const contactStatus = status.contact || {};
+    const windowSelected=!!selectedWindowRole();
+    const contactStatus = windowSelected?status.contact||{}:{};
     const contact = contactStatus.settings || {};
     let locationName = "";
     try { locationName = JSON.parse(environment.planning_weather_location || "{}").name || ""; } catch (_) {}
     return {
-      ready:true,
+      ready:true,windowRequired:!windowSelected,
       environment:{weatherReady:!!status.environment.sources?.weather_ready,
         alertsReady:!!status.environment.sources?.alerts_ready, locationName,
         weatherEnabled:environment.planning_weather_enabled === true,
@@ -126,8 +141,9 @@ window.CompanionNativePerceptionPage = (() => {
         healthEnabled:model.health_enabled === true,
         lunarEnabled:model.lunar_enabled === true, solarTermsEnabled:model.automatic_solar_terms_enabled === true,
         almanacEnabled:model.almanac_enabled === true, platformEnabled:model.platform_enabled === true,
-        routeEnabled:model.model_route_enabled === true, modalitiesEnabled:model.configured_modalities_enabled === true},
-      contact:{dateCheckinEnabled:contact.date_checkin_enabled === true,
+        routeEnabled:model.model_route_enabled === true, modalitiesEnabled:model.configured_modalities_enabled === true,
+        screenContextEnabled:model.screen_context_enabled !== false},
+      contact:windowSelected?{dateCheckinEnabled:contact.date_checkin_enabled === true,
         dates:typeof contactStatus.dates === "string" ? contactStatus.dates
           : typeof contact.important_dates === "string" ? contact.important_dates : "[]",
         lookaheadDays:Number.isInteger(contactStatus.lookaheadDays)
@@ -135,8 +151,8 @@ window.CompanionNativePerceptionPage = (() => {
             ? contact.important_date_lookahead_days : 0,
         timezone:contact.quiet_timezone || "",
         balanceAwarenessEnabled:contact.balance_awareness_enabled === true,
-        automaticAllowed:status.contact?.effective?.automatic_allowed === true},
-      news:{ready:!!status.news.source?.ready, assembled:!!(status.news.source?.assembled ?? status.news.source?.ready),
+        automaticAllowed:status.contact?.effective?.automatic_allowed === true}:{},
+      news:windowSelected?{ready:!!status.news.source?.ready, assembled:!!(status.news.source?.assembled ?? status.news.source?.ready),
         label:status.news.source?.label || "",
         sourceKind:status.news.source?.kind || contact.news_source_kind || "",
         networkStatus:status.news.diagnostic?.network_status || "not_checked",
@@ -150,7 +166,7 @@ window.CompanionNativePerceptionPage = (() => {
         lastAttemptAt:status.news.diagnostic?.last_attempt_at || "",
         lastCheckedAt:status.news.diagnostic?.last_checked_at || "",
         lastSuccessAt:status.news.diagnostic?.last_success_at || status.news.diagnostic?.last_checked_at || "",
-        failureCode:status.news.diagnostic?.failure?.code || ""},
+        failureCode:status.news.diagnostic?.failure?.code || ""}:{},
     };
   }
   function publishStatus() {
@@ -166,6 +182,8 @@ window.CompanionNativePerceptionPage = (() => {
       next.model.settings.health_enabled = false;
     if (next.model?.settings && typeof next.model.settings.health_proactive_enabled !== "boolean")
       next.model.settings.health_proactive_enabled = false;
+    if (next.model?.settings && typeof next.model.settings.screen_context_enabled !== "boolean")
+      next.model.settings.screen_context_enabled = true;
     status = next;
     for (const section of Object.keys(fields)) {
       const current = drafts[section], entry = next[section], latest = values(section, entry);
@@ -227,12 +245,18 @@ window.CompanionNativePerceptionPage = (() => {
     }).join("")}</ol>` : `<p class="memory-notice native-news-feed-empty">${diagnostic.network_status === "failed" ? "最近同步失败；后台会按间隔自动重试。" : "后台正在维护来源，首次同步完成后会在这里显示。"}</p>`;
     return `<section class="native-news-feed" aria-label="已获取资讯"><header><div><span class="perception-section-index">PERSISTED FEED</span><h4>${isDaily ? "AI 日报" : "已获取资讯"}</h4><p>${esc(label)} · ${lastText} · 已保留 ${items.length} 条</p></div><span class="native-news-feed-state">后台自动维护</span></header>${itemMarkup}</section>`;
   }
-  function renderSection(section) {
+  function renderSection(section, options = {}) {
     const node = nodes?.[section]; if (!node) return;
+    if (options.background && status && (section === "calendar" || section === "model")
+        && typeof document !== "undefined" && document.activeElement && node.contains?.(document.activeElement)) {
+      return;
+    }
     if (!product.hosted()) { node.innerHTML = '<p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="native-perception-actions"><button class="button small" type="button" data-workspace-retry>重新读取</button></div>'; return; }
+    if(section==="news"&&!selectedWindowRole()){node.innerHTML='<p class="memory-notice">请先选择当前角色的私聊窗口，再查看资讯与联系状态。</p>';return;}
     if (!path) { node.innerHTML = '<p class="memory-notice">请选择有管理权限的私聊对象和角色。</p>'; return; }
+    const refreshButton = label => `<span class="refresh-cluster">${refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${esc(refreshedAt)}</span>` : ""}<button class="button small${refreshing ? " is-refreshing" : ""}" type="button" data-native-action="refresh" aria-busy="${refreshing ? "true" : "false"}" ${busy || refreshing ? "disabled" : ""}>${refreshing ? "读取中…" : label}</button></span>`;
     if (!status) {
-      node.innerHTML = `<p class="memory-notice" role="status">${esc(notices.load || "正在读取当前配置…")}</p><button class="button small" type="button" data-native-action="refresh">重新读取</button>`;
+      node.innerHTML = `<p class="memory-notice" role="status">${esc(notices.load || "正在读取当前配置…")}</p>${refreshButton("重新读取")}`;
       return;
     }
     if (section === "environment") {
@@ -245,14 +269,14 @@ window.CompanionNativePerceptionPage = (() => {
         <div><dt>角色天气</dt><dd>${settings.planning_weather_enabled?"已开启":"已关闭"} · 同一角色的私聊共用</dd></div>
         <div><dt>天气信息时效</dt><dd>${esc(settings.planning_weather_max_age_minutes)} 分钟</dd></div>
       </dl>
-        <div class="native-perception-actions"><button class="button small" type="button" data-shell-furniture="calendar">打开日程与规划</button><button class="button small" type="button" data-native-action="refresh">刷新状态</button></div></div>`;
+        <div class="native-perception-actions"><button class="button small" type="button" data-shell-furniture="calendar">打开日程与规划</button>${refreshButton("刷新状态")}</div></div>`;
       return;
     }
     const sourceSection=section==="calendar"?"model":section;
     const draft = drafts[sourceSection], pending = !!draft.pending;
     const message = draft.stale ? errors.configuration_revision_conflict : notices[sourceSection] || "";
     if (section === "news") {
-      node.innerHTML = `${context(section)}${feedMarkup(status.news)}<div class="native-perception-actions"><button class="button small" type="button" data-native-action="refresh" ${busy ? "disabled" : ""}>刷新状态</button></div><p class="perception-save-status" role="status" aria-live="polite">${esc(message)}</p>`;
+      node.innerHTML = `${context(section)}${feedMarkup(status.news)}<div class="native-perception-actions">${refreshButton("刷新状态")}</div><p class="perception-save-status" role="status" aria-live="polite">${esc(message)}</p>`;
       return;
     }
     const specs=sourceSection==="model"?(section==="calendar"?fields.model.slice(0,7):fields.model.slice(7)):fields[section];
@@ -262,36 +286,62 @@ window.CompanionNativePerceptionPage = (() => {
       <button class="button small" type="submit" ${busy ? "disabled" : ""}>${pending ? "核对原保存" : "保存设置"}</button></div>
       <fieldset class="perception-settings-grid native-perception-fieldset" ${pending || busy ? "disabled" : ""}>${specs.map(spec => field(sourceSection, spec, draft)).join("")}</fieldset>
       <p class="perception-save-status ${draft.stale ? "native-perception-warning" : ""}" role="status" aria-live="polite">${esc(message)}</p>
-      <div class="native-perception-actions"><button class="button small" type="button" data-native-action="refresh" ${busy ? "disabled" : ""}>刷新</button>${draft.stale ? `<button class="button small" type="button" data-native-action="rebase" data-native-section="${sourceSection}" ${busy ? "disabled" : ""}>采用最新版本</button>` : ""}</div>
+      <div class="native-perception-actions">${refreshButton("刷新")}${draft.stale ? `<button class="button small" type="button" data-native-action="rebase" data-native-section="${sourceSection}" ${busy ? "disabled" : ""}>采用最新版本</button>` : ""}</div>
     </form>`;
     node.innerHTML = `${context(section)}<details class="perception-settings-disclosure" open><summary><span>${title}</span></summary>${formMarkup}</details>`;
   }
-  function render() { for (const section of ["environment","calendar","model","news"]) renderSection(section); }
-  async function load() {
+  function render(options) { for (const section of ["environment","calendar","model","news"]) renderSection(section, options); }
+  async function load(options = {}) {
+    if (!anyConnected()) { unmount(); return; }
+    const manual = options?.manual === true;
     if (!path || busy) return;
-    const ticket = ++generation;
-    notices.load = "";
-    if (!status) render();
-    try { const next = await api("GET"); if (active(ticket)) {
-      merge(next);
-      notices.load = "";
-      for (const section of Object.keys(fields)) notices[section] = "";
-      render();
-    } }
-    catch (failure) { if (active(ticket)) {
-      notices.load = errors[failure.code || failure.message] || "读取失败，请重试。";
-      /* 读取失败时清掉旧状态，避免把上一份环境、模型和资讯配置继续画成
-         当前生效值。输入过但尚未保存的草稿留在内存，并在下一次成功读取时由
-         merge() 按令牌核对；没有 status 时 publicSnapshot() 也会明确 ready:false。 */
-      status = null;
-      stateByScope.delete(cacheKey());
-      for (const draft of Object.values(drafts)) {
-        if (draft && (draft.touched?.size || draft.pending)) draft.stale = true;
+    if (loading) {
+      if (manual && !refreshing) {
+        refreshing = true;
+        notices.load = "";
+        for (const section of Object.keys(fields)) notices[section] = "";
+        render();
       }
-      for (const section of Object.keys(fields)) notices[section] = notices.load;
-      publishStatus();
-      render();
-    } }
+      return;
+    }
+    const ticket = ++generation;
+    loading = true;
+    refreshing = manual;
+    notices.load = "";
+    if (manual) {
+      for (const section of Object.keys(fields)) notices[section] = "";
+    }
+    if (manual || !status) render();
+    try {
+      const next = await api("GET");
+      if (active(ticket)) {
+        merge(next);
+        notices.load = "";
+        for (const section of Object.keys(fields)) notices[section] = "";
+        if (manual || refreshing) refreshedAt = formatClock();
+      }
+    } catch (failure) {
+      if (active(ticket)) {
+        notices.load = errors[failure.code || failure.message] || "读取失败，请重试。";
+        /* 读取失败时清掉旧状态，避免把上一份环境、模型和资讯配置继续画成
+           当前生效值。输入过但尚未保存的草稿留在内存，并在下一次成功读取时由
+           merge() 按令牌核对；没有 status 时 publicSnapshot() 也会明确 ready:false。 */
+        status = null;
+        stateByScope.delete(cacheKey());
+        for (const draft of Object.values(drafts)) {
+          if (draft && (draft.touched?.size || draft.pending)) draft.stale = true;
+        }
+        for (const section of Object.keys(fields)) notices[section] = notices.load;
+        publishStatus();
+      }
+    } finally {
+      if (active(ticket)) {
+        const foreground = manual || refreshing;
+        loading = false;
+        refreshing = false;
+        render({background: !foreground});
+      }
+    }
   }
   function timezone(value) {
     try { new Intl.DateTimeFormat("zh-CN", {timeZone:value}).format(); return true; } catch (_) { return false; }
@@ -323,15 +373,18 @@ window.CompanionNativePerceptionPage = (() => {
   }
   async function save(section) {
     if (!path || !status || busy) return;
+    if(section==="news"&&!selectedWindowRole())return;
     const draft = drafts[section];
     if (draft.stale) { notices[section] = errors.configuration_revision_conflict; renderSection(section); return; }
     if (!draft.pending) {
       let changes;
       try { changes = patch(section, draft); } catch (failure) { notices[section] = failure.message; renderSection(section); return; }
       if (!Object.keys(changes).length) { notices[section] = "没有待保存的修改。"; renderSection(section); return; }
-      draft.pending = {operation_key:crypto.randomUUID(), edit_token:draft.token, changes};
+      draft.pending = {operation_key:createOperationKey(), edit_token:draft.token, changes};
     }
-    const ticket = generation;
+    const ticket = ++generation;
+    loading = false;
+    refreshing = false;
     busy = true; notices[section] = "正在保存…"; render();
     try {
       const response = await api("POST", {section, command:draft.pending});
@@ -352,7 +405,7 @@ window.CompanionNativePerceptionPage = (() => {
     } finally { if (active(ticket)) { busy = false; render(); } }
   }
   async function diagnose() {
-    if (!path || !status || busy) return;
+    if (!path || !status || busy || !selectedWindowRole()) return;
     const ticket = generation;
     busy = true; notices.news = "正在检查资讯源…"; render();
     try {
@@ -378,8 +431,8 @@ window.CompanionNativePerceptionPage = (() => {
   function mount(places) {
     unmount(); nodes = places; scope = product.scopeKey();
     abort = new AbortController();
-    try { path = product.hosted() && product.role()?.perception_native_api
-      ? relative(product.role().perception_native_api) : ""; }
+    try {const role=selectedWindowRole()||product.role();path = product.hosted() && role?.perception_native_api
+      ? relative(role.perception_native_api) : ""; }
     catch (failure) { path = ""; notices.load = failure.message; }
     const cached = path ? stateByScope.get(cacheKey()) : null;
     if (cached?.status && cached?.drafts) {
@@ -406,7 +459,7 @@ window.CompanionNativePerceptionPage = (() => {
       node.addEventListener("submit", event => { event.preventDefault(); save(section); }, {signal:abort.signal});
       node.addEventListener("click", event => {
         const action = event.target.closest("[data-native-action]")?.dataset.nativeAction;
-        if (action === "refresh") load();
+        if (action === "refresh") load({manual: true});
         if (action === "rebase") rebase(section);
         if (action === "diagnose" && section === "news") diagnose();
       }, {signal:abort.signal});
@@ -418,12 +471,14 @@ window.CompanionNativePerceptionPage = (() => {
     const schedule = typeof window.setInterval === "function" ? window.setInterval.bind(window)
       : (typeof setInterval === "function" ? setInterval : null);
     if (schedule && typeof document !== "undefined") refreshTimer = schedule(() => {
+      if (!anyConnected()) { unmount(); return; }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (busy) return;
+      if (busy || loading) return;
       load();
     }, 30000);
     const onVisibility = () => {
-      if (document.visibilityState === "visible" && !busy) load();
+      if (!anyConnected()) { unmount(); return; }
+      if (document.visibilityState === "visible" && !busy && !loading) load();
     };
     if (typeof document !== "undefined" && typeof document.addEventListener === "function")
       document.addEventListener("visibilitychange", onVisibility, {signal:abort.signal});
@@ -436,7 +491,7 @@ window.CompanionNativePerceptionPage = (() => {
       if (cancel) cancel(refreshTimer);
       refreshTimer = null;
     }
-    nodes = null; path = ""; scope = ""; status = null; drafts = {}; notices = {}; busy = false;
+    nodes = null; path = ""; scope = ""; status = null; drafts = {}; notices = {}; busy = false; loading = false; refreshing = false; refreshedAt = "";
     publishStatus();
   }
   /* 页面级未保存守卫（page-guards.js）用：只要有一段还有改过但没提交的字段就算脏。
@@ -472,15 +527,21 @@ window.CompanionNativePerceptionPage = (() => {
   }
   /* 全局搜索用：感知页自己的字段表（日期、节假日、农历、黄历、平台标识等）。
      这一组不在 config-editor 的 spec 里，此前整组搜不到。
+     渲染时 fields.model 前 7 项落在「时空与环境 / 日期与历法」（#nativeCalendarWorkspace），
+     后 4 项落在「模型能力 / 对话感知与表达偏好」（#nativeModelWorkspace），搜索分区必须与真实 DOM 一致。
      「资讯」段的字段其实是主动联系的 news.*，spec 里已经能搜到，这里不再重复索引。 */
-  const sectionTitles = {environment: "环境", model: "模型"};
+  const calendarFieldNames = new Set((fields.model || []).slice(0, 7).map(([name]) => name));
   function searchEntries() {
-    return Object.entries(fields).filter(([section]) => sectionTitles[section]).flatMap(([section, list]) => (list || []).map(([field, label, , help]) => ({
-      group: "conversation.perception", groupTitle: "感知", field,
-      label: label || field, help: help || "",
-      section, sectionTitle: sectionTitles[section],
-      sectionCount: Object.keys(sectionTitles).length,
-    })));
+    return (fields.model || []).map(([field, label, , help]) => {
+      const isCalendar = calendarFieldNames.has(field);
+      return {
+        group: "conversation.perception", groupTitle: "感知", field,
+        label: label || field, help: help || "",
+        section: isCalendar ? "environment" : "models",
+        sectionTitle: isCalendar ? "日期与历法" : "模型与表达",
+        sectionCount: 2,
+      };
+    });
   }
   return {mount, unmount, refresh:load, searchEntries, isDirty, changedFields, saveBeforeLeave, discardChanges, subscribe(listener) {
     if (typeof listener !== "function") return () => {};

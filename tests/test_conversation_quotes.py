@@ -129,7 +129,7 @@ class ConversationQuoteTests(QuoteFixture, unittest.IsolatedAsyncioTestCase):
     async def test_quoted_image_survives_tool_continuation_and_confirmed_memory_source(self):
         originals = []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             originals.append(content[1:])
             evidence = next(m["evidence"] for m in json.loads(content[0]["text"])["materials"]
                             if m["owner"] == "conversation.image")

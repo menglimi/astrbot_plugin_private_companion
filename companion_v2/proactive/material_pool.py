@@ -30,6 +30,7 @@ SOURCE_CATEGORIES = {
     WEATHER_CHANGE_OWNER: ("环境与状态", "环境与状态变化"),
     ALERT_OWNER: ("环境与状态", "环境与状态变化"),
     BALANCE_OWNER: ("环境与状态", "环境与状态变化"),
+    "reality.location": ("环境与状态", "环境与状态变化"),
     NEWS_OWNER: ("资讯", "外部资讯"),
     SCREEN_OWNER: ("屏幕观察", "已授权屏幕观察"),
 }
@@ -43,6 +44,7 @@ SOURCE_LABELS = {
     WEATHER_CHANGE_OWNER: "天气变化",
     ALERT_OWNER: "官方气象预警",
     BALANCE_OWNER: "服务余额",
+    "reality.location": "手机位置",
     NEWS_OWNER: "资讯源",
     SCREEN_OWNER: "授权屏幕回执",
 }
@@ -69,6 +71,7 @@ THOUGHT_ORIGINS = {
     "official_alert_event": "天气预警",
     "weather_event": "当前天气",
     "balance_event": "服务余额",
+    "reality_location_event": "手机位置变化",
     "news_event": "资讯分享",
 }
 

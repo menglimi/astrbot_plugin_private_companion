@@ -43,7 +43,9 @@ _COPY_ORDER = (
 
 
 def open_configuration_store(runtime: StorageRuntime) -> StorageRuntime | None:
-    """Open (and migrate) the side store, or return ``None`` to keep the main one."""
+    """Reuse or open the runtime-owned side store; return ``None`` on open failure."""
+    if runtime.configuration_store is not runtime:
+        return runtime.configuration_store
     path = Path(runtime.data_root) / STORE_DIRECTORY
     try:
         store = StorageRuntime.open_configuration(data_root=path, installation_id=runtime.installation_id)

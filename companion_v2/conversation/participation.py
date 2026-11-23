@@ -53,6 +53,7 @@ CONFIG_OWNER = "conversation.group_participation"
 # leave adjustable windows in code.
 CONFIG_DEFAULTS = {
     "enable_group_social_context": False,
+    "mention_force_reply_enabled": False,
     "enable_group_topic_threads": True,
     "group_topic_thread_max": 12,
     "enable_group_mood_detection": False,
@@ -153,7 +154,7 @@ class GroupParticipationConfigurationOwner(SparseConfigurationOwner):
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.store.transaction():
             result = super().write(target, fields, changes=changes, reset=reset,
                                    expected_revision=expected_revision, observed_at=observed_at)
             _check_interrupt_text(self.read(target, fields).fields)

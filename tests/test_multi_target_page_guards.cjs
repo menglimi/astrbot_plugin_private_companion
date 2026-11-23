@@ -35,7 +35,7 @@ test("the plugin entry and management page use the shared host only", () => {
   assert.doesNotMatch(hostPage, /prefix: "staging"|mode === "single"|mode !== "multi"/);
   assert.match(hostPage, /api\("POST", accountApi, \{enabled: true, accounts,\s*personas, groups: bindingConfig\?\.groups \|\| \[\]\}\)/);
   const mappingSave = hostPage.slice(hostPage.indexOf("async function saveBindingConfig()"),
-    hostPage.indexOf("function renderStatus()"));
+    hostPage.indexOf("function renderStatus("));
   assert.doesNotMatch(mappingSave, /sessions\s*:/, "role-only edits must preserve native private routes");
   assert.doesNotMatch(hostPage, /accounts\/session|bindingWindowRow|runAction\(/);
   const html = read(path.join(ROOT, "pages", "宿主管理", "workspace.html"));

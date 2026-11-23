@@ -15,6 +15,7 @@ window.CompanionReplyPage = (() => {
      选项必须与后端常量一致，否则保存会被拒绝。 */
   const choices = {
     group_tool_profile: {full: "完整工具", standard: "常用工具", lean: "精简工具"},
+    private_tool_profile: {full: "完整工具", lean: "精简工具", custom: "按组自选", none: "关闭陪伴工具"},
       streaming_mode: {buffered: "收齐后分段发送", incremental: "边生成边分段发送"},
       rule_mode: {words: "词列表", regex: "正则表达式", sentences: "按句子", paragraphs: "按段落"},
       part_gap_mode: {fixed: "固定", random: "随机", log: "按文本长度"},
@@ -32,6 +33,11 @@ window.CompanionReplyPage = (() => {
     voice_language: {zh: "中文", ja: "日语", en: "英语"},
     voice_foreign_text_mode: {original: "原文", translation: "中文译文", bilingual: "双语"},
     voice_direction_mode: {off: "关闭", auto: "自动识别", indextts2: "IndexTTS2", fishaudio: "FishAudio"},
+    video_understanding_oversize_action: {
+      compress: "自动压缩后再发送",
+      truncate: "截断至最大时长并压缩",
+      reject: "超出限制时直接拒收",
+    },
     file_understanding_formats: {text_only: "纯文本", text_and_documents: "文本与文档"},
   };
 
@@ -61,6 +67,8 @@ window.CompanionReplyPage = (() => {
       reply_diagnostic_limit: "近期回复诊断条数",
       group_wakeup_enabled: "启用群聊回应判断",
       group_tool_profile: "群聊工具档位",
+      private_tool_profile: "私聊工具档位",
+      private_tool_groups: "私聊启用的工具组",
       group_wakeup_direct_words: "直呼词", group_wakeup_context_words: "上下文关联词",
       group_wakeup_interest_keywords: "兴趣关键词",
       group_wakeup_question_enabled: "识别问题与求助",
@@ -122,6 +130,11 @@ window.CompanionReplyPage = (() => {
       video_understanding_group_enabled: "视频理解 · 群聊",
       video_understanding_max_chars: "转述长度上限",
       video_understanding_wait_seconds: "等待转述时间（秒）",
+      video_understanding_target_mb: "压缩目标上限（MB）",
+      video_understanding_max_duration_seconds: "最大允许时长（秒）",
+      video_understanding_oversize_action: "超限处理策略",
+      video_understanding_quoted_enabled: "处理引用消息中的视频",
+      video_understanding_qa_enabled: "结合本轮提问回答视频内容",
       video_self_recognition_hint: "视频中的角色自我识别线索",
       video_understanding_prompt: "转述提示词补充",
       file_understanding_enabled: "启用文件理解",
@@ -154,17 +167,6 @@ window.CompanionReplyPage = (() => {
       voice_primary_mention_keywords: "核心用户提及语音词",
       voice_primary_mention_probability: "核心用户提及概率",
       voice_primary_mention_prompt: "核心用户提及提示",
-      voice_enabled: "核心管理员可以在本轮消息中直接指定语音模型、音色或语种；该次回复会临时覆盖保存的语音绑定。普通成员也可以直接说「用中文说」「用日语唱」这类话，临时切换本轮的朗读语种，不改保存的配置。",
-      voice_provider_id: "角色级 TTS 绑定，私聊与群聊共用；触发概率和冷却才按渠道分别覆盖。",
-      voice_zh_provider_id: "中文语音优先使用此扩展；留空则跟随通用 TTS 扩展。",
-      voice_ja_provider_id: "日语语音优先使用此扩展；留空则跟随通用 TTS 扩展。",
-      voice_en_provider_id: "英语语音优先使用此扩展；留空则跟随通用 TTS 扩展。",
-      voice_private_zh_provider_id: "可选：私聊中文语音专用 TTS；优先于通用和语种绑定。",
-      voice_private_ja_provider_id: "可选：私聊日语语音专用 TTS；优先于通用和语种绑定。",
-      voice_private_en_provider_id: "可选：私聊英语语音专用 TTS；优先于通用和语种绑定。",
-      voice_group_zh_provider_id: "可选：群聊中文语音专用 TTS；优先于通用和语种绑定。",
-      voice_group_ja_provider_id: "可选：群聊日语语音专用 TTS；优先于通用和语种绑定。",
-      voice_group_en_provider_id: "可选：群聊英语语音专用 TTS；优先于通用和语种绑定。",
     },
     helps: {
       enabled: "让一轮回复自然地分成多条消息。",
@@ -207,17 +209,34 @@ window.CompanionReplyPage = (() => {
       reply_quote_skip_chars: "回复去空白后不超过此字数时不附引用；0 表示不跳过。",
       reply_mention_speaker_enabled: "只在群聊中 @ 本轮发言者。",
       voice_trigger_mode: "决定这一轮要不要朗读，以及由谁挑句子。",
-      voice_segment_mode: "整体朗读会等本轮所有文字段落准备完后合成一次，语气和上下文更完整；每一段会在每段发送前分别合成，出音更早但会切碎语义。",
-      voice_delivery_mode: "仅语音只在语音完整覆盖文字时才会替代文字，否则仍发文字。",
-      voice_language: "本窗口默认朗读语种，切换后按该语种绑定选择默认 TTS 音色。私聊可发「陪伴 切换语种 日语」，群聊可发「陪伴群 切换语种 日语」；本轮明确要求换语种仍只覆盖当轮，不改保存值。",
+      voice_segment_mode: "整段语气更完整；逐段出音更早。",
+      voice_delivery_mode: "仅语音只在完整覆盖文字时替代文字。",
+      voice_language: "本窗口默认朗读语种；当轮换语种不保存。",
       voice_probability: "按百分比编辑，后端按 0–1 的小数保存。",
       voice_trigger_keywords: "留空使用默认关键词。",
       voice_extra_prompt: "只补充朗读语气，不改变朗读内容。",
-      voice_direction_mode: "关闭时不添加任何表演指令；自动识别只在选中引擎明确支持时生效（FishAudio Drama 3 / IndexTTS2）；"
-        + "IndexTTS2 与 FishAudio 两档用于强制指定指令格式，引擎不匹配时不发指令。",
-      voice_primary_mention_keywords: "仅当原生 @ 目标经身份库确认属于核心用户，且正文命中这些词时触发；逗号或换行分隔。",
-      voice_primary_mention_probability: "在当前窗口语音概率基础上提高到此值；仅影响命中的本轮，并绕过本轮语音冷却。",
-      voice_primary_mention_prompt: "核心用户定向语音时追加的表达提示；留空只使用角色原有语气。",
+      voice_direction_mode: "自动识别只在引擎支持时生效；不匹配时不发指令。",
+      voice_primary_mention_keywords: "仅核心用户的 @ 且正文命中时触发。",
+      voice_primary_mention_probability: "命中的本轮提高到此概率。",
+      voice_primary_mention_prompt: "定向语音时追加的表达提示。",
+      voice_enabled: "核心管理员可在本轮临时指定语音；群友说「用中文说」只影响当轮。",
+      voice_generation_mode: "朗读正文，或只读模型语音标签里的原文。",
+      voice_conversion_scope: "完整口述，或只读适合口述的短句。",
+      voice_foreign_text_mode: "外文按原文、译文或双语朗读。",
+      voice_position: "语音在整条回复里的位置。",
+      voice_cooldown_seconds: "两次语音的最短间隔；0 表示不等待。",
+      voice_max_speech_chars: "单段朗读上限，超出会截断。",
+      voice_timeout_seconds: "等待合成的最长时间，超时退回文字。",
+      voice_provider_id: "角色级绑定，私聊与群聊共用。",
+      voice_zh_provider_id: "留空时跟随通用扩展。",
+      voice_ja_provider_id: "留空时跟随通用扩展。",
+      voice_en_provider_id: "留空时跟随通用扩展。",
+      voice_private_zh_provider_id: "可选，优先于通用与语种绑定。",
+      voice_private_ja_provider_id: "可选，优先于通用与语种绑定。",
+      voice_private_en_provider_id: "可选，优先于通用与语种绑定。",
+      voice_group_zh_provider_id: "可选，优先于通用与语种绑定。",
+      voice_group_ja_provider_id: "可选，优先于通用与语种绑定。",
+      voice_group_en_provider_id: "可选，优先于通用与语种绑定。",
       group_wakeup_enabled: "关闭后群聊不使用这组参与判断。此设置跟随角色，同一角色的群聊共用。",
       group_wakeup_direct_words: "在同一角色的群聊中，直呼词作为明确参与信号。",
       group_wakeup_context_words: "在同一角色的群聊中，用于识别与角色有关的上下文。",
@@ -229,6 +248,8 @@ window.CompanionReplyPage = (() => {
       group_wakeup_owner_direct_words: "只对上方主要成员账号生效。",
       group_wakeup_interest_probability: "命中兴趣关键词后，按此概率进入模型参与判断；未抽中时不为该线索调用模型。0 表示关闭，1 表示全部进入，进入后仍可旁听。",
       group_tool_profile: "完整保留可用工具；常用只挂群聊常用能力；精简会移除其他插件提供的工具，包括外部记忆与搜索。选择精简可减少工具开销，也会减少模型可调用的能力。",
+      private_tool_profile: "控制私聊中挂载的陪伴工具范围（跟随角色默认，支持单窗口覆盖），始终保留你在 AstrBot 人格卡中配置的其他插件工具。完整保留全部可用陪伴工具；精简仅保留待办、日程、记忆与日常互动；按组自选可自由勾选功能组；关闭陪伴工具将不注入本插件工具。工具清单整轮固定，不影响前缀缓存。",
+      private_tool_groups: "仅在「按组自选」时生效，勾选本角色私聊需要保留的陪伴工具功能组；当记忆、日程或记录任一组开启时自动附带本轮证据句柄。",
       group_wakeup_question_threshold: "答疑开启时，问题与求助候选评分需达到此值才进入决策。其他成员正在交流、已有回答及近期已接话会降权；达到阈值仍可旁听。范围 0–100。",
       group_wakeup_cold_group_enabled: "开启后，群聊长时间安静时可把重新开场作为判断材料。",
       group_wakeup_cold_group_threshold: "冷群重新开场所需的参与强度参考值，范围 0–100。",
@@ -277,11 +298,16 @@ window.CompanionReplyPage = (() => {
       private_image_vision_max_chars: "限制加入本轮上下文的转述长度，范围 120–4000 字。",
       private_image_vision_wait_seconds: "转述最多等待时间，范围 1–30 秒；超时后回复继续使用原图。",
       private_image_provider_failure_cooldown_seconds: "相同图片识图失败后暂缓重试，范围 0–3600 秒；0 表示不冷却。",
-      video_understanding_enabled: "在当前选中的私聊或群聊窗口启用原生视频理解；主回复与视频模型一致且支持视频输入时，直接读取原视频。",
+      video_understanding_enabled: "在当前选中的私聊或群聊窗口启用视频理解；支持原生视频模型、OpenAI 兼容视觉中转模型与 4 帧抽帧兜底，并会自动避让已完成理解的外部 video_vision 插件。",
       video_understanding_private_enabled: "角色级权限，适用于该角色绑定的所有私聊窗口。关闭后不会把私聊视频交给视频理解模型。",
       video_understanding_group_enabled: "角色级权限，适用于该角色绑定的所有群聊窗口。关闭后不会把群聊视频交给视频理解模型。",
-      video_understanding_max_chars: "限制加入主回复上下文的原生视频转述长度。",
-      video_understanding_wait_seconds: "等待原生视频模型的最长时间；超时后主回复继续并标明视频未读。",
+      video_understanding_max_chars: "限制加入主回复上下文的视频转述长度。",
+      video_understanding_wait_seconds: "等待视频理解模型的最长时间；超时后自动切换备用路由或 4 帧抽帧。",
+      video_understanding_target_mb: "范围 1–18 MB；超过该体积的视频会经本地 FFmpeg 压缩后再发送（未安装 FFmpeg 时仅小视频可直传或抽帧）。",
+      video_understanding_max_duration_seconds: "范围 10–1800 秒；超出此时长的视频会按下方超限策略处理。",
+      video_understanding_oversize_action: "超出体积或时长上限时的处理：自动压缩整段、截断到最大时长后压缩，或直接拒收并给出明确原因。",
+      video_understanding_quoted_enabled: "开启后支持下载并理解引用消息里的原视频与 .mp4 文件附件（.ts 源码文件始终排除）。",
+      video_understanding_qa_enabled: "开启后若用户发视频时附带提问文本，会优先围绕该提问观察视频细节并回答。",
       video_self_recognition_hint: "最多 1200 字，填写角色的头像、昵称、签名、水印或二创别名等线索；只报告可见线索的可能匹配，不确认画中人或发送者身份，也不要填写用户资料。",
       video_understanding_prompt: "只补充视频描述角度；自我识别线索请填写上方专用项。",
       file_understanding_enabled: "开启后读取当前窗口允许格式的正文；附件正文不会写入长期存储。",
@@ -307,7 +333,8 @@ window.CompanionReplyPage = (() => {
                 "content_cleanup_rule", "content_cleanup_words", "content_replacement_enabled",
                 "content_replacements"]},
       {id: "wakeup_direct", title: "明确参与信号", help: "",
-       fields: ["group_wakeup_enabled", "group_tool_profile", "group_wakeup_direct_words", "group_wakeup_context_words",
+       fields: ["group_wakeup_enabled", "group_tool_profile", "private_tool_profile", "private_tool_groups",
+                "group_wakeup_direct_words", "group_wakeup_context_words",
                 "group_wakeup_question_enabled", "group_wakeup_question_threshold"]},
       {id: "wakeup_interest", title: "兴趣与概率参与", help: "",
        fields: ["group_wakeup_interest_keywords", "group_wakeup_interest_probability",
@@ -356,23 +383,33 @@ window.CompanionReplyPage = (() => {
                 "private_image_vision_max_chars", "private_image_vision_wait_seconds",
                 "private_image_provider_failure_cooldown_seconds"]},
       {id: "video_narration", title: "视频理解", help: "",
-       fields: ["video_understanding_enabled", "video_understanding_max_chars",
-                "video_understanding_wait_seconds", "video_self_recognition_hint",
-                "video_understanding_prompt"]},
+       fields: ["video_understanding_enabled", "video_understanding_target_mb",
+                "video_understanding_max_duration_seconds", "video_understanding_oversize_action",
+                "video_understanding_quoted_enabled", "video_understanding_qa_enabled",
+                "video_understanding_max_chars", "video_understanding_wait_seconds",
+                "video_self_recognition_hint", "video_understanding_prompt"]},
       {id: "file_understanding", title: "文件理解", help: "",
        fields: ["file_understanding_enabled", "file_understanding_format_groups", "file_understanding_max_size_mb",
                 "file_understanding_max_chars", "file_understanding_timeout_seconds", "file_understanding_prompt"]},
       {id: "forwards", title: "合并转发理解", help: "",
        fields: ["forward_message_adaptation_enabled"]},
-      {id: "voice", title: "语音与朗读", help: "",
-       fields: ["voice_enabled", "voice_trigger_mode", "voice_generation_mode", "voice_conversion_scope", "voice_segment_mode",
-                "voice_delivery_mode", "voice_language", "voice_foreign_text_mode", "voice_direction_mode",
-                "voice_provider_id", "voice_probability", "voice_cooldown_seconds",
-                "voice_max_speech_chars", "voice_timeout_seconds", "voice_zh_provider_id",
-                "voice_ja_provider_id", "voice_en_provider_id", "voice_trigger_keywords", "voice_position",
-                "voice_extra_prompt", "voice_primary_mention_keywords", "voice_primary_mention_probability",
+      {id: "voice", title: "开关与触发", help: "语音总开关和当前对象的朗读开关都需开启；关闭时文字照常发送。",
+       fields: ["voice_enabled", "voice_trigger_mode", "voice_probability", "voice_cooldown_seconds"]},
+      {id: "voice_render", title: "朗读方式", help: "整段朗读语气更完整；逐段朗读出音更早但会切碎语义。",
+       fields: ["voice_generation_mode", "voice_conversion_scope", "voice_segment_mode",
+                "voice_delivery_mode", "voice_position", "voice_language", "voice_foreign_text_mode",
+                "voice_direction_mode"]},
+      {id: "voice_engine", title: "声线与 TTS 引擎", help: "角色级绑定，私聊与群聊共用；语种留空时跟随通用扩展。",
+       fields: ["voice_provider_id", "voice_zh_provider_id",
+                "voice_ja_provider_id", "voice_en_provider_id"]},
+      {id: "voice_limits", title: "长度与超时", help: "",
+       fields: ["voice_max_speech_chars", "voice_timeout_seconds"]},
+      {id: "voice_primary", title: "核心用户定向语音", help: "仅当原生 @ 经身份库确认属于核心用户、且正文命中关键词时触发；只影响命中的本轮。",
+       fields: ["voice_primary_mention_keywords", "voice_primary_mention_probability",
                 "voice_primary_mention_prompt"]},
-      {id: "voice_channels", title: "私聊 / 群聊语音覆盖", help: "同一语种可为私聊和群聊指定不同的 TTS；留空时沿用上面的语种绑定。",
+      {id: "voice_extra", title: "关键词与语气", help: "触发关键词留空使用默认值；语音表达偏好只补充朗读语气，不改变朗读内容。",
+       fields: ["voice_trigger_keywords", "voice_extra_prompt"]},
+      {id: "voice_channels", title: "私聊 / 群聊覆盖", help: "同一语种可为私聊和群聊指定不同的 TTS；留空时沿用上面的语种绑定。",
        fields: ["voice_private_zh_provider_id", "voice_private_ja_provider_id", "voice_private_en_provider_id",
                 "voice_group_zh_provider_id", "voice_group_ja_provider_id", "voice_group_en_provider_id"]},
       {id: "components", title: "引用与消息组件", help: "",
@@ -386,6 +423,7 @@ window.CompanionReplyPage = (() => {
     segmentedChoices: ["rule_mode", "part_gap_mode", "streaming_mode", "prompt_style_mode"],
     inputs: {
       content_cleanup_scope: "chips",
+      private_tool_groups: "chips",
       split_words: "word-list", content_cleanup_words: "word-list", recall_forbidden_words: "word-list",
       content_replacements: "replacement-list", component_order: "order-list",
       group_wakeup_direct_words: "word-list", group_wakeup_context_words: "word-list",
@@ -396,8 +434,16 @@ window.CompanionReplyPage = (() => {
     chipOptions: {
       content_cleanup_scope: {mode: "multi", options: ["leading", "middle", "trailing"],
         labels: {leading: "句首", middle: "句中", trailing: "句尾"}, hideInput: true},
+      private_tool_groups: {mode: "multi",
+        options: ["agenda", "calendar", "memory", "records", "interaction", "media",
+          "diagnostics", "relay", "extensions"],
+        labels: {agenda: "待办与提醒", calendar: "日程与约定", memory: "记忆读写",
+          records: "成长与关系记录", interaction: "日常互动与查询", media: "生图与视觉媒体",
+          diagnostics: "自检与诊断", relay: "跨窗口递话", extensions: "扩展与外部能力"},
+        hideInput: true},
     },
     visibility: {
+      private_tool_groups: {private_tool_profile: "custom"},
       streaming_mode: {streaming: true},
       prompt: {llm_controlled: true},
       split_words: {rule_mode: "words"},
@@ -432,7 +478,8 @@ window.CompanionReplyPage = (() => {
     },
     rows: {prompt: 4, style_prompt: 5, humanized_expression_prompt: 6,
       rule_regex: 3, content_cleanup_rule: 3, content_replacements: 4, component_order: 3,
-      voice_trigger_keywords: 2, voice_extra_prompt: 3,
+      voice_trigger_keywords: 2, voice_extra_prompt: 3, voice_primary_mention_keywords: 2,
+      voice_primary_mention_prompt: 3,
       private_image_self_recognition_hint: 3, video_self_recognition_hint: 3},
   };
   const decisionSectionIds = new Set(["wakeup_direct", "wakeup_interest", "wakeup_members",
@@ -510,7 +557,8 @@ window.CompanionReplyPage = (() => {
 
   const expressionModuleSections = {
     "expression-text": ["segment", "style", "cleanup"],
-    "expression-voice": ["voice", "voice_channels"],
+    "expression-voice": ["voice", "voice_render", "voice_engine", "voice_limits",
+      "voice_primary", "voice_extra", "voice_channels"],
     "expression-platform": ["components", "checks"],
   };
   const expressionModuleDefaults = {
@@ -527,6 +575,122 @@ window.CompanionReplyPage = (() => {
   function expressionScopeNote(module) {
     const [title, detail] = expressionScopeNotes[module] || expressionScopeNotes.default;
     return `<strong>${e(title)}</strong><p>${e(detail)}</p>`;
+  }
+
+  /* 语音朗读页的头部：一句当前状态 + 一张朗读预览。
+     只读工作台草稿与 TTS 目录，不另建状态；保存仍走同一个工作台。 */
+  function providerLabel(id) {
+    if (!id) return "跟随 AstrBot";
+    const item = (state.status?.tts?.providers || []).find(provider => provider.id === id);
+    return item ? [item.id, item.model, item.voice].filter(Boolean).join(" · ") : id;
+  }
+  function voiceHeroMarkup() {
+    const draft = draftSettings();
+    if (!draft) {
+      return `<section class="voice-hero is-loading" data-voice-hero aria-busy="true">`
+        + `<div class="voice-hero-copy"><p class="voice-hero-kicker">VOICE / 语音朗读</p>`
+        + `<h2>正在读取语音设置…</h2>`
+        + `<p class="voice-hero-lede">连上配置工作台后，这里会说明下一轮会怎么朗读。</p></div></section>`;
+    }
+    const enabled = draft.voice_enabled === true;
+    const rawProbability = Number(draft.voice_probability ?? 1);
+    const probability = Number.isFinite(rawProbability)
+      ? Math.max(0, Math.min(100, Math.round(rawProbability * 100))) : 100;
+    const language = choiceText("voice_language", draft.voice_language);
+    const trigger = choiceText("voice_trigger_mode", draft.voice_trigger_mode);
+    const segment = choiceText("voice_segment_mode", draft.voice_segment_mode);
+    const delivery = choiceText("voice_delivery_mode", draft.voice_delivery_mode);
+    const provider = providerLabel(draft.voice_provider_id);
+    const reading = enabled && probability > 0;
+    const title = !enabled ? "语音朗读已关闭"
+      : probability <= 0 ? "触发概率为 0，暂时不会朗读"
+      : "下一轮可能带上朗读";
+    const alert = !enabled ? "文字会照常发送；需要声音时再打开「启用语音」，不会影响其他表达设置。"
+      : probability <= 0 ? "当前触发概率是 0；把「触发概率」调高后才会合成语音。"
+      : !draft.voice_provider_id ? "还没有绑定 TTS 扩展；在「模型与连接 → 语音」里选好发音人与音色后才会真的出声。"
+      : "";
+    const chips = [
+      ["触发", trigger],
+      ["语种", language],
+      ["概率", `${probability}%`],
+      ["声线", provider],
+    ].map(([label, value]) => `<span class="voice-chip"><small>${e(label)}</small>`
+      + `<strong title="${e(value)}">${e(value)}</strong></span>`).join("");
+    /* 波形高度固定成一组，避免每次重绘跳动；纯装饰，不读屏。 */
+    const wave = [18, 34, 52, 28, 64, 42, 76, 50, 88, 58, 72, 40, 62, 30, 48, 24, 38, 20]
+      .map(height => `<i style="--h:${height}"></i>`).join("");
+    return `<section class="voice-hero${reading ? "" : " is-off"}" data-voice-hero>`
+      + `<div class="voice-hero-copy"><p class="voice-hero-kicker">VOICE / 语音朗读</p>`
+      + `<h2>${e(title)}</h2>`
+      + `<p class="voice-hero-lede">${enabled
+        ? `${e(trigger)}触发，按「${e(segment)}」合成，以「${e(delivery)}」发送。`
+        : "只发文字；语音开关关闭时不会占用合成时间，也不会改变回复内容。"}</p>`
+      + (alert ? `<p class="voice-hero-alert" role="note">${icon("triangle-alert")}<span>${e(alert)}</span></p>` : "")
+      + `<div class="voice-hero-chips">${chips}</div>`
+      + `<div class="voice-hero-actions">`
+      + `<button type="button" class="button small" data-voice-jump="voice">${icon("sliders-horizontal")}调整开关与触发</button>`
+      + `<a class="button small" href="#manage/models">${icon("audio-lines")}配置 TTS 引擎 ↗</a></div>`
+      + `<p class="voice-hero-hint">TTS 在「模型与连接」配置；页尾的全局语音总开关也要开启。</p></div>`
+      + `<div class="voice-hero-preview" aria-label="朗读效果预览">`
+      + `<header><span class="voice-preview-dot" aria-hidden="true"></span><strong>朗读预览</strong>`
+      + `<span class="voice-preview-badge">${e(language)} · ${e(segment)}</span></header>`
+      + `<p class="voice-preview-text">今晚的风很轻，我把这句话读给你听。</p>`
+      + `<div class="voice-wave" aria-hidden="true">${wave}</div>`
+      + `<footer><span>${e(delivery)}</span><span>${e(provider)}</span></footer>`
+      + `</div></section>`;
+  }
+  function renderVoiceHero() {
+    if (root?.dataset?.expressionModule !== "expression-voice") return;
+    const host = anchor("scope");
+    if (!host) return;
+    host.innerHTML = voiceHeroMarkup();
+  }
+
+  /* 分段回复页的头部：当前分段状态 + 一段分段示意。
+     同样只读工作台草稿，保存仍走同一个工作台。 */
+  function renderTextHero() {
+    if (root?.dataset?.expressionModule !== "expression-text") return;
+    const host = anchor("scope");
+    if (!host) return;
+    host.innerHTML = textHeroMarkup();
+  }
+  function textHeroMarkup() {
+    const draft = draftSettings();
+    if (!draft) {
+      return `<section class="text-hero is-loading" data-text-hero aria-busy="true">`
+        + `<div class="text-hero-copy"><p class="text-hero-kicker">TEXT / 分段回复</p>`
+        + `<h2>正在读取分段设置…</h2>`
+        + `<p class="text-hero-lede">连上配置工作台后，这里会显示当前的分段方式与发送节奏。</p></div></section>`;
+    }
+    const enabled = draft.enabled === true;
+    const streaming = draft.streaming === true;
+    const streamingLabel = streaming
+      ? (draft.streaming_mode === "incremental" ? "边生成边分段发送" : "收齐后分段发送")
+      : "完整回复后发送";
+    const boundary = draft.llm_controlled ? "模型边界 + 规则补充分段" : "规则补充分段";
+    const rule = choiceText("rule_mode", draft.rule_mode);
+    const maxSegments = Number(draft.max_segments) || 1;
+    const spacing = spacingLabel(draft);
+    const title = enabled ? "会先把回复分段再发送" : "分段回复已关闭";
+    const lede = enabled
+      ? `${boundary}，按「${rule}」规则切分，${streamingLabel}；最多 ${maxSegments} 条。`
+      : "整段回复会作为一条消息发送；需要更自然的聊天节奏时再打开。";
+    const chips = [
+      ["状态", enabled ? "已开启" : "已关闭"],
+      ["接收", streaming ? "流式" : "完整"],
+      ["切分", draft.llm_controlled ? "模型 + 规则" : "仅规则"],
+      ["上限", `最多 ${maxSegments} 条`],
+    ].map(([label, value]) => `<span class="text-chip"><small>${e(label)}</small>`
+      + `<strong>${e(value)}</strong></span>`).join("");
+    return `<section class="text-hero${enabled ? "" : " is-off"}" data-text-hero>`
+      + `<div class="text-hero-copy"><p class="text-hero-kicker">TEXT / 分段回复</p>`
+      + `<h2>${e(title)}</h2><p class="text-hero-lede">${e(lede)}</p>`
+      + `<div class="text-hero-chips">${chips}</div>`
+      + `<div class="text-hero-actions">`
+      + `<button type="button" class="button small" data-text-preview>${icon("play")}立即预览</button>`
+      + `<button type="button" class="button small" data-text-jump="segment">${icon("sliders-horizontal")}调整分段规则</button>`
+      + `</div><p class="text-hero-hint">间隔：${e(spacing)}；预览会按当前草稿离线计算，不调用模型。</p></div></section>`;
+
   }
   let root = null, instance = null, version = 0, route = null, activeSections = spec.sections;
   let activeDecisionView = "overview";
@@ -573,6 +737,11 @@ window.CompanionReplyPage = (() => {
   function renderDiagnostics() {
     const host = parts().diagnostics;
     if (!host) return;
+    const product = window.CompanionProduct;
+    if (product.selection && !product.selection()?.target_id) {
+      host.innerHTML = '<p class="reply-scope-note">请先选择当前角色的窗口，再查看该窗口的回复诊断。</p>';
+      return;
+    }
     const recent = Array.isArray(state.status?.recent) ? state.status.recent : [];
     const stateLabels = {complete: "已完成", blocked: "受阻", closed: "已关闭", ready: "待投递",
       sealed: "已封存", collecting: "收集中", generating: "生成中", running: "生成中", delivering: "投递中",
@@ -700,10 +869,16 @@ window.CompanionReplyPage = (() => {
       if (instance?.state?.draft) instance.state.draft.rules_enabled = true;
       if (instance?.state?.base) instance.state.base.rules_enabled = true;
     }
-    state.status = status || null;
+    const product = window.CompanionProduct;
+    state.status = status && product.selection && !product.selection()?.target_id
+      ? {...status, recent:[], participation_recent:[]} : status || null;
     notifyStatus();
     if (!status) return;
-    renderDiagnostics();
+    /* The expression workspace (segmentation, voice, reactions, platform and
+       group expression) is a configuration + preview surface.  It has no
+       diagnostics slot; skip the fetch entirely so private-chat diagnostics
+       never leak into those pages or add another request. */
+    if (!root?.dataset?.expressionModule) renderDiagnostics();
     if (root?.dataset?.expressionModule) setExpressionModule(root.dataset.expressionModule);
     /* 预览用的草稿设置取自工作台当前草稿，保证「预览当前草稿」名副其实。 */
     if (!root?.querySelector('[data-reply-part-input="example"]')) renderPreview();
@@ -834,6 +1009,40 @@ window.CompanionReplyPage = (() => {
       + `</dl>`;
   }
 
+  /* 分段效果预览本身就是「分段示意」：用 QQ 气泡把文段、引用、@、语音和图片/表情包的位置画出来。 */
+  function qqPreviewMarkup(p, settings = {}) {
+    const count = Array.isArray(p.parts) ? p.parts.length : 0;
+    if (!count) return "";
+    const quote = p.quote || {};
+    const quoteEnabled = quote.enabled ?? settings.reply_quote_enabled;
+    const quoteGroup = quote.group_enabled ?? settings.reply_quote_group_enabled;
+    const quoteFirst = quote.first_part_only ?? settings.reply_quote_first_part_only;
+    const mentionEnabled = quote.mention_speaker ?? settings.reply_mention_speaker_enabled;
+    const mentionText = `@${state.previewSession === "group" ? "本轮发言者" : "对方"}`;
+    const voice = p.voice?.enabled && p.components?.[0]?.speech;
+    const images = Number.isInteger(p.image_count) ? p.image_count : 0;
+    const voiceLabel = ({before: "文字前", request: "按请求插入", after: "文字后", last: "所有组件后"})[state.previewPositions.voice] || "所有组件后";
+    const quoteText = `<div class="qq-quote"><span class="qq-quote-tag">引用</span><p>本轮触发消息</p></div>`;
+    const quoteApplies = state.previewSession === "group" && quoteEnabled && quoteGroup;
+    const rows = p.parts.map((text, index) => {
+      const at = mentionEnabled && state.previewSession === "group"
+        && positionTarget(state.previewPositions.mention, index, count);
+      return `<div class="qq-row"><div class="qq-bubble"><p>${at ? `<span class="qq-at">${e(mentionText)}</span> ` : ""}${e(text)}</p></div><span class="qq-avatar" aria-hidden="true">澄</span></div>`;
+    }).join("");
+    const media = (voice || images)
+      ? `<div class="qq-row"><div class="qq-media">${voice ? `<span class="qq-voice"><i class="qq-wave" aria-hidden="true"></i>语音</span>` : ""}${images ? `<span class="qq-sticker" aria-hidden="true">🖼️</span>` : ""}</div><span class="qq-avatar" aria-hidden="true">澄</span></div>` : "";
+    const legend = [
+      quoteApplies ? `<span><b>引用</b>${quoteFirst ? "第 1 条" : "每一条"}</span>` : "",
+      mentionEnabled ? `<span><b>@</b>${positionLabel(state.previewPositions.mention)}</span>` : "",
+      voice ? `<span><b>语音</b>${e(voiceLabel)}</span>` : "",
+      images ? `<span><b>图片 / 表情包</b>${state.previewPositions.media === "single" ? "单独一条" : positionLabel(state.previewPositions.media)}</span>` : "",
+    ].filter(Boolean).join("");
+    return `<div class="reply-preview-chat" aria-label="QQ 消息效果预览">`
+      + `<header><strong>消息效果</strong><span>QQ 气泡 · 预览模拟</span></header>`
+      + `<div class="qq-chat">${quoteApplies ? quoteText : ""}${rows}${media}`
+      + (legend ? `<div class="qq-legend">${legend}</div>` : "")
+      + `</div></div>`;
+  }
   function previewMarkup(p, settings = draftSettings() || {}) {
     const labels = {text: "文字", image: "图片", voice: "语音"};
     const componentBadges = items => items.map(kind => labels[kind]
@@ -851,7 +1060,7 @@ window.CompanionReplyPage = (() => {
     const mentionSpeaker = quote.mention_speaker ?? settings.reply_mention_speaker_enabled;
     const imageCount = Number.isInteger(p.image_count) ? p.image_count : 0;
     const faceOrder = Array.isArray(p.component_order) && p.component_order.includes("face");
-    return previewSummaryMarkup(p, settings)
+    return previewSummaryMarkup(p, settings) + qqPreviewMarkup(p, settings)
       + `<div class="reply-preview-list" aria-label="分段结果">`
       + p.parts.map((text, index) => {
         const c = p.components[index];
@@ -939,9 +1148,58 @@ window.CompanionReplyPage = (() => {
       + `<p>${e(message)}</p></div>`;
   }
 
-  function previewModalMarkup() {
+  let previewModalCloseTimer = null;
+  function previewModalCanAnimate(node) {
+    return Boolean(
+      node
+      && typeof requestAnimationFrame === "function"
+      && typeof window.getComputedStyle === "function"
+      && !document.body?.classList?.contains("reduce-motion")
+      && document.documentElement?.dataset?.motion !== "off"
+      && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
+  function openPreviewModal() {
+    const wasClosing = Boolean(previewModalCloseTimer);
+    clearTimeout(previewModalCloseTimer);
+    previewModalCloseTimer = null;
+    const wasOpen = state.previewConfigOpen;
+    state.previewConfigOpen = true;
+    renderPreview({animateModalEnter: !wasOpen || wasClosing});
+    root?.querySelector?.('[data-reply-action="preview-modal-close"]')?.focus?.();
+  }
+  function closePreviewModal() {
+    if (!state.previewConfigOpen || previewModalCloseTimer) return;
+    const modal = root?.querySelector?.("[data-reply-preview-modal]");
+    const myVersion = version;
+    const finish = () => {
+      previewModalCloseTimer = null;
+      if (!live(myVersion)) return;
+      state.previewConfigOpen = false;
+      renderPreview();
+      if (root?.isConnected) root.querySelector?.('[data-reply-action="preview-config"]')?.focus?.({preventScroll: true});
+    };
+    if (!previewModalCanAnimate(modal) || modal.hidden) {
+      finish();
+      return;
+    }
+    if (modal.contains?.(document.activeElement)) document.activeElement?.blur?.();
+    modal.setAttribute?.("inert", "");
+    modal.classList.remove("is-open");
+    modal.classList.add("is-closing");
+    const delay = document.documentElement?.dataset?.motion === "low" ? 110 : 185;
+    previewModalCloseTimer = setTimeout(finish, delay);
+  }
+  function onKeyDown(event) {
+    if (event.key === "Escape" && state.previewConfigOpen) {
+      event.preventDefault?.();
+      closePreviewModal();
+    }
+  }
+  function previewModalMarkup(animateEnter = false) {
     const option = (key, name, value, options) => `<label class="reply-preview-option"><span>${name}</span><select data-reply-preview-option="${key}">${options.map(([optionKey, label]) => `<option value="${optionKey}"${value === optionKey ? " selected" : ""}>${label}</option>`).join("")}</select></label>`;
-    return `<div class="reply-preview-modal" data-reply-preview-modal${state.previewConfigOpen ? "" : " hidden"} role="dialog" aria-modal="true" aria-labelledby="reply-preview-modal-title">`
+    const openClass = state.previewConfigOpen && !animateEnter ? " is-open" : "";
+    return `<div class="reply-preview-modal${openClass}" data-reply-preview-modal${state.previewConfigOpen ? "" : " hidden"} role="dialog" aria-modal="true" aria-labelledby="reply-preview-modal-title">`
       + `<div class="reply-preview-modal-scrim" data-reply-action="preview-modal-close"></div><div class="reply-preview-modal-card">`
       + `<header><h3 id="reply-preview-modal-title">预览配置</h3><button type="button" class="icon-button" data-reply-action="preview-modal-close" aria-label="关闭预览配置">${icon("x")}</button></header>`
       + `<div class="reply-preview-modal-body"><fieldset><legend>示例预设</legend><div class="reply-preview-modal-segmented">${["simple","complex","custom"].map(key => `<button type="button" class="${state.examplePreset === key ? "is-selected" : ""}" data-reply-example="${key}">${key === "simple" ? "简单示例" : key === "complex" ? "复杂示例" : "自定义"}</button>`).join("")}</div></fieldset>`
@@ -950,8 +1208,7 @@ window.CompanionReplyPage = (() => {
       + `<p class="reply-preview-modal-lock">${icon("lock-keyhole")} 引用位置由回复分段设置决定</p><label class="reply-preview-modal-switch"><input type="checkbox" data-reply-preview-protection ${state.previewProtection ? "checked" : ""}><span>高亮保护范围</span></label>`
       + `</div></div></div>`;
   }
-
-  function renderPreview() {
+  function renderPreview({animateModalEnter = false} = {}) {
     const host = anchor("preview");
     if (!host) return;
     if (!previewEnabled()) {
@@ -962,6 +1219,8 @@ window.CompanionReplyPage = (() => {
     const locked = state.loading || state.denied || !state.status;
     const module = root?.dataset?.expressionModule || "expression-text";
     const title = module === "expression-voice" ? "朗读位置预览" : module === "expression-platform" ? "组件顺序预览" : "分段效果预览";
+    const shouldAnimateEnter = animateModalEnter && state.previewConfigOpen
+      && typeof requestAnimationFrame === "function" && typeof window.getComputedStyle === "function";
     host.innerHTML = `<section class="reply-preview" aria-labelledby="reply-preview-title">`
       + `<header class="reply-preview-head"><h3 id="reply-preview-title">${title}<span class="reply-preview-live">实时</span></h3><div class="reply-preview-head-actions"><button type="button" class="button small" data-reply-action="preview-config">${icon("sliders-horizontal")}预览配置</button><button type="button" class="button small" data-reply-action="preview" ${locked || state.busy ? "disabled" : ""}>立即预览</button></div></header>`
       + `<div class="reply-preview-state-grid"><article class="reply-preview-state${state.busy ? " is-active" : ""}"><strong>${icon("loader-circle")}计算中</strong></article><article class="reply-preview-state${state.preview && !state.previewError && !state.busy ? " is-active is-ok" : ""}"><strong>${icon("check-circle-2")}已更新</strong></article><article class="reply-preview-state${state.previewError ? " is-active is-error" : ""}"><strong>${icon("triangle-alert")}预览失败</strong></article></div>`
@@ -976,7 +1235,11 @@ window.CompanionReplyPage = (() => {
       + `<p class="reply-preview-status" id="reply-preview-status" role="status" aria-live="polite">${state.busy ? "正在计算预览…" : state.previewError ? e(state.previewError) : "等待预览"}</p>`
       + `<div id="reply-preview-result" class="reply-preview-result" aria-live="polite">`
       + (state.preview ? previewMarkup(state.preview) : '<p class="reply-muted">等待首次预览</p>')
-      + `</div></div></div></section>${previewModalMarkup()}`;
+      + `</div></div></div></section>${previewModalMarkup(shouldAnimateEnter)}`;
+    if (shouldAnimateEnter) {
+      const modal = host.querySelector?.("[data-reply-preview-modal]");
+      if (modal) requestAnimationFrame(() => { if (state.previewConfigOpen && !previewModalCloseTimer) modal.classList?.add?.("is-open"); });
+    }
   }
 
   function previewStatus(message) {
@@ -1104,6 +1367,8 @@ window.CompanionReplyPage = (() => {
     } else if (el?.dataset?.wbField) {
       schedulePreview();
       notifyStatus();
+      renderVoiceHero();
+      renderTextHero();
     }
   }
 
@@ -1131,15 +1396,30 @@ window.CompanionReplyPage = (() => {
       return;
     }
     const previewAction = event.target.closest("[data-reply-action]")?.dataset.replyAction;
+    const voiceJump = event.target.closest("[data-voice-jump]")?.dataset.voiceJump;
+    if (voiceJump) {
+      const target = root?.querySelector?.(`[data-wb-group="${voiceJump}"]`);
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      target?.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "start"});
+      return;
+    }
+    const textJump = event.target.closest("[data-text-jump]")?.dataset.textJump;
+    if (textJump) {
+      const target = root?.querySelector?.(`[data-wb-group="${textJump}"]`);
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      target?.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "start"});
+      return;
+    }
+    if (event.target.closest("[data-text-preview]")) {
+      void preview();
+      return;
+    }
     if (previewAction === "preview-config") {
-      state.previewConfigOpen = true;
-      renderPreview();
-      root?.querySelector?.('[data-reply-action="preview-modal-close"]')?.focus?.();
+      openPreviewModal();
       return;
     }
     if (previewAction === "preview-modal-close") {
-      state.previewConfigOpen = false;
-      renderPreview();
+      closePreviewModal();
       return;
     }
     const target = event.target.closest("[data-wb-word-add], [data-wb-word-remove], [data-wb-replacement-add], [data-wb-replacement-remove], [data-wb-order-start], [data-wb-order-move], [data-wb-order-remove], [data-wb-order-add], [data-wb-order-natural], [data-wb-reset]");
@@ -1154,13 +1434,17 @@ window.CompanionReplyPage = (() => {
     previewTicket++;
     clearTimeout(previewTimer);
     previewTimer = null;
+    clearTimeout(previewModalCloseTimer);
+    previewModalCloseTimer = null;
     if (instance) instance.unmount();
     if (root) {
       root.removeEventListener("input", onInput);
       root.removeEventListener("change", onInput);
       root.removeEventListener("click", onClick);
+      root.removeEventListener("keydown", onKeyDown);
       root.textContent = "";
     }
+    if (typeof window !== "undefined") window.removeEventListener?.("keydown", onKeyDown);
     instance = null; root = null; route = null; activeSections = spec.sections;
     initialSection=null;
     statusListener=null;
@@ -1187,8 +1471,18 @@ window.CompanionReplyPage = (() => {
     if (!activeSections.some(section => section.id === id)) return false;
     const target = [...(root?.querySelectorAll?.("[data-wb-section]") || [])]
       .find(tab => tab.dataset.wbSection === id);
-    if (!instance?.state?.container || !target) {
+    if (!instance?.state?.container) {
       initialSection = id;
+      return true;
+    }
+    /* 语音页把七组设置直接铺开，没有侧栏标签；跳到某组就滚到那组。 */
+    if (!target) {
+      const group = root?.querySelector?.(`[data-wb-group="${id}"]`);
+      initialSection = null;
+      if (scroll) {
+        const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+        group?.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "start"});
+      }
       return true;
     }
     target.click();
@@ -1207,11 +1501,20 @@ window.CompanionReplyPage = (() => {
     if (!root || !instance) return false;
     const wasVoice = root.dataset.expressionModule === "expression-voice";
     const allowed = expressionModuleSections[module] || activeSections.map(section => section.id);
-    instance.setVisibleGroups?.(allowed, expressionModuleDefaults[module] || allowed[0] || "");
-    root.dataset.expressionModule = module || "";
-    const scopeNote = anchor("scope");
-    if (scopeNote) scopeNote.innerHTML = expressionScopeNote(module);
     const voice = module === "expression-voice";
+    instance.setVisibleGroups?.(
+      allowed,
+      expressionModuleDefaults[module] || allowed[0] || "",
+      {navigationLimit: voice ? 0 : activeSections.length},
+    );
+    root.dataset.expressionModule = module || "";
+    const text = module === "expression-text";
+    const scopeNote = anchor("scope");
+    if (scopeNote) {
+      if (voice) renderVoiceHero();
+      else if (text) renderTextHero();
+      else scopeNote.innerHTML = expressionScopeNote(module);
+    }
     const preview = anchor("preview");
     if (preview) preview.hidden = voice;
     if (voice) {
@@ -1273,6 +1576,10 @@ window.CompanionReplyPage = (() => {
     if (typeof endpoint !== "string" || !endpoint.startsWith(PREFIX) || !identity.operator_id
         || /[?#%\\:]/.test(endpoint)
         || endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..")) {
+      if (!product.selection?.()?.target_id && product.roleTarget?.()?.scope_kind === "group") {
+        root.innerHTML = '<div class="reply-empty">当前角色只有群聊入口。请在上方选择具体群聊，再编辑本群覆盖；角色默认回复设置需要该角色的私聊入口。</div>';
+        return;
+      }
       root.innerHTML = options.view === "decision"
         ? '<div class="reply-empty">当前对象没有可用的群聊回应决策设置工作区。请先选择已初始化的会话对象和角色。</div>'
         : options.view === "perception"
@@ -1294,10 +1601,14 @@ window.CompanionReplyPage = (() => {
     if (options.view === "perception") root.dataset.replyView = "perception";
     else if (options.view === "decision") root.dataset.replyView = "decision";
     else if (root.dataset) delete root.dataset.replyView;
-    const diagnostics = [undefined, "expression", "decision"].includes(options.view)
+    /* Diagnostics belong to the decision/reply workbench and the default reply
+       workspace.  The expression/segmentation page is a settings+preview page;
+       keeping a live reply-diagnostic feed there squeezed the preview column and
+       mixed unrelated private-chat records into an appearance editor. */
+    const diagnostics = [undefined, "decision"].includes(options.view)
       ? '<div data-reply-part="diagnostics"></div>' : "";
     const scopeNote = options.view === "decision"
-      ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。群唤醒设置跟随角色，同一角色的群窗口共用；在私聊窗口调整也会更新该角色的群设置。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
+      ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。角色默认供各群继承；选中具体群时编辑本群覆盖，已单独设置的群字段不随角色默认改变。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
       ? '<aside class="reply-scope-note" role="note"><strong>普通聊天的视频已由本插件原生理解</strong>' +
         '<p>普通聊天的图片、视频和文件由 AstrBot 核心管线送入本轮请求。视频默认开启：支持视频输入的 Gemini 类模型直接读取整段原视频；其他模型用宿主自带的 ffmpeg 抽帧后作为图片送入同一轮请求，不依赖外部视频插件。超时或抽帧失败时本轮不带视频继续，不会阻塞文字回复。本页的转述和文件读取设置用于 V2 独立任务及历史兼容。</p></aside>'
       : '<aside class="reply-scope-note" role="note" data-reply-part="scope">' +
@@ -1308,6 +1619,8 @@ window.CompanionReplyPage = (() => {
     root.addEventListener("input", onInput);
     root.addEventListener("change", onInput);
     root.addEventListener("click", onClick);
+    root.addEventListener("keydown", onKeyDown);
+    if (typeof window !== "undefined") window.addEventListener?.("keydown", onKeyDown);
     instance = window.CompanionWorkbench.create({
       group: GROUP,
       title: options.expressionModule ? moduleTitle : pageSpec.title,
@@ -1316,7 +1629,8 @@ window.CompanionReplyPage = (() => {
       helps: pageSpec.helps,
       choices,
       sections: pageSpec.sections,
-      navigationLimit: options.view === "perception" || options.view === "decision" ? 0 : pageSpec.sections.length,
+      navigationLimit: options.view === "perception" || options.view === "decision"
+        || options.expressionModule === "expression-voice" ? 0 : pageSpec.sections.length,
       rows: pageSpec.rows,
       segmentedChoices: spec.segmentedChoices,
       inputs: spec.inputs,
@@ -1378,3 +1692,10 @@ window.CompanionReplyPage = (() => {
     get state() { return {instance, example: state.example, imageCount: state.imageCount,
       status: state.status, preview: state.preview, notice: state.notice, bad: state.bad}; }};
 })();
+
+
+
+
+
+
+

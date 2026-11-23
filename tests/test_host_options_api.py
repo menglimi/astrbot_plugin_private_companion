@@ -41,7 +41,8 @@ class HostOptionsSchemaTests(unittest.TestCase):
         poke = schema["poke"]["items"]
 
         self.assertTrue(all(voice[name]["invisible"] for name in (
-            "enabled", "probability", "private_probability", "group_probability")))
+            "enabled", "singsing_enabled", "probability", "private_probability", "group_probability")))
+        self.assertIs(voice["singsing_enabled"]["default"], False)
         self.assertTrue(schema["poke"]["invisible"])
         self.assertEqual(poke["back_times"]["default"], 1)
         self.assertFalse(poke["model_reply_enabled"]["default"])
@@ -100,7 +101,7 @@ class HostOptionsWebAPITests(unittest.IsolatedAsyncioTestCase):
         payload = json.dumps(body or {}, ensure_ascii=False).encode("utf-8")
         request = NS(username=username, query=query or {}, body=AsyncMock(return_value=payload))
         with patch("astrbot_host.host_options_api.request", request), \
-             patch("astrbot_host.host_options_api.dashboard_operator", return_value=object()):
+             patch("astrbot_host.host_options_api.require_management_operator", return_value=object()):
             return await getattr(self.api, name)()
 
     async def snapshot(self):
@@ -187,14 +188,16 @@ class HostOptionsWebAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_defaults_save_to_plugin_config_and_report_restart(self):
         current = await self.snapshot()
+        self.assertIs(current["voice_reply"]["singsing_enabled"], False)
         response = await self.call("voice", {
             "edit_token": current["edit_tokens"]["voice"],
-            "changes": {"enabled": True, "private_probability": 0.35},
+            "changes": {"enabled": True, "singsing_enabled": True, "private_probability": 0.35},
         })
 
         self.assertEqual(response["status"], "ok", response)
         self.assertEqual(response["data"]["apply_mode"], "restart_host")
         self.assertTrue(self.config["voice_reply"]["enabled"])
+        self.assertIs(self.config["voice_reply"]["singsing_enabled"], True)
         self.assertEqual(self.config["voice_reply"]["private_probability"], 0.35)
         self.assertEqual(len(self.saved), 1)
         self.assertEqual(self.refreshed, 1)

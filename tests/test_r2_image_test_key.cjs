@@ -13,6 +13,7 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
+const workbenchSource = fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/workbench-page.js"), "utf8");
 const source = fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/models-page.js"), "utf8");
 const flush = async () => {
   await new Promise(resolve => setImmediate(resolve));
@@ -104,6 +105,7 @@ function harness(session = new Map(), prefix = "key") {
     },
     crypto: {randomUUID: () => `${prefix}-${++uuid}`},
   };
+  vm.runInNewContext(workbenchSource, {window, setTimeout, clearTimeout});
   vm.runInNewContext(source, {window, sessionStorage: window.sessionStorage, crypto: window.crypto,
     AbortController, setTimeout, clearTimeout});
   function root() {

@@ -1,0 +1,141 @@
+/* Loading states for the cottage home.
+   The first paint used to say "未设置 / 暂无" while the panel was still waiting
+   for its first snapshot.  These states now announce that they are reading and
+   use one shared, quiet motion language instead of looking like empty data. */
+@keyframes home-loading-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes home-loading-breathe {
+  0%, 100% { opacity: .46; }
+  50% { opacity: .9; }
+}
+@keyframes home-loading-sweep {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(220%); }
+}
+@keyframes home-loading-dots {
+  0%, 20% { content: ""; }
+  40% { content: "·"; }
+  60% { content: "··"; }
+  80%, 100% { content: "···"; }
+}
+
+.home-environment.is-loading .home-environment-icon svg,
+.home-environment.is-loading .home-environment-icon i {
+  animation: home-loading-spin 1.5s linear infinite;
+}
+.home-environment.is-loading .home-environment-copy strong {
+  color: var(--t-text-soft);
+}
+.home-environment.is-loading .home-environment-copy strong::after {
+  display: inline-block;
+  width: 1.4em;
+  margin-left: .15em;
+  color: var(--t-accent-ink);
+  content: "…";
+  animation: home-loading-dots 1.4s steps(1, end) infinite;
+}
+.home-environment.is-loading .home-environment-copy small {
+  color: var(--t-text-faint);
+  animation: home-loading-breathe 1.8s ease-in-out infinite;
+}
+
+.home-state-point[data-visual="loading"] .home-state-glyph svg,
+.home-state-point[data-visual="loading"] .home-state-glyph i,
+.home-state-row[data-visual="loading"] .home-state-row-icon svg,
+.home-state-row[data-visual="loading"] .home-state-row-icon i {
+  color: var(--t-accent-ink);
+  animation: home-loading-breathe 1.5s ease-in-out infinite;
+}
+.home-state-hero[data-visual="loading"] .home-state-hero-icon svg,
+.home-state-hero[data-visual="loading"] .home-state-hero-icon i {
+  color: var(--t-accent-ink);
+  animation: home-loading-spin 1.5s linear infinite;
+}
+.home-state-point[data-visual="loading"] strong::after,
+.home-state-row[data-visual="loading"] strong::after,
+.home-state-hero[data-visual="loading"] strong::after {
+  display: inline-block;
+  width: 1.2em;
+  margin-left: .1em;
+  color: var(--t-accent-ink);
+  content: "…";
+  animation: home-loading-dots 1.4s steps(1, end) infinite;
+}
+
+.home-state-board[data-loading="true"] .home-state-grid {
+  position: relative;
+  overflow: hidden;
+}
+.home-state-board[data-loading="true"] .home-state-grid::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 15%,
+    color-mix(in srgb, var(--t-accent-quiet) 58%, transparent) 48%, transparent 82%);
+  content: "";
+  animation: home-loading-sweep 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.home-agenda-status[data-loading="true"] {
+  position: relative;
+  overflow: hidden;
+}
+.home-agenda-status[data-loading="true"]::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 15%,
+    color-mix(in srgb, var(--t-accent-quiet) 48%, transparent) 48%, transparent 82%);
+  content: "";
+  animation: home-loading-sweep 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+.home-agenda-status[data-loading="true"] strong {
+  color: var(--t-text-soft);
+}
+.home-agenda-status[data-loading="true"] strong::after {
+  display: inline-block;
+  width: 1.4em;
+  color: var(--t-accent-ink);
+  content: "…";
+  animation: home-loading-dots 1.4s steps(1, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-environment.is-loading .home-environment-icon svg,
+  .home-environment.is-loading .home-environment-icon i,
+  .home-environment.is-loading .home-environment-copy strong::after,
+  .home-environment.is-loading .home-environment-copy small,
+  .home-state-point[data-visual="loading"] .home-state-glyph svg,
+  .home-state-point[data-visual="loading"] .home-state-glyph i,
+  .home-state-row[data-visual="loading"] .home-state-row-icon svg,
+  .home-state-row[data-visual="loading"] .home-state-row-icon i,
+  .home-state-hero[data-visual="loading"] .home-state-hero-icon svg,
+  .home-state-hero[data-visual="loading"] .home-state-hero-icon i,
+  .home-state-point[data-visual="loading"] strong::after,
+  .home-state-row[data-visual="loading"] strong::after,
+  .home-state-hero[data-visual="loading"] strong::after,
+  .home-state-board[data-loading="true"] .home-state-grid::after,
+  .home-agenda-status[data-loading="true"]::after,
+  .home-agenda-status[data-loading="true"] strong::after {
+    animation: none;
+  }
+}
+:root[data-motion="off"] .home-environment.is-loading .home-environment-icon svg,
+:root[data-motion="off"] .home-environment.is-loading .home-environment-icon i,
+:root[data-motion="off"] .home-environment.is-loading .home-environment-copy strong::after,
+:root[data-motion="off"] .home-environment.is-loading .home-environment-copy small,
+:root[data-motion="off"] .home-state-point[data-visual="loading"] .home-state-glyph svg,
+:root[data-motion="off"] .home-state-point[data-visual="loading"] .home-state-glyph i,
+:root[data-motion="off"] .home-state-row[data-visual="loading"] .home-state-row-icon svg,
+:root[data-motion="off"] .home-state-row[data-visual="loading"] .home-state-row-icon i,
+:root[data-motion="off"] .home-state-hero[data-visual="loading"] .home-state-hero-icon svg,
+:root[data-motion="off"] .home-state-hero[data-visual="loading"] .home-state-hero-icon i,
+:root[data-motion="off"] .home-state-point[data-visual="loading"] strong::after,
+:root[data-motion="off"] .home-state-row[data-visual="loading"] strong::after,
+:root[data-motion="off"] .home-state-hero[data-visual="loading"] strong::after,
+:root[data-motion="off"] .home-state-board[data-loading="true"] .home-state-grid::after,
+:root[data-motion="off"] .home-agenda-status[data-loading="true"]::after,
+:root[data-motion="off"] .home-agenda-status[data-loading="true"] strong::after {
+  animation: none;
+}

@@ -193,6 +193,10 @@ class TogetherMediaMethods:
             logger.info('[TogetherCompanion] 视频链接解析失败: %s', _single_line(exc, 300))
             await self.send_room_payload(room, {'type': 'media_error', 'message': f'视频解析失败：{_single_line(exc, 260)}'})
             return
+        if (getattr(self, 'record_shared_experiences', True)
+                and not room.shared_experience_finalized
+                and (room.visual_digest_ring or room.watch_memory or room.watch_knowledge)):
+            await self._record_shared_experience(room, final=False)
         self._drop_room_media(room.room_id)
         self.media_sources[source.token] = source
         room.reset_watch(media_token=source.token)
@@ -312,6 +316,8 @@ class TogetherMediaMethods:
         if source_url:
             source_line += f'，页面：{source_url}'
         room.watch_knowledge = f'{source_line}\n{knowledge}'[:1400]
+        if source.title:
+            room.record_visual_digest(f'正在观看《{_single_line(source.title, 60)}》', mode='watch', source='watch_knowledge')
 
     @staticmethod
     def _watch_event_source(kind: Any) -> str:
@@ -411,8 +417,10 @@ class TogetherMediaMethods:
         room.vision_error_notified = False
         decision = self._parse_watch_decision(raw, trigger=trigger)
         observation = _single_line(decision.get('observation'), 600)
+        obs_digest = ''
         if observation and room.watch_epoch == epoch:
             room.append_watch_event('observation', observation, media_time=captured_at, metadata={'trigger': trigger})
+            obs_digest = room.record_visual_digest(observation, mode='watch', source='watch_observation')
         force_memory = trigger == 'ending'
         if not force_memory:
             self._schedule_watch_memory_refresh(room)
@@ -434,7 +442,13 @@ class TogetherMediaMethods:
             self._schedule_shared_experience_record(room, delay_seconds=2.0)
         if room.native_v2 is None:
             await self._push_live_subtitle(comment, source='together_companion')
-        await self._synthesize_and_send(room, comment, display_text=comment, display_source='watch_comment')
+        watch_transcript = {
+            'event_id': f'together-watch-{room.room_id}-{uuid.uuid4().hex[:10]}',
+            'user_text': '',
+            'visual_context_used': bool(obs_digest),
+            'visual_digest': obs_digest,
+        }
+        await self._synthesize_and_send(room, comment, display_text=comment, display_source='watch_comment', native_transcript=watch_transcript)
         status = '已经看完' if trigger == 'ending' else '一起看着'
         await self.send_room_payload(room, {'type': 'status', 'state': 'watching', 'text': status})
 

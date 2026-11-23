@@ -19,6 +19,7 @@ from astrbot_host.core_reply_reaction_delivery import prepare_core_reaction_mess
 from astrbot_host.core_reply_segmentation import prepare_core_reply_segmentation
 from astrbot_host.core_reply_voice import prepare_core_reply_voice_message, voice_prompt_instruction
 from astrbot_host.core_reply_voice import capture_core_voice_message, observe_core_voice_response
+from astrbot_host.core_reply_voice_authoring import _should_repair
 from astrbot.core.provider.entities import LLMResponse
 from companion_v2.conversation.segmentation import SegmentationPolicy
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
@@ -44,6 +45,117 @@ class FakeEvent:
 
 
 class CoreReplyVoiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_chain_keeps_code_examples_across_adjacent_components(self):
+        event = FakeEvent()
+        prepared = {"voice_reply_policy": VoiceReplyPolicy(trigger_mode="adaptive"),
+                    "voice_singsing_enabled": True}
+        prepare_core_reply_event(event, prepared, authorize=_allow)
+        blocks = ("> ```xml\n", '> <pc_tts style="sing">示例</pc_tts>\n', "> ```\n",
+                  '<pc_tts style="sing">月儿弯弯。</pc_tts>')
+        chain = MessageChain(chain=[Plain(part) for part in blocks])
+        response = LLMResponse(role="assistant", completion_text="".join(blocks), result_chain=chain)
+
+        observe_core_voice_response(event, response)
+
+        visible = "".join(blocks[:-1]) + "月儿弯弯。"
+        self.assertEqual(response.completion_text, visible)
+        self.assertEqual("".join(part.text for part in chain.chain), visible)
+        plan = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["_voice_authored"]
+        self.assertEqual(plan["spans"], ((len("".join(blocks[:-1])), "月儿弯弯。"),))
+
+    async def test_singing_only_uses_final_authored_style_and_keeps_clean_text(self):
+        raw = '<pc_tts style="sing">[singsing]月儿弯弯。</pc_tts>'
+        for enabled, final, provider_available, expected_singing, has_record in (
+            (True, True, True, True, True),
+            (True, True, False, True, False),
+            (True, False, True, False, True),
+            (False, True, True, False, True),
+        ):
+            with self.subTest(enabled=enabled, final=final, provider_available=provider_available):
+                event = FakeEvent()
+                policy = VoiceReplyPolicy(trigger_mode="adaptive", zh_provider_id="drama")
+                prepared = {"context": object(), "voice_reply_policy": policy,
+                            "voice_singsing_enabled": enabled}
+                calls = []
+
+                async def renderer(_context, text, **options):
+                    calls.append((text, options["provider_id"], options.get("singing", False)))
+                    return {"type": "record", "data": {"file": "base64://YQ=="}} if provider_available else None
+
+                async def prepare(current, message, check, segment_index, segment_count):
+                    return await prepare_core_reply_voice_message(
+                        event, current, message, renderer=renderer, delivery=None, authorize=check,
+                        segment_index=segment_index, segment_count=segment_count)
+
+                prepare_core_reply_event(event, prepared, authorize=_allow, prepare_send=prepare)
+                activate_core_reply_delivery_guard(event)
+                response = LLMResponse(role="assistant", completion_text=raw)
+                observe_core_voice_response(event, response, final=final)
+                await event.send(MessageChain(chain=[Plain(response.completion_text)]))
+
+                self.assertEqual(response.completion_text, "月儿弯弯。")
+                spoken = "月儿弯弯。" if enabled else "[singsing]月儿弯弯。"
+                self.assertEqual(calls, [(spoken, "drama", expected_singing)])
+                self.assertEqual(len(event.sent), 2 if expected_singing and has_record else 1)
+                chain = [part for message in event.sent for part in message.chain]
+                self.assertEqual([type(part) for part in chain], [Plain, Record] if has_record else [Plain])
+                self.assertEqual(chain[0].text, "月儿弯弯。")
+                if has_record:
+                    self.assertEqual(chain[1].text, spoken)
+
+    async def test_qq_singing_sends_body_first_and_record_refusal_keeps_the_receipt(self):
+        for singing in (True, False):
+            with self.subTest(singing=singing):
+                event = FakeEvent()
+                event.get_platform_name = lambda: "aiocqhttp"
+                attempts = []
+
+                async def send(message, *args, **kwargs):
+                    attempts.append(message.chain)
+                    return not isinstance(message.chain[0], Record) or not singing
+
+                event.send = send
+                policy = VoiceReplyPolicy(trigger_mode="adaptive", position="before_text")
+                prepared = {"context": object(), "voice_reply_policy": policy, "voice_singsing_enabled": True}
+                observed = []
+
+                async def renderer(*args, **kwargs):
+                    self.assertIs(kwargs.get("singing", False), singing)
+                    return {"type": "record", "data": {"file": "base64://YQ=="}}
+
+                async def prepare(current, message, check, segment_index, segment_count):
+                    return await prepare_core_reply_voice_message(
+                        event, current, message, renderer=renderer, delivery=None, authorize=check,
+                        segment_index=segment_index, segment_count=segment_count)
+
+                prepare_core_reply_event(event, prepared, authorize=_allow, prepare_send=prepare,
+                                         on_sent=lambda _, text: observed.append(text))
+                activate_core_reply_delivery_guard(event)
+                wrapper = '<pc_tts style="sing">' if singing else "<pc_tts>"
+                response = LLMResponse(role="assistant", completion_text=f"{wrapper}正文</pc_tts>")
+                observe_core_voice_response(event, response)
+                self.assertTrue(await event.send(MessageChain(chain=[Plain(response.completion_text)])))
+                self.assertEqual([[type(part) for part in chain] for chain in attempts],
+                                 [[Plain], [Record]] if singing else [[Record], [Plain]])
+                if singing:
+                    self.assertEqual(observed, ["正文"])
+
+    def test_singing_prompt_does_not_change_plain_or_disabled_direction_modes(self):
+        tagged = VoiceReplyPolicy(trigger_mode="adaptive")
+        self.assertIn('style="sing"', voice_prompt_instruction(tagged, singsing=True))
+        self.assertNotIn('style="sing"', voice_prompt_instruction(tagged))
+        self.assertNotIn('style="sing"', voice_prompt_instruction(VoiceReplyPolicy(), singsing=True))
+        self.assertNotIn('style="sing"', voice_prompt_instruction(
+            VoiceReplyPolicy(trigger_mode="adaptive", direction_mode="off"), singsing=True))
+
+    def test_singing_is_not_rewritten_by_spoken_language_repair(self):
+        policy = VoiceReplyPolicy(generation_mode="model_tag", language="ja")
+        text = '<pc_tts style="sing">Moon over the river.</pc_tts>'
+        prepared = {"voice_reply_policy": policy, "voice_singsing_enabled": True}
+        response = LLMResponse(role="assistant", completion_text=text)
+        self.assertFalse(_should_repair({"prepared": prepared}, response))
+        self.assertTrue(_should_repair({"prepared": prepared}, response, final=False))
+
     async def test_core_send_authorizes_before_and_after_tts_then_sends_record(self):
         event = FakeEvent()
         context = object()
@@ -57,7 +169,7 @@ class CoreReplyVoiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def renderer(actual_context, text, *, provider_id, timeout_seconds):
             self.assertIs(actual_context, context)
-            self.assertEqual((text, provider_id, timeout_seconds), ("你好", "", 30))
+            self.assertEqual((text, provider_id, timeout_seconds), ("你好", "", 120))
             order.append("render")
             return {"type": "record", "data": {"file": "base64://YQ=="}}
 

@@ -88,7 +88,8 @@ class WeatherChangeContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertEqual(materials[0]["current"]["provider"], "qweather")
         self.assertEqual(materials[0]["current"]["weather_code"], 61)
         self.assertNotIn("_receipt", materials[0])
-        self.assertIn("不称灾害、预警或趋势", request.instruction)
+        self.assertIn("不称灾害、预警或趋势", request.user_instruction)
+        self.assertNotIn("不称灾害、预警或趋势", request.instruction)
         self.assertEqual(json.loads(self.contacts(app)[0]["record_json"])["purpose"], "environment")
 
         await app.close()

@@ -95,20 +95,27 @@ test("字段容器按可用宽度分列，而不是每字段一整行", () => {
   const fields = rule(".wb-fields");
   assert.match(fields, /display:\s*grid/,
     ".wb-fields 不是 grid：字段会退回单列堆叠（一个数字字段占一整行）");
-  const autoFit = fields.match(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\((\d+)px/);
-  assert.ok(autoFit, ".wb-fields 需要 repeat(auto-fit,minmax(Npx,1fr)) 才能在宽屏并排、窄屏回落");
-  const minimum = Number(autoFit[1]);
-  assert.ok(minimum >= 240 && minimum <= 380,
-    `列宽下限 ${minimum}px 不在合理区间：太小会把标签挤成两行，太大又退回一行一个字段`);
+  const autoFit = fields.match(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\((?:min\((\d+)px,\s*100%\)|(\d+)px)/);
+  assert.ok(autoFit, ".wb-fields 需要 repeat(auto-fit,minmax(min(Npx,100%),1fr)) 才能在宽屏并排、窄屏安全回落");
+  const minimum = Number(autoFit[1] || autoFit[2]);
+  /* 在 AstrBot 双侧栏（~880–912px 内容区）里，360–520px 的列宽下限既能让 1280/1440 桌面
+     舒适排成两列，又能在带侧栏或中等窗口里自动回落单列。 */
+  assert.ok(minimum >= 360 && minimum <= 520,
+    `列宽下限 ${minimum}px 不在合理区间：太小会挤窄卡片，太大又在 904px 面板下退回一行一个字段`);
   assert.doesNotMatch(fields, /flex-direction:\s*column/,
     ".wb-fields 又变成纵向堆叠了：这正是本次修复要消掉的那个形状");
 });
 
-test("字段仍保留层轨 + 主体 + 状态三栏", () => {
-  const field = rule(".wb-field");
-  assert.match(field, /display:\s*grid/);
-  assert.match(field, /grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto/,
-    ".wb-field 的三栏（层轨 / 主体 / 状态）被改动：层轨会被挤掉或换行");
+test("字段保留层轨与主体，空的恢复继承槽位按需折叠", () => {
+  assert.match(rule(".wb-field"), /display:\s*grid/);
+  assert.match(rule(".wb-field"), /grid-template-columns:\s*12px\s+minmax\(0,\s*1fr\)/);
+  assert.match(rule(".wb-field:where(:has(>.wb-field-side:not(:empty)))"),
+    /grid-template-columns:\s*12px\s+minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(rule(".wb-field>.wb-field-side:empty"), /display:\s*none/);
+  assert.match(rule(".wb-field>.wb-field-main"), /grid-column:2/);
+  assert.match(rule(".wb-context-tip:not(:popover-open)"), /display:none/);
+  assert.match(rule(".wb-rail"), /display:flex;flex-direction:column/);
+  assert.match(rule(".wb-node.is-source"), /background:var\(--t-accent\)/);
 });
 
 test("长控件整幅通栏，不被挤进窄列", () => {
@@ -116,9 +123,19 @@ test("长控件整幅通栏，不被挤进窄列", () => {
     .filter(([, body]) => /grid-column:\s*1\s*\/\s*-1/.test(body))
     .map(([selector]) => (selector.match(/:has\(([^)]+)\)/) || [])[1])
     .filter(Boolean);
-  for (const needed of ["textarea", ".wb-word-editor", ".wb-order-editor"]) {
+  for (const needed of [
+    "textarea",
+    ".wb-word-editor",
+    ".wb-keywords",
+    ".wb-replacement-editor",
+    ".wb-source-picker",
+    ".wb-order-editor",
+    ".wb-date",
+    ".wb-tagset",
+    ".wb-quotes",
+  ]) {
     assert.ok(wide.includes(needed),
-      `长控件 ${needed} 没有通栏规则：多行文本/关键词/发送顺序会被塞进一列里`);
+      `长控件 ${needed} 没有通栏规则：多行文本/关键词/替换规则/发送顺序会被塞进一列里`);
   }
 });
 

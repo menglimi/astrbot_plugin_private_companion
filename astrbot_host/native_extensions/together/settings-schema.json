@@ -75,7 +75,7 @@
         "type": "string",
         "default": "",
         "_special": "select_provider",
-        "hint": "留空时跟随私伴主配置 model.provider_id。选中的模型会用于房间对话与语音通话，必须是 AstrBot 里存在且支持文本对话的 Provider。"
+        "hint": "留空时跟随私伴主配置 model.provider_id。选中的模型会用于房间对话与语音通话，必须是 AstrBot 里存在且支持文本对话的 Provider；若所选 Provider 已删除或失效，建房时将记录告警并自动回退到主配置模型。"
       },
       "history_turns": {
         "description": "房间上下文轮数",
@@ -118,6 +118,12 @@
         "type": "bool",
         "default": false,
         "hint": "开启后把实际收到的用户转写与成功投递的 Bot 文字存入 V2 本地来源，供记忆整理使用。仅限原私聊窗口的单人房间，不保存原始音视频，也不生成 QQ 发送回执。"
+      },
+      "record_shared_experiences": {
+        "description": "记录有意义的共同经历",
+        "type": "bool",
+        "default": true,
+        "hint": "单人原私聊房间结束时，将片名/画面简述/剧情笔记与关键对话整理为 1 条脱敏共同经历，仅写入当前私聊主人记忆与在场上下文，绝不保存原图且绝不泄露到群聊。多人邀请房间默认不记录私人背景。"
       },
       "system_prompt": {
         "description": "共处补充提示词",
@@ -169,7 +175,7 @@
         "type": "string",
         "default": "",
         "_special": "select_provider_tts",
-        "hint": "留空时跟随 AstrBot 当前 TTS。"
+        "hint": "留空时跟随 AstrBot 当前 TTS；若所选 TTS Provider 已删除或失效，建房时将记录告警并自动回退到主配置或默认 TTS。"
       },
       "browser_tts_fallback": {
         "description": "浏览器朗读兜底",

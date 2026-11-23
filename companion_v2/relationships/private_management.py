@@ -40,7 +40,10 @@ PRIVATE_REPLY_FIELDS = frozenset((
     "private_image_vision_custom_prompt", "private_image_vision_max_chars",
     "private_image_vision_wait_seconds", "private_image_provider_failure_cooldown_seconds",
     "video_understanding_enabled", "video_understanding_max_chars",
-    "video_understanding_wait_seconds", "video_self_recognition_hint", "video_understanding_prompt",
+    "video_understanding_wait_seconds", "video_understanding_target_mb",
+    "video_understanding_max_duration_seconds", "video_understanding_oversize_action",
+    "video_understanding_quoted_enabled", "video_understanding_qa_enabled",
+    "video_self_recognition_hint", "video_understanding_prompt",
     "file_understanding_enabled", "file_understanding_format_groups", "file_understanding_max_size_mb",
     "file_understanding_max_chars", "file_understanding_timeout_seconds", "file_understanding_prompt",
 ))
@@ -185,7 +188,10 @@ class PrivateMemberSettings:
             except Exception:
                 logger.exception("[CompanionV2] 私聊成员配置分区读取失败 section=%s", name)
                 section_errors[name] = {"code": "member_settings_section_failed"}
-        return {"sections": sections, "section_errors": section_errors}
+        from .account_links import PrivateAccountLinks
+        group = PrivateAccountLinks(self.app.runtime).group_for(self.context)
+        return {"sections": sections, "section_errors": section_errors,
+                "account_links": {"id": group["id"], "sharing": group.get("sharing", {})} if group else None}
 
     def _replayed_section_operation(self, name, editor, operator, section_key):
         targets = [editor._target()]
@@ -221,9 +227,10 @@ class PrivateMemberSettings:
         store = self.app.configuration.store
         operations = OperationRepository(store)
         # Validate every original token before shared owner revisions advance.
-        # All section writes and the receipt must share the configuration store
-        # transaction; the main runtime no longer owns these rows.
-        with store.transaction():
+        # Acquire the main runtime lock before the configuration store lock so
+        # multi-section edits share the global runtime -> store lock order with
+        # GroupEditor.configure() and grant-syncing owners.
+        with self.app.runtime.transaction(), store.transaction():
             snapshots = {name: require(editor.status(operator)) for name, editor in editors.items()}
             require(self.app.tasks.check_generation())
             receipt = require(operations.reserve(operation, parameter_hash=digest([

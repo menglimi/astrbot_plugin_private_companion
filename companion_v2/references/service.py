@@ -261,7 +261,7 @@ class ReferenceAssetService:
         if type(local_date) is not str or date.fromisoformat(local_date).isoformat() != local_date:
             raise TaskError("daily_outfit_date_invalid", "daily outfit selection requires a local ISO date")
         options = self.daily_outfit_options(context)
-        if not options["enabled"] or self.wardrobe is None:
+        if self.wardrobe is None:
             return None
         now = normalize_utc(self.tasks.now(), field="daily outfit observed time")
         wardrobe = self.wardrobe.read(context, now)
@@ -300,15 +300,15 @@ class ReferenceAssetService:
         if type(local_date) is not str or date.fromisoformat(local_date).isoformat() != local_date:
             raise TaskError("daily_outfit_date_invalid", "daily outfit selection requires a local ISO date")
         now, reference_options = self._admit(context, USE_ACTION, require_enabled=False)
-        if not reference_options["enabled"]:
-            return {"references": (), "wardrobe": None, "daily_outfit": None}
+        references_enabled = bool(reference_options["enabled"])
         references = []
-        for asset in self.assets.list(self.owner(context)):
-            if not asset.media_ref.startswith(OWNED_REFERENCE_PREFIX):
-                continue
-            roles = self.assets.roles_of(self.owner(context), asset.asset_id)
-            references.append({"id": asset.asset_id, "label": asset.label, "roles": roles,
-                               "usage": self.assets.usage_of(self.owner(context), asset.asset_id)})
+        if references_enabled:
+            for asset in self.assets.list(self.owner(context)):
+                if not asset.media_ref.startswith(OWNED_REFERENCE_PREFIX):
+                    continue
+                roles = self.assets.roles_of(self.owner(context), asset.asset_id)
+                references.append({"id": asset.asset_id, "label": asset.label, "roles": roles,
+                                   "usage": self.assets.usage_of(self.owner(context), asset.asset_id)})
         if context.scope.kind is ScopeKind.GROUP:
             return {"references": tuple(references), "wardrobe": None, "daily_outfit": None}
         wardrobe_options = self.wardrobe_options(context)
@@ -319,13 +319,13 @@ class ReferenceAssetService:
                     "image_prompt": wardrobe_options["image_prompt"],
                     "items": tuple({"id": item.item_id, "name": item.name,
                                     "description": item.description, "tags": item.tags,
-                                    "asset_id": item.asset_id} for item in items)}
+                                    "asset_id": item.asset_id if references_enabled else None} for item in items)}
         daily = None
         if reference_options["daily_outfit_enabled"]:
             selected = self.assets.daily_outfit_item(self.owner(context), local_date)
             if selected is not None:
                 outfit_asset_id = None
-                if selected.asset_id is not None:
+                if references_enabled and selected.asset_id is not None:
                     linked = self.assets.get(self.owner(context), selected.asset_id)
                     if (linked is not None and linked.state is ReferenceState.ACTIVE
                             and ReferenceRole.OUTFIT.value in self.assets.roles_of(self.owner(context), linked.asset_id)):

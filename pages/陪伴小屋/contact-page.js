@@ -43,6 +43,18 @@ window.CompanionContactPage = (() => {
   let autoRecoveryTimer = null;
   let autoRecoveryAttempts = 0;
   const GROUP = "proactive.contact";
+  /* 现实触及的早晨照料按用户保存在原生模块里（走系统默认音频输出，通常是蓝牙音响；需要本人授权）。
+     晨间唤醒页只放一个摘要开关与入口，不再维护第二份闹钟配置。 */
+  const WAKE_MODE_LABELS = {gentle:"轻一点", normal:"正常", persistent:"执着一点"};
+  const NATIVE_WAKE_REASONS = {
+    native_extension_inactive:"现实触及还没启用，先在详细配置里启用。",
+    native_service_not_running:"现实触及服务还没运行起来，稍后再试。",
+    native_service_changed:"现实触及刚重新配置过，请再读取一次。",
+    native_management_unavailable:"暂时读不到现实触及的管理状态。",
+    native_reality_action_failed:"现实触及没有完成这次操作，请核对授权与设备。",
+    bridge_timeout:"等待现实触及响应超时，稍后重试。",
+    invalid_response:"现实触及返回的内容无法识别，稍后重试。",
+  };
   /* 15 类契机，归属三个语义桶——这个分法来自它们「凭什么开口」：
      关系本身、日程时刻、还是外部分享。矩阵按桶分行，不按字母序。 */
   const PURPOSE_BUCKETS = [
@@ -176,6 +188,13 @@ window.CompanionContactPage = (() => {
     authorization_denied:"当前账号没有安装级联系配置权限。",
     binding_revoked:"管理账号的授权已撤销。", binding_rebound:"管理账号的绑定已变化，请重新进入。",
     proactive_contact_scope_invalid:"全局联系配置接口不可用，请重新读取安装配置。",
+    proactive_recipients_unavailable:"当前宿主没有可用的测试收件人列表：请在 AstrBot 里重载陪伴插件后再读取。",
+    proactive_recipient_unavailable:"已保存的测试收件人读取失败，请重新选择并保存。",
+    proactive_recipient_required:"请先选择并保存一个核心管理员私聊目标。",
+    proactive_recipient_invalid:"这个目标不是当前可用的核心管理员私聊，请重新选择。",
+    proactive_recipient_changed:"测试收件人已变化，请重新读取收件人后再测试。",
+    setup_binding_confirmation_required:"还没有确认核心管理员私聊窗口：请先在「开始使用」或「关系与权限」里确认身份与具体私聊账号。",
+    setup_core_window_ambiguous:"有多个核心管理员私聊目标，请在上方选择并保存测试收件人。",
     proactive_contact_target_changed:"全局联系配置目标已变化，请重新读取。",
     proactive_contact_configuration_invalid:"请核对设置：数值需在各自范围内，枚举项需在下拉选项内。",
     proactive_contact_clock_invalid:"请填写二十四小时制的时刻，形如 23:00 或 07:45。",
@@ -316,7 +335,7 @@ window.CompanionContactPage = (() => {
     enabled:"center", automatic_enabled:"center",
     proactive_intensity_preset:"tier",
   };
-  let root = null, bridge = null, version = 0, data = null;
+  let root = null, bridge = null, version = 0, data = null, pendingFocus = null;
   /* 联系设置有不少页面内筛选与未保存草稿。路由切换会卸载本页，按安装
      和管理账号在内存保留这些普通字段；令牌不进入缓存，回来后由真实接口
      重新读取。 */
@@ -336,6 +355,7 @@ window.CompanionContactPage = (() => {
       ...data, settings:hasGlobalSettings ? {...data.settings} : null, editToken:"", configToken:"",
       configurationLoaded:!!hasGlobalSettings, busy:false, loading:false, contractLoading:false,
       ready:false, effective:null, effectiveSettings:null, purposes:{},
+      recipients:null, recipientDraft:"", recipientsLoading:false, recipientSaving:false, recipientError:"",
       confirmTest:"", testBusy:"", testUncertain:data.testUncertain || !!data.testBusy,
       testGuard:data.testGuard || (data.testBusy ? {purpose:data.testBusy, state:"pending"} : null),
       contractError:"", contractErrorCode:"", materialsLoading:false, touched:[...data.touched],
@@ -494,7 +514,8 @@ window.CompanionContactPage = (() => {
     catch { return "UTC"; }
   }
   function blank() {
-    return {view:"dial", purposeQuery:"", purposeBucket:"all", purposeFilter:"all",
+    return {recipients:null, recipientDraft:"", recipientsLoading:false, recipientSaving:false, recipientError:"", testAllowLinkedAccounts:false,
+      view:"dial", purposeQuery:"", purposeBucket:"all", purposeFilter:"all",
       testQuery:"", testBucket:"all", testCoverage:"all", materialQuery:"", materialCategory:"all",
       materialKind:"window", materialWindow:"all", materialDay:localDayKey(), materialTimezone:localTimezone(),
       nativePath:"", configPath:"",
@@ -504,6 +525,10 @@ window.CompanionContactPage = (() => {
       materialsSharedCount:0, materialsTraceCount:0, materialsTraceTotal:0,
       materialsTraceState:"not_checked", materialsTraceContexts:0, materialsTraceUnavailable:0,
        editToken:"", configToken:"", configScope:"", configurationLoaded:false,
+      /* 晨间唤醒页右边的「现实触及 · 音响叫醒」摘要：现实触及的早晨照料按用户保存，
+         这里只负责读状态、扳开关和跳到详细配置，不在本页维护第二份闹钟配置。 */
+      nativeWake:{state:"idle", busy:false, userId:"", label:"", enabled:false, consent:false,
+        time:"", deadline:"", mode:"normal", message:"", notice:"", noticeBad:false},
        contractLoading:false, contractError:"", contractErrorCode:"",
       /* 草稿：只放用户真的改过的字段。提交时只发这些，未动的字段一个都不发——
          避免把「没看过的字段」当成「要保持的值」写回去。 */
@@ -599,8 +624,87 @@ window.CompanionContactPage = (() => {
       if (live(ticket)) {
         data.contractLoading = false; render();
         if (settingsAvailable() && data.pendingWrite) schedulePendingRecovery(ticket);
+        if (data.ready && pendingFocus && root && root.isConnected !== false) {
+          const queued = pendingFocus;
+          pendingFocus = null;
+          focusField(queued.field, queued.section);
+        }
       }
     }
+  }
+  function applyRecipients(payload) {
+    if (!payload || !Array.isArray(payload.candidates)
+        || typeof payload.selected_target_id !== "string"
+        || payload.candidates.some(row => !row || typeof row.target_id !== "string" || !row.target_id || typeof row.label !== "string")
+        || (payload.selected_target_id && !payload.candidates.some(row => row.target_id === payload.selected_target_id)))
+      throw problem("invalid_response");
+    data.recipients = payload;
+    data.recipientDraft = payload.selected_target_id;
+    data.recipientError = "";
+  }
+  async function loadRecipients() {
+    if (data.recipientsLoading || data.recipientSaving) return;
+    const ticket = version;
+    data.recipientsLoading = true; data.recipientError = ""; render();
+    try {
+      const payload = await api("GET", "setup/proactive-recipients");
+      if (live(ticket)) applyRecipients(payload);
+    } catch (error) {
+      if (live(ticket)) {
+        data.recipients = null;
+        /* 别把真实原因吞成一句「读取失败」：带出错误码，重载插件/未确认窗口
+           这类可操作的原因才能被看见。 */
+        const code = typeof error?.code === "string" ? error.code : "";
+        data.recipientError = code
+          ? `${reason(code)}（${code}）`
+          : "收件人读取失败，请重新读取后再测试。";
+      }
+    } finally {
+      if (live(ticket)) { data.recipientsLoading = false; render(); }
+    }
+  }
+  async function saveRecipient() {
+    if (!data.recipientDraft || data.recipientSaving || data.testBusy || data.testUncertain) return;
+    const ticket = version;
+    data.recipientSaving = true; render();
+    try {
+      const payload = await api("POST", "setup/proactive-recipient", {target_id:data.recipientDraft});
+      if (live(ticket)) { applyRecipients(payload); notice("测试收件人已保存，仅影响手动消息测试。"); }
+    } catch (error) {
+      if (live(ticket)) { data.recipientError = "收件人保存失败，请重新读取并确认核心管理员权限。"; notice(data.recipientError, true); }
+    } finally {
+      if (live(ticket)) { data.recipientSaving = false; render(); }
+    }
+  }
+  function recipientReady() {
+    return !!data.recipients?.selected_target_id && !data.recipientsLoading && !data.recipientSaving
+      && !data.recipientError && data.recipientDraft === data.recipients.selected_target_id;
+  }
+  function recipientLabel() {
+    return data.recipients?.candidates.find(row => row.target_id === data.recipients.selected_target_id)?.label || "核心管理员";
+  }
+  function recipientMarkup() {
+    const rows = data.recipients?.candidates || [];
+    const disabled = data.testBusy || data.testUncertain || data.recipientSaving || data.recipientsLoading;
+    return `<section class="ct-test-recipient" aria-label="测试收件人">
+      ${data.recipientsLoading ? '<span role="status">正在读取核心管理员…</span>'
+        : rows.length > 1 ? `<label><span>测试收件人 · 核心管理员</span>
+          <select data-test-recipient aria-label="选择测试收件人"${disabled ? " disabled" : ""}>
+            <option value="">请选择核心管理员</option>
+            ${rows.map(row => `<option value="${e(row.target_id)}"${data.recipientDraft === row.target_id ? " selected" : ""}>${e(row.label)}</option>`).join("")}
+          </select></label>
+          <button type="button" class="ct-btn is-primary" data-test-recipient-save${disabled || !data.recipientDraft || data.recipientDraft === data.recipients.selected_target_id ? " disabled" : ""}>${data.recipientSaving ? "保存中…" : "保存收件人"}</button>`
+        : rows.length === 1 ? `<span>测试收件人：<strong>${e(rows[0].label)}</strong>（唯一核心管理员，自动使用）</span>`
+        : '<span>暂无可用核心管理员私聊目标。请用核心管理员账号私聊 bot（发送任意消息并收到回复），再点「重新读取」。</span>'}
+      <label class="ct-switch ct-test-forward-switch">
+        <input type="checkbox" data-test-allow-links${data.testAllowLinkedAccounts ? " checked" : ""}${disabled ? " disabled" : ""}>
+        <span class="ct-switch-track"><i></i></span>
+        <span class="ct-switch-text"><strong>允许转发到关联账号</strong><small>开启后按所选管理员的关联账号策略投递，包含指定账号、随机权重与安全回退；关闭时只发给所选管理员。</small></span>
+      </label>
+      ${data.recipientError ? `<span class="ct-test-recipient-error" role="alert">${e(data.recipientError)}</span>` : ""}
+      <button type="button" class="ct-btn" data-test-recipient-refresh${disabled ? " disabled" : ""}>重新读取收件人</button>
+      ${rows.length > 1 && (!data.recipients.selected_target_id || data.recipientDraft !== data.recipients.selected_target_id) ? '<small>选择后请先保存，再运行测试；不会修改首次绑定或正式主动联系的账号策略。</small>' : ""}
+    </section>`;
   }
   async function loadMaterials({patrolPoll = false} = {}) {
     if (!data.nativePath || data.materialsLoading) return;
@@ -1011,6 +1115,8 @@ window.CompanionContactPage = (() => {
      控件顺序按「改了会立刻改变环的哪一圈」排，不按字段在注册表里的顺序。 */
   function dialView() {
     const span = quietSpan();
+    const quietOn = value("quiet_enabled") === true;
+    const greetingsOn = value("enable_daily_greetings") === true;
     const tier = TIER_BY_KEY[data.tierDraft || tierOf(value("proactive_intensity_preset"))];
     const v = verdict();
     const interval = Number(value("interval_seconds"));
@@ -1022,23 +1128,41 @@ window.CompanionContactPage = (() => {
     /* 这一帧要闪哪几片盘面。取出来就清空：动效只放一次，
        下一次渲染（哪怕什么都没改）不该重放。 */
     const pulse = data.pulseNow;
+    const curveOn = value("proactive_hour_activity_enabled") === true;
+    const quietSummary = quietOn && span ? `${hm(span.from)}–${hm(span.to)}` : "未开启";
+    const ringLegend = [
+      ["quiet", "外圈 · 免打扰", quietSummary, quietOn],
+      ["curve", "次圈 · 活动曲线", curveOn ? "按小时权重" : "未开启", curveOn],
+      ["tier", "三圈 · 强度档位", tier.label, tier.key !== "off"],
+      ["greet", "内圈 · 问候窗口", greetingsOn ? "每日问候" : "未开启", greetingsOn],
+    ];
     return `<div class="ct-dial-wrap">
-      <div class="ct-dial-stage${pulse.map(part => " is-pulse-" + part).join("")}">${dialSVG()}
-        <div class="ct-center is-${v.tone}">
-          <span class="ct-center-title">${e(v.title)}</span>
-          <span class="ct-center-detail">${e(v.detail)}</span>
-          ${v.automatic ? `<span class="ct-center-flag">${ICON.alert}${e(v.automatic.text)}</span>` : ""}
+      <div class="ct-dial-stage${pulse.map(part => " is-pulse-" + part).join("")}">
+        <div class="ct-dial-face">${dialSVG()}
+          <div class="ct-center is-${v.tone}">
+            <span class="ct-center-title">${e(v.title)}</span>
+            <span class="ct-center-detail">${e(v.detail)}</span>
+            ${v.automatic ? `<span class="ct-center-flag">${ICON.alert}${e(v.automatic.text)}</span>` : ""}
+          </div>
         </div>
         ${data.scanning ? `<div class="ct-scan-hint">时间游标按 ${e(value("quiet_timezone") || "未设时区")} 走</div>` : ""}
+        <div class="ct-dial-legend" role="group" aria-label="节律盘四圈图例">
+          ${ringLegend.map(([ring, label, summary, active]) => `<button type="button" class="ct-ring-chip is-ring-${ring}${active ? " is-on" : ""}" data-ring-jump="${ring}"><i aria-hidden="true"></i><span><strong>${e(label)}</strong><small>${e(summary)}</small></span></button>`).join("")}
+        </div>
       </div>
       <div class="ct-controls">
         ${fieldBlock("全局开关", [
           toggle("enabled", "允许主动联系", "单个用户的开关在私聊用户页调整。"),
           toggle("automatic_enabled", "后台自动联系", "未单独设置的用户跟随此值。"),
-        ])}
+          `<dl class="ct-global-summary" aria-label="当前生效节律速览">
+            <div><dt>当前档位</dt><dd>${e(tier.label)}</dd></div>
+            <div><dt>联系间隔</dt><dd>${effectiveInterval === null ? "—" : e(fmtDuration(effectiveInterval))}</dd></div>
+            <div><dt>对话后等候</dt><dd>${effectiveIdle === null ? "—" : e(fmtDuration(effectiveIdle))}</dd></div>
+          </dl>`,
+        ], "is-global-switch")}
         ${fieldBlock("免打扰 · 外圈", [
           toggle("quiet_enabled", "启用免打扰时段", "免打扰只决定「现在不开口」，不改动已登记的日程。"),
-          timeRow("quiet_start", "开始", "quiet_end", "结束", span && span.from > span.to ? "跨午夜：" + hm(span.from) + " 至次日 " + hm(span.to) : ""),
+          timeRow("quiet_start", "开始", "quiet_end", "结束", span && span.from > span.to ? "跨午夜：" + hm(span.from) + " 至次日 " + hm(span.to) : "", {muted: !quietOn}),
           textRow("quiet_timezone", "时区", "Asia/Shanghai", "环上游标与免打扰判定都用这个时区。"),
         ], "is-ring-quiet")}
       </div></div>
@@ -1064,34 +1188,211 @@ window.CompanionContactPage = (() => {
       ${fieldBlock("问候窗口 · 内圈", [
         toggle("enable_daily_greetings", "启用每日问候", "三个窗口必须当天内结束，不能跨午夜。"),
         ...ANCHORS.map(([name, , from, to]) => textRow("greeting_" + name + "_window",
-          {morning:"早间", noon:"午间", evening:"晚间"}[name], from + "-" + to, "形如 " + from + "-" + to)),
+          {morning:"早间", noon:"午间", evening:"晚间"}[name], from + "-" + to, "形如 " + from + "-" + to, {muted: !greetingsOn})),
         toggle("allow_insomnia_night_message", "允许深夜一条", "深夜窗口显式有界，并按日限额。"),
       ], "is-ring-greet")}
     </div>`;
   }
   function morningView() {
+    const chainOn = value("morning_chain_enabled") === true;
+    const routineLearningOn = value("routine_learning_enabled") === true;
+    const nudgeOn = chainOn && value("morning_nudge_enabled") === true;
     return `<div class="ct-rest">
       ${fieldBlock("晨间流程", [
         toggle("morning_chain_enabled", "启用晨间流程", "关闭后不会生成角色醒来问候或清醒确认提醒。"),
-        timeRow("wake_morning_start", "开始", "wake_morning_end", "结束", "使用全局免打扰时区；窗口外不补发过期消息。"),
+        timeRow("wake_morning_start", "开始", "wake_morning_end", "结束", "使用全局免打扰时区；窗口外不补发过期消息。", {muted: !chainOn}),
       ], "is-wide")}
       ${fieldBlock("角色作息", [
-        toggle("morning_role_greeting_enabled", "角色醒来后先问候", "只判断角色自身醒来，不推断用户已经醒。"),
+        toggle("morning_role_greeting_enabled", "角色醒来后先问候", "只判断角色自身醒来，不推断用户已经醒。", {muted: !chainOn}),
         toggle("routine_learning_enabled", "学习角色的起床习惯", "根据近期有效样本调整角色的预测起床窗口。"),
-        numberRow("routine_window_days", "学习窗口", "天", 14, 180, "只使用最近这段时间的作息记录。"),
+        numberRow("routine_window_days", "学习窗口", "天", 14, 180, "只使用最近这段时间的作息记录。", {muted: !routineLearningOn}),
         decimalRow("morning_wake_confidence_floor", "预测可信度下限", 0, 1, 0.05,
-          "预测把握低于此值时不生成晨间问候。"),
+          "预测把握低于此值时不生成晨间问候。", {muted: !chainOn}),
       ])}
+      ${nativeWakeBlock()}
       ${fieldBlock("清醒确认", [
-        toggle("morning_nudge_enabled", "允许轻声确认", "仅在清醒证据充分、窗口有效且没有新输入时提醒。"),
-        numberRow("morning_nudge_delay_minutes", "确认前等待", "分钟", 10, 90, "给对方自然开口的时间。"),
-        numberRow("morning_nudge_max_attempts", "每次起床最多提醒", "次", 0, 2, "0 表示不提醒；默认最多一次。"),
-        numberRow("wake_contact_window_minutes", "清醒后有效窗口", "分钟", 15, 240, "超时后不再翻旧账。"),
-        numberRow("wake_contact_min_confidence", "清醒迹象可信度", "%", 40, 100, "低于此值只保留诊断，不触发联系。"),
-        numberRow("wake_contact_max_daily", "每日确认上限", "次", 0, 3, "按免打扰时区的本地日期计数。"),
-        toggle("wake_require_device_evidence", "要求设备侧证据", "开启后只接受授权设备提供的清醒迹象。"),
-      ], "is-wide")}
+        toggle("morning_nudge_enabled", "允许轻声确认", "仅在清醒证据充分、窗口有效且没有新输入时提醒。", {muted: !chainOn}),
+        numberRow("morning_nudge_delay_minutes", "确认前等待", "分钟", 10, 90, "给对方自然开口的时间。", {muted: !nudgeOn}),
+        numberRow("morning_nudge_max_attempts", "每次起床最多提醒", "次", 0, 2, "0 表示不提醒；默认最多一次。", {muted: !nudgeOn}),
+        numberRow("wake_contact_window_minutes", "清醒后有效窗口", "分钟", 15, 240, "超时后不再翻旧账。", {muted: !nudgeOn}),
+        numberRow("wake_contact_min_confidence", "清醒迹象可信度", "%", 40, 100, "低于此值只保留诊断，不触发联系。", {muted: !nudgeOn}),
+        numberRow("wake_contact_max_daily", "每日确认上限", "次", 0, 3, "按免打扰时区的本地日期计数。", {muted: !nudgeOn}),
+        toggle("wake_require_device_evidence", "要求设备侧证据", "开启后只接受授权设备提供的清醒迹象。", {muted: !nudgeOn}),
+      ], "is-wide is-wake")}
     </div>`;
+  }
+  function defaultWakeTime() {
+    const start = String(value("wake_morning_start") || "");
+    return /^([01]\d|2[0-3]):[0-5]\d$/.test(start) ? start : "07:30";
+  }
+  /* 早晨照料按用户保存。优先用当前私聊对象，其次核心管理员；
+     只有一个用户时就用它；有多个又认不出目标时不替用户猜。 */
+  function pickWakeUser(management) {
+    const users = Array.isArray(management?.users)
+      ? management.users.filter(row => row && row.user_id) : [];
+    if (!users.length) return null;
+    const target = window.CompanionProduct?.target?.();
+    const targetId = target && target.scope_kind === "private" ? String(target.participant_id || "") : "";
+    const mobile = management?.configuration?.mobile || {};
+    const coreId = String(mobile.core_user_id || mobile.allowed_user_id || "");
+    for (const id of [targetId, coreId]) {
+      if (!id) continue;
+      const row = users.find(user => String(user.user_id) === id);
+      if (row) return row;
+    }
+    if (users.length === 1) return users[0];
+    const usable = users.filter(row => row.alarm?.enabled === true || row.consent?.confirmed === true);
+    return usable.length === 1 ? usable[0] : null;
+  }
+  function applyNativeWake(management) {
+    const row = pickWakeUser(management);
+    const mobile = management?.configuration?.mobile || {};
+    const fallbackId = String(mobile.core_user_id || mobile.allowed_user_id || "");
+    const alarm = row?.alarm && typeof row.alarm === "object" ? {...row.alarm} : {};
+    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(alarm.time || "")) ? String(alarm.time) : defaultWakeTime();
+    data.nativeWake = {
+      state:"ready", busy:false,
+      userId:String(row?.user_id || fallbackId || ""),
+      label:String(row?.label || row?.user_id || fallbackId || ""),
+      enabled:row ? alarm.enabled === true : false,
+      consent:row ? row.consent?.confirmed === true || row.consent?.local_audio === true : false,
+      time,
+      deadline:String(alarm.deadline || ""),
+      mode:WAKE_MODE_LABELS[alarm.mode] ? alarm.mode : "normal",
+      message:String(alarm.message || ""),
+      alarm,
+      notice:"", noticeBad:false,
+    };
+  }
+  function wakeReason(error) {
+    return NATIVE_WAKE_REASONS[error?.code] || "现实触及暂时没有完成这次操作，请到详细配置里核对。";
+  }
+  async function loadNativeWake() {
+    const wake = data.nativeWake || {};
+    if (wake.busy || wake.state === "loading" || !window.CompanionProduct?.request) return;
+    const ticket = version;
+    data.nativeWake = {...wake, state:"loading", notice:"", noticeBad:false};
+    render();
+    try {
+      const result = await window.CompanionProduct.request("GET", "extensions");
+      if (!live(ticket)) return;
+      const record = result?.extensions?.reality;
+      if (!record?.management) {
+        data.nativeWake = {...data.nativeWake, state:"unavailable", busy:false,
+          notice:record ? "暂时读不到现实触及的管理状态。" : "现实触及未安装或尚未启用。"};
+        render(); return;
+      }
+      applyNativeWake(record.management);
+      render();
+    } catch (error) {
+      if (!live(ticket)) return;
+      data.nativeWake = {...data.nativeWake, state:"unavailable", busy:false, notice:wakeReason(error)};
+      render();
+    }
+  }
+  function maybeLoadNativeWake() {
+    if (!data || data.view !== "morning" || !data.settings) return;
+    if (data.nativeWake?.state !== "idle") return;
+    void loadNativeWake();
+  }
+  /* 卡片里的开关和时间/方式都写同一份早晨照料；每次提交都带上整份
+     alarm，避免把原生面板里配好的音量、星期或提示语冲掉。 */
+  async function persistNativeWake({enabled = data.nativeWake?.enabled === true,
+    time = data.nativeWake?.time || defaultWakeTime(), deadline = data.nativeWake?.deadline || "",
+    mode = data.nativeWake?.mode || "normal", message = data.nativeWake?.message || "",
+    success = "叫醒设置已保存。"} = {}) {
+    const wake = data.nativeWake;
+    if (!wake || wake.busy || wake.state !== "ready") return;
+    if (!wake.userId) {
+      data.nativeWake = {...wake, notice:"还没有可叫醒的私聊对象；先在详细配置里选择用户。", noticeBad:true};
+      render(); return;
+    }
+    if (enabled && !wake.consent) {
+      data.nativeWake = {...wake, notice:"音响要先由本人在私聊完成现实触及语音授权；详细配置里有授权入口。", noticeBad:true};
+      render(); return;
+    }
+    const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
+    if (!clock.test(String(time || ""))) {
+      data.nativeWake = {...wake, notice:"请选择起床时间。", noticeBad:true};
+      render(); return;
+    }
+    if (deadline && (!clock.test(deadline) || deadline <= time)) {
+      data.nativeWake = {...wake, notice:"最晚时间需要晚于起床时间。", noticeBad:true};
+      render(); return;
+    }
+    const ticket = version;
+    data.nativeWake = {...wake, enabled, time, deadline, mode, message, busy:true, notice:"", noticeBad:false};
+    render();
+    try {
+      const record = await window.CompanionProduct.request("POST", "extensions/action", {
+        extension_id:"reality", action:"save",
+        payload:{...(wake.alarm || {}), user_id:wake.userId, enabled:enabled === true, time, deadline, mode, message},
+      }, {timeoutMs:65000});
+      if (!live(ticket)) return;
+      if (!record?.management) throw {code:"invalid_response"};
+      applyNativeWake(record.management);
+      data.nativeWake.notice = success;
+      render();
+    } catch (error) {
+      if (!live(ticket)) return;
+      data.nativeWake = {...wake, notice:wakeReason(error), noticeBad:true};
+      render();
+    }
+  }
+  function toggleNativeWake(next) {
+    if (next && !data.nativeWake?.consent) {
+      return persistNativeWake({enabled:true});
+    }
+    return persistNativeWake({enabled:next === true,
+      success:next ? "已开启音响叫醒。" : "已关闭音响叫醒。"});
+  }
+  function nativeWakeBlock() {
+    const wake = data.nativeWake || {};
+    const ready = wake.state === "ready";
+    const busy = wake.busy === true;
+    const on = ready && wake.enabled === true;
+    const time = wake.time || defaultWakeTime();
+    const editable = ready && !!wake.userId && !busy;
+    const detail = !ready
+      ? (wake.state === "loading" || wake.state === "idle" ? "正在读取现实触及…" : wake.notice || "暂时读不到现实触及状态。")
+      : !wake.userId ? "尚未选择私聊对象"
+      : !wake.consent ? "等待本人语音授权"
+      : on ? `每天 ${time} · ${WAKE_MODE_LABELS[wake.mode] || "正常"}${wake.deadline ? ` · 最晚 ${wake.deadline}` : ""}`
+      : "已关闭";
+    const hint = !ready
+      ? "现实触及的早晨照料单独管理；详细配置的「本机语音与叫醒」里可以启用、授权和调整时间。"
+      : !wake.userId ? "在详细配置里选择私聊用户并完成授权后，这里就能直接开关。"
+      : !wake.consent ? `${wake.label || wake.userId} 完成现实触及语音授权后才会出声。`
+      : `对象：${wake.label || wake.userId}。声音走系统默认音频输出（通常是已连接的蓝牙音响）；改动立即生效，不用本页保存，到点会先看你醒没醒，没回应才继续。`;
+    const notice = wake.notice
+      ? `<p class="ct-wake-notice${wake.noticeBad ? " is-error" : ""}" role="status" aria-live="polite">${e(wake.notice)}</p>` : "";
+    const fields = ready && wake.userId ? `<div class="ct-wake-fields">
+      <label class="ct-field"><span class="ct-field-label">起床时间</span>
+        <input type="time" data-native-wake-field="time" value="${e(time)}"${editable ? "" : " disabled"}></label>
+      <label class="ct-field"><span class="ct-field-label">最晚<small>可选</small></span>
+        <input type="time" data-native-wake-field="deadline" value="${e(wake.deadline || "")}"${editable ? "" : " disabled"}></label>
+      <label class="ct-field ct-wake-mode"><span class="ct-field-label">叫醒方式</span>
+        <select data-native-wake-field="mode"${editable ? "" : " disabled"}>${Object.entries(WAKE_MODE_LABELS)
+          .map(([key, text]) => `<option value="${key}"${wake.mode === key ? " selected" : ""}>${e(text)}</option>`).join("")}</select></label>
+      <label class="ct-field ct-wake-message"><span class="ct-field-label">想让你记得的事<small>可选</small></span>
+        <input type="text" data-native-wake-field="message" maxlength="240" value="${e(wake.message || "")}"
+          placeholder="例如：提醒我吃早餐"${editable ? "" : " disabled"}></label>
+    </div>` : "";
+    return `<section class="ct-block ct-wake" data-native-wake-card>
+      <h3>现实触及 · 音响叫醒</h3>
+      <label class="ct-switch ct-wake-switch">
+        <input type="checkbox" data-native-wake-toggle${on ? " checked" : ""}${ready && wake.userId && wake.consent && !busy ? "" : " disabled"}>
+        <span class="ct-switch-track"><i></i></span>
+        <span class="ct-switch-text"><strong>早晨音响叫醒</strong><small>${e(detail)}</small></span>
+      </label>
+      ${fields}
+      ${notice}
+      <div class="ct-wake-actions">
+        <button type="button" class="ct-btn" data-detail="cap-reality" data-native-wake-details>详细配置 ↗</button>
+        ${ready ? "" : `<button type="button" class="ct-btn" data-native-wake-retry>重试</button>`}
+      </div>
+      <p class="ct-note">${e(hint)}</p>
+    </section>`;
   }
   function fmtDuration(seconds) {
     if (!Number.isFinite(seconds)) return "—";
@@ -1104,41 +1405,41 @@ window.CompanionContactPage = (() => {
   function fieldBlock(title, body, extra) {
     return `<section class="ct-block${extra ? " " + extra : ""}"><h3>${e(title)}</h3>${body.join("")}</section>`;
   }
-  function toggle(name, label, help) {
+  function toggle(name, label, help, opts = {}) {
     const on = value(name) === true;
-    return `<label class="ct-switch${dirty(name) ? " is-dirty" : ""}${flipClass(name)}">
+    return `<label class="ct-switch${dirty(name) ? " is-dirty" : ""}${flipClass(name)}${opts.muted ? " is-muted" : ""}">
       <input type="checkbox" data-field="${e(name)}"${on ? " checked" : ""}>
       <span class="ct-switch-track"><i></i></span>
       <span class="ct-switch-text"><strong>${e(label)}</strong><small>${e(help)}</small></span></label>`;
   }
-  function textRow(name, label, placeholder, help) {
+  function textRow(name, label, placeholder, help, opts = {}) {
     const current = value(name);
-    return `<label class="ct-field${dirty(name) ? " is-dirty" : ""}">
+    return `<label class="ct-field${dirty(name) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <span class="ct-field-label">${e(label)}</span>
       <input type="text" data-field="${e(name)}" value="${e(typeof current === "string" ? current : "")}"
         placeholder="${e(placeholder)}" autocomplete="off" spellcheck="false">
       ${help ? `<small class="ct-field-help">${e(help)}</small>` : ""}</label>`;
   }
-  function timeRow(nameA, labelA, nameB, labelB, help) {
+  function timeRow(nameA, labelA, nameB, labelB, help, opts = {}) {
     const a = value(nameA), b = value(nameB);
-    return `<div class="ct-field-pair${dirty(nameA) || dirty(nameB) ? " is-dirty" : ""}">
+    return `<div class="ct-field-pair${dirty(nameA) || dirty(nameB) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <label class="ct-field"><span class="ct-field-label">${e(labelA)}</span>
         <input type="time" data-field="${e(nameA)}" value="${e(typeof a === "string" ? a : "")}"></label>
       <label class="ct-field"><span class="ct-field-label">${e(labelB)}</span>
         <input type="time" data-field="${e(nameB)}" value="${e(typeof b === "string" ? b : "")}"></label>
       ${help ? `<small class="ct-field-help">${e(help)}</small>` : ""}</div>`;
   }
-  function numberRow(name, label, unit, min, max, help) {
+  function numberRow(name, label, unit, min, max, help, opts = {}) {
     const current = value(name);
-    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}">
+    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <span class="ct-field-label">${e(label)}<small>${e(min)}–${e(max)}</small></span>
       <span class="ct-input-unit"><input type="number" data-field="${e(name)}" value="${e(current ?? "")}"
         min="${min}" max="${max}" step="1" inputmode="numeric"><i>${e(unit)}</i></span>
       ${help ? `<small class="ct-field-help">${e(help)}</small>` : ""}</label>`;
   }
-  function decimalRow(name, label, min, max, step, help) {
+  function decimalRow(name, label, min, max, step, help, opts = {}) {
     const current = value(name);
-    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}">
+    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <span class="ct-field-label">${e(label)}<small>${e(min)}–${e(max)}</small></span>
       <input type="number" data-field="${e(name)}" value="${e(current ?? "")}"
         min="${min}" max="${max}" step="${step}" inputmode="decimal">
@@ -1298,7 +1599,7 @@ window.CompanionContactPage = (() => {
       ${item.id === "screen" ? '<div data-screen-observation></div>' : ""}
       <footer class="ct-test-actions">
         <button type="button" class="ct-btn is-primary ct-test-run" data-test-run="${e(item.id)}"
-          ${data.testBusy || data.testUncertain || item.coverage !== "ready" ? " disabled" : ""}>
+          ${data.testBusy || data.testUncertain || !recipientReady() || item.coverage !== "ready" ? " disabled" : ""}>
           ${data.testBusy === item.id ? '<span class="ct-spinner" aria-hidden="true"></span><span>测试中…</span>'
             : data.testUncertain ? `${ICON.alert}<span>先核对投递结果</span>`
             : `${ICON.test}<span>运行测试</span>`}
@@ -1307,6 +1608,7 @@ window.CompanionContactPage = (() => {
       </footer>
     </article>`).join("");
     return `<div class="ct-tests">
+      ${recipientMarkup()}
       <div class="ct-test-overview">
         <p>主动联系目的与拓展发送链路分别验收，来源、素材和投递回执各自可核对。</p>
         <div class="ct-test-coverage-summary" aria-label="生产器覆盖情况">
@@ -1314,10 +1616,10 @@ window.CompanionContactPage = (() => {
           <span><i class="is-partial"></i>只有资格检查 <strong>${counts.partial}</strong></span>
           <span><i class="is-missing"></i>尚无独立生产器 <strong>${counts.missing}</strong></span>
         </div>
-        <p class="ct-test-boundary">资讯、天气、屏幕和手机地点读取真实来源；屏幕会实际截图并调用视觉模型，手机地点读取终端授权快照。带图测试使用授权图库素材。测试调用角色模型并真实投递到核心管理员私聊。</p>
+        <p class="ct-test-boundary">资讯、天气、屏幕和手机地点读取真实来源；屏幕会实际截图并调用视觉模型，手机地点读取终端授权快照。带图测试使用授权图库素材。测试调用角色模型；实际投递由上方收件人及关联转发开关决定。</p>
       </div>
       ${data.testUncertain ? `<div class="ct-test-lock" role="alert">
-        <span>${data.testGuard?.state === "pending" ? "上次测试没有收到最终回执。" : "上次测试结果未确认。"}请先核对核心管理员私聊；确认前不能再次启动测试，以免重复投递。</span>
+        <span>${data.testGuard?.state === "pending" ? "上次测试没有收到最终回执。" : "上次测试结果未确认。"}请先核对核心管理员私聊及本次允许转发的关联账号；确认前不能再次启动测试，以免重复投递。</span>
         <button type="button" class="ct-btn" data-test-action="unlock">核实后解除测试锁</button>
       </div>` : ""}
       ${data.testBusy ? `<p class="ct-test-running" role="status"><span class="ct-spinner" aria-hidden="true"></span>正在运行 ${e(PURPOSE_META[data.testBusy]?.label || "主动消息")} 测试；可能需要等待模型与平台回执。</p>` : ""}
@@ -1374,7 +1676,7 @@ window.CompanionContactPage = (() => {
     respect_user_boundary:"为尊重对方边界而保持沉默", other:"模型选择暂不发送",
   };
   const TEST_DELIVERY_STATES = {
-    delivered:"平台已确认投递", failed:"平台明确返回失败", unknown:"平台投递结果未知",
+    delivered:"平台已确认投递", failed:"投递失败，详见诊断原因", cancelled:"发送前已终止", partial:"仅部分消息已确认投递", unknown:"平台投递结果未知",
     accepted:"平台已接收请求，但尚无最终投递回执", pending:"等待平台投递回执",
     dispatched:"已提交平台，等待投递回执",
   };
@@ -1394,11 +1696,44 @@ window.CompanionContactPage = (() => {
         <strong>${e(TEST_STAGE_STATES[item.state] || item.state)}</strong>${item.detail ? `<small>${e(item.detail)}</small>` : ""}</li>`).join("")}</ol>
     </section>`;
   }
+  function contactPricingPreference(result) {
+    if (result?.pricing && typeof result.pricing === "object") {
+      const rate = Number(result.pricing.usd_cny_rate);
+      return {
+        currency: result.pricing.display_currency === "USD" ? "USD" : "CNY",
+        rate: Number.isFinite(rate) && rate >= 1 && rate <= 100 ? rate : 7.2,
+      };
+    }
+    try {
+      const raw = localStorage.getItem("companion-pricing-display.v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const rate = Number(parsed?.usd_cny_rate);
+        if (parsed && ["CNY", "USD"].includes(parsed.currency)) {
+          return {currency: parsed.currency, rate: Number.isFinite(rate) && rate >= 1 && rate <= 100 ? rate : 7.2};
+        }
+      }
+    } catch {}
+    return {currency: "USD", rate: 7.2};
+  }
+  function formatContactCost(value, result, {prefix = ""} = {}) {
+    if (value == null || !Number.isFinite(Number(value))) return "未设单价";
+    const {currency, rate} = contactPricingPreference(result);
+    const usd = Number(value) / 1000000;
+    const amount = currency === "CNY" ? usd * rate : usd;
+    const symbol = currency === "CNY" ? "¥" : "US$";
+    const abs = Math.abs(amount);
+    const formatted = abs === 0 ? `${symbol}0.00`
+      : abs >= 1 ? `${symbol}${amount.toFixed(2)}`
+      : abs >= 0.0001 ? `${symbol}${amount.toFixed(4)}`
+      : `${symbol}${amount.toFixed(6)}`;
+    return prefix ? `${prefix}${formatted}` : formatted;
+  }
   function testMetricsMarkup(result) {
     const metrics = result.stage_metrics;
     const model = metrics?.model;
     const delivery = metrics?.delivery;
-    const fmtCost = (value) => value == null ? "费用未返回" : `成本 $${(Number(value) / 1000000).toFixed(6)}`;
+    const fmtCost = (value) => formatContactCost(value, result, {prefix: "成本 "});
     const stageLines = [];
     if (model && Number.isFinite(Number(model.provider_calls))) {
       const latency = Number.isFinite(Number(model.avg_latency_ms)) ? ` · 平均 ${Number(model.avg_latency_ms)} ms` : "";
@@ -1428,7 +1763,7 @@ window.CompanionContactPage = (() => {
     const sessionModel = summary?.model?.session;
     const quotaLine = (label, decision, contact, usage) => {
       if (!decision || !contact || !usage) return "";
-      const cost = usage.cost_microusd == null ? "费用未返回" : `$${(Number(usage.cost_microusd) / 1000000).toFixed(6)}`;
+      const cost = formatContactCost(usage.cost_microusd, result);
       return `${label}：主动模型决策已调用 ${Number(decision.calls ?? decision.used ?? 0)} 次（待处理 ${Number(decision.pending || 0)}，仅统计）；实际联系已确认发送 ${Number(contact.delivered)} 条（每日上限占用 ${Number(contact.occupied ?? contact.used)}/${Number(contact.limit)}，待确认 ${Number(contact.unresolved)}）；主动生成/复核 Provider 调用 ${Number(usage.calls)} 次、${Number(usage.tokens)} Tokens、${cost}`;
     };
     const quotaDay = sessionDecision?.date || sessionDelivery?.date || sessionModel?.date || summary?.date;
@@ -1460,7 +1795,9 @@ window.CompanionContactPage = (() => {
       ${result.failure_title ? `<p class="ct-test-cause"><b>失败原因</b>${e(result.failure_title)}</p>` : ""}
       ${result.explanation ? `<p class="ct-test-explanation">${e(result.explanation)}</p>` : ""}
       ${result.route?.label || result.variant?.label ? `<p>来源：${e(result.route?.label || result.variant.label)}</p>` : ""}
-      ${result.purpose_label ? `<p>测试用途：${e(result.purpose_label)} · 收件人：核心管理员</p>` : ""}
+      ${result.purpose_label ? `<p>测试用途：${e(result.purpose_label)} · ${result.allow_linked_accounts ? "关联策略起点" : "收件人"}：${e(result.recipient_label || "核心管理员")}</p>` : ""}
+      ${result.allow_linked_accounts ? '<p>允许转发到关联账号：已开启（按现有关联策略执行）</p>' : ""}
+      ${Array.isArray(result.delivery_targets) && result.delivery_targets.length ? `<p>实际投递目标：${result.delivery_targets.map(row => `${e(row.participant_id)} · ${e(row.platform_id)} / ${e(row.account_id)}（${e(TEST_DELIVERY_STATES[row.delivery_state] || row.delivery_state)}）`).join("；")}</p>` : ""}
       ${result.event_mode === "synthetic_event" ? `<p>输入：一次性合成事件（未写入普通聊天记录）</p>` : ""}
       ${result.event_mode === "source_backed" ? `<p>输入：本次取得的真实来源</p>` : ""}
       ${delivery ? `<p>投递状态：${e(delivery)}</p>` : ""}
@@ -1497,8 +1834,8 @@ window.CompanionContactPage = (() => {
       <div class="ct-test-dialog-body">
         <p class="ct-test-dialog-kicker">${synthetic ? "合成事件" : "真实来源"} · 真实投递</p>
         <h2 id="ct-test-confirm-title">运行「${e(item.label)}」测试？</h2>
-        <p>${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。来源获取失败会显示失败阶段。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递到核心管理员 QQ 私聊。QQ 正文按正式效果呈现，测试标识只保留在本页。</p>
-        <p class="ct-test-dialog-warning">测试不占日常联系额度。带图测试可能记录素材实际已投递；若结果未知，请先核对管理员私聊，不要重新运行。</p>
+        <p>${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。来源获取失败会显示失败阶段。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递${data.testAllowLinkedAccounts ? `，以 ${e(recipientLabel())} 为起点按关联账号策略选择目标，可能转发到关联账号` : `到所选核心管理员私聊：${e(recipientLabel())}`}。消息正文按正式效果呈现，测试标识只保留在本页。</p>
+        <p class="ct-test-dialog-warning">测试不占日常联系额度。带图测试可能记录素材实际已投递；若结果未知，请核对所选管理员及本次允许转发的关联账号，不要重新运行。</p>
         <div class="ct-test-dialog-actions">
           <button type="button" class="ct-btn" data-test-action="cancel">取消</button>
           <button type="button" class="ct-btn is-primary" data-test-action="confirm">确认并运行</button>
@@ -1675,22 +2012,24 @@ window.CompanionContactPage = (() => {
     return Number.isFinite(at.getTime()) ? at.toISOString() : "";
   }
 
-  /* 额度与去重：额度**没有读出口**，所以画成上限刻度而不是用量表。 */
+  /* 额度与去重：额度**没有读出口**，所以画成上限刻度而不是用量表。
+     三块统一通栏堆叠、各自内部双列对齐，彻底消除「每日额度 1 条 vs 重复抑制 7 条」并排撕出的垂直空洞。 */
   function budgetsView() {
     const num = name => { const n = Number(value(name)); return Number.isFinite(n) ? n : null; };
+    const dedupOn = value("dedup_enabled") === true;
+    const lastMsgOn = dedupOn && value("dedup_last_message_enabled") === true;
+    const burstOn = value("enable_proactive_burst") === true;
     const quota = [["max_contacts_24h", "本窗口每日最多实际联系", "条", 100]];
-    const dedup = [
-      ["dedup_enabled", "启用重复抑制"],
-      ["dedup_last_message_enabled", "与上一条原文比对"],
-      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440],
-      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440],
-      ["dedup_min_shared_tokens", "最少共有词数", 4],
-      ["dedup_min_overlap_ratio", "最低重合比例", 1],
+    const dedupSliders = [
+      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440, !dedupOn],
+      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440, !lastMsgOn],
+      ["dedup_min_shared_tokens", "最少共有词数", 4, !dedupOn],
+      ["dedup_min_overlap_ratio", "最低重合比例", 1, !dedupOn],
     ];
     return `<div class="ct-budgets">
       <section class="ct-block"><h3>每日额度</h3>
         <p class="ct-note">这几个数只有上限，没有实时读出口——所以画成刻度，不画成进度条。</p>
-
+        <div class="ct-budget-quota-list">
         ${quota.map(([name, label, unit, max]) => {
           const current = num(name);
           return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}">
@@ -1701,120 +2040,180 @@ window.CompanionContactPage = (() => {
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div>
           </div>`;
         }).join("")}
+        </div>
       </section>
       <section class="ct-block"><h3>重复抑制</h3>
-        ${dedup.map(([name, label, max]) => {
-          if (typeof max === "undefined") return toggle(name, label, "关闭后同一内容可能在窗口内重复发出。");
+        <div class="ct-budget-switches">
+          ${toggle("dedup_enabled", "启用重复抑制", "关闭后同一内容可能在窗口内重复发出。")}
+          ${toggle("dedup_last_message_enabled", "与上一条原文比对", "避免连续两次说出几乎相同的话。", {muted: !dedupOn})}
+        </div>
+        <div class="ct-budget-sliders${dedupOn ? "" : " is-branch-off"}">
+        ${dedupSliders.map(([name, label, max, muted]) => {
           const current = num(name);
-          return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}">
+          return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}${muted ? " is-muted" : ""}">
             <div class="ct-quota-head"><strong>${e(label)}</strong>
               <span class="ct-quota-value"><b>${current === null ? "—" : current}</b></span></div>
             <input type="range" min="0" max="${max}" step="${max <= 4 ? 1 : max <= 100 ? 5 : 30}"
               data-field="${e(name)}" value="${current ?? 0}" aria-label="${e(label)}">
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div></div>`;
         }).join("")}
+        </div>
         ${textRow("dedup_policies", "启用的去重策略", "semantic,content_fingerprint,life_event,event_revision",
-          "逗号分隔，不能重复。可选：semantic / event_anchor / event_revision / conversation_anchor / daily_slot / content_fingerprint / life_event。")}
+          "逗号分隔，不能重复。可选：semantic / event_anchor / event_revision / conversation_anchor / daily_slot / content_fingerprint / life_event。", {muted: !dedupOn})}
       </section>
       <section class="ct-block is-wide"><h3>连发与收尾</h3>
-        ${toggle("enable_proactive_burst", "允许连发", "连发只接着一条普通话题继续；提醒、预警、问候和分享不会拖着连发走。")}
-        ${numberRow("proactive_burst_max_messages", "一轮最多几条", "条", 2, 3, "")}
-        ${numberRow("proactive_burst_gap_min_seconds", "两条之间最少", "秒", 10, 600, "")}
-        ${numberRow("proactive_burst_gap_max_seconds", "两条之间最多", "秒", 10, 900, "实际间隔由这一轮的联系标识决定，同一轮不会重掷。")}
-        ${numberRow("proactive_closing_grace_minutes", "收尾静默时长", "分钟", 0, 240, "连续开口到这个数后会主动停一段，等你回应或静默结束。")}
-        ${numberRow("proactive_closing_contacts_threshold", "触发收尾的连续条数", "条", 1, 10, "")}
-        ${numberRow("proactive_share_probability", "分享类开口概率", "%", 0, 100, "只作用于「分享自己的生活」与「作品与阅读」；提醒、预警和天气各有自己的授权，不受这个数影响。")}
+        <div class="ct-budget-sub${burstOn ? "" : " is-branch-off"}">
+          <div class="ct-budget-sub-head">
+            ${toggle("enable_proactive_burst", "允许连发", "连发只接着一条普通话题继续；提醒、预警、问候和分享不会拖着连发走。")}
+            ${burstOn ? "" : '<span class="ct-src-branch-state">未启用 · 以下连发参数暂不生效</span>'}
+          </div>
+          <div class="ct-budget-sub-grid">
+            ${numberRow("proactive_burst_max_messages", "一轮最多几条", "条", 2, 3, "", {muted: !burstOn})}
+            ${numberRow("proactive_burst_gap_min_seconds", "两条之间最少", "秒", 10, 600, "", {muted: !burstOn})}
+            ${numberRow("proactive_burst_gap_max_seconds", "两条之间最多", "秒", 10, 900, "实际间隔由这一轮的联系标识决定，同一轮不会重掷。", {muted: !burstOn})}
+          </div>
+        </div>
+        <div class="ct-budget-sub">
+          <div class="ct-budget-sub-title">收尾静默与分享比例</div>
+          <div class="ct-budget-sub-grid">
+            ${numberRow("proactive_closing_grace_minutes", "收尾静默时长", "分钟", 0, 240, "连续开口到这个数后会主动停一段，等你回应或静默结束。")}
+            ${numberRow("proactive_closing_contacts_threshold", "触发收尾的连续条数", "条", 1, 10, "")}
+            ${numberRow("proactive_share_probability", "分享类开口概率", "%", 0, 100, "只作用于「分享自己的生活」与「作品与阅读」；提醒、预警和天气各有自己的授权，不受这个数影响。")}
+          </div>
+        </div>
       </section></div>`;
   }
 
-  /* 外部触发源：这些不是「一天」上的东西，是「素材从哪来」。
-     所以单独一屏，按获取方式分组，每组一张卡片：图标 + 组名 + 「n/m 开启」，
-     组内一行一件事（标签在左、控件在右）。
-     分组没动过——分法是按「谁在决定素材」，改了分组名等于重写语义；
-     改的只是画法：原来每个字段竖排三行（标签 / 控件 / 说明），
-     一屏扫下去全是左对齐的灰标签，读不出哪一行是哪一项。
-     wide 的三组条目最多（14 / 9 / 9 条），占满整行、组内分两栏，
-     否则它们会把同一行的短卡片拉出一大块空白。 */
+  /* 外部触发源：每组一张通栏结构化卡片，组内按独立功能拆成清晰子块与 2 列对齐表单网格，
+     彻底消除窄卡挤压、相邻卡片高低错位空洞、以及文本输入被截断的问题；
+     主开关关闭时，其从属子配置项视觉柔和降权（仍可查看与预先填写）。 */
   function sourcesView() {
+    const weatherCheckinOn = value("weather_checkin_enabled") === true;
+    const weatherChangeOn = value("weather_change_enabled") === true;
+    const officialAlertOn = value("official_weather_alert_enabled") === true;
+    const newsShareOn = value("news_share_enabled") === true;
+    const newsHotOn = value("news_daily_hot_read_enabled") === true;
+    const mealOn = value("meal_checkin_enabled") === true;
+    const dateOn = value("date_checkin_enabled") === true;
+    const webExploreOn = value("web_exploration_enabled") === true;
+    const screenOn = value("screen_glance_enabled") === true;
+    const goodnightOn = screenOn && value("screen_glance_goodnight_enabled") === true;
+    const followupOn = screenOn && value("screen_glance_followup_enabled") === true;
+    const voiceOn = value("voice_action_enabled") === true;
+    const pokeOn = value("poke_action_enabled") === true;
+    const judgeOn = value("enable_llm_proactive_persona_judge") === true;
+    const balanceOn = value("balance_awareness_enabled") === true;
+
     const known = [
-      {id:"weather", icon:ICON.weather, title:"天气", hint:"定时采样；只有突变超过阈值才开口。", body:[
-        srcToggle("weather_checkin_enabled", "定时天气问候", "要等定时点。"),
-        srcText("weather_checkin_time", "问候时刻", "08:30", "本地时间，二十四小时制。"),
-        srcNumber("weather_sample_minutes", "采样间隔", "分钟", 10, 1440, ""),
-        srcToggle("weather_change_enabled", "天气突变时联系", "变化幅度超过阈值时才开口。"),
-        srcNumber("dedup_weather_window_minutes", "同内容不重复时长", "分钟", 0, 2880, "突变与预警都走 event_revision 去重。"),
+      {id:"weather", icon:ICON.weather, title:"天气", hint:"定时采样；只有突变超过阈值才开口。", pairSections:true, sections:[
+        {master:srcToggle("weather_checkin_enabled", "定时天气问候", "要等定时点。", {master:true}),
+          active:weatherCheckinOn, cols:1, fields:[
+            srcText("weather_checkin_time", "问候时刻", "08:30", "本地时间，二十四小时制。", {compact:true}),
+          ]},
+        {master:srcToggle("weather_change_enabled", "天气突变时联系", "变化幅度超过阈值时才开口。", {master:true}),
+          active:weatherCheckinOn || weatherChangeOn || officialAlertOn, cols:1, fields:[
+            srcNumber("weather_sample_minutes", "采样间隔", "分钟", 10, 1440, "", {muted:!weatherCheckinOn && !weatherChangeOn}),
+            srcNumber("dedup_weather_window_minutes", "同内容不重复时长", "分钟", 0, 2880, "突变与预警都走 event_revision 去重。", {muted:!weatherChangeOn && !officialAlertOn}),
+          ]},
       ]},
-      {id:"weather-alert", icon:ICON.bell, title:"官方预警", hint:"预警由官方发布，这里只管转不转、多久看一次。", body:[
-        srcToggle("official_weather_alert_enabled", "转发官方气象预警", "预警由官方发布，这里只管转不转、多久看一次。"),
-        srcNumber("official_alert_poll_minutes", "轮询间隔", "分钟", 1, 1440, ""),
-        srcSelect("official_alert_min_severity", "最低预警级别",
-          [["","不限制（全部转发）"],["minor","蓝色 · 一般"],["moderate","黄色 · 较重"],
-           ["severe","橙色 · 严重"],["extreme","红色 · 特别严重"]]),
+      {id:"weather-alert", icon:ICON.bell, title:"官方预警", hint:"预警由官方发布，这里只管转不转、多久看一次。", sections:[
+        {master:srcToggle("official_weather_alert_enabled", "转发官方气象预警", "预警由官方发布，这里只管转不转、多久看一次。", {master:true}),
+          active:officialAlertOn, fields:[
+            srcNumber("official_alert_poll_minutes", "轮询间隔", "分钟", 1, 1440, ""),
+            srcSelect("official_alert_min_severity", "最低预警级别",
+              [["","不限制（全部转发）"],["minor","蓝色 · 一般"],["moderate","黄色 · 较重"],
+               ["severe","橙色 · 严重"],["extreme","红色 · 特别严重"]]),
+          ]},
       ]},
-      {id:"news", icon:ICON.source, title:"资讯", hint:"资讯来源、每日热点与去重时长。", body:[
-        srcToggle("news_share_enabled", "分享资讯", "自然分享亮点和感想；追问时再给来源与原文。分段沿用表达设置。"),
-        srcNumber("news_check_interval_minutes", "检查间隔", "分钟", 15, 1440, ""),
-        srcSelect("news_source_kind", "来源类型", [["host","默认数据源"],["disabled","停用资讯源"],
-          ["bilibili","B 站动态"],["rss","RSS / Atom"],["json","HTTPS JSON"],["search","网络搜索"],["hot","热榜"]]),
-        srcText("news_source_uid", "来源标识", "", "与类型匹配填写。"),
-        srcText("news_source_url", "来源地址", "", "与类型匹配填写。"),
-        srcToggle("news_daily_hot_read_enabled", "每日热点", ""),
-        srcText("news_hot_sources", "热点来源", "weibo,hackernews", "逗号分隔，可选 weibo / hackernews。"),
+      {id:"news", icon:ICON.source, title:"资讯", hint:"资讯来源、每日热点与去重时长。", sections:[
+        {master:srcToggle("news_share_enabled", "分享资讯", "自然分享亮点和感想；追问时再给来源与原文。分段沿用表达设置。", {master:true}),
+          active:newsShareOn, fields:[
+            srcNumber("news_check_interval_minutes", "检查间隔", "分钟", 15, 1440, ""),
+            srcSelect("news_source_kind", "来源类型", [["host","默认数据源"],["disabled","停用资讯源"],
+              ["bilibili","B 站动态"],["rss","RSS / Atom"],["json","HTTPS JSON"],["search","网络搜索"],["hot","热榜"]]),
+            srcText("news_source_uid", "来源标识", "", "与类型匹配填写。", {stacked:true}),
+            srcText("news_source_url", "来源地址", "", "与类型匹配填写。", {stacked:true}),
+          ]},
+        {master:srcToggle("news_daily_hot_read_enabled", "每日热点", "定时巡读热点榜单，挑适合聊起的内容自然分享。", {master:true}),
+          active:newsHotOn, cols:1, fields:[
+            srcText("news_hot_sources", "热点来源", "weibo,hackernews", "逗号分隔，可选 weibo / hackernews。", {stacked:true}),
+          ]},
       ]},
-      {id:"meal", icon:ICON.meal, title:"饭点与生日纪念日", hint:"饭点只是可选话题；生日和纪念日自动读取资料。", body:[
-        srcToggle("meal_checkin_enabled", "饭点话题", "系统会按当天语境在跳过、单时段或双时段中选择，不保证每餐都联系。"),
-        srcText("meal_lunch_time", "午餐大致时刻", "12:00", "实际机会会在参考时刻前后小幅浮动。"),
-        srcText("meal_dinner_time", "晚餐大致时刻", "18:00", "实际机会会在参考时刻前后小幅浮动。"),
-        srcNumber("meal_care_followup_minutes", "饭点后可接话窗口", "分钟", 1, 240, "超出窗口就不再跟进；语境不合适时可以直接跳过。"),
-        srcToggle("date_checkin_enabled", "生日与纪念日问候", ""),
-        srcText("date_checkin_time", "问候时刻", "09:00", ""),
-        srcNumber("important_date_lookahead_days", "提前几天开始留意", "天", 0, 30, "0 表示只在当天问候；角色生日、对方资料日期和每日反思记下的重要互动纪念日会自动读取，无需再填日期清单；可在聊天中用「陪伴 日期列表」查看或删除。"),
+      {id:"meal", icon:ICON.meal, title:"饭点与生日纪念日", hint:"饭点只是可选话题；生日和纪念日自动读取资料。", pairSections:true, sections:[
+        {master:srcToggle("meal_checkin_enabled", "饭点话题", "系统会按当天语境在跳过、单时段或双时段中选择，不保证每餐都联系。", {master:true}),
+          active:mealOn, cols:1, fields:[
+            srcText("meal_lunch_time", "午餐大致时刻", "12:00", "实际机会会在参考时刻前后小幅浮动。", {compact:true}),
+            srcText("meal_dinner_time", "晚餐大致时刻", "18:00", "实际机会会在参考时刻前后小幅浮动。", {compact:true}),
+            srcNumber("meal_care_followup_minutes", "饭点后可接话窗口", "分钟", 1, 240, "超出窗口就不再跟进；语境不合适时可以直接跳过。"),
+          ]},
+        {master:srcToggle("date_checkin_enabled", "生日与纪念日问候", "按本地问候时刻自动触发重要日期关心。", {master:true}),
+          active:dateOn, cols:1, fields:[
+            srcText("date_checkin_time", "问候时刻", "09:00", "", {compact:true}),
+            srcNumber("important_date_lookahead_days", "提前几天开始留意", "天", 0, 30, "0 表示只在当天问候；角色生日、对方资料日期和每日反思记下的重要互动纪念日会自动读取，无需再填日期清单；可在聊天中用「陪伴 日期列表」查看或删除。"),
+          ]},
       ]},
-      {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", body:[
-        srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。"),
-        srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。"),
-        srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
-        srcNumber("web_exploration_result_count", "每次取几条", "条", 1, 30, ""),
-        srcToggle("external_event_self_link_enabled", "把外部事件关联到自己", ""),
+      {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", sections:[
+        {master:srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。", {master:true}),
+          active:webExploreOn, fields:[
+            srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。", {stacked:true, span:true}),
+            srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
+            srcNumber("web_exploration_result_count", "每次取几条", "条", 1, 30, ""),
+          ]},
+        {master:srcToggle("external_event_self_link_enabled", "把外部事件关联到自己", "允许在自然语境中把外部见闻联系到角色自身经历。", {master:true}),
+          active:true, standalone:true, fields:[]},
       ]},
-      {id:"screen", icon:ICON.screen, title:"屏幕与动作", hint:"屏幕观察有授权与每日上限；语音与戳一戳各自有冷却。", wide:true, body:[
-        srcToggle("screen_glance_enabled", "已授权屏幕观察", "采集本身是设备侧的原生调用，可能被拒绝。"),
-        srcNumber("screen_glance_daily_limit", "每日上限", "次", 0, 20, ""),
-        srcNumber("screen_glance_cooldown_minutes", "冷却", "分钟", 0, 10080, ""),
-        srcToggle("screen_glance_goodnight_enabled", "睡前看一眼", ""),
-        srcNumber("screen_glance_goodnight_delay_minutes", "睡前延迟", "分钟", 1, 180, ""),
-        srcToggle("screen_glance_followup_enabled", "未回应后跟进", ""),
-        srcNumber("screen_glance_followup_after_minutes", "多久后跟进", "分钟", 10, 240, ""),
-        srcNumber("screen_glance_followup_cooldown_minutes", "跟进冷却", "分钟", 30, 1440, ""),
-        srcToggle("voice_action_enabled", "允许发语音", "沿用回复设置中的语音语言与对应 TTS，正文完整保留，语音另条发送。"),
-        srcNumber("voice_action_max_chars", "语音参考长度", "字", 6, 80, "供模型组织完整短句参考，优先保证语意完整，不按字数截断。"),
-        srcNumber("voice_action_cooldown_minutes", "语音冷却", "分钟", 0, 1440, ""),
-        srcToggle("poke_action_enabled", "允许戳一戳", ""),
-        srcNumber("poke_action_daily_limit", "每日上限", "次", 0, 20, ""),
-        srcNumber("poke_action_cooldown_minutes", "冷却", "分钟", 0, 1440, ""),
+      {id:"screen", icon:ICON.screen, title:"屏幕与动作", hint:"屏幕观察有授权与每日上限；语音与戳一戳各自有冷却。", wide:true, pairSections:true, sections:[
+        {master:srcToggle("screen_glance_enabled", "已授权屏幕观察", "采集本身是设备侧的原生调用，可能被拒绝。", {master:true}),
+          active:screenOn, span:true, fields:[
+            srcNumber("screen_glance_daily_limit", "每日上限", "次", 0, 20, ""),
+            srcNumber("screen_glance_cooldown_minutes", "冷却", "分钟", 0, 10080, ""),
+            srcToggle("screen_glance_goodnight_enabled", "睡前看一眼", ""),
+            srcNumber("screen_glance_goodnight_delay_minutes", "睡前延迟", "分钟", 1, 180, "", {muted:!goodnightOn}),
+            srcToggle("screen_glance_followup_enabled", "未回应后跟进", "", {span:true}),
+            srcNumber("screen_glance_followup_after_minutes", "多久后跟进", "分钟", 10, 240, "", {muted:!followupOn}),
+            srcNumber("screen_glance_followup_cooldown_minutes", "跟进冷却", "分钟", 30, 1440, "", {muted:!followupOn}),
+          ]},
+        {master:srcToggle("voice_action_enabled", "允许发语音", "沿用回复设置中的语音语言与对应 TTS，正文完整保留，语音另条发送。", {master:true}),
+          active:voiceOn, cols:1, fields:[
+            srcNumber("voice_action_max_chars", "语音参考长度", "字", 6, 80, "供模型组织完整短句参考，优先保证语意完整，不按字数截断。"),
+            srcNumber("voice_action_cooldown_minutes", "语音冷却", "分钟", 0, 1440, ""),
+          ]},
+        {master:srcToggle("poke_action_enabled", "允许戳一戳", "按冷却与每日上限控制戳一戳频率。", {master:true}),
+          active:pokeOn, cols:1, fields:[
+            srcNumber("poke_action_daily_limit", "每日上限", "次", 0, 20, ""),
+            srcNumber("poke_action_cooldown_minutes", "冷却", "分钟", 0, 1440, ""),
+          ]},
       ]},
-      {id:"context", icon:ICON.context, title:"约定与生成上下文", hint:"约定前后的静默，以及主动联系的生成方式。", wide:true, body:[
-        srcNumber("appointment_lead_minutes", "约定提前量", "分钟", 0, 240, ""),
-        srcNumber("appointment_lag_minutes", "约定延后量", "分钟", 0, 180, ""),
-        srcNumber("appointment_pre_silence_minutes", "约定前静默", "分钟", 0, 240, "约定前先安静一段，避免连着说两遍。"),
-        srcSelect("generation_mode", "生成方式", [["single","一次调用"],["two_stage","先规划再写作"]],
-          "两阶段先规划，决定发送后再写作；规划模型可在模型路由中单独设置。实际费用见运行统计。"),
-        srcToggle("enable_llm_proactive_persona_judge", "开口前先自评", "多一次模型调用，按阈值决定这条要不要发。"),
-        srcNumber("proactive_persona_judge_threshold", "自评阈值", "", 0, 100, ""),
-        srcNumber("proactive_persona_judge_cache_minutes", "自评缓存", "分钟", 0, 720, ""),
-        srcNumber("generation_history_limit", "近期对话轮数", "轮", 0, 64, "同一轮中的分段消息会合并计数，并受上下文字数预算约束。"),
-        srcNumber("history_max_chars", "历史字数上限", "字", 0, 8192, ""),
+      {id:"context", icon:ICON.context, title:"约定与生成上下文", hint:"约定前后的静默，以及主动联系的生成方式。", wide:true, sections:[
+        {title:"约定时间窗", active:true, fields:[
+          srcNumber("appointment_lead_minutes", "约定提前量", "分钟", 0, 240, ""),
+          srcNumber("appointment_lag_minutes", "约定延后量", "分钟", 0, 180, ""),
+          srcNumber("appointment_pre_silence_minutes", "约定前静默", "分钟", 0, 240, "约定前先安静一段，避免连着说两遍。", {span:true}),
+        ]},
+        {title:"生成方式与历史上下文", active:true, fields:[
+          srcSelect("generation_mode", "生成方式", [["single","一次调用"],["two_stage","先规划再写作"]],
+            "两阶段先规划，决定发送后再写作；规划模型可在模型路由中单独设置。实际费用见运行统计。", {span:true}),
+          srcNumber("generation_history_limit", "近期对话轮数", "轮", 0, 64, "同一轮中的分段消息会合并计数，并受上下文字数预算约束。"),
+          srcNumber("history_max_chars", "历史字数上限", "字", 0, 8192, ""),
+        ]},
+        {master:srcToggle("enable_llm_proactive_persona_judge", "开口前先自评", "多一次模型调用，按阈值决定这条要不要发。", {master:true}),
+          active:judgeOn, fields:[
+            srcNumber("proactive_persona_judge_threshold", "自评阈值", "", 0, 100, ""),
+            srcNumber("proactive_persona_judge_cache_minutes", "自评缓存", "分钟", 0, 720, ""),
+          ]},
       ]},
-      {id:"balance", icon:ICON.purse, title:"余额与其它", hint:"余额只影响说不说、说不说金额；两个阈值是绝对值与百分比双保险。", wide:true, body:[
-        srcToggle("balance_awareness_enabled", "余额感知", ""),
-        srcToggle("balance_include_amount_in_message", "在消息里说出金额", "关闭时只提「快用完了」，不报具体数字。"),
-        srcText("balance_currency_label", "货币单位", "元", "不超过 20 字符。"),
-        srcNumber("balance_check_interval_minutes", "检查间隔", "分钟", 5, 1440, ""),
-        srcNumber("balance_low_threshold", "低余额阈值", "", 0, 1000000000, ""),
-        srcNumber("balance_critical_threshold", "极低余额阈值", "", 0, 1000000000, ""),
-        srcNumber("balance_low_percent_threshold", "低余额百分比", "%", 0, 100, ""),
-        srcNumber("balance_critical_percent_threshold", "极低余额百分比", "%", 0, 100, ""),
-        srcNumber("balance_message_cooldown_hours", "余额提醒冷却", "小时", 1, 168, ""),
+      {id:"balance", icon:ICON.purse, title:"余额与其它", hint:"余额只影响说不说、说不说金额；两个阈值是绝对值与百分比双保险。", wide:true, sections:[
+        {master:srcToggle("balance_awareness_enabled", "余额感知", "根据配置的服务余额来源与阈值触发温和提醒。", {master:true}),
+          active:balanceOn, fields:[
+            srcToggle("balance_include_amount_in_message", "在消息里说出金额", "关闭时只提「快用完了」，不报具体数字。"),
+            srcText("balance_currency_label", "货币单位", "元", "不超过 20 字符。", {compact:true}),
+            srcNumber("balance_check_interval_minutes", "检查间隔", "分钟", 5, 1440, ""),
+            srcNumber("balance_message_cooldown_hours", "余额提醒冷却", "小时", 1, 168, ""),
+            srcNumber("balance_low_threshold", "低余额阈值", "", 0, 1000000000, ""),
+            srcNumber("balance_critical_threshold", "极低余额阈值", "", 0, 1000000000, ""),
+            srcNumber("balance_low_percent_threshold", "低余额百分比", "%", 0, 100, ""),
+            srcNumber("balance_critical_percent_threshold", "极低余额百分比", "%", 0, 100, ""),
+          ]},
       ]},
     ];
     const groups = known.map(sourceGroup).join("");
@@ -1833,48 +2232,71 @@ window.CompanionContactPage = (() => {
       <div class="ct-source-summary" role="status">${fields} 项触发配置 · ${on}/${toggles} 个开关当前开启</div>
       ${groups}<div data-screen-observation></div></div>`;
   }
-  function sourceGroup(group) {
-    const body = group.body;
-    const html = body.join("");
-    const half = group.wide ? Math.ceil(body.length / 2) : body.length;
-    const rows = [body.slice(0, half), body.slice(half)].filter(list => list.length)
-      .map(list => `<div class="ct-src-col">${list.join("")}</div>`).join("");
-    const toggles = (html.match(/data-kind="toggle"/g) || []).length;
-    const on = (html.match(/data-on="1"/g) || []).length;
-    return `<section class="ct-src-group${group.wide ? " is-wide" : ""}" data-source="${e(group.id)}"
-      data-toggles="${toggles}" data-enabled="${on}">
-      <header class="ct-src-head"><span class="ct-src-icon">${group.icon}</span><h3>${e(group.title)}</h3>
-        <em class="ct-src-badge${on ? " is-on" : ""}">${on}/${toggles} 开启</em></header>
-      <p class="ct-src-hint">${e(group.hint)}</p><div class="ct-src-rows">${rows}</div></section>`;
+  function sourceSection(section) {
+    const off = section.active === false;
+    const hasFields = Array.isArray(section.fields) && section.fields.length > 0;
+    const colsClass = section.cols === 1 ? " is-single-col" : "";
+    const head = section.master
+      ? `<div class="ct-src-section-head${hasFields ? "" : " is-solo"}">${section.master}`
+        + `${off && hasFields ? '<span class="ct-src-branch-state">未启用 · 以下子项暂不生效</span>' : ""}</div>`
+      : section.title
+        ? `<div class="ct-src-section-title">${e(section.title)}</div>` : "";
+    const body = hasFields
+      ? `<div class="ct-src-section-fields${colsClass}">${section.fields.join("")}</div>` : "";
+    return `<div class="ct-src-section${off ? " is-branch-off" : ""}${section.span ? " is-span" : ""}${section.standalone ? " is-standalone" : ""}">${head}${body}</div>`;
   }
-  function srcRow(name, label, help, kind, control) {
-    return `<label class="ct-src-row${dirty(name) ? " is-dirty" : ""}" data-kind="${kind}">
+  function sourceGroup(group) {
+    const sections = Array.isArray(group.sections) ? group.sections : [];
+    const sectionsHtml = sections.map(sourceSection).join("");
+    const toggles = (sectionsHtml.match(/data-kind="toggle"/g) || []).length;
+    const on = (sectionsHtml.match(/data-on="1"/g) || []).length;
+    return `<section class="ct-src-group${group.wide ? " is-wide" : ""}${on ? " has-active" : ""}" data-source="${e(group.id)}"
+      data-toggles="${toggles}" data-enabled="${on}">
+      <header class="ct-src-head"><span class="ct-src-icon">${group.icon}</span><div class="ct-src-head-copy"><h3>${e(group.title)}</h3>
+        <p class="ct-src-hint">${e(group.hint)}</p></div>
+        <em class="ct-src-badge${on ? " is-on" : ""}">${on}/${toggles} 开启</em></header>
+      <div class="ct-src-rows${group.pairSections ? " is-paired" : ""}">${sectionsHtml}</div></section>`;
+  }
+  function srcRow(name, label, help, kind, control, opts = {}) {
+    const classes = ["ct-src-row"];
+    if (dirty(name)) classes.push("is-dirty");
+    if (opts.stacked) classes.push("is-stacked");
+    if (opts.compact) classes.push("is-compact");
+    if (opts.muted) classes.push("is-muted");
+    if (opts.span) classes.push("is-span");
+    return `<label class="${classes.join(" ")}" data-kind="${kind}">
       <span class="ct-src-label">${e(label)}${help ? `<small>${e(help)}</small>` : ""}</span>
       <span class="ct-src-control">${control}</span></label>`;
   }
-  function srcToggle(name, label, help) {
+  function srcToggle(name, label, help, opts = {}) {
     const on = value(name) === true;
-    return `<label class="ct-src-row is-toggle${on ? " is-on" : ""}${dirty(name) ? " is-dirty" : ""}${flipClass(name)}"
+    const classes = ["ct-src-row", "is-toggle"];
+    if (on) classes.push("is-on");
+    if (dirty(name)) classes.push("is-dirty");
+    if (opts.master) classes.push("is-branch-master");
+    if (opts.muted) classes.push("is-muted");
+    if (opts.span) classes.push("is-span");
+    return `<label class="${classes.join(" ")}${flipClass(name)}"
       data-kind="toggle"${on ? ' data-on="1"' : ""}>
       <span class="ct-src-label">${e(label)}${help ? `<small>${e(help)}</small>` : ""}</span>
       <span class="ct-src-control"><span class="ct-switch"><input type="checkbox" data-field="${e(name)}"${on ? " checked" : ""}>
         <span class="ct-switch-track"><i></i></span></span></span></label>`;
   }
-  function srcText(name, label, placeholder, help) {
+  function srcText(name, label, placeholder, help, opts = {}) {
     const current = value(name);
     return srcRow(name, label, help, "text", `<input type="text" data-field="${e(name)}" value="${e(typeof current === "string" ? current : "")}"
-      placeholder="${e(placeholder)}" autocomplete="off" spellcheck="false" aria-label="${e(label)}">`);
+      placeholder="${e(placeholder)}" autocomplete="off" spellcheck="false" aria-label="${e(label)}">`, opts);
   }
-  function srcNumber(name, label, unit, min, max, help) {
+  function srcNumber(name, label, unit, min, max, help, opts = {}) {
     const current = value(name);
     const range = "可填 " + min + "–" + max + (unit ? "，单位 " + unit : "");
     return srcRow(name, label, help, "number", `<input type="number" data-field="${e(name)}" value="${e(current ?? "")}" min="${min}" max="${max}"
-      step="1" inputmode="numeric" aria-label="${e(label)}" title="${e(range)}"><i>${e(unit)}</i>`);
+      step="1" inputmode="numeric" aria-label="${e(label)}" title="${e(range)}">${unit ? `<i>${e(unit)}</i>` : ""}`, opts);
   }
-  function srcSelect(name, label, options, help="") {
+  function srcSelect(name, label, options, help="", opts = {}) {
     const current = value(name);
     return srcRow(name, label, help, "select", `<select data-field="${e(name)}" aria-label="${e(label)}">${options.map(([v, text]) =>
-      `<option value="${e(v)}"${String(current ?? "") === v ? " selected" : ""}>${e(text)}</option>`).join("")}</select>`);
+      `<option value="${e(v)}"${String(current ?? "") === v ? " selected" : ""}>${e(text)}</option>`).join("")}</select>`, opts);
   }
   function materialTime(value) {
     if (typeof value !== "string") return "—";
@@ -2064,6 +2486,45 @@ window.CompanionContactPage = (() => {
     data.viewShift = to > from ? 1 : to < from ? -1 : null;
     data.view = next;
     data.notice = "";
+    /* 晨间页的原生摘要每次进来重读：详细配置那边可能刚改过。 */
+    if (next === "morning" && data.nativeWake && data.nativeWake.state !== "loading") {
+      data.nativeWake = {...data.nativeWake, state:"idle", notice:""};
+    }
+    if (next === "tests") void loadRecipients();
+  }
+  let testDialogCloseTimer = null;
+  function canAnimateTestDialog(dialog) {
+    return Boolean(
+      dialog
+      && typeof requestAnimationFrame === "function"
+      && typeof window.getComputedStyle === "function"
+      && !document.body?.classList?.contains("reduce-motion")
+      && document.documentElement?.dataset?.motion !== "off"
+      && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
+  function closeTestDialog(afterClose) {
+    if (testDialogCloseTimer && !afterClose) return;
+    clearTimeout(testDialogCloseTimer);
+    testDialogCloseTimer = null;
+    const myTicket = version;
+    const finish = () => {
+      testDialogCloseTimer = null;
+      if (!live(myTicket)) return;
+      if (data) data.confirmTest = "";
+      if (typeof afterClose === "function") afterClose();
+      render();
+    };
+    const dialog = root?.querySelector?.("[data-test-confirm-dialog]");
+    if (dialog && typeof dialog.close === "function" && dialog.open) {
+      dialog.close();
+      if (canAnimateTestDialog(dialog)) {
+        const delay = document.documentElement?.dataset?.motion === "low" ? 110 : 185;
+        testDialogCloseTimer = setTimeout(finish, delay);
+        return;
+      }
+    }
+    finish();
   }
   function render() {
     if (!root) return;
@@ -2089,12 +2550,23 @@ window.CompanionContactPage = (() => {
     if (screenObservationHost) window.CompanionScreenObservation?.mount(screenObservationHost);
     else window.CompanionScreenObservation?.unmount();
     const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
-    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) testDialog.showModal();
+    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
+      testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+      testDialog.addEventListener("click", event => {
+        if (event.target !== testDialog) return;
+        const box = testDialog.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+      });
+      testDialog.showModal();
+    }
     if (data.scanning && data.ready) {
       data.scanning = false;
       const dial = root.querySelector(".ct-dial");
       if (dial) { dial.classList.add("is-entering"); setTimeout(() => dial.classList.remove("is-entering"), 900); }
     }
+    /* 晨间页右边那块要读原生模块状态：第一次画出来后再发请求，
+       避免挂载阶段抢在桥接就绪之前。 */
+    maybeLoadNativeWake();
   }
 
   /* ---- 交互 ------------------------------------------------------------ */
@@ -2109,12 +2581,174 @@ window.CompanionContactPage = (() => {
     target.focus({preventScroll: true});
     return true;
   }
+  const FIELD_VIEW_OVERRIDES = {
+    note: "gates",
+    pause_until: "gates",
+    max_contacts_24h: "budgets",
+    enable_proactive_burst: "budgets",
+    proactive_burst_max_messages: "budgets",
+    proactive_burst_gap_min_seconds: "budgets",
+    proactive_burst_gap_max_seconds: "budgets",
+    proactive_closing_grace_minutes: "budgets",
+    proactive_closing_contacts_threshold: "budgets",
+    proactive_share_probability: "budgets",
+    generation_mode: "sources",
+  };
+  const SECTION_VIEW_MAP = {
+    morning: "morning",
+    bond: "purposes",
+    daily: "purposes",
+    share: "purposes",
+    followup: "purposes",
+    dedup: "budgets",
+    meal: "sources",
+    date: "sources",
+    weather: "sources",
+    news: "sources",
+    web: "sources",
+    selflink: "sources",
+    balance: "sources",
+    screen: "sources",
+    action: "sources",
+    appointment: "sources",
+    context: "sources",
+    judgement: "sources",
+    prompts: "sources",
+    master: "dial",
+    rhythm: "dial",
+    intensity: "dial",
+    quiet: "dial",
+    greeting: "dial",
+    freshness: "dial",
+  };
+  function viewForField(field = "", section = "") {
+    if (field && Object.hasOwn(FIELD_VIEW_OVERRIDES, field)) return FIELD_VIEW_OVERRIDES[field];
+    if (field && /^[a-z0-9_]+\.(enabled|weight|pause_until)$/.test(field)) return "purposes";
+    if (section && Object.hasOwn(SECTION_VIEW_MAP, section)) return SECTION_VIEW_MAP[section];
+    return "dial";
+  }
+  function sourceGroupFor(field = "", section = "") {
+    if (section === "weather") return String(field).startsWith("official_") ? "weather-alert" : "weather";
+    if (section === "news") return "news";
+    if (section === "meal" || section === "date") return "meal";
+    if (section === "web" || section === "selflink") return "explore";
+    if (section === "screen" || section === "action") return "screen";
+    if (section === "balance") return "balance";
+    if (["appointment", "context", "judgement", "prompts"].includes(section) || field === "generation_mode") return "context";
+    return "";
+  }
+  function expandContactDetails(node) {
+    if (!node) return;
+    const nearest = node.closest?.("details");
+    if (nearest) nearest.open = true;
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === "DETAILS") parent.open = true;
+    }
+  }
+  function highlightContactTarget(node) {
+    if (!node) return;
+    if (typeof window.CompanionSearchHighlight === "function") { window.CompanionSearchHighlight(node); return; }
+    if (!node.classList) return;
+    node.classList.remove("is-search-target");
+    void node.offsetWidth;
+    node.classList.add("is-search-target");
+    const timer = setTimeout(() => node.classList?.remove?.("is-search-target"), 2400);
+    timer?.unref?.();
+  }
+  function findContactTarget(field, section, view) {
+    if (!root) return null;
+    const safe = field ? (globalThis.CSS?.escape?.(field) || String(field).replace(/["\\]/g, "\\$&")) : "";
+    if (safe) {
+      const direct = root.querySelector(`[data-field="${safe}"]`);
+      if (direct) return direct;
+    }
+    if (field === "proactive_intensity_preset") {
+      const tiers = root.querySelector(".ct-tiers, [data-tier]");
+      if (tiers) return tiers;
+    }
+    const purposeMatch = /^([a-z0-9_]+)\.(enabled|weight|pause_until)$/.exec(field || "");
+    if (purposeMatch) {
+      const card = root.querySelector(`[data-purpose="${purposeMatch[1]}"]`);
+      if (card) return card;
+    }
+    if (section === "followup") {
+      const card = root.querySelector('[data-purpose="followup"]');
+      if (card) return card;
+    }
+    if (section === "greeting") {
+      const greetingToggle = root.querySelector('[data-field="enable_daily_greetings"], .ct-dial-stage');
+      if (greetingToggle) return greetingToggle;
+    }
+    if (view === "sources") {
+      const groupId = sourceGroupFor(field, section);
+      if (groupId) {
+        const group = root.querySelector(`[data-source="${groupId}"]`);
+        if (group) return group;
+      }
+    }
+    return root.querySelector(".ct-view") || root;
+  }
+  function focusField(field = "", section = "") {
+    const targetView = viewForField(field, section);
+    if (!root || !data || !data.ready || data.contractLoading) {
+      pendingFocus = {field: field || "", section: section || ""};
+      if (data && targetView && data.view !== targetView) {
+        switchView(targetView);
+        render();
+      }
+      return true;
+    }
+    pendingFocus = null;
+    const needsResetFilters = targetView === "purposes"
+      && (data.purposeQuery || data.purposeBucket !== "all" || data.purposeFilter !== "all");
+    if (needsResetFilters) {
+      data.purposeQuery = "";
+      data.purposeBucket = "all";
+      data.purposeFilter = "all";
+    }
+    if (data.view !== targetView) {
+      switchView(targetView);
+      render();
+    } else if (needsResetFilters) {
+      render();
+    }
+    const locate = (tries = 0) => {
+      if (!root || root.isConnected === false) return;
+      const target = findContactTarget(field, section, targetView);
+      if (target) {
+        expandContactDetails(target);
+        const reduced = Boolean(document.body?.classList?.contains("reduce-motion")
+          || ["low", "off"].includes(document.documentElement?.dataset?.motion)
+          || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+        target.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "center"});
+        if (target.matches?.("button, input, select, textarea, a")) target.focus?.({preventScroll: true});
+        else {
+          if (!target.hasAttribute?.("tabindex")) target.tabIndex = -1;
+          target.focus?.({preventScroll: true});
+        }
+        highlightContactTarget(target.closest?.(".ct-src-row, .ct-field, .ct-quota, .ct-purpose, .ct-block, .ct-src-group") || target);
+        return;
+      }
+      if (tries < 20) requestAnimationFrame(() => locate(tries + 1));
+    };
+    requestAnimationFrame(() => locate());
+    return true;
+  }
   function openGateSettingsView() {
     if (!root || !data) return false;
     if (data.view !== "gates") { switchView("gates"); render(); }
     return focusGateSettings();
   }
   function clicked(event) {
+    if (event.target.closest("[data-native-wake-retry]")) {
+      data.nativeWake = {...data.nativeWake, state:"idle", notice:""};
+      render(); return;
+    }
+    /* 详细配置交给页外的 data-detail 处理去开「现实触及」原生面板；
+       先标记下一次挂载展开「本机语音与叫醒」，跳过去就能直接看到。 */
+    if (event.target.closest("[data-native-wake-details]")) {
+      window.CompanionNativeExtensionPanel?.focusAudio?.(); return;
+    }
     const view = event.target.closest("[data-view]");
     if (view) {
       switchView(view.dataset.view); render();
@@ -2126,23 +2760,28 @@ window.CompanionContactPage = (() => {
       data.materialKind = materialKind;
       render(); return;
     }
+    if (event.target.closest("[data-test-recipient-save]")) { void saveRecipient(); return; }
+    if (event.target.closest("[data-test-recipient-refresh]")) { void loadRecipients(); return; }
     const testAction = event.target.closest("[data-test-action]")?.dataset.testAction;
-    if (testAction === "cancel") { data.confirmTest = ""; render(); return; }
-    if (testAction === "confirm") { void runProactiveTest(data.confirmTest); return; }
+    if (testAction === "cancel") { closeTestDialog(); return; }
+    if (testAction === "confirm") { clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null; void runProactiveTest(data.confirmTest); return; }
     if (testAction === "unlock") {
-      if (data.testUncertain) { data.confirmTest = TEST_GUARD_RESET; render(); }
+      if (data.testUncertain) { clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null; data.confirmTest = TEST_GUARD_RESET; render(); }
       return;
     }
     if (testAction === "confirm-unlock") {
-      storeProactiveTestGuard(null);
-      data.confirmTest = ""; data.testGuard = null; data.testUncertain = false;
-      data.testResults = {};
-      notice("已解除测试锁。下一轮测试仍可能真实投递到核心管理员私聊。");
-      render(); return;
+      closeTestDialog(() => {
+        storeProactiveTestGuard(null);
+        data.testGuard = null; data.testUncertain = false;
+        data.testResults = {};
+        notice("已解除测试锁。下一轮测试仍可能真实投递到核心管理员私聊。");
+      });
+      return;
     }
     const testRun = event.target.closest("[data-test-run]")?.dataset.testRun;
     if (testRun) {
-      if (data.testBusy || data.testUncertain) return;
+      if (data.testBusy || data.testUncertain || !recipientReady()) return;
+      clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null;
       data.confirmTest = testRun;
       render(); return;
     }
@@ -2151,7 +2790,9 @@ window.CompanionContactPage = (() => {
     const action = event.target.closest("[data-action]")?.dataset.action;
     if (action === "refresh") {
       data.notice = ""; data.error = false; loadContract();
+      data.nativeWake = {...data.nativeWake, state:"idle", notice:""};
       if (data.view === "materials") void loadMaterials();
+      if (data.view === "tests") void loadRecipients();
       return;
     }
     if (action === "refresh-materials") { void loadMaterials(); return; }
@@ -2177,6 +2818,17 @@ window.CompanionContactPage = (() => {
       set("proactive_intensity_preset", tier);
       render(); return;
     }
+    const ringJump = event.target.closest("[data-ring-jump]")?.dataset.ringJump;
+    if (ringJump && ["quiet", "curve", "tier", "greet"].includes(ringJump)) {
+      const target = root?.querySelector?.(`.ct-block.is-ring-${ringJump}`);
+      if (target) {
+        const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+          || document.documentElement?.dataset?.motion === "off";
+        target.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "center"});
+        highlightTarget(target);
+      }
+      return;
+    }
     const anchor = event.target.closest("[data-anchor]")?.dataset.anchor;
     if (anchor) {
       data.notice = "问候窗口 " + String(value("greeting_" + anchor + "_window") || "") + "；改下面那三个框。";
@@ -2184,6 +2836,34 @@ window.CompanionContactPage = (() => {
     }
   }
   function changed(event) {
+    const wakeToggle = event.target.closest("[data-native-wake-toggle]");
+    if (wakeToggle) { void toggleNativeWake(wakeToggle.checked === true); return; }
+    const wakeField = event.target.closest("[data-native-wake-field]");
+    if (wakeField) {
+      const kind = wakeField.dataset.nativeWakeField, wake = data.nativeWake;
+      if (!wake || !["time", "deadline", "mode", "message"].includes(kind)) return;
+      const value = String(wakeField.value || "");
+      void persistNativeWake({
+        enabled:wake.enabled === true,
+        time:kind === "time" ? value : wake.time,
+        deadline:kind === "deadline" ? value : wake.deadline,
+        mode:kind === "mode" ? value : wake.mode,
+        message:kind === "message" ? value : wake.message,
+      });
+      return;
+    }
+    const allowLinks = event.target.closest("[data-test-allow-links]");
+    if (allowLinks) {
+      if (!data.testBusy && !data.testUncertain) { data.testAllowLinkedAccounts = allowLinks.checked === true; data.confirmTest = ""; render(); }
+      return;
+    }
+    const recipient = event.target.closest("[data-test-recipient]");
+    if (recipient) {
+      if (!data.testBusy && !data.testUncertain && !data.recipientSaving && !data.recipientsLoading) {
+        data.recipientDraft = recipient.value; data.confirmTest = ""; render();
+      }
+      return;
+    }
     const testMode = event.target.closest("[data-test-mode]");
     if (testMode) { data.testModes = {...data.testModes, [testMode.dataset.testMode]:testMode.value}; render(); return; }
     const testVariant = event.target.closest("[data-test-variant]");
@@ -2291,9 +2971,12 @@ window.CompanionContactPage = (() => {
   }
   async function runProactiveTest(id) {
     const item = TEST_INSTRUCTIONS.find(candidate => candidate.id === id);
-    if (!item || data.testBusy || data.testUncertain) return;
+    if (!item || data.testBusy || data.testUncertain || !recipientReady()) return;
     const ticket = version;
-    const guard = {purpose:id, state:"pending", started_at:Date.now()};
+    const targetId = data.recipients.selected_target_id;
+    const targetLabel = recipientLabel();
+    const allowLinkedAccounts = data.testAllowLinkedAccounts === true;
+    const guard = {purpose:id, state:"pending", started_at:Date.now(), target_id:targetId, recipient_label:targetLabel, allow_linked_accounts:allowLinkedAccounts};
     if (!storeProactiveTestGuard(guard)) {
       data.confirmTest = "";
       data.testResults[id] = {state:"failed", failure_title:"测试没有启动",
@@ -2306,12 +2989,12 @@ window.CompanionContactPage = (() => {
     data.testGuard = guard;
     data.testResults[id] = null;
     const synthetic = testUsesSynthetic(id);
-    notice(synthetic ? "正在生成合成事件并等待模型与 QQ 投递回执…" : "正在获取真实来源、运行分析与消息模型，并等待 QQ 投递回执…");
+    notice(synthetic ? "正在生成合成事件并等待模型与目标账号投递回执…" : "正在获取真实来源、运行分析与消息模型，并等待目标账号投递回执…");
     render();
     try {
       const purpose = id === "mobile_location" ? "environment" : id === "reaction_image" ? "chat" : id;
       const result = await api("POST", "setup/proactive-diagnostic",
-        {purpose, confirm_delivery: true, synthetic_event: synthetic,
+        {purpose, confirm_delivery: true, synthetic_event: synthetic, target_id:targetId, allow_linked_accounts:allowLinkedAccounts,
           ...(id === "environment" ? {variant:data.testVariants?.environment || "weather"} : {}),
           ...(id === "mobile_location" ? {variant:"mobile_location"} : {}),
           ...(id === "reaction_image" ? {diagnostic_image:true} : {})}, id === "screen" && !synthetic ? 300000 : 180000);
@@ -2319,13 +3002,13 @@ window.CompanionContactPage = (() => {
       if (!["passed", "skipped", "failed", "unknown", "pending"].includes(result.state)) {
         throw problem("invalid_response");
       }
-      data.testResults[id] = result;
+      data.testResults[id] = {...result, recipient_label:targetLabel, allow_linked_accounts:allowLinkedAccounts};
       const uncertain = ["unknown", "pending"].includes(result.state);
       data.testUncertain = uncertain;
       data.testGuard = uncertain ? {...guard, state:result.state} : null;
       storeProactiveTestGuard(data.testGuard);
       notice(uncertain ? "测试结果未确认。请先核对核心管理员私聊；不要重试。"
-        : result.state === "passed" ? "测试通过，消息已投递到核心管理员私聊。"
+        : result.state === "passed" ? (allowLinkedAccounts ? "测试通过，消息已按关联账号策略投递，请核对下方实际目标。" : "测试通过，消息已投递到所选核心管理员私聊。")
         : result.state === "skipped" ? "测试完成，模型按当前素材判断本次不发送。"
         : "测试未通过，查看卡片中的阶段和建议。", result.state === "failed");
     } catch (error) {
@@ -2335,6 +3018,7 @@ window.CompanionContactPage = (() => {
       data.testGuard = uncertain ? {...guard, state:"unknown"} : null;
       storeProactiveTestGuard(data.testGuard);
       data.testResults[id] = {
+        recipient_label:targetLabel, allow_linked_accounts:allowLinkedAccounts,
         state: uncertain ? "unknown" : "failed",
         error: uncertain ? "请求未收到可核验的最终结果。" : reason(error.code),
         suggestion: uncertain ? "请核对核心管理员私聊；确认是否收到前，不要再次启动测试。" : "修正提示的问题后可重新运行测试。",
@@ -2388,13 +3072,16 @@ window.CompanionContactPage = (() => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault(); save(); return;
     }
-    const rail = event.target.closest("[data-view]");
-    if (rail && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    const rail = event.target.closest(".ct-rail [data-view]");
+    if (rail && ["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
       event.preventDefault();
       const index = VIEWS.findIndex(([id]) => id === data.view);
-      const next = (index + (event.key === "ArrowDown" ? 1 : VIEWS.length - 1)) % VIEWS.length;
+      const next = event.key === "Home" ? 0
+        : event.key === "End" ? VIEWS.length - 1
+        : (index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : VIEWS.length - 1)) % VIEWS.length;
       switchView(VIEWS[next][0]); render();
-      root.querySelector('[data-view="' + data.view + '"]')?.focus();
+      if (data.view === "materials") void loadMaterials();
+      root.querySelector('.ct-rail [data-view="' + data.view + '"]')?.focus();
     }
   }
 
@@ -2436,11 +3123,13 @@ window.CompanionContactPage = (() => {
     root = host; contactScope = currentContactScope();
     const cached = contactCache.get(contactScope);
     data = cached ? {...blank(), ...cached, confirmTest:"", testBusy:"", touched:new Set(cached.touched || []), draft:{...(cached.draft || {})}, pulse:new Set(), pulseNow:[], flip:null, flipNow:null, viewShift:null, viewShiftNow:null} : blank();
+    /* 原生模块状态不缓存：每次挂载都重新读，免得拿到上一次的半截请求。 */
+    data.nativeWake = {...blank().nativeWake};
     const testGuard = restoreProactiveTestGuard();
     if (testGuard) {
       data.testGuard = testGuard;
       data.testUncertain = true;
-      data.testResults[testGuard.purpose] = {state:"unknown",
+      data.testResults[testGuard.purpose] = {state:"unknown", recipient_label:testGuard.recipient_label, allow_linked_accounts:testGuard.allow_linked_accounts,
         error:"页面没有收到上一轮测试的最终回执。",
         suggestion:"请核对核心管理员私聊；确认上一轮结束后再解除测试锁。"};
     }
@@ -2465,6 +3154,7 @@ window.CompanionContactPage = (() => {
       addresses();
       data.pendingWrite = restorePendingWrite();
       await loadContract();
+      if (live(ticket) && data.view === "tests") void loadRecipients();
       if (live(ticket)) render();
     } catch (error) {
       if (!live(ticket)) return;
@@ -2475,6 +3165,9 @@ window.CompanionContactPage = (() => {
   function unmount() {
     window.CompanionScreenObservation?.unmount();
     ++version;
+    pendingFocus = null;
+    clearTimeout(testDialogCloseTimer);
+    testDialogCloseTimer = null;
     if (autoRecoveryTimer !== null) clearTimeout(autoRecoveryTimer);
     autoRecoveryTimer = null;
     autoRecoveryKey = "";
@@ -2493,7 +3186,8 @@ window.CompanionContactPage = (() => {
   }
   /* `state` 只为测试驱动而暴露：这一页的 data 是模块私有的，
      测试要断言环的几何与阈值时没有别的入口。 */
-  return {mount, unmount, openGateSettingsView,
+  return {mount, unmount, openGateSettingsView, focusField, viewForField,
     get state() { return {data}; },
     _internals:{minutes, hm, angle, point, curveOf, curveText, tierOf, arc, quietSpan}};
 })();
+

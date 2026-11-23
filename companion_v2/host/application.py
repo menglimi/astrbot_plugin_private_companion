@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging import getLogger
 from pathlib import Path
 import json
@@ -105,6 +105,7 @@ from companion_v2.screen.configuration import (ScreenConfigurationOwner, ScreenS
     configuration_fields as screen_configuration_fields)
 from companion_v2.screen.interpretation import ScreenInterpretationService
 from companion_v2.screen.peek import ScreenPeekService
+from companion_v2.device.action_service import KIND as PHONE_KIND, NOTICE_OWNER as PHONE_NOTICE_OWNER, PhoneActionService
 from companion_v2.conversation.relay_settings import (RelayConfigurationOwner, RelaySettings,
     configuration_fields as relay_configuration_fields)
 from companion_v2.conversation.recall_settings import (RecallConfigurationOwner, RecallSettings,
@@ -118,11 +119,14 @@ from companion_v2.library.provider import (CATALOG_CAPABILITY as LIBRARY_CATALOG
     make_read_provider as make_library_read_provider)
 from companion_v2.references.configuration import (ReferenceConfigurationOwner, ReferenceSettings,
     configuration_fields as reference_configuration_fields)
+from companion_v2.references.daily_outfit import DailyOutfitPhotos
 from companion_v2.references.service import ReferenceAssetService
 from companion_v2.references.wardrobe import (WardrobeConfigurationOwner, WardrobeSettings,
     configuration_fields as wardrobe_configuration_fields)
 from companion_v2.qzone.configuration import (QzoneConfigurationOwner, QzoneSettings,
     configuration_fields as qzone_configuration_fields)
+from companion_v2.device.configuration import (PhoneConfigurationOwner,
+    configuration_fields as phone_configuration_fields)
 from companion_v2.qzone.service import QzoneService
 from companion_v2.system_prompts.configuration import (
     RoleSystemPromptConfigurationOwner, configuration_fields as system_prompt_configuration_fields)
@@ -172,7 +176,32 @@ from companion_v2.memory.person.configuration import (AcquaintanceSettings,
 from companion_v2.role_work.awareness import RoleAwareness
 from companion_v2.conversation.awareness_context import ConversationAwarenessContext
 from companion_v2.host.role_attention import RoleAttention
-from companion_v2.host.tick_budget import TickScheduler, TickUnit
+from companion_v2.host.tick_budget import StagedOffload, TickScheduler, TickUnit
+from companion_v2.host.tick_offload import (
+    advance_background_async,
+    advance_calendar_planning_async,
+    advance_daily_outfit_async,
+    advance_growth_progress_async,
+    advance_journal_schedule_async,
+    advance_life_runtime_async,
+    advance_memory_schedule_async,
+    advance_phone_actions_async,
+    advance_presence_async,
+    advance_self_review_async,
+    advance_state_maintenance_async,
+    stage_background,
+    stage_calendar_planning,
+    stage_daily_outfit,
+    stage_growth_progress,
+    stage_journal_schedule,
+    stage_life_runtime,
+    stage_memory_schedule,
+    stage_phone_actions,
+    stage_presence,
+    stage_self_review,
+    stage_state_maintenance,
+    uses_default_method,
+)
 from companion_v2.proactive.configuration import ContactConfigurationOwner, GROUP as CONTACT_GROUP, with_contact_fields
 from companion_v2.proactive.service import ProactiveContacts
 from companion_v2.proactive.scheduling import ContactSchedule
@@ -221,7 +250,7 @@ class CompanionApplication:
                  runtime_identity=None, presence_port=None, segmentation=SegmentationPolicy(), voice_policy=None,
                  weather_port=None, weather_alert_port=None, balance_port=None, news_port=None,
                  solar_term_port=None, budget_soft=None, capability_owners=(),
-                 qzone_transport=None, default_provider_resolver=None,
+                 qzone_transport=None, default_provider_resolver=None, provider_lookup=None,
                  knowledge=None, memory_owner=DEFAULT_MEMORY_OWNER, memory_push=DEFAULT_MEMORY_PUSH, wake_port=None,
                  search_port_factory=None, configuration_store=None, reference_owner_resolver=None):
         if type(owns_runtime) is not bool or not any(p.kind == REPLY_KIND and p.lane is Lane.FOREGROUND for p in profiles):
@@ -272,6 +301,7 @@ class CompanionApplication:
             *reference_configuration_fields(),
             *wardrobe_configuration_fields(),
             *qzone_configuration_fields(),
+            *phone_configuration_fields(),
             *private_access_configuration_fields(),
             *relay_configuration_fields(),
             *system_prompt_configuration_fields(),
@@ -299,6 +329,7 @@ class CompanionApplication:
                     reference_configuration_owner,
                     WardrobeConfigurationOwner(runtime),
                     QzoneConfigurationOwner(runtime),
+                    PhoneConfigurationOwner(runtime),
                     RoleSystemPromptConfigurationOwner(runtime),
                     *capability_owners))
         try:
@@ -321,6 +352,7 @@ class CompanionApplication:
         self.qzone = (QzoneService(runtime, self.qzone_settings, qzone_transport, now=self.now)
                       if qzone_transport is not None else None)
         self.proactive = ProactiveContacts(self.configuration, memory_push=memory_push)
+        self.memory_push = memory_push
         self.role_life = PersistentRoleLifeLedger(runtime, now=self.now)
         self.role_growth = PersistentRoleGrowthLedger(runtime, now=self.now)
         self.relationship_memories = RelationshipMemoryService(runtime, now=self.now)
@@ -330,16 +362,19 @@ class CompanionApplication:
         self.role_reader = RoleReader(self.role_life)
         self.state_maintenance = StateMaintenance(runtime)
         self.calendar_planning = CalendarPlanning(runtime, weather_port=weather_port)
+        self.daily_outfit = DailyOutfitPhotos(runtime, weather_port)
         self.growth_progress = GrowthProgressService(runtime)
         self.self_review = SelfReviewService(runtime)
         self.expression_style = ExpressionStyleService(runtime)
         self.expression_draft_review = ExpressionDraftReview(runtime)
         self.agenda = AgendaService(runtime)
+        self.phone_actions = PhoneActionService(runtime, notify=self.notify)
         self.outbound = OutboundDelivery(runtime, sender, (
             DeliveryOwner(AGENDA_OWNER, "reminder.deliver", lambda request, at: self.agenda_background.delivery_text(request, at),
                 lambda request, at: self.agenda_background.history_text(request, at)),
             DeliveryOwner(CONTACT_GROUP, CONTACT_GROUP, self.proactive.delivery_text, self.proactive.history_text),
             DeliveryOwner(FALLBACK_OWNER, "conversation.reply", lambda request, at: self.image_fallback.read(request, at)),
+            DeliveryOwner(PHONE_NOTICE_OWNER, PHONE_KIND, self.phone_actions.delivery_content),
         ), concurrency=limits.background_slots)
         self.outbound.on_delivered = self._mark_contact_sent
         self.outbound.on_receipt = self._record_contact_delivery_receipt
@@ -362,8 +397,8 @@ class CompanionApplication:
             TaskRegistration(TaskDefinition(DELIVERY_KIND, "conversation.delivery", REPLY_ACTION, Lane.FOREGROUND,
                 side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding, timeout_seconds=30,
                 max_attempts=1, concurrency=self.worker_limit), lambda spec, at: self.delivery.validate(spec, at)),
-        ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + self.screen_interpretation.registrations + self.screen_peek.registrations + self.authoring.registrations + (external.registrations if external is not None else ())
-        registrations += self.expression_draft_review.registrations
+        ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + self.screen_interpretation.registrations + self.screen_peek.registrations + self.phone_actions.registrations + self.authoring.registrations + (external.registrations if external is not None else ())
+        registrations += self.expression_draft_review.registrations + self.daily_outfit.registrations
         self.tasks = TaskSupervisor(runtime, registrations, limits=limits, now=self.now)
         # Reference material shares this runtime and the supervisor that owns it, so
         # it is constructed here rather than with the other settings readers above.
@@ -459,7 +494,8 @@ class CompanionApplication:
         self.messages.reply_images.enabled = sender.supports_images
         self.messages.reply_pokes = sender.supports_poke
         self.router = ModelRouter(self.configuration, profiles, providers,
-                                  default_provider_resolver=default_provider_resolver)
+                                  default_provider_resolver=default_provider_resolver,
+                                  provider_lookup=provider_lookup)
         self.gateway = LocalModelGateway(self.router, BudgetLedger(runtime, budget, budget_soft), self.tasks)
         self.authoring.attach(self.gateway, require_running=self.require_running)
         self.background_waiting = BackgroundTaskQueue(self.tasks)
@@ -480,11 +516,13 @@ class CompanionApplication:
         self.video_narration.attach(self)
         self.screen_interpretation.attach(self)
         self.screen_peek.attach(self)
+        self.phone_actions.attach(self)
         self.background = BackgroundCoordinator(self.tasks, self.outbound,
                                                 (self.agenda_background, self.image_review_service,
                                                  self.screen_interpretation, self.screen_peek), notify=self.notify)
         self.state_maintenance.attach(self)
         self.calendar_planning.attach(self)
+        self.daily_outfit.attach(self)
         self.growth_progress.attach(self)
         self.self_review.attach(self)
         self.expression_style.attach(self)
@@ -561,6 +599,7 @@ class CompanionApplication:
         self._wake = asyncio.Event()
         self._driver = None
         self._wal_checkpoint_worker = None
+        self._thread_futures = set()
         # Built by the first drive pass, once every component exists and the loop
         # that will time the slices is running.
         self._maintenance = None
@@ -940,6 +979,19 @@ class CompanionApplication:
             self._mark_reaction_sent(result.result_ref)
         return result
 
+    async def _run_in_thread(self, fn, *args, **kwargs):
+        """Run blocking maintenance off-loop while tracking the worker thread for safe shutdown."""
+        future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        self._thread_futures.add(future)
+
+        def _discard(done_future):
+            self._thread_futures.discard(done_future)
+            if not done_future.cancelled():
+                done_future.exception()
+
+        future.add_done_callback(_discard)
+        return await asyncio.shield(future)
+
     def _maintenance_rotation(self, loop) -> TickScheduler:
         """The ordered maintenance units of one drive pass, and its slice bound.
 
@@ -949,49 +1001,168 @@ class CompanionApplication:
         with ``BACKGROUND_UNIT_PREFIX`` so the sleep calculation still finds them.
         """
 
-        def bound_activity() -> None:
-            self.memory.activity.advance_bound(self.state_maintenance.bindings.values())
+        def stage_bound_activity() -> StagedOffload:
+            windows = tuple(self.state_maintenance.bindings.values())
+            if not self.memory.activity.has_due_bindings(windows):
+                return StagedOffload("skip")
+            return StagedOffload("offload", scan=lambda: self.memory.activity.advance_bound(windows))
 
-        def bound_game() -> None:
-            if self.memory.game is not None:
-                self.memory.game.advance_bound(self.state_maintenance.bindings.values())
+        async def bound_activity() -> None:
+            windows = tuple(self.state_maintenance.bindings.values())
+            if not self.memory.activity.has_due_bindings(windows):
+                return
+            await self._run_in_thread(self.memory.activity.advance_bound, windows)
 
-        def advance_reflection() -> None:
+        def stage_bound_game() -> StagedOffload:
+            if self.memory.game is None:
+                return StagedOffload("skip")
+            windows = tuple(self.state_maintenance.bindings.values())
+            if not self.memory.game.has_due_bindings(windows):
+                return StagedOffload("skip")
+            return StagedOffload("offload", scan=lambda: self.memory.game.advance_bound(windows))
+
+        async def bound_game() -> None:
+            if self.memory.game is None:
+                return
+            windows = tuple(self.state_maintenance.bindings.values())
+            if not self.memory.game.has_due_bindings(windows):
+                return
+            await self._run_in_thread(self.memory.game.advance_bound, windows)
+
+        def stage_reflection() -> StagedOffload | None:
             tools = self.messages.tools
             participation = getattr(tools, "group_participation", None) if tools is not None else None
-            if participation is not None:
-                participation.advance_reflection()
+            if participation is None:
+                return StagedOffload("skip")
+            from companion_v2.conversation.participation import GroupParticipation, day_key as participation_day_key
+            if not uses_default_method(participation, GroupParticipation, "advance_reflection"):
+                return None
+            day = participation_day_key(participation.tasks.now(), participation.messages.timezone_name)
+            if day == participation._reflection_day:
+                return StagedOffload("skip")
+            return StagedOffload("offload", scan=participation.advance_reflection)
 
-        def advance_presence() -> None:
-            if self.presence is not None:
-                self.presence.advance()
+        async def advance_reflection() -> None:
+            tools = self.messages.tools
+            participation = getattr(tools, "group_participation", None) if tools is not None else None
+            if participation is None:
+                return
+            from companion_v2.conversation.participation import GroupParticipation, day_key as participation_day_key
 
-        def advance_contact_deliveries():
+            if uses_default_method(participation, GroupParticipation, "advance_reflection"):
+                day = participation_day_key(participation.tasks.now(), participation.messages.timezone_name)
+                if day == participation._reflection_day:
+                    return
+                await asyncio.to_thread(participation.advance_reflection)
+                return
+            participation.advance_reflection()
+
+        def stage_expression_style() -> StagedOffload | None:
+            svc = self.expression_style
+            if ("advance" in svc.__dict__
+                    or type(svc).advance is not ExpressionStyleService.advance):
+                return None
+            if svc.closed or svc._advancing:
+                return StagedOffload("skip")
+            svc._reap_workers()
+            from companion_v2.expression.style_service import KIND as EXPRESSION_KIND
+            if svc.workers or EXPRESSION_KIND not in svc.gateway.router.profiles:
+                return StagedOffload("skip")
+            at = svc.tasks.now()
+            if svc._next_discovery_at is not None and at < svc._next_discovery_at:
+                return StagedOffload("skip")
+            prev_discovery = svc._next_discovery_at
+            svc._next_discovery_at = at + timedelta(seconds=60)
+            bindings = tuple(svc.app.state_maintenance.bindings.values())
+            svc._advancing = True
+
+            def apply_expression(to_launch):
+                svc._advancing = False
+                if svc.closed or not to_launch:
+                    return
+                for work_key, context, instruction in to_launch:
+                    existing = svc.workers.get(work_key)
+                    if existing is not None and not existing.done():
+                        continue
+                    worker = asyncio.create_task(
+                        svc.run(context, instruction), name="companion:expression-learn"
+                    )
+                    svc.workers[work_key] = worker
+                    worker.add_done_callback(lambda done: svc.app.notify())
+
+            def cleanup_expression():
+                svc._advancing = False
+                svc._next_discovery_at = prev_discovery
+
+            return StagedOffload(
+                "offload",
+                scan=lambda: svc._discover_and_scan_sync(bindings, at, defer_launch=True),
+                apply=apply_expression,
+                cleanup=cleanup_expression,
+            )
+
+        async def advance_expression_style():
+            # Honor tests that patch ``application.expression_style.advance`` directly.
+            if ("advance" not in self.expression_style.__dict__
+                    and type(self.expression_style).advance is ExpressionStyleService.advance):
+                return await self.expression_style.advance_async()
+            return self.expression_style.advance()
+
+        async def advance_presence() -> None:
+            await advance_presence_async(self.presence)
+
+        def stage_contact_deliveries() -> StagedOffload:
+            now = loop.time()
+            if now < self._next_contact_delivery_check:
+                return StagedOffload("skip", value=None)
+            prev_check = self._next_contact_delivery_check
+            self._next_contact_delivery_check = now + self.CONTACT_DELIVERY_INTERVAL_SECONDS
+            return StagedOffload(
+                "offload",
+                scan=self.proactive.advance_deliveries,
+                cleanup=lambda: setattr(self, "_next_contact_delivery_check", prev_check),
+            )
+
+        async def advance_contact_deliveries():
             # One second is the cadence the unconditional call already had; keeping
             # the gate inside the unit means a deferred slice delays it, not skips it.
             now = loop.time()
             if now < self._next_contact_delivery_check:
                 return None
             self._next_contact_delivery_check = now + self.CONTACT_DELIVERY_INTERVAL_SECONDS
-            return self.proactive.advance_deliveries()
+            return await asyncio.to_thread(self.proactive.advance_deliveries)
 
         return TickScheduler((
             TickUnit(self.BACKGROUND_UNIT_PREFIX + "planners",
-                     lambda: self.background.advance(planners=False)),
-            TickUnit("memory-schedule", self.memory_schedule.advance),
-            TickUnit("life-runtime", self.life_runtime.advance),
-            TickUnit("state-maintenance", self.state_maintenance.advance),
-            TickUnit("memory-activity", bound_activity),
-            TickUnit("memory-game", bound_game),
-            TickUnit("calendar-planning", self.calendar_planning.advance),
-            TickUnit("growth-progress", self.growth_progress.advance),
-            TickUnit("self-review", self.self_review.advance),
-            TickUnit("group-participation", advance_reflection),
-            TickUnit("expression-style", self.expression_style.advance),
-            TickUnit("presence", advance_presence),
-            TickUnit("proactive-deliveries", advance_contact_deliveries),
-            TickUnit("journal-schedule", self.journal_schedule.advance),
-            TickUnit(self.BACKGROUND_UNIT_PREFIX + "deliveries", self.background.advance),
+                     lambda: advance_background_async(self.background, planners=False),
+                     stage=lambda: stage_background(self.background, planners=False)),
+            TickUnit("memory-schedule", lambda: advance_memory_schedule_async(self.memory_schedule),
+                     stage=lambda: stage_memory_schedule(self.memory_schedule)),
+            TickUnit("life-runtime", lambda: advance_life_runtime_async(self.life_runtime),
+                     stage=lambda: stage_life_runtime(self.life_runtime)),
+            TickUnit("phone-actions", lambda: advance_phone_actions_async(self.phone_actions),
+                     stage=lambda: stage_phone_actions(self.phone_actions)),
+            TickUnit("state-maintenance", lambda: advance_state_maintenance_async(self.state_maintenance),
+                     stage=lambda: stage_state_maintenance(self.state_maintenance)),
+            TickUnit("memory-activity", bound_activity, stage=stage_bound_activity),
+            TickUnit("memory-game", bound_game, stage=stage_bound_game),
+            TickUnit("calendar-planning", lambda: advance_calendar_planning_async(self.calendar_planning),
+                     stage=lambda: stage_calendar_planning(self.calendar_planning)),
+            TickUnit("daily-outfit", lambda: advance_daily_outfit_async(self.daily_outfit),
+                     stage=lambda: stage_daily_outfit(self.daily_outfit)),
+            TickUnit("growth-progress", lambda: advance_growth_progress_async(self.growth_progress),
+                     stage=lambda: stage_growth_progress(self.growth_progress)),
+            TickUnit("self-review", lambda: advance_self_review_async(self.self_review),
+                     stage=lambda: stage_self_review(self.self_review)),
+            TickUnit("group-participation", advance_reflection, stage=stage_reflection),
+            TickUnit("expression-style", advance_expression_style, stage=stage_expression_style),
+            TickUnit("presence", advance_presence, stage=lambda: stage_presence(self.presence)),
+            TickUnit("proactive-deliveries", advance_contact_deliveries, stage=stage_contact_deliveries),
+            TickUnit("journal-schedule", lambda: advance_journal_schedule_async(self.journal_schedule),
+                     stage=lambda: stage_journal_schedule(self.journal_schedule)),
+            TickUnit(self.BACKGROUND_UNIT_PREFIX + "deliveries",
+                     lambda: advance_background_async(self.background, planners=True),
+                     stage=lambda: stage_background(self.background, planners=True)),
         ), budget_seconds=self.TICK_BUDGET_SECONDS, clock=loop.time)
 
     async def _reclaim_expired_reservations(self):
@@ -1013,7 +1184,7 @@ class CompanionApplication:
         """
 
         try:
-            await asyncio.to_thread(self.gateway.ledger.reclaim_expired, self.tasks)
+            await self._run_in_thread(self.gateway.ledger.reclaim_expired, self.tasks)
         except TaskError as error:
             logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
         except Exception as error:
@@ -1124,12 +1295,14 @@ class CompanionApplication:
             self.life_runtime.cancel_running()
             self.state_maintenance.cancel_running()
             self.calendar_planning.cancel_running()
+            self.daily_outfit.cancel_running()
             self.growth_progress.cancel_running()
             self.self_review.cancel_running()
             self.expression_style.cancel_running()
             self.image_review_service.cancel_running()
             self.screen_interpretation.cancel_running()
             self.screen_peek.cancel_running()
+            self.phone_actions.cancel_running()
             self.memory.activity.close()
             if self.memory.game is not None:
                 self.memory.game.close()
@@ -1144,7 +1317,7 @@ class CompanionApplication:
     def active_handles(self):
         return ((self.semantics.active_handles if self.semantics else ()) + self.runner.active_handles + self.journal_writer.active_handles + self.memory_reflection.active_handles
                 + self.role_reader.active_handles + self.life_runtime.active_handles
-                + self.state_maintenance.active_handles + self.calendar_planning.active_handles
+                + self.state_maintenance.active_handles + self.calendar_planning.active_handles + self.daily_outfit.active_handles
                 + self.growth_progress.active_handles
                 + self.self_review.active_handles
                 + self.expression_style.active_handles
@@ -1159,6 +1332,7 @@ class CompanionApplication:
                 + self.poke_reply_model.active_handles + tuple(self.poke_context_tasks)
                 + self.screen_interpretation.active_handles
                 + self.screen_peek.active_handles
+                + self.phone_actions.active_handles
                 + (self.authoring.runner.active_handles if self.authoring.runner else ())
                 + (self.external.runner.active_handles if self.external else ()))
 
@@ -1178,6 +1352,9 @@ class CompanionApplication:
             if self._wal_checkpoint_worker is not None:
                 await asyncio.gather(self._wal_checkpoint_worker, return_exceptions=True)
                 self._wal_checkpoint_worker = None
+            pending_threads = tuple(future for future in self._thread_futures if not future.done())
+            if pending_threads:
+                await asyncio.wait(pending_threads, timeout=5.0)
             workers = tuple(worker for _, worker in self._workers.values())
             if workers:
                 _, pending = await asyncio.wait(workers, timeout=grace_seconds)
@@ -1194,6 +1371,7 @@ class CompanionApplication:
             await self.life_runtime.close()
             await self.state_maintenance.close()
             await self.calendar_planning.close()
+            await self.daily_outfit.close()
             await self.growth_progress.close()
             await self.self_review.close()
             await self.expression_style.close()
@@ -1204,6 +1382,7 @@ class CompanionApplication:
             await self.video_narration.close()
             await self.screen_interpretation.close()
             await self.screen_peek.close()
+            await self.phone_actions.close()
             self.memory.activity.close()
             if self.memory.game is not None:
                 self.memory.game.close()
@@ -1234,8 +1413,5 @@ class CompanionApplication:
                 if self.owns_runtime:
                     self.runtime.close()
                     self._storage_closed = True
-                if self.configuration_store is not None:
-                    self.runtime.attach_configuration_store(None)
-                    self.configuration_store.close()
-                    self.configuration_store = None
+                # An externally owned runtime keeps both stores for stopped views.
             return ShutdownReport(self.state, handles, self._storage_closed)

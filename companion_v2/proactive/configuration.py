@@ -501,6 +501,8 @@ class ContactConfigurationOwner(SparseConfigurationOwner):
                     values[key] = replace(item, explicit=False)
             current = replace(current, fields=values,
                 dependencies=tuple(dict((*current.dependencies, *stable.dependencies, *shared.dependencies)).items()))
+        from companion_v2.relationships.account_link_settings import overlay_snapshot
+        current = overlay_snapshot(self.runtime, target, fields, current)
         return replace(current, fields=self._pauses(target, fields, dict(current.fields),
             old_public_revisions=public_revisions))
 

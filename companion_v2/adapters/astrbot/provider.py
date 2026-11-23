@@ -7,6 +7,7 @@ The V2 gateway alone owns tool execution, fallback and durable accounting.
 
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
+from inspect import isawaitable
 from logging import getLogger
 import json
 import re
@@ -17,6 +18,7 @@ from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.model_gateway.cache_diagnostics import signature_for_payload
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import Amount, CapturedModelOutput, LocalProvider, ProviderResponse
+from companion_v2.model_gateway.pricing import UsageTariff
 from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics, ResponseTextSummary
 
 from .model_wire import build_wire, decode_response, decode_text_response
@@ -24,7 +26,7 @@ from .native import check_version, native_id
 from .memory_output import capture, explicit_refusal, response_format, responses_text_format
 from .streaming import StreamTranscript
 from .response_diagnostics import observe_completion
-from .provider_transport import definitely_not_sent, rejected_before_generation
+from .provider_transport import definitely_not_sent, extract_error_status_code, rejected_before_generation
 
 
 # Reasoning models count hidden thinking tokens against the same completion budget.
@@ -304,17 +306,6 @@ def provider_fingerprint(native):
                    sorted(getattr(native, "default_params", {}))])
 
 
-def provider_class_matches(provider, classes):
-    """Class identity that also survives AstrBot re-importing provider modules."""
-    if provider is None:
-        return False
-    if isinstance(provider, classes):
-        return True
-    actual = type(provider)
-    return any(actual.__module__ == expected.__module__
-               and actual.__qualname__ == expected.__qualname__ for expected in classes)
-
-
 def provider_config_drift(expected, provider, auto_resolved=None):
     """Compare captured keys, including host-resolved automatic limits, without exposing values."""
     config = getattr(provider, "provider_config", None)
@@ -331,25 +322,6 @@ def provider_config_drift(expected, provider, auto_resolved=None):
               and not _auto_filled_equivalent(key, value, config[key])):
             drifted.append(key)
     return tuple(sorted(drifted))
-
-
-@dataclass(frozen=True)
-class UsageTariff:
-    """Explicit rated cost in microUSD per million tokens; not a billing receipt."""
-    input: int
-    cached_input: int
-    output: int
-
-    def __post_init__(self):
-        if any(type(v) is not int or not 0 <= v <= 10**12 for v in (self.input, self.cached_input, self.output)):
-            raise ValueError("tariff requires nonnegative integer microUSD rates")
-
-    def amount(self, other, cached, output, *, input_tokens=None, cached_input_tokens=None,
-               cache_creation_tokens=None):
-        cost = (other * self.input + cached * self.cached_input + output * self.output + 999999) // 1000000
-        return Amount(other + cached + output, cost, input_tokens=input_tokens,
-                      cached_input_tokens=cached_input_tokens, cache_creation_tokens=cache_creation_tokens,
-                      output_tokens=output if input_tokens is not None else None)
 
 
 def looks_like_text_provider(native):
@@ -454,7 +426,8 @@ def host_capabilities(provider_config):
 class AstrBotTextProvider:
     def __init__(self, context, *, bridge, binding, provider_id, version, provider_type,
                  function_tool_type, tool_set_type, tariff: UsageTariff, maximum_output_tokens=4096,
-                 maximum_input_estimate=131072, output_parameter="max_tokens", streaming=False):
+                 maximum_input_estimate=131072, output_parameter="max_tokens", streaming=False,
+                 tariff_resolver=None):
         check_version(version)
         if output_parameter not in ("max_tokens", "max_completion_tokens"):
             raise ValueError("output token parameter must be selected explicitly")
@@ -498,6 +471,7 @@ class AstrBotTextProvider:
         # the OpenAI-compatible path opts in; the prompt already asks for JSON
         # and the decoder accepts fenced JSON as a fallback.
         self.supports_response_format = self.kind == "openai" and not self.is_anthropic
+        self.supports_gemini_json_mime = self.kind == "gemini"
         self.config = deepcopy(self.native.provider_config) if isinstance(
             getattr(self.native, "provider_config", None), dict) else {}
         self.config_hash = digest(self.config)
@@ -511,6 +485,7 @@ class AstrBotTextProvider:
         self.parameters = frozenset(getattr(self.native, "default_params", {}))
         self.function_tool_type, self.tool_set_type = function_tool_type, tool_set_type
         self.tariff, self.output_parameter = tariff, output_parameter
+        self._tariff_resolver = tariff_resolver if callable(tariff_resolver) else None
         if type(streaming) is not bool:
             raise ValueError("streaming must be an explicit boolean")
         # 只有 Chat Completions 的 chunk 协议与 StreamTranscript 兼容。Responses
@@ -539,10 +514,16 @@ class AstrBotTextProvider:
                      "astrbot_openai_responses" if self.kind == "openai_responses" else
                      "astrbot_openai" if self.kind == "openai" else
                      "astrbot_gemini" if self.kind == "gemini" else "astrbot_native")
+        supports_video_relay = (
+            "image" in capabilities
+            and self.kind in ("openai", "openai_responses")
+            and not self.is_anthropic
+        )
         return LocalProvider(self.binding, capabilities, self.maximum_output_tokens,
                              self.reserve, self.generate, transport=transport, default_streaming=self.streaming,
                              maximum_input_estimate=self.maximum_input_estimate,
-                             supports_model_override=True, model=self.model)
+                             supports_model_override=True, model=self.model,
+                             supports_video_relay=supports_video_relay)
 
     def _provider_class_matches(self, provider):
         """宿主刷新注册表时会重新导入适配器模块，类对象随之更换。
@@ -650,25 +631,34 @@ class AstrBotTextProvider:
                                      "provider_max_output_tokens": self.maximum_output_tokens})
         return estimated
 
+    def _active_tariff(self, model_name=""):
+        if self._tariff_resolver is not None:
+            resolved = self._tariff_resolver(self.provider_id, model_name or self.model, self.tariff)
+            if isinstance(resolved, UsageTariff):
+                return resolved
+        return self.tariff
+
     def reserve(self, envelope):
-        estimate = self._estimate(envelope, build_wire(envelope, model_name=envelope.model_override or self.model))
-        # No assumed cache hit; reserve using the larger of the two input rates.
-        rate = max(self.tariff.input, self.tariff.cached_input)
-        return UsageTariff(rate, rate, self.tariff.output).amount(estimate, 0, envelope.max_output_tokens)
+        model_name = envelope.model_override or self.model
+        estimate = self._estimate(envelope, build_wire(envelope, model_name=model_name))
+        # No assumed cache hit; reserve using the largest input rate.
+        return self._active_tariff(model_name).reserve_amount(estimate, envelope.max_output_tokens)
 
     def _usage(self, raw):
         try:
             def read(value, name):
                 return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
 
+            raw_model = read(raw, "model")
+            tariff = self._active_tariff(raw_model if type(raw_model) is str else "")
             usage = read(raw, "usage")
             if hasattr(usage, "input_other"):
                 # AstrBot 的原生 Gemini 用量是 TokenUsage，而不是 OpenAI 的 usage dict。
                 other, cached, output = usage.input_other, usage.input_cached, usage.output
                 if any(type(v) is not int or v < 0 for v in (other, cached, output)):
                     return None
-                return self.tariff.amount(other, cached, output,
-                                          input_tokens=other + cached, cached_input_tokens=cached)
+                return tariff.amount(other, cached, output,
+                                     input_tokens=other + cached, cached_input_tokens=cached)
             prompt = read(usage, "prompt_tokens")
             completion = read(usage, "completion_tokens")
             total = read(usage, "total_tokens")
@@ -701,9 +691,9 @@ class AstrBotTextProvider:
                                                        or not 0 <= cache_creation <= prompt
                                                        or cache_read + cache_creation > prompt)):
                 return None
-            return self.tariff.amount(prompt - cache_read, cache_read, completion, input_tokens=prompt,
-                                      cached_input_tokens=cache_read if cached is not None else None,
-                                      cache_creation_tokens=cache_creation)
+            return tariff.amount(prompt - cache_read, cache_read, completion, input_tokens=prompt,
+                                 cached_input_tokens=cache_read if cached is not None else None,
+                                 cache_creation_tokens=cache_creation)
         except (AttributeError, TypeError, ValueError):
             return None
 
@@ -764,16 +754,28 @@ class AstrBotTextProvider:
         return configured
 
     @staticmethod
+    def _error_metadata(error):
+        """Extract bounded, body-free error type, TaskError code, and HTTP status."""
+        task_error_code = error.code if isinstance(error, TaskError) else None
+        if (not isinstance(task_error_code, str)
+                or re.fullmatch(r"[a-z0-9_.-]{1,80}", task_error_code) is None):
+            task_error_code = None
+        status_code = extract_error_status_code(error)
+        error_type = type(error).__name__
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type) is None:
+            error_type = None
+        return error_type, task_error_code, status_code
+
+    @staticmethod
     def _response_format_unsupported(error):
         """Whether the provider rejected only the optional structured-output field."""
         message = str(error).casefold()
         if isinstance(error, TypeError):
-            return ("response_format" in message or "unexpected keyword" in message
-                    or "unexpected argument" in message)
-        if "response_format" not in message:
+            return ("response_format" in message or "response_mime_type" in message
+                    or "unexpected keyword" in message or "unexpected argument" in message)
+        if not any(token in message for token in ("response_format", "response_mime_type", "json mode")):
             return False
-        status = getattr(error, "status_code", None)
-        return type(status) is int and status in (400, 404, 422)
+        return extract_error_status_code(error) in (400, 404, 422)
 
     async def generate(self, envelope):
         receipt = "astrbot-model-" + uuid4().hex
@@ -935,6 +937,7 @@ class AstrBotTextProvider:
                 payload = {"model": envelope.model_override or self.model,
                            "messages": deepcopy(_gemini_messages(wire.messages)),
                            "max_tokens": envelope.max_output_tokens}
+            gemini_json_mime = None
             if self.kind == "openai_responses":
                 text_format = responses_text_format(envelope.original)
                 if text_format is not None:
@@ -943,6 +946,26 @@ class AstrBotTextProvider:
                 structured = response_format(envelope.original)
                 if structured is not None and self.supports_response_format:
                     payload["response_format"] = structured
+                elif structured is not None and self.supports_gemini_json_mime and not wire.tools:
+                    # Gemini native SDK reads response_mime_type on GenerateContentConfig;
+                    # it is incompatible with tool declarations, so only enable it when no
+                    # tools are attached to this turn.
+                    gemini_json_mime = "application/json"
+                    payload["response_mime_type"] = gemini_json_mime
+            if gemini_json_mime is not None:
+                prepare_config = getattr(native, "_prepare_query_config", None)
+                if callable(prepare_config):
+                    async def _prepare_query_config_with_json_mime(*args, _orig=prepare_config, **kwargs):
+                        config = _orig(*args, **kwargs)
+                        if isawaitable(config):
+                            config = await config
+                        mime = payload.get("response_mime_type")
+                        if (mime and config is not None
+                                and not getattr(config, "tools", None)
+                                and hasattr(config, "response_mime_type")):
+                            config.response_mime_type = mime
+                        return config
+                    native._prepare_query_config = _prepare_query_config_with_json_mime
             if structured_tool is not None:
                 payload["tool_choice"] = {"type": "tool", "name": structured_tool}
             logger.debug("[CompanionV2][开发者追踪] 实际模型请求 provider=%s model=%s payload=%s",
@@ -961,16 +984,7 @@ class AstrBotTextProvider:
                 except Exception:
                     logger.debug("cache signature collection failed", exc_info=True)
         except Exception as error:
-            task_error_code = error.code if isinstance(error, TaskError) else None
-            if (not isinstance(task_error_code, str)
-                    or re.fullmatch(r"[a-z0-9_.-]{1,80}", task_error_code) is None):
-                task_error_code = None
-            status_code = getattr(error, "status_code", None)
-            if type(status_code) is not int or not 100 <= status_code <= 599:
-                status_code = None
-            error_type = type(error).__name__
-            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type) is None:
-                error_type = None
+            error_type, task_error_code, status_code = self._error_metadata(error)
             diagnostics = replace(diagnostics, failure=ModelFailure.PREPARATION,
                 error_type=error_type, error_code=task_error_code, status_code=status_code)
             logger.warning("[CompanionV2] 模型请求准备失败 provider=%s failure=%s error_type=%s "
@@ -998,6 +1012,11 @@ class AstrBotTextProvider:
                     logger.info("[CompanionV2] 模型协议不接受 response_format，降级重试 provider=%s error_type=%s",
                                 self.provider_id, type(error).__name__)
                     payload.pop("response_format", None)
+                    response = await dispatch_once()
+                elif "response_mime_type" in payload and self._response_format_unsupported(error):
+                    logger.info("[CompanionV2] 模型协议不接受 response_mime_type，降级重试 provider=%s error_type=%s",
+                                self.provider_id, type(error).__name__)
+                    payload.pop("response_mime_type", None)
                     response = await dispatch_once()
                 else:
                     raise
@@ -1103,23 +1122,14 @@ class AstrBotTextProvider:
                 diagnostics = replace(diagnostics, parse_state="native_rejected")
             diagnostics = replace(diagnostics, failure=final_failure,
                 parse_state="contract_rejected" if final_failure is ModelFailure.WIRE_DECODE else diagnostics.parse_state)
-            task_error_code = error.code if isinstance(error, TaskError) else "unavailable"
-            if (not isinstance(task_error_code, str)
-                    or re.fullmatch(r"[a-z0-9_.-]{1,80}", task_error_code) is None):
-                task_error_code = "unavailable"
-            status_code = getattr(error, "status_code", None)
-            if type(status_code) is not int or not 100 <= status_code <= 599:
-                status_code = "unavailable"
-            error_type = type(error).__name__
-            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type) is None:
-                error_type = None
+            error_type, task_error_code, status_code = self._error_metadata(error)
             diagnostics = replace(diagnostics, error_type=error_type,
-                error_code=task_error_code if task_error_code != "unavailable" else None,
-                status_code=status_code if type(status_code) is int else None)
+                error_code=task_error_code, status_code=status_code)
+            status_label = status_code if status_code is not None else "unavailable"
             if (raw is None and transcript is None
                     and (definitely_not_sent(error) or rejected_before_generation(error))):
-                logger.warning("[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s error_type=%s",
-                               self.provider_id, error_type)
+                logger.warning("[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s error_type=%s status_code=%s",
+                               self.provider_id, error_type, status_label)
                 return ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref=receipt,
                                         failure=final_failure, diagnostics=diagnostics)
             logger.warning(
@@ -1127,7 +1137,8 @@ class AstrBotTextProvider:
                 "error_type=%s task_error_code=%s status_code=%s completion_present=%s "
                 "finish_reason=%s parse_state=%s raw_chars=%s parsed_chars=%s",
                 self.provider_id, final_failure.document()["phase"], final_failure.value,
-                type(error).__name__, task_error_code, status_code, diagnostics.completion_present,
+                type(error).__name__, task_error_code or "unavailable", status_label,
+                diagnostics.completion_present,
                 diagnostics.finish_reason, diagnostics.parse_state,
                 diagnostics.raw.chars if diagnostics.raw is not None else "unavailable",
                 diagnostics.parsed.chars if diagnostics.parsed is not None else "unavailable")

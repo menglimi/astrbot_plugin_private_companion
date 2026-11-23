@@ -9,7 +9,7 @@ window.CompanionHuaweiHealthPage = (() => {
     IDLE: "未开始", STARTING: "正在启动浏览器", WAITING: "等待登录", NEED_SMS: "等待手机验证码",
     NEED_CRED: "等待账号密码", NEED_TRUST: "等待信任选择", DONE: "登录成功", FAILED: "登录失败",
   };
-  let root = null, status = null, perception = null, perceptionError = "", busy = false, notice = "", generation = 0, pollTimer = null;
+  let root = null, status = null, perception = null, perceptionError = "", busy = false, notice = "", generation = 0, pollTimer = null, pollInFlight = false;
   const draft = {
     account: "", password: "", cookieFields: {}, cookieJson: "", sms: "",
     autoTrust: true, preferAuto: false, visibleFallback: false,
@@ -114,7 +114,7 @@ window.CompanionHuaweiHealthPage = (() => {
       <div><span>登录会话</span><strong>${esc(loginState())}</strong></div>
       <div><span>浏览器</span><strong>${status?.browser?.found ? "已找到 Edge / Chrome" : "未找到，请填写浏览器路径"}</strong></div>
     </div>
-    ${login.message ? `<p class="hw-health-note">${esc(login.message)}</p>` : ""}`;
+    ${login.message ? `<p class="hw-health-note" data-hw-login-message>${esc(login.message)}</p>` : `<p class="hw-health-note" data-hw-login-message hidden></p>`}`;
   }
   function loginMarkup() {
     const login = status?.login || {}, need = login.need || {};
@@ -127,7 +127,7 @@ window.CompanionHuaweiHealthPage = (() => {
       <label class="hw-health-check"><input type="checkbox" data-hw-login-prefer-auto> 使用已保存账号密码无头自动登录</label>
       <label class="hw-health-check"><input type="checkbox" data-hw-login-auto-trust checked> 自动信任此浏览器</label>
       <label class="hw-health-check"><input type="checkbox" data-hw-login-visible-fallback> 自动失败时打开可见窗口</label>
-      <div class="hw-health-login-state"><span>${esc(loginState())}</span><small>${login.deadline_left ? `剩余 ${Math.max(0, Number(login.deadline_left))} 秒` : ""}</small></div>
+      <div class="hw-health-login-state"><span data-hw-login-state>${esc(loginState())}</span><small data-hw-login-deadline>${login.deadline_left ? `剩余 ${Math.max(0, Number(login.deadline_left))} 秒` : ""}</small></div>
       ${need.sms || /NEED_SMS/.test(login.state || "") ? `<div class="hw-health-inline"><input data-hw-sms placeholder="手机验证码" inputmode="numeric" maxlength="8"><button class="button small" type="button" data-hw-action="login-sms" ${busy ? "disabled" : ""}>提交验证码</button></div>` : ""}
       ${need.trust || /NEED_TRUST/.test(login.state || "") ? `<div class="hw-health-actions">
         <button class="button small" type="button" data-hw-trust="true" ${busy ? "disabled" : ""}>信任此浏览器</button>
@@ -347,26 +347,80 @@ window.CompanionHuaweiHealthPage = (() => {
       if (active(ticket)) { busy = false; render(); }
     }
   }
+  function loginStructureKey(value) {
+    const login = value?.login || {}, need = login.need || {};
+    return JSON.stringify([
+      Boolean(value?.bound),
+      Boolean(value?.token?.cached),
+      Boolean(value?.cookie?.exists),
+      Number(value?.cookie?.count) || 0,
+      value?.credentials?.state || "",
+      Boolean(value?.browser?.found),
+      login.state || "",
+      Boolean(need.sms),
+      Boolean(need.trust),
+      value?.latest?.observed_at || "",
+    ]);
+  }
+  function syncPollingCopy() {
+    if (!root) return false;
+    const stateEl = root.querySelector?.("[data-hw-login-state]");
+    const deadlineEl = root.querySelector?.("[data-hw-login-deadline]");
+    if (!stateEl || !deadlineEl) return false;
+    const login = status?.login || {};
+    stateEl.textContent = loginState();
+    deadlineEl.textContent = login.deadline_left ? `剩余 ${Math.max(0, Number(login.deadline_left))} 秒` : "";
+    const messageEl = root.querySelector?.("[data-hw-login-message]");
+    if (messageEl) {
+      messageEl.textContent = login.message || "";
+      messageEl.hidden = !login.message;
+    }
+    return true;
+  }
+  function stopPolling() {
+    if (pollTimer != null) { clearTimeout(pollTimer); pollTimer = null; }
+    pollInFlight = false;
+  }
   function startPolling() {
-    clearInterval(pollTimer);
+    stopPolling();
+    const ticket = generation;
     let count = 0;
-    pollTimer = setInterval(async () => {
+    const scheduleNext = () => {
+      if (!active(ticket) || count >= 90) { stopPolling(); return; }
+      pollTimer = setTimeout(tick, 2000);
+    };
+    const tick = async () => {
+      pollTimer = null;
+      if (!active(ticket) || count >= 90) { stopPolling(); return; }
+      if (pollInFlight) { scheduleNext(); return; }
+      pollInFlight = true;
       count += 1;
-      if (!root?.isConnected || count > 90) { clearInterval(pollTimer); pollTimer = null; return; }
       try {
         const next = await call("GET", "status");
-        if (!root?.isConnected) return;
-        status = next.status || next; render();
+        if (!active(ticket)) return;
+        const resolved = next?.status || next;
+        const unchanged = status && loginStructureKey(status) === loginStructureKey(resolved);
+        status = resolved;
+        if (!(unchanged && syncPollingCopy())) {
+          captureDraft();
+          render();
+        }
         const state = status.login?.state;
         if (state === "DONE" || state === "FAILED" || state === "IDLE") {
-          clearInterval(pollTimer); pollTimer = null;
+          stopPolling();
           if (state === "DONE") {
             await ensureHealthPerception();
-            setNotice("登录成功，健康感知已打开。现在可以拉取最新健康数据。");
+            if (active(ticket)) setNotice("登录成功，健康感知已打开。现在可以拉取最新健康数据。");
           }
+          return;
         }
       } catch (_) { /* keep polling until the bounded count expires */ }
-    }, 2000);
+      finally {
+        pollInFlight = false;
+      }
+      scheduleNext();
+    };
+    scheduleNext();
   }
   function mount(node) {
     unmount();
@@ -378,7 +432,7 @@ window.CompanionHuaweiHealthPage = (() => {
   }
   function unmount() {
     generation++;
-    clearInterval(pollTimer); pollTimer = null;
+    stopPolling();
     root?.removeEventListener?.("click", onClick);
     root?.removeEventListener?.("input", onFormChange);
     root?.removeEventListener?.("change", onFormChange);

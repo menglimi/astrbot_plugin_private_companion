@@ -65,6 +65,20 @@ def video_state(request):
 
 
 class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_structured_background_preserves_later_turn_guidance(self):
+        event = Event()
+        turn = prepared(options=(False, False, False))
+        turn["prompt_context_instruction"] = "\n\n【相处背景】\n原始材料"
+        turn["prompt_context_blocks"] = ({"title": "相处背景", "instruction": "参考",
+                                          "materials": [{"kind": "memory", "content": {"text": "原始材料"}}]},)
+        turn["prompt_instruction"] = turn["prompt_context_instruction"] + "\n\n【对话收尾】\n自然结束"
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": turn}
+        request = NS(extra_user_content_parts=[])
+        await inject_core_reply_perception_context(event, request)
+        background = perception_payload(request)["companion_background"]
+        self.assertEqual(background["sections"][0]["materials"][0]["content"]["text"], "原始材料")
+        self.assertIn("自然结束", background["additional_guidance"])
+
     async def test_group_without_mentions_retains_wake_name_restoration(self):
         event = Event()
         event.is_at_or_wake_command = True
@@ -202,6 +216,25 @@ class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(payloads[0]["conversation"], payloads[1]["conversation"])
         self.assertNotEqual(payloads[0]["expression_guidance"], payloads[1]["expression_guidance"])
         self.assertNotEqual(payloads[0]["companion_background"], payloads[1]["companion_background"])
+
+    def test_role_style_replaces_default_and_can_be_disabled(self):
+        event = Event()
+        turn = prepared()
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": turn}
+        request = NS(system_prompt="AstrBot 人格")
+        inject_core_reply_perception_policy(event, request)
+        self.assertIn("日常闲聊的篇幅随本轮意思走", request.system_prompt)
+
+        turn["perception_style"] = "自己的表达风格"
+        inject_core_reply_perception_policy(event, request)
+        self.assertIn("自己的表达风格", request.system_prompt)
+        self.assertNotIn("日常闲聊的篇幅随本轮意思走", request.system_prompt)
+
+        turn["perception_style"] = ""
+        inject_core_reply_perception_policy(event, request)
+        self.assertNotIn("自己的表达风格", request.system_prompt)
+        self.assertIn("角色状态材料说的是角色自己", request.system_prompt)
+        self.assertEqual(request.system_prompt.count("【陪伴感知与自然表达】"), 1)
 
     async def test_language_voice_route_reaches_provider_input_and_tracks_live_drama_model(self):
         event = Event()

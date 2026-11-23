@@ -60,9 +60,11 @@ class MemorySearchPerformanceTests(MemoryFixture, unittest.IsolatedAsyncioTestCa
         self.memory.submit(self.context, replace(original, operation="correct", target=fact,
             object="喝茶", representation="用户后来改喝茶。", evidence=(self.evidence("后来改喝茶"),)),
             operation_key="correction").unwrap()
-        with closing(sqlite3.connect(self.recall.index.path)) as reader:
+        with closing(sqlite3.connect(self.recall.index.path)) as reader, \
+                closing(sqlite3.connect(self.recall.index.path)) as writer, immediate_sqlite():
             reader.execute("BEGIN")
             before = reader.execute("SELECT state_json FROM fact_sync").fetchone()[0]
+            writer.execute("BEGIN IMMEDIATE")
             result = self.query("喝茶")
             self.assertEqual(result.failure.code, "memory_index_busy")
             self.assertEqual(reader.execute("SELECT state_json FROM fact_sync").fetchone()[0], before)

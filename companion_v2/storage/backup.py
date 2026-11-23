@@ -71,6 +71,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sqlite3
 import stat
@@ -114,19 +115,23 @@ SCOPE_MAIN_DATABASE = "main_database_only"
 LEGACY_WARNINGS = ("legacy_main_database_only", "side_stores_not_restored", "mixed_generation_risk")
 # The paths a main-database-only restore leaves exactly as they are today.
 LEGACY_PRESERVES = ("semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3", "configuration/",
-                    "content_v2/", "decision/", "extensions/", "legacy-v1-archives/", "screen/", "search/")
+                    "content_v2/", "decision/", "extensions/", "legacy-v1-archives/", "media/", "pricing/",
+                    "screen/", "search/")
 # Files at the root of the runtime data directory that are part of the installation.
 OWNED_ROOT_FILES = (MAIN_DATABASE, "semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3")
 # Root directories the installation fully owns. Adding a new top-level data store
 # means adding it here in the same change, otherwise snapshots would omit it.
-OWNED_ROOT_DIRECTORIES = ("configuration", "content_v2", "decision", "extensions", "legacy-v1-archives", "screen", "search")
+OWNED_ROOT_DIRECTORIES = ("configuration", "content_v2", "decision", "extensions", "legacy-v1-archives",
+                          "media", "pricing", "screen", "search")
 # Derived state that is rebuilt from authoritative rows; never packaged, always
 # dropped by a restore so a stale index cannot answer for rows that no longer exist.
 DERIVED_ROOT_FILES = ("memory-search.sqlite3",)
 # The immutable V1 archive is a byte-for-byte contract (see companion_v2.legacy.archive);
 # it is copied verbatim, never re-snapshotted through SQLite.
 VERBATIM_PREFIXES = ("legacy-v1-archives/",)
-EXCLUDED_DIRECTORY_NAMES = frozenset({"temp", "cache", ".cache", "endpoint_tests", "__pycache__", ".git"})
+EXCLUDED_DIRECTORY_NAMES = frozenset({
+    "temp", "cache", ".cache", "album-thumbnails", "endpoint_tests", "__pycache__", ".git",
+})
 CREDENTIAL_FILES = frozenset({
     "extensions/game/trusted_browsers.json",
     "extensions/reality/mihome/auth.json",
@@ -978,13 +983,15 @@ def _redact_json(source: Path, target: Path, *, relative: str) -> int:
 
 def _open_source_database(source: Path) -> sqlite3.Connection:
     """Read-only where possible; recover a hot WAL only when read-only is refused."""
+    connection = None
     try:
         from .sqlite_path import readonly_uri
         connection = sqlite3.connect(readonly_uri(source), uri=True, timeout=10.0)
         connection.execute("PRAGMA schema_version").fetchone()
         return connection
     except sqlite3.Error:
-        pass
+        if connection is not None:
+            connection.close()
     try:
         return sqlite3.connect(str(source), timeout=10.0)
     except sqlite3.Error as error:
@@ -1231,15 +1238,23 @@ class InstallationBackup:
 
     # -- snapshot --------------------------------------------------------
 
+    def has_published_bundle(self, snapshot_id: str) -> bool:
+        """Cheap cache validity check, not a freshness scan or an integrity proof."""
+        sidecar, bundle, payload = _snapshot_paths(self.directory, snapshot_id)
+        return (not any(_is_link(path) for path in (sidecar, bundle, payload))
+                and sidecar.is_file() and payload.is_dir())
+
     def create(self, *, note: str = "") -> Outcome:
         """Write one verified bundle and return its manifest."""
         try:
             document = self._create(note=note)
             try:
                 cleanup = cleanup_backups(self.runtime.data_root, retention_count=self.retention_count,
-                                          retention_days=self.retention_days, now=self._at(),
+                                          retention_days=self.retention_days,
+                                          now=_parse_stamp(document["created_at"]),
                                           backup_directory=self.directory,
-                                          installation_id=self.runtime.installation_id)
+                                          installation_id=self.runtime.installation_id,
+                                          created_snapshot_id=document["snapshot_id"])
             except (OSError, ValueError):
                 cleanup = {"removed_count": 0, "removed_bytes": 0, "failed": True}
             return Outcome.success({**document, "retention": cleanup})
@@ -1574,6 +1589,43 @@ class InstallationBackup:
             return Outcome.failed(error.code, str(error))
         except (OSError, sqlite3.Error) as error:
             return Outcome.failed("backup_restore_failed", str(error))
+
+    def delete(self, *, snapshot_id: str, confirmed_hash: str, confirm: bool = False) -> Outcome:
+        """Remove one explicitly confirmed snapshot, never its live source data."""
+        try:
+            if confirm is not True:
+                raise BackupError("backup_delete_confirmation_required", "confirm snapshot deletion")
+            snapshot_id = _valid_snapshot_id(snapshot_id)
+            # Even an unreadable pending request may depend on this snapshot.
+            if self.pending_path.exists() or _is_link(self.pending_path):
+                raise BackupError("backup_restore_pending", "finish or cancel the pending restore first")
+            directory = self.directory
+            if _is_link(directory):
+                raise BackupError("backup_snapshot_unreadable", "the backup directory is a link")
+            document = _read_snapshot_manifest(directory, snapshot_id)
+            if document.get("installation_id") != self.runtime.installation_id:
+                raise BackupError("backup_snapshot_missing", "the named snapshot does not exist")
+            if (type(confirmed_hash) is not str or not re.fullmatch(r"[a-f0-9]{64}", confirmed_hash)
+                    or confirmed_hash != document.get("content_hash")):
+                raise BackupError("backup_confirmation_mismatch", "the confirmed digest does not match this snapshot")
+            sidecar, bundle, _payload = _snapshot_paths(directory, snapshot_id)
+            if document["format"] == LEGACY_BACKUP_FORMAT:
+                if not _legacy_listable(directory, document):
+                    raise BackupError("backup_delete_incomplete", "quarantine the incomplete snapshot instead")
+                _legacy_database_path(directory, snapshot_id).unlink()
+            else:
+                if not _bundle_complete(directory, document):
+                    raise BackupError("backup_delete_incomplete", "quarantine the incomplete snapshot instead")
+                _remove_tree(bundle)
+                if bundle.exists() or _is_link(bundle):
+                    raise OSError("snapshot bundle removal did not finish")
+            # Keep the manifest until the payload is gone, so failures stay visible.
+            sidecar.unlink()
+            return Outcome.success({"snapshot_id": snapshot_id})
+        except BackupError as error:
+            return Outcome.failed(error.code, str(error))
+        except (OSError, ValueError):
+            return Outcome.failed("backup_delete_failed", "snapshot deletion could not be completed")
 
     def quarantine(self, *, snapshot_id: str, confirm: bool = False) -> Outcome:
         """Move one incomplete pair out of the active directory, keeping every byte.

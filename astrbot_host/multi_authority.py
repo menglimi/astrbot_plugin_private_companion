@@ -399,6 +399,17 @@ class MultiAuthority:
                 self.write(self.context_key(template, role.subject_id), scope.document())
             return context
 
+    def ensure_core_admin_tier(self, target):
+        """Ensure the Dashboard-confirmed core target holds CORE tier when unset."""
+        actor = self.ensure_actor(target)
+        policy = ObjectAccessPolicy(self.runtime)
+        tier = self.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (actor.subject.kind.value, actor.subject.subject_id))
+        if tier is None:
+            policy.set_tier(actor.subject, AuthorizationTier.CORE,
+                expected_revision=policy.revision, observed_at=self.now())
+
     def _grant_core_admin(self, context, scope):
         """Keep the Dashboard-confirmed administrator window actually administrative.
 
@@ -441,6 +452,8 @@ class MultiAuthority:
             context = self.context(target.target_id, role.subject_id)
             from .image_access import ensure_image_access
             ensure_image_access(self.runtime, context, observed_at=self.now())
+            from .content_access import ensure_content_access
+            ensure_content_access(self.runtime, context, observed_at=self.now())
             from companion_v2.role_work.state.configuration import (
                 ensure_window_presentation_grants, ensure_role_state_grants)
             ensure_window_presentation_grants(self.runtime, context, observed_at=self.now())

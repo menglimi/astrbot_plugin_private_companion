@@ -34,9 +34,10 @@ window.CompanionStatePage = (() => {
   const when = value => value && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "未安排";
   const reason = code => errors[code] || (code ? "当前状态未能确认，请刷新核对。" : "暂时无法读取角色状态。请刷新核对。");
-  let root = null, bridge = null, version = 0, timer = null, data = null, editor = null, calendarEditor = null;
-  let section = "state", activeFeature = null;
+  let root = null, bridge = null, version = 0, timer = null, data = null, editor = null, calendarEditor = null, backgroundLoading = false;
+  let section = "state", activeFeature = null, pendingEditor = null;
   let settingsOpen=false,settingsReturnFeature=null,settingsReturnFocus=null;
+  const CYCLE_PHASE_FIELD_RE=/^cycle_(menstrual|follicular|pre_ovulation|ovulation|luteal|pms)_(energy|mood|prompt)$/;
 
   /* 状态页切换到其它工作区时会被卸载。最近一次成功状态只在当前页面
      内存保留并按角色/会话隔离，返回时先显示旧读数，后台再核对最新状态。 */
@@ -50,10 +51,17 @@ window.CompanionStatePage = (() => {
     stateByScope.set(stateScopeKey, {...data, loading:false, error:false, notice:""});
   }
 
-  function blank() { return {catalog:null,target:0,role:0,status:null,cursor:"",loading:false,error:false,notice:"",ready:false,
+  function blank() { return {catalog:null,target:-1,role:-1,windowSelected:false,status:null,cursor:"",loading:false,error:false,notice:"",ready:false,
     pendingMaintenance:null,maintenanceSubmitting:false}; }
   function target() { return data?.catalog?.targets[data.target]; }
   function role() { return target()?.roles[data.role]; }
+  function visibleStatus(result) {
+    if(data.windowSelected)return result;
+    const settings={...result.settings},effective={...result.effective},diagnostics={...result.presentation_diagnostics};
+    delete settings.typing_enabled;delete settings.typing_refresh_seconds;delete effective.typing_enabled;delete diagnostics.typing;
+    return {...result,settings,effective,presentation_diagnostics:diagnostics,edit_token:null,contact:null,
+      presentation:Object.fromEntries(Object.entries(result.presentation||{}).filter(([key])=>!key.startsWith("typing:")))};
+  }
   function personaLabel() { return window.CompanionProduct?.roleLabel?.(role()) || "当前角色"; }
   /* 同 memory-page.js：桥要插件相对路径，所以切掉插件目录名。 */
   function endpoint() {
@@ -204,8 +212,8 @@ window.CompanionStatePage = (() => {
     const basis=value=>({calendar_plan:"当前日程的公开文案",role_simulation:"角色模拟的公开文案"})[value]||"公开文案";
     /* 在线模式的四个档位与适配层的映射一致（delivery 侧 status 10/30/50/40）。 */
     const onlineMode=value=>({online:"在线",away:"离开",busy:"忙碌",invisible:"隐身"})[value]||value;
-    const configuration=`<dl class="state-presentation-settings"><div><dt>正在输入 · ${e(configured("typing_enabled"))}</dt>
-      <dd>${e(activity(typing,"typing"))}</dd><dd class="state-presentation-note">配置刷新间隔：${e(typing?.refresh_seconds??settings.typing_refresh_seconds??"未提供")} 秒</dd></div>
+    const configuration=`<dl class="state-presentation-settings">${data.windowSelected?`<div><dt>正在输入 · ${e(configured("typing_enabled"))}</dt>
+      <dd>${e(activity(typing,"typing"))}</dd><dd class="state-presentation-note">配置刷新间隔：${e(typing?.refresh_seconds??settings.typing_refresh_seconds??"未提供")} 秒</dd></div>`:'<div><dt>正在输入 · 未选择私聊窗口</dt><dd>请选择当前角色的私聊窗口查看和设置。</dd></div>'}
       <div><dt>在线状态 · ${e(configured("online_status_enabled"))}</dt><dd>${e(activity(online,"online"))}</dd>
       ${online?.desired?.mode?`<dd class="state-presentation-note">待展示：${e(onlineMode(online.desired.mode))} · ${e(basis(online.desired.basis))}</dd>`:""}
       <dd class="state-presentation-note">与自定义短状态共用同一路：同一时刻只报一种，在线状态优先；日程里写了公开文案时以日程为准。</dd></div>
@@ -383,13 +391,14 @@ window.CompanionStatePage = (() => {
     } else if(feature==="presentation") {
       const diag=status.presentation_diagnostics,enabled=[settings.typing_enabled,settings.presence_enabled].filter(Boolean).length;
       const channel=(name,value)=>{
+        if(name==="typing_enabled"&&!data.windowSelected)return "未选择私聊窗口";
         if(!settings[name])return "开关已关闭";
         if(!status.effective?.[name]?.allowed)return `已开启 · ${presentationReasons[status.effective?.[name]?.reason]||"授权待核对"}`;
         if(!value)return "已开启 · 授权通过";
         const label=({idle:"已开启 · 当前空闲",waiting:"已开启 · 等待任务",refreshing:"已开启 · 刷新中",suppressed:"本轮已停止刷新",recorded:"相同文案已有请求记录",deduplicated:"账号已有相同文案记录",blocked:"当前条件未满足",paused:"已暂停",unavailable:"展示端口不可用"})[value.state]||"运行状态待确认";
         return [label,value.reason?presentationReasons[value.reason]||reason(value.reason):null].filter(Boolean).join(" · ");
       };
-      body=overviewMarkup(feature,"展示通道",`${enabled} 项开关已开启`,"受理确认只说明请求被平台接受，不代表客户端当前展示状态。",[["正在输入",channel("typing_enabled",diag?.typing)],["自定义短状态",channel("presence_enabled",diag?.custom_status)],["输入提示刷新间隔",`${settings.typing_refresh_seconds??"未提供"} 秒（取值 1–10）`],["诊断时间",diag?.observed_at?when(diag.observed_at):"尚无诊断记录"]])+(editor?.markup({feature,details:presentationMarkup(status,{receiptsOnly:true})})||"");
+      body=overviewMarkup(feature,"展示通道",`${enabled} 项开关已开启`,"受理确认只说明请求被平台接受，不代表客户端当前展示状态。",[["正在输入",channel("typing_enabled",diag?.typing)],["自定义短状态",channel("presence_enabled",diag?.custom_status)],["输入提示刷新间隔",data.windowSelected?`${settings.typing_refresh_seconds??"未提供"} 秒（取值 1–10）`:"未选择私聊窗口"],["诊断时间",diag?.observed_at?when(diag.observed_at):"尚无诊断记录"]])+(editor?.markup({feature,details:presentationMarkup(status,{receiptsOnly:true})})||"");
     } else body=workspaceOverview(status,feature)+(editor?.markup({feature})||"");
     const scopePill=featureScopes[feature]||"当前角色";
     const subtitle=featureSubtitles[feature]||"";
@@ -414,8 +423,8 @@ window.CompanionStatePage = (() => {
   }
   function homeSettingsMarkup() {
     return `<dialog id="state-home-settings" class="state-home-settings state-config-page" aria-labelledby="state-home-settings-title">
-      <header><div><span class="state-eyebrow">${e(personaLabel())} · 人格共享</span><h3 id="state-home-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i>状态功能与首页展示</h3></div><button type="button" class="state-feature-close" data-state-close-home-settings aria-label="关闭状态设置" title="关闭" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button></header>
-      <div class="state-home-settings-body">${data?.status?editor?.markup({feature:"home"})||"":`<p class="memory-notice" role="status">${e(data?.notice||"正在读取状态设置…")}</p><button type="button" class="memory-button" id="state-home-settings-refresh" ${data?.loading?"disabled":""}>重新读取状态</button>`}</div>
+      <header class="state-home-settings-header"><div class="state-home-settings-title"><span class="state-eyebrow">${e(personaLabel())} · 人格共享</span><h3 id="state-home-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i><span>状态功能与首页展示</span></h3></div><button type="button" class="state-feature-close" data-state-close-home-settings aria-label="关闭" title="关闭" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="state-home-settings-body">${data?.status?editor?.markup({feature:"home"})||"":`<div class="state-home-settings-fallback"><p class="memory-notice" role="status">${e(data?.notice||"正在读取状态设置…")}</p><button type="button" class="memory-button" id="state-home-settings-refresh" ${data?.loading?"disabled":""}>重新读取状态</button></div>`}</div>
     </dialog>`;
   }
   /* 地址栏的落点：`#life/state/<feature>` 进来时只切图块，不打开编辑表单
@@ -430,46 +439,154 @@ window.CompanionStatePage = (() => {
     render();schedule();
     return true;
   }
+  function expandStateDetails(node) {
+    if(!node)return;
+    const nearest=node.closest?.("details");
+    if(nearest)nearest.open=true;
+    for(let parent=node.parentElement;parent;parent=parent.parentElement){
+      if(parent.tagName==="DETAILS")parent.open=true;
+    }
+  }
+  function highlightStateTarget(node) {
+    if(!node)return;
+    if(typeof window.CompanionSearchHighlight==="function"){window.CompanionSearchHighlight(node);return;}
+    if(!node.classList)return;
+    node.classList.remove("is-search-target");
+    void node.offsetWidth;
+    node.classList.add("is-search-target");
+    const timer=setTimeout(()=>node.classList?.remove?.("is-search-target"),2400);
+    timer?.unref?.();
+  }
+  function resolveStateKind(kind, field) {
+    if(kind==="maintenance")return field==="hunger_enabled"?"hunger":"health";
+    return kind;
+  }
+  function findStateField(field) {
+    if(!root||!field)return null;
+    const safe=globalThis.CSS?.escape?.(field)||String(field).replace(/["\\]/g,"\\$&");
+    const direct=root.querySelector(`[data-state-field="${safe}"]`);
+    if(direct)return direct;
+    if(field==="planning_weather_location")
+      return root.querySelector('#state-weather-location-name, [data-state-weather-location="name"]');
+    return null;
+  }
   /* 全局搜索的落地钩子：搜索命中 role.state 的某个字段时，先切到对应图块，
-     再打开它的编辑表单，最后把焦点落到那个输入框上。
-     与「点图块 → 点配置」是同一条路径（featureEditors 把 kind 映射回图块）。 */
+     再打开它的编辑表单（支持冷启动加载中排队、home 弹窗及 cycle 阶段子视图自动切换），
+     最后展开祖先折叠块、居中滚动、聚焦并施加搜索目标脉冲高亮。 */
   function openEditor(kind, field) {
-    if(!data?.status||data.loading||section!=="state"||!root?.isConnected||settingsOpen)return false;
+    const targetKind=resolveStateKind(kind,field);
+    if(!targetKind)return false;
+    if(!root?.isConnected||section!=="state"||!data?.status||data.loading){
+      pendingEditor={kind:targetKind,field:field||""};
+      return true;
+    }
+    pendingEditor=null;
     if(editor&&!editor.discardIfPristine())return false;
-    const feature=Object.keys(featureEditors).find(name=>featureEditors[name]===kind)||null;
-    if(feature)activeFeature=feature;
-    editor?.open(kind);
+    if(targetKind==="home"){
+      if(!settingsOpen){settingsReturnFeature=activeFeature;settingsReturnFocus=document.activeElement;}
+      settingsOpen=true;activeFeature=null;
+      editor?.open("home");
+    }else{
+      if(settingsOpen){
+        clearTimeout(settingsCloseTimer);settingsCloseTimer=null;
+        const dialog=root.querySelector("#state-home-settings");
+        if(dialog?.open)dialog.close();
+        settingsOpen=false;settingsReturnFeature=null;settingsReturnFocus=null;
+      }
+      const feature=Object.keys(featureEditors).find(name=>featureEditors[name]===targetKind)
+        ||(Object.hasOwn(featureInfo,targetKind)?targetKind:null);
+      if(feature)activeFeature=feature;
+      editor?.open(targetKind);
+      if(targetKind==="cycle"&&field){
+        const phaseMatch=CYCLE_PHASE_FIELD_RE.exec(field);
+        if(phaseMatch){
+          window.CompanionStateMaintenance?.selectCycleView?.("expression");
+          window.CompanionStateMaintenance?.selectPhase?.(phaseMatch[1]);
+        }else if(field==="cycle_expression_prompt"){
+          window.CompanionStateMaintenance?.selectCycleView?.("expression");
+        }else{
+          window.CompanionStateMaintenance?.selectCycleView?.("plan");
+        }
+      }
+    }
     render();schedule();
     if(!field)return true;
     const attempt=(tries=0)=>{
-      const input=root?.querySelector(`[data-state-field="${field}"]`);
-      if(input){input.focus({preventScroll:false});input.scrollIntoView({block:"center",behavior:"smooth"});return;}
-      if(tries<20)requestAnimationFrame(()=>attempt(tries+1));
+      const input=findStateField(field);
+      if(input){
+        expandStateDetails(input);
+        const reduced=Boolean(document.body?.classList?.contains("reduce-motion")
+          ||["low","off"].includes(document.documentElement?.dataset?.motion)
+          ||window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+        const dialogScrollBody=input.closest?.(".state-home-settings .state-config-body, .state-home-settings-body");
+        const hostDialog=input.closest?.("dialog");
+        if(dialogScrollBody&&typeof dialogScrollBody.getBoundingClientRect==="function"&&typeof input.getBoundingClientRect==="function"){
+          const bodyRect=dialogScrollBody.getBoundingClientRect();
+          const inputRect=input.getBoundingClientRect();
+          const targetTop=Math.max(0,dialogScrollBody.scrollTop+(inputRect.top-bodyRect.top)-(bodyRect.height-inputRect.height)/2);
+          if(typeof dialogScrollBody.scrollTo==="function")dialogScrollBody.scrollTo({top:targetTop,behavior:reduced?"instant":"smooth"});
+          else dialogScrollBody.scrollTop=targetTop;
+          if(hostDialog)hostDialog.scrollTop=0;
+        }else{
+          input.scrollIntoView?.({block:"center",behavior:reduced?"instant":"smooth"});
+          if(hostDialog)hostDialog.scrollTop=0;
+        }
+        input.focus?.({preventScroll:true});
+        highlightStateTarget(input.closest?.("label, .state-field, .state-edit-field, .state-setting-row")||input);
+        return;
+      }
+      if(tries<25)requestAnimationFrame(()=>attempt(tries+1));
     };
     requestAnimationFrame(()=>attempt());
     return true;
   }
+  let settingsCloseTimer=null;
+  function canAnimateSettingsDialog(dialog) {
+    return Boolean(
+      dialog
+      &&typeof requestAnimationFrame==="function"
+      &&typeof window.getComputedStyle==="function"
+      &&!document.body?.classList?.contains("reduce-motion")
+      &&document.documentElement?.dataset?.motion!=="off"
+      &&!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
   function openSettings(trigger) {
-    if(!data?.status||data.loading||section!=="state"||!root?.isConnected||settingsOpen)return;
+    if(!data?.status||data.loading||section!=="state"||!root?.isConnected)return;
+    if(settingsCloseTimer){clearTimeout(settingsCloseTimer);settingsCloseTimer=null;settingsOpen=false;}
+    if(settingsOpen)return;
     if(editor&&!editor.discardIfPristine())return;
     settingsReturnFeature=activeFeature;settingsReturnFocus=trigger||document.activeElement;
     settingsOpen=true;activeFeature=null;
     render();schedule();
   }
   function closeSettings() {
-    if(!settingsOpen)return;
+    if(!settingsOpen||settingsCloseTimer)return;
     if(editor&&!editor.discardIfPristine())return;
     const dialog=root?.querySelector("#state-home-settings");
-    if(dialog?.open)dialog.close();
-    settingsOpen=false;activeFeature=settingsReturnFeature;settingsReturnFeature=null;
-    render();schedule();
-    if(settingsReturnFocus?.isConnected)settingsReturnFocus.focus({preventScroll:true});
-    settingsReturnFocus=null;
+    const myTicket=version;
+    const finalize=()=>{
+      settingsCloseTimer=null;
+      if(!live(myTicket))return;
+      settingsOpen=false;activeFeature=settingsReturnFeature;settingsReturnFeature=null;
+      render();schedule();
+      if(settingsReturnFocus?.isConnected)settingsReturnFocus.focus({preventScroll:true});
+      settingsReturnFocus=null;
+    };
+    if(dialog?.open){
+      dialog.close();
+      if(canAnimateSettingsDialog(dialog)){
+        const delay=document.documentElement?.dataset?.motion==="low"?110:185;
+        settingsCloseTimer=setTimeout(finalize,delay);
+        return;
+      }
+    }
+    finalize();
   }
   function render() {
     if (!root?.isConnected || !data) return;
     const status=data.status,roleTarget=target(),contactView=section==="contact",weatherView=section==="weather",patrolView=section==="patrol";
-    if(role()?.state_api&&data.catalog)editor?.setScope({installation_id:data.catalog.installation_id,operator_id:data.catalog.operator_id,path:endpoint()});
+    if(role()?.state_api&&data.catalog)editor?.setScope({installation_id:data.catalog.installation_id,operator_id:data.catalog.operator_id,path:endpoint(),window_selected:data.windowSelected});
     else editor?.invalidate();
     editor?.setStatus(status,data.loading);
     if(!contactView&&editor?.requiredFeature) {
@@ -478,12 +595,13 @@ window.CompanionStatePage = (() => {
       else activeFeature=required==="health"&&activeFeature==="hunger"?"hunger":required;
     }
     const oldDialog=root.querySelector("#state-home-settings");
-    const dialogScroll=oldDialog?.querySelector(".state-home-settings-body")?.scrollTop||0;
+    const dialogScroll=oldDialog?.querySelector(".state-config-body, .state-home-settings-body")?.scrollTop||0;
     const focused=root.contains(document.activeElement)?document.activeElement.id:null;
     const expanded=new Set([...root.querySelectorAll(".state-receipt-reference[open]")].map(item=>item.dataset.receipt));
     const available=!!role()?.state_api;
     let content;
     if (!data.ready) content=`<div class="panel state-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看角色状态。"}</div>`;
+    else if(contactView&&!data.windowSelected)content='<div class="panel state-empty">请先选择当前角色的私聊窗口，再查看联系安排。</div>';
     else if (!available) content=`<div class="panel state-empty"><h3>当前角色尚未绑定状态工作区</h3><p>请在账号与会话中核对 Bot 账号和人格映射。</p></div>`;
     else if (!status) content=`<div class="panel state-empty">${data.loading?"正在读取状态…":"尚未读取状态。"}</div>`;
     else if(contactView)content=editor?.markup({section:"contact"})||"";
@@ -497,13 +615,13 @@ window.CompanionStatePage = (() => {
         ${activeFeature?featurePanelMarkup(status):""}${temporary}`;
     }
     const selectedScope=window.CompanionProduct?.selection?.();
-    const accessScope=roleTarget ? (window.CompanionProduct?.targetLabel?.(roleTarget) || (roleTarget.scope_kind === "group" ? "当前群聊" : "当前私聊窗口")) : "尚未选择真实会话";
+    const accessScope=data.windowSelected&&roleTarget ? (window.CompanionProduct?.targetLabel?.(roleTarget) || "当前私聊窗口") : "未选择私聊窗口";
     const scopeMarkup=contactView?`<div class="panel memory-scope state-scope"><div class="state-scope-current"><span>当前会话</span><strong>${e(accessScope)}</strong><small>联系安排适用于当前会话。</small></div>${!selectedScope?`<button type="button" class="button small" data-go="manage" data-manage="host">去账号与会话选择</button>`:""}</div>`
       :"";
     if(oldDialog?.open)oldDialog.close();
     const pending=data.pendingMaintenance,maintenanceOff=status?.settings?.enabled===false;
-    const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy||pending&&!pending.retryable;
-    const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?(pending.retryable?"重试更新":"更新中…")
+    const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy;
+    const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?"重试更新"
       :maintenanceOff?"前往设置":"立即更新";
     const maintainIcon=maintenanceOff?"settings-2":"sparkles";
     const noticeText=data.notice||(maintenanceOff?"状态维护已关闭，启用后才会生成新的状态记录。":"");
@@ -523,7 +641,9 @@ window.CompanionStatePage = (() => {
         if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeSettings();
       });
       settingsDialog.showModal();
-      settingsDialog.querySelector(".state-home-settings-body").scrollTop=dialogScroll;
+      const dialogScrollBody=settingsDialog.querySelector(".state-config-body")||settingsDialog.querySelector(".state-home-settings-body");
+      if(dialogScrollBody)dialogScrollBody.scrollTop=dialogScroll;
+      settingsDialog.scrollTop=0;
     }
     if(focused)root.querySelector("#"+focused)?.focus({preventScroll:true});
     syncSettingsButton();
@@ -531,7 +651,18 @@ window.CompanionStatePage = (() => {
   }
   function schedule() {
     stopTimer();
-    if(data?.ready&&role()?.state_api&&!document.hidden&&!editor?.interacting)timer=setTimeout(()=>{if(!data.loading)load();else schedule();},data?.pendingMaintenance?3000:15000);
+    if(data?.ready&&role()?.state_api&&!document.hidden&&!editor?.interacting)timer=setTimeout(()=>{if(!data.loading&&!backgroundLoading)load(data.cursor,{silent:true});else schedule();},data?.pendingMaintenance?3000:15000);
+  }
+  function snapshotStatus(status) {
+    if(!status)return null;
+    if(!status.presentation_diagnostics||!Object.hasOwn(status.presentation_diagnostics,"observed_at"))return status;
+    const {observed_at,...diagnostics}=status.presentation_diagnostics;
+    return {...status,presentation_diagnostics:diagnostics};
+  }
+  function stateSnapshot() {
+    if(!data)return "";
+    return JSON.stringify({ready:data.ready,windowSelected:data.windowSelected,cursor:data.cursor,
+      status:snapshotStatus(data.status),pendingMaintenance:data.pendingMaintenance,notice:data.notice,error:data.error});
   }
   async function refreshAfterSave() {
     const result=await load();
@@ -542,15 +673,16 @@ window.CompanionStatePage = (() => {
     data.status=null; data.error=true; data.notice=reason(error?.code);
     if(["dashboard_identity_required","core_access_required","authorization_denied","role_binding_changed","binding_revoked","binding_rebound","staging_host_terminated"].includes(error?.code)) {
       data.catalog=null; data.ready=false; editor?.invalidate(); stopTimer();
+      clearTimeout(settingsCloseTimer);settingsCloseTimer=null;
       settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;
     }
     stateByScope.delete(stateScopeKey);
   }
   async function directory() {
-    const ticket=++version; stopTimer();
+    const ticket=++version; stopTimer(); backgroundLoading=false;
     const cached=stateByScope.get(stateScopeKey), fresh=blank();
     if(cached){fresh.catalog=cached.catalog;fresh.target=cached.target;fresh.role=cached.role;fresh.status=cached.status;fresh.cursor=cached.cursor;
-      fresh.pendingMaintenance=cached.pendingMaintenance;fresh.ready=!!cached.catalog;}
+      fresh.windowSelected=cached.windowSelected;fresh.pendingMaintenance=cached.pendingMaintenance;fresh.ready=!!cached.catalog;}
     data=fresh; data.loading=true; render();
     try {
       const catalog=window.CompanionProduct?.directory?.() || await api("GET","page/targets");
@@ -560,20 +692,29 @@ window.CompanionStatePage = (() => {
       const product=window.CompanionProduct;
       const selected=product?.selection();
       const owner=product?.roleTarget?.();
-      const targetIndex=catalog.targets.findIndex(item=>item.target_id===(owner?.target_id||selected?.target_id));
+      const selectedTarget=catalog.targets.find(item=>item.target_id===selected?.target_id&&item.bot_id===selected?.bot_id
+        &&item.scope_kind==="private"&&item.roles.some(item=>item.role_id===selected?.role_id));
+      data.windowSelected=!!selectedTarget;
+      const targetId=selectedTarget?.target_id||(section!=="contact"?owner?.target_id:null);
+      const targetIndex=catalog.targets.findIndex(item=>item.target_id===targetId&&item.bot_id===selected?.bot_id);
       const roleIndex=targetIndex>=0?catalog.targets[targetIndex].roles.findIndex(item=>item.role_id===selected?.role_id):-1;
-      if(targetIndex>=0&&roleIndex>=0){data.target=targetIndex;data.role=roleIndex;}
-      if(targetIndex>=0&&roleIndex>=0&&role()?.state_api){endpoint();await load();}else {data.notice="当前角色尚未绑定状态工作区，请核对账号与人格映射。";render();}
+      data.target=targetIndex;data.role=roleIndex;data.status=null;
+      if(targetIndex>=0&&roleIndex>=0&&role()?.state_api){endpoint();await load();}
+      else {data.notice=section==="contact"&&!data.windowSelected?"":"当前角色尚未绑定状态工作区，请核对账号与人格映射。";render();}
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  async function load(cursor=data?.cursor||"") {
-    if(!root||!data.ready||!role()?.state_api||data.loading)return;
-    const ticket=++version;stopTimer();data.cursor=cursor;data.loading=true;render();
+  async function load(cursor=data?.cursor||"",{silent=false}={}) {
+    if(!root||!data.ready||!role()?.state_api)return;
+    if(silent?(data.loading||backgroundLoading):data.loading)return;
+    const ticket=++version;stopTimer();data.cursor=cursor;
+    const previousSnapshot=silent?stateSnapshot():null;
+    if(silent)backgroundLoading=true;
+    else {backgroundLoading=false;data.loading=true;render();}
     try {
       const result=await api("GET",endpoint(),{after_id:data.cursor});
       if(!live(ticket))return;
       if(!result.state||!result.settings||!result.sleep_schedule)throw Object.assign(new Error("invalid_response"),{code:"invalid_response"});
-      data.status={...result,request_cursor:data.cursor};
+      data.status=visibleStatus({...result,request_cursor:data.cursor});
       if(data.pendingMaintenance){
         const pending=data.pendingMaintenance,revision=result.state?.revision;
         const currentResult=JSON.stringify(result.maintenance?.result??null);
@@ -590,9 +731,25 @@ window.CompanionStatePage = (() => {
         }else notice("状态更新中…");
       }else notice("");
       stateScopeKey=currentStateScope(); rememberState();
-      return result;
+      return data.status;
     } catch(error) { if(live(ticket))failure(error);return null; }
-    finally { if(live(ticket)){data.loading=false;render();schedule();} }
+    finally {
+      if(live(ticket)){
+        if(silent){
+          backgroundLoading=false;
+          if(stateSnapshot()!==previousSnapshot)render();
+        }else{
+          data.loading=false;
+          render();
+          if(data.status&&pendingEditor&&section==="state"&&root?.isConnected){
+            const queued=pendingEditor;
+            pendingEditor=null;
+            openEditor(queued.kind,queued.field);
+          }
+        }
+        schedule();
+      }
+    }
   }
   async function requestMaintenance() {
     if(!root?.isConnected||!data?.status||data.loading||data.maintenanceSubmitting||section!=="state")return;
@@ -602,11 +759,11 @@ window.CompanionStatePage = (() => {
     if(!Number.isInteger(current?.revision)||typeof current?.view_token!=="string"){
       notice("当前状态尚未就绪，请重新读取后再试。",true);render();return;
     }
-    let pending=data.pendingMaintenance;
-    if(pending&&!pending.retryable)return;
-    if(!pending)pending={operation_key:crypto.randomUUID(),expected_revision:current.revision,view_token:current.view_token,
+    const prevPending=data.pendingMaintenance;
+    const pending={operation_key:prevPending?.retryable&&prevPending.operation_key?prevPending.operation_key:crypto.randomUUID(),
+      expected_revision:current.revision,view_token:current.view_token,
       resultSnapshot:JSON.stringify(data.status.maintenance?.result??null),retryable:false};
-    pending.retryable=false;data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
+    data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
     notice("正在安排状态更新…");render();
     try {
       await api("POST",endpoint()+"/command",{action:"maintain",operation_key:pending.operation_key,
@@ -621,11 +778,13 @@ window.CompanionStatePage = (() => {
       render();schedule();
     }
   }
-  function changeScope(targetIndex,roleIndex) {
+  async function changeScope(targetIndex,roleIndex) {
     if(!data.catalog?.targets[targetIndex]?.roles[roleIndex])return;
-    ++version;stopTimer();const catalog=data.catalog;
-    data={...blank(),catalog,target:targetIndex,role:roleIndex,ready:true};
-    window.CompanionProduct?.choose(catalog.targets[targetIndex].target_id,catalog.targets[targetIndex].roles[roleIndex].role_id,true);
+    const selectedTarget=data.catalog.targets[targetIndex],selectedRole=selectedTarget.roles[roleIndex];
+    if(await window.CompanionProduct?.choose(selectedTarget.target_id,selectedRole.role_id,true)===false)return;
+    if(!root?.isConnected)return;
+    ++version;stopTimer();backgroundLoading=false;const catalog=data.catalog;
+    data={...blank(),catalog,target:targetIndex,role:roleIndex,windowSelected:selectedTarget.scope_kind==="private",ready:true};
     if(role()?.state_api){try{endpoint();load();}catch(error){failure(error);render();}}else render();
   }
   function click(event) {
@@ -784,8 +943,8 @@ window.CompanionStatePage = (() => {
       setChrome(true);await directory();
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  function unmount() { rememberState();++version;stopTimer();root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
-  document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!editor?.interacting)load();});
+  function unmount() { rememberState();++version;stopTimer();clearTimeout(settingsCloseTimer);settingsCloseTimer=null;backgroundLoading=false;pendingEditor=null;root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
+  document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!backgroundLoading&&!editor?.interacting)load(data.cursor,{silent:true});});
   window.addEventListener?.("beforeunload",event=>{if(editor?.dirty){event.preventDefault();event.returnValue="";}});
   return {mount,unmount,openSettings,openEditor,openFeature,currentFeature:()=>activeFeature,
     canLeave:()=>editor?.discardIfPristine()??true};

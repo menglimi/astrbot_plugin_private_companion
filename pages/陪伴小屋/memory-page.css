@@ -75,7 +75,7 @@
 .mem-linkage-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
 .mem-linkage-head h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-body)}
 .mem-linkage-head p{margin:3px 0 0;color:var(--t-text-faint);font-size:var(--fs-tiny)}
-.mem-linkage-counts{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--sp-2);margin:var(--sp-3) 0 0}
+.mem-linkage-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr));gap:var(--sp-2);margin:var(--sp-3) 0 0}
 .mem-linkage-counts>div{display:flex;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-2);background:var(--t-surface-soft);border-radius:var(--r-xs)}
 .mem-linkage-counts dt{color:var(--t-text-faint);font-size:var(--fs-micro)}
 .mem-linkage-counts dd{margin:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums}
@@ -95,7 +95,7 @@
 }
 .mem-head-title{flex:1 1 200px;min-width:0}
 .mem-head-title h2{
-  font-family:"Noto Serif SC","Songti SC","SimSun",serif;
+  font-family:var(--skin-heading-font,"Noto Serif SC","Songti SC","SimSun",serif);
   font-size:var(--fs-display);line-height:1.35;font-weight:600;color:var(--t-text-strong);margin:0;
   letter-spacing:.01em;
 }
@@ -160,7 +160,7 @@
    它像报错那样抢注意力。 */
 .mem-ownership{
   margin:0;font-size:var(--fs-body);line-height:1.8;color:var(--t-text-soft);
-  max-width:66ch;overflow-wrap:anywhere;
+  overflow-wrap:anywhere;
 }
 
 /* ===== 按钮 ===== */
@@ -206,7 +206,7 @@
 }
 .mem-block-head h3{margin:0;font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong)}
 .mem-block-head p{
-  flex:1 1 240px;min-width:0;max-width:60ch;margin:0;
+  flex:1 1 240px;min-width:0;margin:0;
   font-size:var(--fs-tiny);line-height:1.7;color:var(--t-text-faint);
 }
 .mem-block-body{padding:var(--sp-4);min-width:0}
@@ -218,7 +218,7 @@
 .mem-vitals{display:flex;gap:var(--sp-4);align-items:flex-end;flex-wrap:wrap}
 .mem-vitals-figure{display:flex;align-items:baseline;gap:var(--sp-2);flex:none}
 .mem-vitals-figure b{
-  font-family:Georgia,"Times New Roman",serif;font-weight:400;
+  font-family:var(--skin-heading-font,Georgia,"Times New Roman",serif);font-weight:400;
   font-size:var(--fs-hero);line-height:1;color:var(--t-text-strong);
   font-variant-numeric:tabular-nums;
 }
@@ -333,12 +333,12 @@
 .mem-pin[hidden]{display:none}
 
 /* ===== 事实详情（右半） ===== */
-.mem-detail{min-width:0;padding:var(--sp-4)}
+.mem-detail{min-width:0;padding:var(--sp-4);container-type:inline-size}
 .mem-detail-empty{padding:var(--sp-7) var(--sp-5);text-align:center;color:var(--t-text-faint);font-size:var(--fs-body);line-height:1.8}
 .mem-detail-top{display:flex;align-items:flex-start;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-4)}
 .mem-detail-top h3{
   flex:1 1 auto;min-width:0;margin:0;
-  font-family:"Noto Serif SC","Songti SC","SimSun",serif;
+  font-family:var(--skin-heading-font,"Noto Serif SC","Songti SC","SimSun",serif);
   font-size:var(--fs-head);line-height:1.5;font-weight:600;color:var(--t-text-strong);
   overflow-wrap:anywhere;
 }
@@ -422,6 +422,10 @@
 .mem-stages li.is-now{color:var(--t-text-strong);font-weight:600}
 .mem-stages li.is-failed::before{background:var(--t-risk);border-color:var(--t-risk)}
 .mem-stages li.is-failed{color:var(--t-risk-ink);font-weight:600}
+@container (max-width:480px){
+  .mem-stages{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));row-gap:var(--sp-3)}
+  .mem-stages li:nth-child(3n + 1)::after{display:none}
+}
 
 .mem-batch{
   display:grid;gap:var(--sp-1);width:100%;text-align:left;padding:var(--sp-3) var(--sp-4);
@@ -456,7 +460,7 @@
   font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong);
 }
 .mem-sub small{font-weight:400;font-size:var(--fs-micro);color:var(--t-text-faint)}
-.mem-plain{font-size:var(--fs-body);line-height:1.85;color:var(--t-text-soft);margin:var(--sp-3) 0 0;max-width:64ch}
+.mem-plain{font-size:var(--fs-body);line-height:1.85;color:var(--t-text-soft);margin:var(--sp-3) 0 0}
 .mem-list{margin:var(--sp-2) 0 0;padding-left:19px;font-size:var(--fs-body);line-height:1.85;color:var(--t-text-soft)}
 .mem-list li{margin-bottom:3px}
 
@@ -602,18 +606,26 @@
   .mem-rail-icon svg{width:14px;height:14px}
 }
 @media(max-width:880px){
+  .mem-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .mem-split{grid-template-columns:minmax(0,1fr)}
   .mem-corpus{border-right:0;max-height:none}
-  /* 详情推入：没有选中条目时整块收起（否则会在列表下方留一块空白，
-     窄屏上那块空白比列表本身还高），选中后从右侧滑入覆盖列表。 */
+  /* 详情推入：没有选中条目时整块隐藏（不占位、不可点），
+     选中后从右侧滑入覆盖列表，保留 transform 过渡。 */
   .mem-detail{
     position:fixed;z-index:40;inset:0;max-height:100dvh;overflow-y:auto;
     background:var(--t-surface-raised);border-radius:0;border:0;
-    transform:translateX(100%);
-    transition:transform .3s cubic-bezier(.16,1,.3,1);
+    opacity:0;transform:translate3d(100%,0,0);
+    transition:transform 220ms cubic-bezier(0.4,0,1,1),opacity 200ms ease-in,visibility 0s linear 220ms;
   }
-  .mem-detail:not(.is-open){display:none}
-  .mem-detail.is-open{display:block;transform:none;box-shadow:var(--t-shadow-lift)}
+  .mem-detail:not(.is-open){visibility:hidden;pointer-events:none}
+  .mem-detail.is-open{
+    visibility:visible;pointer-events:auto;opacity:1;transform:translate3d(0,0,0);
+    box-shadow:var(--t-shadow-lift);
+    transition:transform 260ms cubic-bezier(0.22,1,0.36,1),opacity 220ms ease-out,visibility 0s linear 0s;
+  }
+  :root[data-motion="low"] .mem-detail{transform:none}
+  :root[data-motion="off"] .mem-detail,body.reduce-motion .mem-detail{transition:none!important;transform:none}
+  @media(prefers-reduced-motion:reduce){.mem-detail{transition:none!important;transform:none}}
   .mem-detail-close{display:inline-flex!important;margin-right:auto}
   .mem-detail-top{flex-wrap:wrap}
   .mem-vitals-figure b{font-size:var(--fs-display)}
@@ -658,4 +670,4 @@
 .mem-add-form{display:grid;gap:var(--sp-3);margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
 .mem-add-field{display:grid;gap:var(--sp-1)}
 .mem-add-field span{font-size:var(--fs-micro);color:var(--t-text-faint)}
-.mem-add-field select,.mem-add-field textarea{width:100%;box-sizing:border-box;font:inherit;color:var(--t-text);background:var(--t-bg);border:1px solid var(--t-line);border-radius:var(--r-sm);padding:var(--sp-2)}
+.mem-add-field select,.mem-add-field textarea{width:100%;box-sizing:border-box;font:inherit;color:var(--t-text);background:var(--t-surface-raised);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);padding:var(--sp-2)}

@@ -8,6 +8,8 @@ adding a second save mechanism: every write goes through
 idempotency rules as the rest of the cottage.
 """
 
+import re
+
 from companion_v2.configuration.models import ApplyMode, ConfigLayer, ConfigTarget, ConfigurationError, fingerprint
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.execution.service import outcome
@@ -67,6 +69,8 @@ from ..screen.configuration import (GROUP as SCREEN_GROUP, OWNER as SCREEN_OWNER
     configuration_fields as screen_fields)
 from ..qzone.configuration import (GROUP as QZONE_GROUP, OWNER as QZONE_OWNER,
     configuration_fields as qzone_fields)
+from ..device.configuration import (GROUP as PHONE_GROUP, OWNER as PHONE_OWNER,
+    configuration_fields as phone_fields)
 from ..library.configuration import (GROUP as LIBRARY_GROUP, OWNER as LIBRARY_OWNER,
     configuration_fields as library_fields)
 from ..references.configuration import (GROUP as REFERENCE_GROUP, OWNER as REFERENCE_OWNER,
@@ -352,6 +356,61 @@ class QzoneManagement(GroupEditor):
     error_prefix = "qzone"
 
 
+class PhoneManagement(GroupEditor):
+    """Role-wide ADB device settings for the autonomous phone step chain."""
+
+    group, owner = PHONE_GROUP, PHONE_OWNER
+    layers = phone_fields()[0].layers
+    error_prefix = "device_phone"
+
+    @outcome
+    def connection(self, operator, data):
+        from ..device.adb import AdbClient, AdbError, discover_adb
+        from ..device.configuration import PhoneSettingsReader
+
+        action = data["action"]
+        arguments = {"scan": (), "pair": ("address", "code"), "connect": ("address",),
+                     "use": ("serial", "edit_token", "operation_key")}
+        if (type(action) is not str or action not in arguments
+                or set(data) != {"action", *arguments[action]}
+                or any(type(data[name]) is not str or not data[name].strip() or len(data[name]) > 256
+                       for name in arguments[action])):
+            raise TaskError("device_phone_connection_invalid", "invalid phone connection request")
+        address_pattern = r"[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]{1,5}"
+        if action in ("pair", "connect") and not re.fullmatch(address_pattern, data["address"]):
+            raise TaskError("adb_address_invalid", "provide the Android debugging address and port")
+        if action == "use" and (len(data["edit_token"]) != 64 or len(data["operation_key"]) > 128):
+            raise TaskError("device_phone_connection_invalid", "invalid phone configuration version")
+        target = self._authorize(operator, "configuration.read" if action == "scan" else "configuration.write")
+        self.app.tasks.check_generation()
+        settings = PhoneSettingsReader(self.app.configuration, fallback_root=self.runtime.data_root).read_for(
+            operator, target, self.app.now())
+        try:
+            adb = AdbClient(discover_adb(settings.adb), timeout=8)
+            if action == "pair":
+                adb.pair(data["address"], data["code"])
+            elif action == "connect":
+                adb.connect(data["address"])
+            devices = adb.devices()
+        except AdbError as error:
+            raise TaskError(error.code, "ADB did not complete the requested operation") from None
+        if action != "use":
+            return {"devices": [{"serial": item.serial, "model": item.model, "state": item.state,
+                     "wireless": bool(re.fullmatch(address_pattern, item.serial)
+                                      or "_adb-tls-connect._tcp" in item.serial)} for item in devices]}
+
+        serial = data["serial"]
+        if not any(device.serial == serial and device.state == "device" for device in devices):
+            raise TaskError("adb_no_device", "the selected phone is no longer connected")
+        connect = serial if re.fullmatch(address_pattern, serial) else ""
+        # Carry effective settings forward when the role still reads the old phone.json file.
+        return require(self.configure(operator, {"edit_token": data["edit_token"],
+            "operation_key": data["operation_key"], "changes": {"enabled": True, "serial": serial,
+            "connect": connect, "adb_path": settings.adb, "max_steps": settings.max_steps,
+            "unicode_input": settings.unicode_input, "ime_restore_seconds": settings.ime_restore_seconds,
+            "allowed_actions": ",".join(settings.allowed), "allowed_subjects": ",".join(settings.allowed_subjects)}}))
+
+
 class ContentAuthoringManagement(GroupEditor):
     """Role-level direction and availability for native Content creation."""
 
@@ -359,6 +418,16 @@ class ContentAuthoringManagement(GroupEditor):
     owner = ConfigurationService.OWNER
     layers = authoring_fields()[0].layers
     error_prefix = "content_authoring"
+
+    def _after_configure(self, operator, data, result):
+        from ..conversation.content.authoring_service import effective_settings
+        from ..conversation.content.provisioning import ensure_content_access
+
+        if getattr(self.context, "role_binding", None) is None:
+            return
+        if not effective_settings(self.runtime, self.context).enabled:
+            return
+        ensure_content_access(self.runtime, self.context, observed_at=self.app.now())
 
 
 class AcquaintanceManagement(GroupEditor):
@@ -434,7 +503,7 @@ class PrivateAcquaintanceSettingsMixin:
 
     @outcome
     def configure(self, operator, data):
-        with self.app.configuration.store.transaction():
+        with self.runtime.transaction(), self.app.configuration.store.transaction():
             status = require(self.status(operator))
             if type(data) is not dict or data.get("edit_token") != status["edit_token"]:
                 raise TaskError("configuration_revision_conflict",

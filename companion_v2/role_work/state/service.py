@@ -1,13 +1,15 @@
 """Versioned role simulation; never a diagnosis or observation of the user."""
 
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 import json
 
 from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
 from companion_v2.identity_policy.private_domain import source_ref
 from companion_v2.sources.models import SourceRecord
-from companion_v2.sources.dependencies import link
+from companion_v2.sources.dependencies import key as dependency_key, link, validation_batch
+from companion_v2.storage.codec import decode_timestamp, scope_from_row
 from .configuration import FEATURE_SWITCHES, GROUP, target_for
 from . import cycle
 from . import cycle_feelings
@@ -21,6 +23,91 @@ from .access import RoleStateAccess
 FIELDS = ("energy", "hunger", "health", "sleep", "busy", "mood", "location", "cycle", "presence", "online_mode", "conditions")
 PERSONA_STATE_FIELDS = frozenset(FIELDS)
 ONLINE_MODES = frozenset({"online", "away", "busy", "invisible"})
+STATE_CHAIN_OWNERS = frozenset({"role.state", "role.state.cycle"})
+MAX_ROLE_STATE_ANCESTOR_DEPTH = 16
+ROLE_STATE_DEPENDENCY_WINDOW = timedelta(days=3)
+MAX_ROLE_STATE_CHECKPOINT_SOURCES = 64
+
+
+def bound_state_dependencies(
+    runtime,
+    dependencies,
+    *,
+    at: datetime,
+    max_depth: int = MAX_ROLE_STATE_ANCESTOR_DEPTH,
+    max_window: timedelta = ROLE_STATE_DEPENDENCY_WINDOW,
+    max_sources: int = MAX_ROLE_STATE_CHECKPOINT_SOURCES,
+) -> tuple[SourceRef, ...]:
+    """Keep role-state dependency chains strictly bounded in depth and node count.
+
+    Shallow chains (depth < ``max_depth``) retain direct ancestor links so normal
+    multi-step withdrawal propagation is unchanged. Once an ancestor chain
+    reaches ``max_depth`` state hops (including legacy deep chains), re-anchor
+    directly onto the active, non-expired, non-state evidence sources from the
+    recent window instead of extending an unbounded linked list.
+    """
+    if not dependencies:
+        return ()
+    cutoff = at - max_window
+    result: list[SourceRef] = []
+    for dep in dependencies:
+        if dep.owner not in STATE_CHAIN_OWNERS:
+            result.append(dep)
+            continue
+        root_key = dependency_key(dep)
+        queue: deque[tuple[tuple[str, str, int], int]] = deque([(root_key, 1)])
+        visited_state = {root_key}
+        max_seen_depth = 1
+        collected: dict[tuple[str, str, int], SourceRef] = {}
+        while queue:
+            current_key, depth = queue.popleft()
+            if depth > max_seen_depth:
+                max_seen_depth = depth
+            if depth >= max_depth:
+                continue
+            rows = runtime.read_all(
+                """SELECT s.source_id, s.lineage_id, s.source_revision, s.owner, s.state,
+                          s.issued_at, s.expires_at,
+                          s.installation_id, s.platform, s.scope_kind, s.native_scope_id,
+                          s.bot_id, s.account_id, s.conversation_id, s.session_id
+                   FROM source_dependencies d
+                   JOIN sources s
+                     ON s.source_id = d.input_id
+                    AND s.lineage_id = d.input_lineage
+                    AND s.source_revision = d.input_revision
+                   WHERE d.dependent_id = ? AND d.dependent_lineage = ? AND d.dependent_revision = ?""",
+                current_key,
+            )
+            for row in rows:
+                child_key = (row["source_id"], row["lineage_id"], row["source_revision"])
+                if row["owner"] in STATE_CHAIN_OWNERS:
+                    if child_key not in visited_state:
+                        visited_state.add(child_key)
+                        next_depth = depth + 1
+                        if next_depth > max_seen_depth:
+                            max_seen_depth = next_depth
+                        queue.append((child_key, next_depth))
+                    continue
+                if child_key in collected or row["state"] != "active":
+                    continue
+                issued_at = decode_timestamp(row["issued_at"])
+                expires_at = decode_timestamp(row["expires_at"]) if row["expires_at"] else None
+                if issued_at > at or issued_at < cutoff or (expires_at is not None and at >= expires_at):
+                    continue
+                collected[child_key] = SourceRef(
+                    row["source_id"],
+                    row["owner"],
+                    scope_from_row(row),
+                    VersionRef(row["lineage_id"], row["source_revision"]),
+                    issued_at,
+                    expires_at,
+                )
+        if max_seen_depth < max_depth:
+            result.append(dep)
+        else:
+            recent = sorted(collected.values(), key=lambda ref: (ref.issued_at, ref.source_id), reverse=True)
+            result.extend(recent[:max_sources])
+    return tuple(dict.fromkeys(result))
 INSTRUCTION = """role_state 描述角色自身的人格模拟感受，不是用户身体信息或医疗结论。精力、饥饿、健康、忙碌、心情、周期和位置是当前角色的持续体验，不按阈值拒答，也不播报数值或套台词。
 每轮参考当前最相关的一两项，让状态自然影响具体反应、措辞、情绪浓度、回应节奏或主动性；话题合适时可以用第一人称带出感受。即使不直接说，也留下一点可感知的状态色彩，不要把它藏成无关的后台资料；不逐项复述，也不压过对方正在聊的事。
 状态只作为语气底色，不能改写成连续的状态汇报；对方没问时，不把饥饿、健康、忙碌等自身状态当聊天主线。
@@ -161,6 +248,10 @@ class RoleStateService:
             if not values["cycle_discomfort_enabled"] or type(assertion) is dict and assertion["applicability"] != "applicable":
                 data["conditions"] = [c for c in data["conditions"] if c["kind"] != "cycle"]
             def transform(current):
+                with validation_batch(self.runtime, now):
+                    return _write_transform(current)
+
+            def _write_transform(current):
                 if expected_settings_token is not None and self.cycle_settings_token(values) != expected_settings_token:
                     raise TaskError("role_cycle_settings_conflict", "cycle settings changed; review the current configuration")
                 clock, clock_sources, cycle_shared = self.cycles.save(context, current, assertion, values, now,
@@ -194,13 +285,14 @@ class RoleStateService:
                         cross_window=True) if mood.axes(data["mood"]) else None)
                 dependencies = tuple(dict.fromkeys(dependencies))
                 self.evidence.validate(context, dependencies, control=True)
-                # A derived source retains prior dependencies without expanding every prompt.
+                link_dependencies = bound_state_dependencies(self.runtime, dependencies, at=now)
+                # A derived source retains bounded prior dependencies without expanding every prompt.
                 identifier = "role-state-" + digest([context.key, operation_key])
                 source = SourceRef(identifier, "role.state", context.scope, VersionRef(identifier, 1), now)
                 payload = encode({"values": data, "cycle_clock": clock, "cycle_feeling": feeling,
                                   "mood_dynamics": dynamics}) if clock or feeling or dynamics else encode(data)
                 require(self.access.sources.publish(SourceRecord(source, context.audience, digest(payload), payload), observed_at=now))
-                link(self.runtime, source, dependencies, now)
+                link(self.runtime, source, link_dependencies, now)
                 return {"state": "saved", "basis": "role_simulation", "values": data,
                     "body_shared": True, "cycle_shared": cycle_shared,
                     **({"cycle_clock": clock, "cycle_sources": json.loads(encode(clock_sources))} if clock else {}),
@@ -246,18 +338,19 @@ class RoleStateService:
             self.access.check_injection(context, at=at)
         else:
             self.access.check(context, "role.state.read", operator=operator, at=at)
-        values, _ = self.settings(context)
-        record = self.records.get(context, "current")
-        if record:
-            self.evidence.validate(context, record["sources"], at=at, control=True)
-        if not values["enabled"] and operator is None:
-            return {"state": "disabled", "revision": record["revision"] if record else 0}
-        if record is None:
-            result = {"state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
-        else:
-            result = self._project(record, values, at, context=context, cycle_at=cycle_at)
-        sleep = self.body_clock.read(context)
-        return {**result, **({"sleep_execution": sleep} if sleep else {})}
+        with validation_batch(self.runtime, at):
+            values, _ = self.settings(context)
+            record = self.records.get(context, "current")
+            if record:
+                self.evidence.validate(context, record["sources"], at=at, control=True)
+            if not values["enabled"] and operator is None:
+                return {"state": "disabled", "revision": record["revision"] if record else 0}
+            if record is None:
+                result = {"state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
+            else:
+                result = self._project(record, values, at, context=context, cycle_at=cycle_at, control_validated=True)
+            sleep = self.body_clock.read(context)
+            return {**result, **({"sleep_execution": sleep} if sleep else {})}
 
     def read_revision(self, context, revision, *, captured_at, observed_at, storage=None, sleep_reference=None,
                       include_sleep=False, injection=False):
@@ -266,20 +359,22 @@ class RoleStateService:
             self.access.check_injection(context, at=observed_at)
         else:
             self.access.check(context, "role.state.read", at=observed_at)
-        values, _ = self.settings(context)
-        if not values["enabled"]:
-            raise TaskError("role_state_disabled", "role state reading is disabled")
-        record = self.records.version(context, "current", revision, storage=storage) if revision else None
-        if record:
-            self.evidence.validate(context, record["sources"], at=observed_at, control=True)
-        if record and record["updated_at"] > stamp(captured_at) or captured_at > observed_at:
-            raise TaskError("state_snapshot_invalid", "state was not available at the captured time")
-        result = self._project(record, values, captured_at, context=context, authority_at=observed_at) if record else {
-            "state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
-        sleep = self.body_clock.read(context, reference=sleep_reference, historical=True) if include_sleep else None
-        if sleep and (sleep["started_at"] > stamp(captured_at) or sleep["ended_at"] and sleep["ended_at"] > stamp(captured_at)):
-            raise TaskError("state_snapshot_invalid", "sleep receipt was not available at capture")
-        return {**result, **({"sleep_execution": sleep} if sleep else {})}
+        with validation_batch(self.runtime, observed_at):
+            values, _ = self.settings(context)
+            if not values["enabled"]:
+                raise TaskError("role_state_disabled", "role state reading is disabled")
+            record = self.records.version(context, "current", revision, storage=storage) if revision else None
+            if record:
+                self.evidence.validate(context, record["sources"], at=observed_at, control=True)
+            if record and record["updated_at"] > stamp(captured_at) or captured_at > observed_at:
+                raise TaskError("state_snapshot_invalid", "state was not available at the captured time")
+            result = self._project(record, values, captured_at, context=context, authority_at=observed_at,
+                                   control_validated=True) if record else {
+                "state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
+            sleep = self.body_clock.read(context, reference=sleep_reference, historical=True) if include_sleep else None
+            if sleep and (sleep["started_at"] > stamp(captured_at) or sleep["ended_at"] and sleep["ended_at"] > stamp(captured_at)):
+                raise TaskError("state_snapshot_invalid", "sleep receipt was not available at capture")
+            return {**result, **({"sleep_execution": sleep} if sleep else {})}
 
     def maintenance_cycle(self, context, settings, at):
         """Preview configuration adoption before generating feelings for the next state."""
@@ -300,13 +395,14 @@ class RoleStateService:
             link(self.runtime, reference, dependencies, at)
         return json.loads(encode(reference))
 
-    def _project(self, record, values, at, *, context, cycle_at=None, authority_at=None):
+    def _project(self, record, values, at, *, context, cycle_at=None, authority_at=None, control_validated=False):
         result = {**record, "values": dict(record["values"])}
         result.pop("body_shared", None)
         result.pop("cycle_shared", None)
         original = source_ref(record["sources"][0])
         local = original.scope == context.scope
-        visible = self.evidence.visible(context, record["sources"], at=authority_at or at)
+        visible = self.evidence.visible(context, record["sources"], at=authority_at or at,
+                                        control_validated=control_validated)
         role_shared = self.records.storage(context) == "role"
         if not local or not visible:
             allowed = PERSONA_STATE_FIELDS if role_shared else set()
@@ -323,8 +419,9 @@ class RoleStateService:
                 band=values["mood_neutral_band"], cross_window=not local and role_shared)
         clock = result.pop("cycle_clock", None)
         result.pop("cycle_sources", None)
-        if (clock and not local and self.records.storage(context) != "role"
-                and not self.evidence.visible(context, record.get("cycle_sources", record["sources"]), at=authority_at or at)):
+        if (clock and not local and not role_shared
+                and not self.evidence.visible(context, record.get("cycle_sources", record["sources"]),
+                                              at=authority_at or at, control_validated=control_validated)):
             clock = None
             result["values"]["cycle"] = None
             result.pop("cycle_feeling", None)

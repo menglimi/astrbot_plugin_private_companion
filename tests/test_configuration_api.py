@@ -12,6 +12,7 @@ authorization gate.
 import json
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from tests import test_astrbot_staging_host as support
@@ -20,6 +21,7 @@ from tests.native_adapter_support import FakeEvent, FakeProvider, FakeReverseApi
 from astrbot_host.controller import AstrBotStagingController
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
 from companion_v2.configuration.management import DiaryAndRestManagement, ProactiveContactManagement
+from companion_v2.device.adb import AdbDevice
 from companion_v2.identity_policy.grants import PERSON_PERMISSION_GRANT_PREFIX
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.proactive.management import GRANT_PREFIX as PROACTIVE_GRANT_PREFIX
@@ -77,6 +79,43 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                 **selection,
             })
             self.assertEqual(saved["status"], "ok", saved)
+        finally:
+            self.controller.unregister_routes()
+
+    async def test_phone_connection_probes_and_enables_only_a_ready_device(self):
+        handlers, first, _ = await self.routes()
+        connect = handlers[first + "/phone-connection"]
+        try:
+            read = await call(handlers[first], query={"sections": "device.phone"})
+            token = read["data"]["sections"]["device.phone"]["edit_token"]
+            with patch("companion_v2.device.adb.discover_adb", return_value=Path("adb.exe")) as discover, \
+                    patch("companion_v2.device.adb.AdbClient") as client:
+                adb = client.return_value
+                adb.devices.return_value = (AdbDevice("USB123", "unauthorized"),
+                                            AdbDevice("192.168.1.20:37123", "device", "Test_Phone"))
+                rejected = await call(connect, {"action": "scan"}, username="api_key:test")
+                self.assertEqual(rejected["message"], "dashboard_identity_required")
+                discover.assert_not_called()
+                scan = await call(connect, {"action": "scan"})
+                self.assertEqual(scan["status"], "ok", scan)
+                self.assertEqual([(item["state"], item["wireless"]) for item in scan["data"]["devices"]],
+                                 [("unauthorized", False), ("device", True)])
+                pair = await call(connect, {"action": "pair", "address": "192.168.1.20:35125", "code": "123456"})
+                self.assertEqual(pair["status"], "ok", pair)
+                adb.pair.assert_called_once_with("192.168.1.20:35125", "123456")
+                payload = {"action": "use", "serial": "USB123", "edit_token": token, "operation_key": "phone-setup"}
+                waiting = await call(connect, payload)
+                self.assertEqual(waiting["message"], "adb_no_device")
+                ready = await call(connect, {**payload, "serial": "192.168.1.20:37123"})
+                self.assertEqual(ready["status"], "ok", ready)
+                replay = await call(connect, {**payload, "serial": "192.168.1.20:37123"})
+                self.assertEqual(replay["status"], "ok", replay)
+                self.assertTrue(replay["data"]["replayed"])
+            read = await call(handlers[first], query={"sections": "device.phone"})
+            settings = read["data"]["sections"]["device.phone"]["settings"]
+            self.assertTrue(settings["enabled"])
+            self.assertEqual(settings["connect"], "192.168.1.20:37123")
+            self.assertEqual(settings["serial"], "192.168.1.20:37123")
         finally:
             self.controller.unregister_routes()
 

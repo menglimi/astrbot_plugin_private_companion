@@ -53,17 +53,17 @@ DEFAULTS = {
     "private_learning_enabled": True,
     "group_learning_enabled": False,
     "window_hours": 720,
-    "sample_limit": 60,
+    "sample_limit": 25,
     "min_samples": 2,
     "group_min_samples": 20,
-    "sample_chars": 800,
+    "sample_chars": 300,
     "active_signal_limit": 60,
     "rules_per_turn": 2,
     "minimum_confidence": 0.65,
     "payload_chars": 4000,
     "rotation_candidate_limit": 24,
     "rotation_decay_hours": 336,
-    "scan_interval_minutes": 90,
+    "scan_interval_minutes": 360,
     "group_scan_interval_minutes": 180,
     "learning_mode": "balanced",
     "private_application_enabled": True,
@@ -271,7 +271,7 @@ class RoleExpressionScopeSettings:
         return _subject_ids(self.private_application_subject_ids)
 
 
-def read_role_scope_settings(runtime, context):
+def _read_role_scope_snapshot(runtime, context):
     from companion_v2.role_profile.configuration import (GROUP as PROFILE_GROUP,
         RoleProfileConfigurationOwner, configuration_fields as profile_fields,
         target_for as profile_target_for)
@@ -287,19 +287,20 @@ def read_role_scope_settings(runtime, context):
     values = {name: snapshot.fields[prefix + profile_name].value
               for name, profile_name in profile_names.items()}
     try:
-        return RoleExpressionScopeSettings.from_values(values)
+        settings = RoleExpressionScopeSettings.from_values(values)
     except ConfigurationError:
-        return RoleExpressionScopeSettings()
+        settings = RoleExpressionScopeSettings()
+    raw_owner = snapshot.fields[prefix + "main_companion_subject"].value
+    explicit_owner = raw_owner.strip() if type(raw_owner) is str else ""
+    return settings, explicit_owner
+
+
+def read_role_scope_settings(runtime, context):
+    return _read_role_scope_snapshot(runtime, context)[0]
 
 
 def main_companion_subject(runtime, context):
-    from companion_v2.role_profile.configuration import (GROUP as PROFILE_GROUP,
-        RoleProfileConfigurationOwner, configuration_fields as profile_fields,
-        target_for as profile_target_for)
-
-    snapshot = RoleProfileConfigurationOwner(runtime).read(profile_target_for(context), profile_fields())
-    value = snapshot.fields[PROFILE_GROUP + ".main_companion_subject"].value
-    explicit = value.strip() if type(value) is str else ""
+    _, explicit = _read_role_scope_snapshot(runtime, context)
     if explicit:
         return explicit
     # 默认来源是"本人"，但单人部署往往从未填写主要陪伴者。角色只有一个私聊
@@ -319,7 +320,7 @@ def _sole_private_participant(runtime, context):
         AND json_extract(context_json, '$.actor.subject.subject_id') IS NOT NULL"""
     subjects = set()
     for table in ("conversation_batches", "conversation_native_turns",
-                  "conversation_native_observations"):
+                  "conversation_native_observations", "conversation_contexts"):
         try:
             rows = runtime.read_all(f"""SELECT DISTINCT json_extract(context_json,
                 '$.actor.subject.subject_id') AS subject FROM {table}
@@ -332,20 +333,31 @@ def _sole_private_participant(runtime, context):
     return next(iter(subjects)) if len(subjects) == 1 else None
 
 
+def resolve_role_source_gate(runtime, context):
+    """Read role private-source policy and owner once, avoiding redundant scans."""
+    settings, explicit = _read_role_scope_snapshot(runtime, context)
+    if settings.private_source_mode != "owner":
+        return settings, None
+    return settings, explicit or _sole_private_participant(runtime, context)
+
+
 def source_subject_allowed_for_context(runtime, context):
     if context.scope.kind is not ScopeKind.PRIVATE:
         return False
-    settings = read_role_scope_settings(runtime, context)
-    return source_subject_allowed(settings, context.actor.subject.subject_id,
-                                  main_companion_subject(runtime, context))
+    settings, owner_subject = resolve_role_source_gate(runtime, context)
+    return source_subject_allowed(settings, context.actor.subject.subject_id, owner_subject)
 
 
 def application_subject_allowed_for_context(runtime, context):
     if context.scope.kind is not ScopeKind.PRIVATE:
         return False
-    settings = read_role_scope_settings(runtime, context)
-    return application_subject_allowed(settings, context.actor.subject.subject_id,
-                                       main_companion_subject(runtime, context))
+    settings, explicit = _read_role_scope_snapshot(runtime, context)
+    owner_subject = (
+        (explicit or _sole_private_participant(runtime, context))
+        if settings.private_application_mode == "owner"
+        else None
+    )
+    return application_subject_allowed(settings, context.actor.subject.subject_id, owner_subject)
 
 
 def source_subject_allowed(settings, subject_id, owner_subject):

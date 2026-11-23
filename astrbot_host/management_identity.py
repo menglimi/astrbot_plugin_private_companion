@@ -1,7 +1,9 @@
 """Map a host-authenticated Dashboard administrator to a separate V2 human identity."""
 
+from datetime import datetime, timezone
+
 from companion_v2.execution.models import TaskError, digest, require
-from companion_v2.foundation.refs import SubjectKind, SubjectRef
+from companion_v2.foundation.refs import ScopeKind, ScopeRef, SubjectKind, SubjectRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
@@ -20,11 +22,29 @@ def _authenticated_api_key(username):
         return False
 
 
+def current_request_username(web_request):
+    """Read the authenticated Dashboard username from a request proxy safely."""
+    try:
+        return web_request.username
+    except (RuntimeError, AttributeError):
+        raise TaskError(
+            "dashboard_identity_required",
+            "sign in to the AstrBot Dashboard as an administrator",
+        ) from None
+
+
+def _validate_dashboard_username(username, *, allow_api_key=False):
+    if (type(username) is not str or not username.strip() or username != username.strip()
+            or len(username) > 128
+            or (username.startswith("api_key:")
+                and (not allow_api_key or not _authenticated_api_key(username)))):
+        raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard as an administrator")
+    return username
+
+
 def dashboard_operator(runtime, username, *, at):
     # username must come from astrbot.api.web.request, never a query/body/header claim.
-    if (type(username) is not str or not username.strip() or username != username.strip()
-            or len(username) > 128 or (username.startswith("api_key:") and not _authenticated_api_key(username))):
-        raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard as an administrator")
+    _validate_dashboard_username(username, allow_api_key=True)
     identifier = "dashboard:" + digest([runtime.installation_id, username])
     service = username.startswith("api_key:")
     principal = AuthenticatedHostPrincipal(runtime.installation_id,
@@ -53,3 +73,56 @@ def dashboard_operator(runtime, username, *, at):
             resolved = identities.resolve_authenticated(principal, observed_at=at)
         # A known revoked binding or downgraded tier is never silently restored.
         return require(resolved)
+
+
+def require_management_operator(
+    runtime,
+    username,
+    *,
+    at,
+    scope_id="page.management",
+    action="memory.manage",
+    allow_api_key=False,
+):
+    """Resolve the Dashboard operator and verify management-plane RBAC policy."""
+    _validate_dashboard_username(username, allow_api_key=allow_api_key)
+    operator = dashboard_operator(runtime, username, at=at)
+    scope = ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, scope_id)
+    require(ObjectAccessPolicy(runtime).feature_access(
+        operator, scope=scope, action=action, observed_at=at,
+    ))
+    return operator
+
+
+def require_controller_management_operator(
+    controller,
+    username,
+    *,
+    scope_id="page.management",
+    action="memory.manage",
+    allow_api_key=False,
+    require_runtime=False,
+    runtime_missing_code="staging_not_initialized",
+    runtime_missing_reason="load the V2 profile first",
+):
+    """Enforce termination gate, Dashboard identity, and policy RBAC when runtime exists."""
+    if getattr(controller, "_terminated", False):
+        raise TaskError("staging_host_terminated", "plugin is stopped")
+    _validate_dashboard_username(username, allow_api_key=allow_api_key)
+    runtime = getattr(controller, "runtime", None)
+    if runtime is None:
+        if require_runtime:
+            raise TaskError(runtime_missing_code, runtime_missing_reason)
+        return None
+    now = getattr(controller, "now", None)
+    at = now() if callable(now) else datetime.now(timezone.utc)
+    if at is None:
+        at = datetime.now(timezone.utc)
+    return require_management_operator(
+        runtime,
+        username,
+        at=at,
+        scope_id=scope_id,
+        action=action,
+        allow_api_key=allow_api_key,
+    )

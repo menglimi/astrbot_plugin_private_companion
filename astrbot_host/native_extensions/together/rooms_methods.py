@@ -98,9 +98,11 @@ class TogetherRoomsMethods:
         if not access['tunnel_ready']:
             access_note += '临时域名可能还需数秒生效，如首次打不开请稍后重试。'
         selection_note = '页面打开后，请由用户选择或粘贴要看的视频；当前工具不会自动选择或播放视频。' if normalized_mode == 'watch' else '页面打开后可从书库继续阅读，或导入 TXT、Markdown、EPUB 小说。' if normalized_mode == 'novel' else '页面打开后会结合屏幕伙伴提供的脱敏工作上下文开始协同。' if normalized_mode == 'work' else '页面打开后即可开始文字或语音通话。'
-        user_ticket = self.issue_room_ticket(mode=normalized_mode, user_id=sender_id)
+        is_group = self._event_is_group(event)
+        native_v2 = None if is_group else await self._resolve_native_v2_binding(sender_id)
+        user_ticket = self.issue_room_ticket(mode=normalized_mode, user_id=sender_id, native_v2=native_v2)
         room_url = self._ticket_url(user_ticket)
-        if self._event_is_group(event):
+        if is_group:
             private_message = f'{label}的手机房间已经准备好了。{access_note}\n{room_url}\n请直接用手机浏览器打开；这是短期一次性链接，请勿转发。'
             private_sent = await self._send_private_room_link(event, private_message)
             if not private_sent:
@@ -115,6 +117,62 @@ class TogetherRoomsMethods:
 
     def _ticket_url(self, ticket: RoomTicket) -> str:
         return f"{self._room_base_url()}/join/{quote(ticket.token, safe='')}?mode={quote(ticket.mode, safe='')}"
+
+    async def _resolve_native_v2_binding(self, user_id: str) -> dict[str, Any] | None:
+        """Resolve an active private V2 room binding when the host session authorizes it."""
+        target_user = _single_line(user_id, 80)
+        controller = getattr(self, 'controller', None)
+        registry = getattr(controller, 'native_extensions', None)
+        if not target_user or controller is None or registry is None:
+            return None
+        try:
+            from astrbot_host.mobile_together import MobileTogetherBridge
+            from astrbot_host.native_extensions import together_room_execution
+            from companion_v2.execution.models import encode
+            from companion_v2.together.provider import scope_key
+            bridge = MobileTogetherBridge(controller)
+            resolved = bridge._target_context(target_user)
+            if resolved is None:
+                return None
+            _session, application, context = resolved
+            if getattr(registry, 'application', None) is not application:
+                return None
+            scope = context.scope
+            if getattr(scope.kind, 'value', '') != 'private':
+                return None
+            if bridge._admitted(registry, application, context, 'together.room.create') is None:
+                return None
+            persona_guard = getattr(registry, 'persona_guard', None)
+            if not callable(persona_guard):
+                return None
+            persona = await persona_guard(scope, context.role_binding)
+            if not isinstance(persona, dict):
+                return None
+            base_execution = dict(getattr(registry, 'together_execution', None) or {})
+            if not base_execution.get('model_provider_id'):
+                chat = self._get_chat_provider()
+                base_execution['model_provider_id'] = self._provider_usage_id(chat) if chat is not None else ''
+            base_execution.setdefault('tts_provider_id', '')
+            base_execution.setdefault('tts_language', 'zh')
+            base_execution.setdefault('tts_timeout_seconds', int(getattr(self, 'tts_timeout_seconds', 60) or 60))
+            execution = together_room_execution(base_execution, self, context=getattr(self, 'context', None))
+            return {
+                'scope_key': scope_key(json.loads(encode(context))),
+                'bot_id': str(persona['bot_id']),
+                'account_id': str(persona['account_id']),
+                'persona_id': persona.get('persona_id'),
+                'prompt': str(persona['prompt']),
+                'model_provider_id': str(execution.get('model_provider_id') or ''),
+                'tts_provider_id': str(execution.get('tts_provider_id') or ''),
+                'tts_language': str(execution.get('tts_language') or 'zh'),
+                'tts_timeout_seconds': max(1, min(int(execution.get('tts_timeout_seconds') or 60), 120)),
+                'platform': str(scope.platform),
+                'session_id': str(scope.session_id),
+                'scope_kind': str(scope.kind.value),
+            }
+        except Exception as exc:
+            logger.debug('[TogetherCompanion] 解析 V2 原生房间绑定失败，回退兼容模式: %s', _single_line(exc, 160))
+            return None
 
     def issue_room_ticket(self, *, mode: str, user_id: str='', native_v2: dict[str, Any] | None=None) -> RoomTicket:
         resolved_user = _single_line(user_id, 80) or self._resolve_primary_user_id()
@@ -347,8 +405,8 @@ class TogetherRoomsMethods:
                 task = room.shared_experience_task
                 if isinstance(task, asyncio.Task) and (not task.done()):
                     await asyncio.wait_for(asyncio.shield(task), timeout=12)
-                elif not room.shared_experience_finalized:
-                    await asyncio.wait_for(self._record_shared_experience(room), timeout=12)
+                if not room.shared_experience_finalized:
+                    await asyncio.wait_for(self._record_shared_experience(room, final=True), timeout=12)
             except asyncio.TimeoutError:
                 logger.debug('[TogetherCompanion] 房间结束时共享经历整理未及时完成')
             except asyncio.CancelledError:

@@ -19,11 +19,14 @@
   "config-editor.css",
   "workbench.css",
   "console.css",
+  "voice-page.css",
+  "text-page.css",
   "output-page.css",
   "decision-page.css",
   "action-page.css",
   "home.css",
   "models-page.css",
+  "pricing-workbench.css",
   "product-page.css",
   "native-extension-panel.css",
   "semantic-page.css",
@@ -42,5 +45,6 @@
   "theme-skins.css",
   "page-motion.css",
   "screen-observation.css",
-  "care.css"
+  "care.css",
+  "learning-policy.css"
 ]

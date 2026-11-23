@@ -136,7 +136,7 @@ class VoicePlan:
 
     speech: str
     provider_id: str = ""
-    timeout_seconds: int = 30
+    timeout_seconds: int = 120
     position: str = "after_text"
     delivery_mode: str = "voice_and_text"
 

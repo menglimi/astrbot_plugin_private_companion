@@ -29,6 +29,10 @@ window.CompanionNativeExtensionPanel = (() => {
     return groups;
   }
   const sessions = new Map(), operations = new Map();
+  /* 从外面跳到「现实触及」时，先把「本机语音与叫醒」展开再滚动过去；
+     只用于一次性定位，不改变面板自己的展开状态。 */
+  let audioFocusPending = false;
+  let pendingFieldFocus = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   const secret = name => /token|secret|password|cookie|api_key|access_key|sessdata|auth_code/i.test(name);
@@ -122,7 +126,7 @@ window.CompanionNativeExtensionPanel = (() => {
       this.root = root; this.name = name; this.options = options;
       this.alive = true; this.ticket = 0; this.busy = false; this.dirty = false;
       this.mobileTokenNotice = "";
-      this.mobileOpen = new Set(["gateway"]);
+      this.mobileOpen = new Set(["gateway", "pairing"]);
       this.group = ""; this.query = ""; this.record = null; this.fields = [];
       /* 只挂一组时（手机连接页复用现实触及的 mobile 分组），不显示分组栏，
          否则同一份设置会出现两条导航。 */
@@ -159,7 +163,8 @@ window.CompanionNativeExtensionPanel = (() => {
       this.managementState = null;
       clearTimeout(this.statusTimer); this.statusTimer = null; this.statusReads = 0;
       const ticket = ++this.ticket;
-      this.root.innerHTML = `<div class="native-extension-empty" role="status"><span class="native-extension-loading"></span>正在读取${escape(names[this.name])}设置…</div>`;
+      const title = this.onlyGroup === "mobile" ? "手机端连接" : names[this.name];
+      this.root.innerHTML = `<div class="native-extension-empty" role="status"><span class="native-extension-loading"></span>正在读取${escape(title)}设置…</div>`;
       try {
         const result = await window.CompanionProduct.request("GET", "extensions");
         if (!this.current(ticket)) return;
@@ -203,7 +208,7 @@ window.CompanionNativeExtensionPanel = (() => {
         control = `<input type="number" ${attrs} value="${escape(resolved ?? "")}" step="${escape(bounds.step ?? (kind === "int" ? 1 : "any"))}"${Number.isFinite(bounds.min) ? ` min="${bounds.min}"` : ""}${Number.isFinite(bounds.max) ? ` max="${bounds.max}"` : ""}>`;
       } else control = `<input type="${isSecret ? "password" : "text"}" ${attrs} value="${isSecret ? "" : escape(resolved || "")}" ${isSecret ? `autocomplete="new-password" placeholder="${this.isConfigured(path, resolved) ? "已配置，留空保持不变" : "尚未配置"}"` : ""} spellcheck="false">`;
       const notes = [hint, kind === "list" ? "每行一项；清空可移除所有条目。" : "", isSecret ? "留空保留已有密钥，填写新值才会替换。" : ""].filter(Boolean).join(" ");
-      return `<div class="native-extension-field ${kind === "bool" ? "is-switch" : ""}" data-native-field-label="${escape(title)}"><label for="${id}">${escape(title)}</label>${kind === "bool" ? `<label class="native-extension-switch" for="${id}" aria-label="${escape(title)}">${control}</label>` : control}<small id="${id}-hint">${escape(notes)}</small></div>`;
+      return `<div class="native-extension-field ${kind === "bool" ? "is-switch" : ""}" data-native-field-label="${escape(title)}" data-field="${escape(path.join("."))}"><label for="${id}">${escape(title)}</label>${kind === "bool" ? `<label class="native-extension-switch" for="${id}" aria-label="${escape(title)}">${control}</label>` : control}<small id="${id}-hint">${escape(notes)}</small></div>`;
     }
     isConfigured(path, value) {
       return at(this.record.settings, [...path.slice(0, -1), path.at(-1) + "_configured"]) === true || Boolean(value);
@@ -213,6 +218,7 @@ window.CompanionNativeExtensionPanel = (() => {
       this.fields = []; this.instance = ++instance;
       this.groups = groupsFor(this.name, this.record.schema);
       if (this.onlyGroup) this.groups = this.groups.filter(group => group.id === this.onlyGroup);
+      else if (this.name === "reality") this.groups = this.groups.filter(group => group.id !== "mobile");
       if (!this.groups.some(group => group.id === this.group)) this.group = this.groups[0]?.id || "";
       const controls = this.groups.map(group => {
         const content = group.fields.map(([key, field]) => {
@@ -227,12 +233,29 @@ window.CompanionNativeExtensionPanel = (() => {
         return `<section class="native-extension-group" data-native-group-panel="${escape(group.id)}" ${group.id !== this.group ? "hidden" : ""}><h3>${escape(group.title)}</h3>${group.hint ? `<p class="native-extension-hint">${escape(group.hint)}</p>` : ""}${content}</section>`;
       }).join("");
       const mobileOnly = this.onlyGroup === "mobile";
-      const mobile = mobileOnly ? this.mobileConnectionCard() : "";
-      const heading = mobileOnly ? `<div class="mobile-config-heading"><h3>连接配置</h3><p>网关、配对身份与终端权限</p></div>`
+      const mobile = mobileOnly ? this.mobileConnectionMarkup() : null;
+      const focusAudio = this.name === "reality" && !mobileOnly && audioFocusPending;
+      if (focusAudio) audioFocusPending = false;
+      if (focusAudio) this.managementState = {...(this.managementState || {}), audioOpen:true};
+      const heading = mobileOnly ? ""
         : `<header class="native-extension-head"><div><span class="native-extension-kicker">V2 内置能力</span><h3>${escape(names[this.name])}</h3><p>${escape(descriptions[this.name])}</p></div><div data-native-runtime></div></header><div class="native-extension-lifecycle" data-native-lifecycle></div>`;
-      const management = !mobileOnly && ["reality", "live"].includes(this.name)
+      const mobileLink = this.name === "reality" && !mobileOnly && this.record.schema.mobile
+        ? '<button class="button small native-extension-device-link" type="button" data-go="manage" data-manage="mobile"><i data-lucide="link-2" aria-hidden="true"></i>手机端连接</button>' : "";
+      const management = !mobileOnly && ["reality", "live", "game"].includes(this.name)
         ? '<div data-native-management></div>' : "";
-      this.root.innerHTML = `<div class="native-extension-panel${mobileOnly ? " is-mobile-connection" : ""}">${mobile}${heading}${management}<form data-native-form><label class="native-extension-search"><span class="sr-only">查找设置项</span><input type="search" placeholder="${this.onlyGroup ? "查找手机连接设置项" : "查找设置项"}" aria-label="${this.onlyGroup ? "查找手机连接设置项" : "查找" + escape(names[this.name]) + "设置项"}" data-native-search value="${escape(this.query)}"></label><div class="native-extension-workspace${this.onlyGroup ? " is-single" : ""}">${this.onlyGroup ? "" : `<nav class="native-extension-nav" aria-label="${escape(names[this.name])}设置分组">${this.groups.map(group => `<button type="button" data-native-group="${escape(group.id)}" aria-pressed="${group.id === this.group}">${escape(group.title)}</button>`).join("")}</nav>`}<div class="native-extension-settings">${controls}<p class="native-extension-no-results" hidden>没有匹配的设置项，换个关键词试试。</p></div></div><footer class="native-extension-savebar"><p role="status" aria-live="polite" data-native-notice></p><div><button class="button small" type="button" data-native-reload>重新读取</button><button class="button small primary" type="submit" data-native-save ${this.dirty ? "" : "disabled"}>保存并应用</button></div></footer></form></div>`;
+      const searchLabel = mobileOnly ? "查找手机端连接设置项" : `查找${names[this.name]}设置项`;
+      const search = mobileOnly
+        ? `<label class="native-extension-search is-mobile-search"><i data-lucide="search" aria-hidden="true"></i><input type="search" placeholder="查找设置项" aria-label="${escape(searchLabel)}" data-native-search value="${escape(this.query)}"><button type="button" class="mobile-search-clear" data-mobile-search-clear aria-label="清空搜索" ${this.query ? "" : "hidden"}><i data-lucide="x" aria-hidden="true"></i></button></label>`
+        : `<label class="native-extension-search"><input type="search" placeholder="查找设置项" aria-label="${escape(searchLabel)}" data-native-search value="${escape(this.query)}"></label>`;
+      const navigation = this.onlyGroup ? "" : `<nav class="native-extension-nav" aria-label="${escape(names[this.name])}设置分组">${this.groups.map(group => `<button type="button" data-native-group="${escape(group.id)}" aria-pressed="${group.id === this.group}">${escape(group.title)}</button>`).join("")}</nav>`;
+      this.root.innerHTML = `<div class="native-extension-panel${mobileOnly ? " is-mobile-connection" : ""}">
+        ${mobile?.overview || ""}${heading}${mobileLink}${management}
+        <form data-native-form>
+          ${mobileOnly ? `<header class="mobile-config-heading"><div class="mobile-config-heading-copy"><h3>连接设置</h3></div>${search}</header>` : search}
+          <div class="native-extension-workspace${this.onlyGroup ? " is-single" : ""}">${navigation}<div class="native-extension-settings">${controls}<p class="native-extension-no-results" hidden>没有匹配的设置项，换个关键词试试。</p></div></div>
+          <footer class="native-extension-savebar"><p role="status" aria-live="polite" data-native-notice></p><div><button class="button small" type="button" data-native-reload>重新读取</button><button class="button small primary" type="submit" data-native-save ${this.dirty ? "" : "disabled"}>保存并应用</button></div></footer>
+        </form>${mobile?.reports || ""}</div>`;
+      window.lucide?.createIcons({nodes:this.root.querySelectorAll("[data-lucide]")});
       const managementRoot = this.root.querySelector("[data-native-management]");
       this.management = managementRoot ? window.CompanionNativeExtensionManagement?.mount(managementRoot, {
         extensionId:this.name, record:this.record, instance:this.instance,
@@ -243,23 +266,67 @@ window.CompanionNativeExtensionPanel = (() => {
         onState:state => { this.managementState = state; },
         onUseHotkey:hotkey => this.useHotkey(hotkey),
       }) : null;
+      if (focusAudio && managementRoot) {
+        const audio = managementRoot.querySelector("[data-native-audio-details]");
+        if (audio) {
+          audio.open = true;
+          setTimeout(() => audio.scrollIntoView?.({block:"center"}), 0);
+        }
+      }
       this.filter(); this.setBusy(this.busy);
+      if (pendingFieldFocus && pendingFieldFocus.extensionId === this.name) {
+        const targetField = pendingFieldFocus.fieldPath;
+        pendingFieldFocus = null;
+        this.applyFieldFocus(targetField);
+      }
+    }
+    applyFieldFocus(fieldPath) {
+      if (!fieldPath || !this.root) return false;
+      const safe = globalThis.CSS?.escape?.(fieldPath) || String(fieldPath).replace(/["\\]/g, "\\$&");
+      const row = this.root.querySelector(`[data-field="${safe}"]`);
+      if (!row) return false;
+      const groupPanel = row.closest?.("[data-native-group-panel]");
+      if (groupPanel?.dataset?.nativeGroupPanel) {
+        this.group = groupPanel.dataset.nativeGroupPanel;
+        this.root.querySelectorAll("[data-native-group]").forEach(btn => {
+          btn.setAttribute("aria-pressed", String(btn.dataset.nativeGroup === this.group));
+        });
+        this.root.querySelectorAll("[data-native-group-panel]").forEach(panel => {
+          panel.hidden = panel.dataset.nativeGroupPanel !== this.group;
+        });
+      }
+      for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+        if (parent.tagName === "DETAILS") {
+          parent.open = true;
+          if (parent.dataset?.mobileConfigSection) this.mobileOpen.add(parent.dataset.mobileConfigSection);
+        }
+      }
+      row.hidden = false;
+      const focusable = row.querySelector?.("input, select, textarea, button");
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+        || ["low", "off"].includes(document.documentElement?.dataset?.motion);
+      setTimeout(() => {
+        row.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "center"});
+        focusable?.focus?.({preventScroll: true});
+        window.CompanionSearchHighlight?.(row);
+      }, 40);
+      return true;
     }
     mobileConfiguration(key, field, value, parent) {
       const groups = mobileSettingGroups(field);
       return `<div class="mobile-config-sections">${groups.map(group => {
         const open = this.mobileOpen.has(group.id);
-        const body = group.fields.map(([child, descriptor]) =>
-          this.field(child, descriptor, value?.[child], [key, child], parent, value)).join("");
+        const rendered = group.fields.map(([child, descriptor]) =>
+          this.field(child, descriptor, value?.[child], [key, child], parent, value)).filter(Boolean);
         /* 整组字段都被 condition 隐藏时连折叠壳一起收起来，免得留下空分组。 */
-        if (!body) return "";
+        if (!rendered.length) return "";
         return `<details class="mobile-config-section" data-mobile-config-section="${escape(group.id)}" ${open ? "open" : ""}>`
-          + `<summary><span><strong>${escape(group.title)}</strong><small>${escape(group.summary)}</small></span>`
-          + `<span class="mobile-config-chevron" aria-hidden="true"></span></summary>`
-          + `<div class="mobile-config-section-body">${body}</div></details>`;
+          + `<summary><span class="mobile-config-summary-copy"><strong>${escape(group.title)}</strong><small>${escape(group.summary)}</small></span>`
+          + `<span class="mobile-config-summary-meta"><span class="mobile-config-count">${rendered.length} 项</span><span class="mobile-config-chevron" aria-hidden="true"></span></span></summary>`
+          + `<div class="mobile-config-section-body">${rendered.join("")}</div></details>`;
       }).join("")}</div>`;
     }
-    mobileConnectionCard() {
+    mobileConnectionMarkup() {
       const mobile = this.record?.settings?.mobile || {};
       const runtimeMobile = this.record?.management?.configuration?.mobile || {};
       const statusMobile = {...mobile, ...runtimeMobile};
@@ -288,15 +355,16 @@ window.CompanionNativeExtensionPanel = (() => {
         : latestConnection ? [latestConnection.online ? "手机已配对" : "手机已配对 · 暂无心跳", latestConnection.online ? "ready" : "pending"]
         : activeSessions ? ["会话未匹配当前对象", "error"] : ["等待手机配对", "pending"];
       const issued = this.mobileTokenNotice && typeof this.mobileTokenNotice === "object" ? this.mobileTokenNotice : null;
-      const notice = issued ? (issued.running ? "网关已启动。请复制令牌，在手机端完成配对。" : "令牌已保存，但网关未能启动；请检查端口占用和模块状态。")
-        : configured ? latestConnection ? "当前手机会话有效。健康检查只表示网关可访问，不代表手机已配对。"
-          : activeSessions ? "检测到活动会话，但当前连接对象下没有可验证的设备记录；请核对手机与插件使用的私聊账号。"
-          : "网关可访问，但还没有有效手机会话。请在手机端完成配对；健康检查成功只代表网关在线。"
-        : "生成令牌会同时启用手机网关。";
-      const token = issued?.token ? `<div class="mobile-pairing-token"><input type="text" readonly aria-label="本次生成的手机配对令牌" value="${escape(issued.token)}"><button class="button small" type="button" data-mobile-copy-token>复制令牌</button></div>` : "";
+      const notice = issued ? (issued.running ? "网关已启动。请复制令牌，在手机端完成配对。" : "令牌已保存，网关启动失败。请检查端口占用和模块状态。")
+        : !configured ? "生成令牌会同时启用手机网关。"
+          : !running ? "网关尚未运行。"
+            : latestConnection ? "已生成配对令牌。轮换后，已配对的手机需要重新连接。"
+              : activeSessions ? "存在活动会话，请核对手机与插件使用的私聊账号。"
+                : "等待手机配对。健康检查成功只代表网关在线。";
+      const token = issued?.token ? `<div class="mobile-pairing-token"><input type="text" readonly aria-label="本次生成的手机配对令牌" value="${escape(issued.token)}"><button class="button small" type="button" data-mobile-copy-token><i data-lucide="copy" aria-hidden="true"></i>复制令牌</button></div>` : "";
       const action = configured
-        ? `<button class="button small" type="button" data-mobile-token-action="rotate">轮换配对令牌</button>`
-        : `<button class="button small primary" type="button" data-mobile-token-action="generate">生成并启用网关</button>`;
+        ? `<button class="button small" type="button" data-mobile-token-action="rotate"><i data-lucide="refresh-cw" aria-hidden="true"></i>轮换配对令牌</button>`
+        : `<button class="button small primary" type="button" data-mobile-token-action="generate"><i data-lucide="key-round" aria-hidden="true"></i>生成并启用网关</button>`;
       const recentItems = [];
       const device = observation.device || {};
       if (device.available) {
@@ -314,7 +382,7 @@ window.CompanionNativeExtensionPanel = (() => {
       const telemetry = observation.telemetry || {};
       if (telemetry.available) recentItems.push({title:"健康摘要", body:telemetry.summary || "已收到健康数据", time:telemetry.received_at || telemetry.captured_at});
       recentItems.sort((a, b) => Number(b.time || 0) - Number(a.time || 0));
-      const recentMarkup = recentItems.length ? `<ol class="mobile-recent-list">${recentItems.map(item => `<li><div><strong>${escape(item.title)}</strong><p>${escape(item.body)}</p></div><time>${escape(formatTime(item.time))}</time></li>`).join("")}</ol>`
+      const recentMarkup = recentItems.length ? `<ul class="mobile-recent-list">${recentItems.map(item => `<li><div><strong>${escape(item.title)}</strong><p>${escape(item.body)}</p></div><time>${escape(formatTime(item.time))}</time></li>`).join("")}</ul>`
         : `<p class="mobile-recent-empty">尚未收到这台手机的近期上报。</p>`;
       const targetLabel = allowedUser ? `${coreTarget ? "核心管理员" : "指定用户"} · ${allowedUser}`
         : coreUser ? `核心管理员 · ${coreUser}` : "尚未确认核心管理员私聊";
@@ -322,51 +390,74 @@ window.CompanionNativeExtensionPanel = (() => {
         ? `${latestConnection.device_name || "Android 设备"} · ${latestConnection.online ? "在线" : "最近已离线"}`
         : activeSessions ? "检测到活动会话，但未匹配当前连接对象" : "尚无有效手机配对";
       const lastSeen = latestConnection ? formatTime(latestConnection.last_seen_at) : "尚无心跳";
-      const healthAddress = address === "填写电脑内网或组网地址" ? "填写可访问地址后检查 /health" : `${address}/health`;
-      return `<div class="mobile-connection-overview">
+      const healthAddress = address === "填写电脑内网或组网地址" ? "等待配置 /health 地址" : `${address.replace(/\/+$/, "")}/health`;
+      const overview = `<div class="mobile-connection-overview">
         <section class="mobile-gateway-card" aria-labelledby="mobileGatewayTitle">
           <header class="mobile-gateway-head">
-            <div><span class="native-extension-kicker">手机陪伴终端</span><h3 id="mobileGatewayTitle">连接基础信息</h3></div>
-            <span class="native-extension-status ${state[1]}">${escape(state[0])}</span>
+            <div class="mobile-gateway-head-main">
+              <h3 id="mobileGatewayTitle">连接状态</h3>
+              <span class="mobile-scope-pill">全局</span>
+              <span class="native-extension-status ${state[1]}">${escape(state[0])}</span>
+            </div>
+            <button class="button small" type="button" data-mobile-refresh><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新状态</button>
           </header>
-          <dl class="mobile-gateway-facts">
-            <div><dt>连接地址</dt><dd>${escape(address)}</dd></div>
-            <div><dt>健康检查</dt><dd>${escape(healthAddress)}</dd></div>
-            <div><dt>监听端口</dt><dd>${escape(String(bound))}</dd></div>
-            <div><dt>默认连接对象</dt><dd>${escape(targetLabel)}</dd></div>
-            <div><dt>已配对终端</dt><dd>${escape(pairedDevice)}</dd></div>
-            <div><dt>最近心跳</dt><dd>${escape(lastSeen)}</dd></div>
+          <p class="mobile-gateway-feedback" role="status" data-mobile-status-notice></p>
+          <dl class="mobile-gateway-facts mobile-gateway-status">
+            <div class="mobile-gateway-tile is-wide"><dt>连接地址</dt><dd class="is-mono">${escape(address)}</dd></div>
+            <div class="mobile-gateway-tile"><dt>监听端口</dt><dd class="is-mono">${escape(String(bound))}</dd></div>
+            <div class="mobile-gateway-tile"><dt>默认连接对象</dt><dd>${escape(targetLabel)}</dd></div>
+            <div class="mobile-gateway-tile"><dt>已配对终端</dt><dd>${escape(pairedDevice)}</dd></div>
+            <div class="mobile-gateway-tile"><dt>最近心跳</dt><dd>${escape(lastSeen)}</dd></div>
+            <div class="mobile-gateway-tile is-full mobile-gateway-address"><dt>健康检查</dt><dd class="is-mono">${escape(healthAddress)}</dd></div>
           </dl>
-          <div class="mobile-gateway-actionbar"><div class="mobile-gateway-actions">${action}</div><p class="native-extension-hint" data-mobile-token-result role="status" aria-live="polite">${escape(notice)}</p></div>
+        </section>
+        <section class="mobile-pairing-card" aria-labelledby="mobilePairingTitle">
+          <header class="mobile-pairing-head">
+            <h3 id="mobilePairingTitle">配对令牌</h3>
+            <span class="mobile-pairing-chip ${configured ? "is-ready" : ""}">${configured ? "已配置" : "待生成"}</span>
+          </header>
+          <p class="mobile-pairing-desc" data-mobile-token-result role="status">${escape(notice)}</p>
           ${token}
+          <div class="mobile-gateway-actions">${action}</div>
           <div class="mobile-gateway-lifecycle" data-native-lifecycle></div>
         </section>
-        <section class="mobile-recent-card" aria-labelledby="mobileRecentTitle">
-          <header class="mobile-recent-head"><div><span class="native-extension-kicker">终端上报</span><h3 id="mobileRecentTitle">手机端最近信息</h3></div><button class="button small" type="button" data-mobile-refresh>刷新状态</button></header>
-          ${recentMarkup}
-        </section>
       </div>`;
+      const reports = `<section class="mobile-recent-card" aria-labelledby="mobileRecentTitle"><header class="mobile-recent-head"><h3 id="mobileRecentTitle">最近上报</h3>${recentItems.length ? `<span class="mobile-config-count">${recentItems.length} 项</span>` : ""}</header>${recentMarkup}</section>`;
+      return {overview, reports};
     }
     async refreshMobileStatus(button) {
       if (this.busy || this.actionBusy || !this.record) return;
       const ticket = this.ticket;
-      let edits;
-      try { edits = this.changes(this.collect()); }
-      catch (error) { this.notice(error.message, true); error.field?.focus(); return; }
-      button.disabled = true; button.textContent = "正在读取";
+      const restoreFocus = document.activeElement === button;
+      this.actionBusy = true; this.updateDirty();
+      button.disabled = true;
+      const feedback = report => {
+        const node = this.root.querySelector("[data-mobile-status-notice]");
+        if (node) node.textContent = report;
+      };
+      feedback("正在读取…");
       try {
         const result = await window.CompanionProduct.request("GET", "extensions");
         if (!this.current(ticket)) return;
         const record = result?.extensions?.[this.name];
         if (!validRecord(record)) throw {code:"native_settings_unavailable"};
+        const edits = this.changes(this.collect());
         this.record = record;
         this.draft = merge(clone(record.settings), edits);
         this.render();
-        this.notice("手机端状态已刷新。未保存的设置修改已保留。");
+        feedback("状态已刷新。");
+        if (restoreFocus && document.activeElement === document.body) this.root.querySelector("[data-mobile-refresh]")?.focus();
       } catch (error) {
-        if (this.current(ticket)) this.notice(errorText(error), true);
+        if (this.current(ticket)) {
+          feedback(error.field ? error.message : errorText(error));
+          error.field?.focus();
+        }
       } finally {
-        button.disabled = false; button.textContent = "刷新状态";
+        if (this.current(ticket)) {
+          this.actionBusy = false;
+          this.updateStatus(); this.updateDirty();
+          button.disabled = false;
+        }
       }
     }
     receiveManagement(record) {
@@ -422,9 +513,14 @@ window.CompanionNativeExtensionPanel = (() => {
             const record = result?.extensions?.[this.name];
             if (!validRecord(record)) return;
             this.record.runtime = record.runtime;
+            if (record.management) this.record.management = record.management;
             if (record.runtime?.state === "failed") this.notice("模块启动失败，请检查连接设置。", true);
             if (record.runtime?.state !== "starting") {
               try { await window.CompanionProduct.refreshIntegrations?.(); } catch (_) {}
+              if (this.name === "game" && this.current(ticket)) {
+                window.CompanionGameAccess?.refresh?.();
+                if (record.management) this.management?.update?.(this.record);
+              }
             }
             if (this.current(ticket)) this.updateStatus();
           } catch (_) {
@@ -520,6 +616,7 @@ window.CompanionNativeExtensionPanel = (() => {
         this.notice(record.runtime?.state === "failed" ? "设置已保存，模块启动失败，请检查连接设置。" : "设置已保存并应用。", record.runtime?.state === "failed");
         this.options.onApplied?.(this.name);
         try { await window.CompanionProduct.refreshIntegrations?.(); } catch (_) {}
+        if (this.name === "game" && this.current(ticket)) window.CompanionGameAccess?.refresh?.();
         if (this.current(ticket)) this.updateStatus();
       } catch (error) { if (this.current(ticket)) this.notice(errorText(error), true); }
       finally { if (this.current(ticket)) this.setBusy(false); }
@@ -541,8 +638,16 @@ window.CompanionNativeExtensionPanel = (() => {
         operations.delete(signature);
         const result = await product.request("GET", "extensions");
         if (!this.current(ticket)) return;
-        if (validRecord(result?.extensions?.[this.name])) this.record.runtime = result.extensions[this.name].runtime;
+        const latest = result?.extensions?.[this.name];
+        if (validRecord(latest)) {
+          this.record.runtime = latest.runtime;
+          if (latest.management) {
+            this.record.management = latest.management;
+            this.management?.update?.(this.record);
+          }
+        }
         this.updateStatus();
+        if (this.name === "game") window.CompanionGameAccess?.refresh?.();
         this.notice(this.record.runtime?.state === "failed" ? "模块启动失败，请检查连接设置后重试。" : action === "pause" ? "模块已暂停。" : "模块已启用。", this.record.runtime?.state === "failed");
       } catch (error) {
         if (error?.code === "capability_revision_conflict") operations.delete(signature);
@@ -563,6 +668,13 @@ window.CompanionNativeExtensionPanel = (() => {
       if (button.dataset.mobileTokenAction) { this.mobileToken(button.dataset.mobileTokenAction); return; }
       if (button.hasAttribute("data-mobile-refresh")) { this.refreshMobileStatus(button); return; }
       if (button.hasAttribute("data-mobile-copy-token")) { this.copyMobileToken(); return; }
+      if (button.hasAttribute("data-mobile-search-clear")) {
+        this.query = "";
+        const searchInput = this.root.querySelector("[data-native-search]");
+        if (searchInput) { searchInput.value = ""; searchInput.focus?.(); }
+        this.filter();
+        return;
+      }
       if (button.dataset.nativeAdd || button.dataset.nativeRemove) {
         try { this.draft = this.collect(); }
         catch (error) { this.notice(error.message, true); error.field?.focus(); return; }
@@ -632,9 +744,38 @@ window.CompanionNativeExtensionPanel = (() => {
     }
     onInput(event) {
       if (event.target.hasAttribute?.("data-native-search")) { this.query = event.target.value; this.filter(); return; }
-      if (event.target.hasAttribute?.("data-native-field")) { this.updateDirty(); this.notice(this.dirty ? "修改尚未保存。" : ""); }
+      if (event.target.hasAttribute?.("data-native-field")) {
+        const item = this.fields[Number(event.target.dataset.nativeField)];
+        if (item?.field?.type === "bool" && this.onlyGroup === "mobile") {
+          const pathKey = keyOf(item.path);
+          const checked = event.target.checked;
+          if (at(this.draft, item.path) === checked) {
+            this.updateDirty();
+            this.notice(this.dirty ? "修改尚未保存。" : "");
+            return;
+          }
+          try { this.draft = this.collect(); } catch (_) { put(this.draft, item.path, checked); }
+          if (item.path.join(".") === "mobile.enabled" && checked) {
+            this.mobileOpen.add("gateway");
+            this.mobileOpen.add("pairing");
+          }
+          this.updateDirty();
+          const wasDirty = this.dirty;
+          this.render();
+          this.dirty = wasDirty;
+          this.updateDirty();
+          this.notice(this.dirty ? "修改尚未保存。" : "");
+          const restored = this.fields.find(candidate => keyOf(candidate.path) === pathKey);
+          if (restored) this.root.querySelector(`#${restored.id}`)?.focus?.();
+          return;
+        }
+        this.updateDirty();
+        this.notice(this.dirty ? "修改尚未保存。" : "");
+      }
     }
     filter() {
+      const clearButton = this.root.querySelector("[data-mobile-search-clear]");
+      if (clearButton) clearButton.hidden = !this.query.trim();
       const query = this.query.trim().toLocaleLowerCase(), matched = [];
       for (const panel of this.root.querySelectorAll("[data-native-group-panel]")) {
         const group = this.groups.find(item => item.id === panel.dataset.nativeGroupPanel);
@@ -674,6 +815,15 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const [root, panel] of sessions) if (root.isConnected === false) { panel.stop(); sessions.delete(root); }
   }
   function refreshStatus() { prune(); for (const panel of sessions.values()) if (panel.record) panel.updateStatus(); }
+  function syncRuntime(name, runtime) {
+    prune();
+    for (const panel of sessions.values()) {
+      if (panel.name !== name || !panel.record) continue;
+      if (runtime && typeof runtime === "object") panel.record.runtime = clone(runtime);
+      panel.updateStatus();
+      if (!panel.busy && !panel.actionBusy) panel.management?.read?.({quiet:true});
+    }
+  }
   function mount(root, {extensionId, ...options} = {}) {
     prune();
     if (!root || !names[extensionId]) return null;
@@ -686,5 +836,18 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const panel of sessions.values()) panel.stop();
     sessions.clear();
   }
-  return {mount, unmount, prune, refreshStatus, conditionMet};
+  function focusField(extensionId, fieldPath) {
+    if (!extensionId || !fieldPath) return false;
+    prune();
+    for (const panel of sessions.values()) {
+      if (panel.name === extensionId && panel.record && panel.applyFieldFocus(fieldPath)) {
+        return true;
+      }
+    }
+    pendingFieldFocus = {extensionId, fieldPath};
+    return true;
+  }
+  return {mount, unmount, prune, refreshStatus, syncRuntime, conditionMet, focusField,
+    /* 打开「现实触及」设置时把「本机语音与叫醒」展开并滚到视线内。 */
+    focusAudio: () => { audioFocusPending = true; }};
 })();

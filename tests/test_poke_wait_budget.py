@@ -37,8 +37,9 @@ class PokeWaitBudgetConfigTests(unittest.TestCase):
         profile = poke_reply_profile("provider-a", max_output_tokens=128)
         self.assertEqual((profile.kind, profile.lane), (MODEL_REPLY_KIND, Lane.BACKGROUND))
         self.assertEqual(profile.timeout_seconds, 45)
-        # One short answer; the wait is what changed, not the output budget.
         self.assertEqual(profile.max_output_tokens, 128)
+        default_profile = poke_reply_profile("provider-a")
+        self.assertGreaterEqual(default_profile.max_output_tokens, 4096)
 
     def test_the_task_budget_is_sixty_seconds_and_the_round_is_derived_from_it(self):
         self.assertEqual(POKE_BUDGET_SECONDS, 60)

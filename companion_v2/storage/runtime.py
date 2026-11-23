@@ -1,4 +1,4 @@
-﻿"""A V2-owned SQLite lifecycle with fail-closed schema upgrades."""
+"""A V2-owned SQLite lifecycle with fail-closed schema upgrades."""
 
 from __future__ import annotations
 
@@ -11,12 +11,16 @@ import re
 from pathlib import Path
 import sqlite3
 import sys
-from threading import Condition, Lock, RLock, current_thread, get_ident, local
+from threading import Condition, Lock, RLock, get_ident, local
 import time
 from typing import Iterator
-from weakref import WeakKeyDictionary
+
+from .sqlite_tuning import SqliteTuningProfile, tuning_profile
+from .write_batcher import WriteBehindBatcher
 
 from .schema import (
+    SCHEMA_VERSION_V69, MIGRATION_V68_TO_V69_ID, MIGRATION_V68_TO_V69_FINGERPRINT,
+    V69_MIGRATION_STATEMENTS, V69_REQUIRED_TABLES, V69_SCHEMA_STATEMENTS,
     SCHEMA_VERSION_V68, MIGRATION_V67_TO_V68_ID, MIGRATION_V67_TO_V68_FINGERPRINT,
     V68_MIGRATION_STATEMENTS, V68_REQUIRED_TABLES, V68_SCHEMA_STATEMENTS,
     SCHEMA_VERSION_V67, MIGRATION_V66_TO_V67_ID, MIGRATION_V66_TO_V67_FINGERPRINT,
@@ -347,6 +351,46 @@ CONFIGURATION_STORE_STATEMENTS = (
 )
 
 
+# Newer releases may append defaulted columns without changing semantics.  The
+# data root is allowed to stay at one of these additive versions when an older
+# code package is loaded; rejecting it strands an otherwise readable database.
+FORWARD_COMPATIBLE_SCHEMA_VERSIONS = frozenset({
+    "companion-v2.storage.v69",
+    "companion-v2.storage.v70",
+    "companion-v2.storage.v71",
+})
+
+# The early local builds used these same version numbers before the upstream
+# scope backfill was finalized. Keep existing migration records intact.
+_V69_LOCAL_INDEX_ONLY_FINGERPRINT = "f582d1f16d10927f376cd977bb60cd915c6bd7eb3ee5169df5effeafb7bfdb03"
+_EARLY_V70_MIGRATIONS = (
+    (MIGRATION_V68_TO_V69_ID, SCHEMA_VERSION_V68, SCHEMA_VERSION_V69,
+     "18d7f090a08f774f9d3fdbfddc0afe891bb756d71d461a9655fad30cf881b455"),
+    ("companion-v2.storage.v69-to-v70", SCHEMA_VERSION_V69, "companion-v2.storage.v70",
+     "217928112622d21f5cfb55b084a8050782a5a14b93e4c8062b1efa677ba56ebd"),
+)
+
+
+def table_exists(runtime: object, table_name: str) -> bool:
+    """Return whether *table_name* exists on *runtime*, using the runtime cache when available."""
+    checker = getattr(runtime, "has_table", None)
+    if callable(checker):
+        return bool(checker(table_name))
+    reader = getattr(runtime, "read_one", None)
+    if callable(reader):
+        return reader(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ) is not None
+    read_all = getattr(runtime, "read_all", None)
+    if callable(read_all):
+        return bool(read_all(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ))
+    return False
+
+
 class StorageRuntime:
     """Own the V2 database connection; repositories never open their own connection."""
 
@@ -372,6 +416,60 @@ class StorageRuntime:
     # parameters, so it is safe to log and it is what makes the next stall name
     # itself. Truncated so one slow event stays one line.
     SLOW_OPERATION_STATEMENT_CHARS = 160
+    OPTIMIZE_INTERVAL_SECONDS = 21600.0
+    OPTIMIZE_ANALYSIS_LIMIT = 400
+    _PERFORMANCE_INDEX_STATEMENTS = (
+        (
+            "execution_tasks",
+            "idx_execution_tasks_origin_kind_id",
+            "CREATE INDEX IF NOT EXISTS idx_execution_tasks_origin_kind_id "
+            "ON execution_tasks(origin_key, kind, task_id)",
+        ),
+        (
+            "conversation_batches",
+            "idx_conversation_batches_group_role",
+            "CREATE INDEX IF NOT EXISTS idx_conversation_batches_group_role "
+            "ON conversation_batches(json_extract(context_json, '$.role_binding')) "
+            "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
+        ),
+        (
+            "sources",
+            "idx_sources_owner_inst_state",
+            "CREATE INDEX IF NOT EXISTS idx_sources_owner_inst_state "
+            "ON sources(owner, installation_id, state)",
+        ),
+        (
+            "astrbot_core_reply_observations",
+            "idx_core_reply_role_watermark",
+            "CREATE INDEX IF NOT EXISTS idx_core_reply_role_watermark "
+            "ON astrbot_core_reply_observations(role_key, received_at, revision, observed_at)",
+        ),
+        (
+            "astrbot_core_reply_observations",
+            "idx_core_reply_scope_lookup",
+            "CREATE INDEX IF NOT EXISTS idx_core_reply_scope_lookup "
+            "ON astrbot_core_reply_observations("
+            "role_key, scope_kind, "
+            "json_extract(context_json, '$.role_binding.scope.native_scope_id'), "
+            "json_extract(context_json, '$.role_binding.scope.session_id'), "
+            "json_extract(context_json, '$.role_binding.scope.conversation_id'), "
+            "received_at DESC, turn_id DESC)",
+        ),
+    )
+
+    _STARTUP_WAL_TRUNCATE_MIN_BYTES = 8 * 1024 * 1024
+    _TABLE_WRITE_ACTIONS = frozenset((
+        sqlite3.SQLITE_INSERT,
+        sqlite3.SQLITE_UPDATE,
+        sqlite3.SQLITE_DELETE,
+    ))
+    _SCHEMA_MUTATION_ACTIONS = frozenset((
+        sqlite3.SQLITE_CREATE_TABLE,
+        sqlite3.SQLITE_DROP_TABLE,
+        sqlite3.SQLITE_ALTER_TABLE,
+        sqlite3.SQLITE_ATTACH,
+        sqlite3.SQLITE_DETACH,
+    ))
 
     def __init__(self, *, data_root: Path, installation_id: str) -> None:
         if not installation_id or installation_id != installation_id.strip():
@@ -381,12 +479,25 @@ class StorageRuntime:
         self._database_path = self._data_root / self.DATABASE_FILENAME
         self._connection: sqlite3.Connection | None = None
         self._lock = RLock()
+        self._tuning_profile: SqliteTuningProfile = tuning_profile()
+        self._reader_pool_size: int = self._tuning_profile.reader_pool_size
         self._read_snapshot_diagnostics = local()
         self._read_connections = local()
         self._reader_condition = Condition()
-        self._reader_connections = WeakKeyDictionary()
+        # Shared pool of read-only WAL connections scaled to host RAM and CPU.
+        self._idle_readers: list[sqlite3.Connection] = []
+        self._all_readers: list[sqlite3.Connection] = []
+        self._creating_readers = 0
         self._active_readers = 0
         self._reader_closing = False
+        self._meta_cache_lock = Lock()
+        self._table_exists_cache: dict[str, tuple[bool, int]] = {}
+        self._initialized_schemas: set[str] = set()
+        self._write_epoch = 0
+        self._table_write_epochs: dict[str, int] = {}
+        self._schema_mutation_epoch = 0
+        self._last_optimize_at = 0.0
+        self._schema_indexes_changed = False
         self._savepoint_sequence = 0
         self._slow_operation_log_state: dict[tuple[str, str], _SlowOperationLogState] = {}
         # A plain Lock, not the connection RLock: _report_slow_operation runs
@@ -398,8 +509,210 @@ class StorageRuntime:
         self._slow_operation_clock = time.monotonic
         self._write_depth = 0
         self._write_owner_thread_id: int | None = None
+        self._transaction_rollback_epoch = 0
         self._configuration_only = False
         self._configuration_store: StorageRuntime | None = None
+        self._write_batcher = WriteBehindBatcher(self)
+
+    @property
+    def tuning_profile(self) -> SqliteTuningProfile:
+        return self._tuning_profile
+
+    @property
+    def reader_pool_size(self) -> int:
+        return self._reader_pool_size
+
+    def _install_write_tracker(self, connection: sqlite3.Connection) -> None:
+        """Track per-table in-process writes on the writer connection with ~1-2us overhead."""
+        write_actions = self._TABLE_WRITE_ACTIONS
+        schema_actions = self._SCHEMA_MUTATION_ACTIONS
+        epochs = self._table_write_epochs
+
+        def _authorizer(action: int, arg1: str | None, _arg2: str | None, _db: str | None, _src: str | None) -> int:
+            if action in write_actions:
+                if arg1:
+                    table = arg1.lower()
+                    epochs[table] = epochs.get(table, 0) + 1
+            elif action in schema_actions:
+                self._schema_mutation_epoch += 1
+                if arg1:
+                    table = arg1.lower()
+                    epochs[table] = epochs.get(table, 0) + 1
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(_authorizer)
+
+    def table_write_epoch_snapshot(self, groups: tuple[frozenset[str], ...]) -> tuple[int, ...]:
+        """Return per-group write counters plus the schema-mutation counter.
+
+        Callers that already hold ``self._lock`` receive a consistent snapshot
+        with zero SQLite work; external callers acquire ``self._lock`` briefly.
+        """
+        with self._lock:
+            epochs = self._table_write_epochs
+            return (
+                *(sum(epochs.get(table, 0) for table in group) for group in groups),
+                self._schema_mutation_epoch,
+            )
+
+    def _wal_file_size(self) -> int:
+        wal_path = Path(str(self._database_path) + "-wal")
+        try:
+            return wal_path.stat().st_size
+        except OSError:
+            return 0
+
+    def _truncate_wal_best_effort(self, connection: sqlite3.Connection) -> tuple[int, int, int] | None:
+        if connection.in_transaction:
+            return None
+        try:
+            row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            return tuple(int(value) for value in row) if row is not None else None
+        except sqlite3.Error:
+            return None
+
+    def has_table(self, table_name: str) -> bool:
+        """Return whether *table_name* exists, caching hits across hot read paths.
+
+        Inside a WAL ``read_snapshot`` the connection may be pinned to an older
+        write epoch than the live writer. Snapshot readers therefore never
+        populate the shared cache (preventing negative-cache poisoning), and
+        only trust shared positive entries confirmed at or before the snapshot's
+        opening epoch (preventing stale-snapshot false positives).
+        """
+        in_own_write = self._write_owner_thread_id == get_ident()
+        snapshot_diag = getattr(self._read_snapshot_diagnostics, "current", None)
+        in_read_snapshot = snapshot_diag is not None and not snapshot_diag.get("writer_owned", False)
+
+        if in_read_snapshot:
+            local_cache = snapshot_diag.get("table_cache")
+            if local_cache is not None and table_name in local_cache:
+                return local_cache[table_name]
+            snapshot_epoch = snapshot_diag.get("snapshot_epoch", -1)
+            with self._meta_cache_lock:
+                cached = self._table_exists_cache.get(table_name)
+                if (
+                    isinstance(cached, tuple)
+                    and cached[0] is True
+                    and cached[1] <= snapshot_epoch
+                ):
+                    if local_cache is not None:
+                        local_cache[table_name] = True
+                    return True
+            exists = self.read_one(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            ) is not None
+            if local_cache is not None:
+                local_cache[table_name] = exists
+            return exists
+
+        if not in_own_write:
+            with self._meta_cache_lock:
+                cached = self._table_exists_cache.get(table_name)
+                if isinstance(cached, tuple):
+                    if cached[0] is True:
+                        return True
+                    if cached[0] is False and cached[1] == self._write_epoch:
+                        return False
+                epoch_before = self._write_epoch
+        exists = self.read_one(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ) is not None
+        if not in_own_write:
+            with self._meta_cache_lock:
+                if exists:
+                    # Record the latest epoch so older open snapshots do not
+                    # assume a table created after they started is visible.
+                    self._table_exists_cache[table_name] = (True, self._write_epoch)
+                elif self._write_epoch == epoch_before:
+                    self._table_exists_cache[table_name] = (False, epoch_before)
+        return exists
+
+    def invalidate_table_cache(self) -> None:
+        """Drop cached table-existence probes after optional DDL changes."""
+        with self._meta_cache_lock:
+            self._table_exists_cache.clear()
+
+    def ensure_schema(self, schema_key: str, initializer) -> bool:
+        """Run an optional-table DDL initializer at most once per open runtime.
+
+        Only records *schema_key* as initialized after an outermost write
+        transaction commits, so a rolled-back enclosing transaction never
+        leaves ``_initialized_schemas`` poisoned.
+        """
+        with self._meta_cache_lock:
+            if schema_key in self._initialized_schemas:
+                return False
+        with self._lock:
+            with self._meta_cache_lock:
+                if schema_key in self._initialized_schemas:
+                    return False
+            with self.transaction() as connection:
+                initializer(connection)
+            if self._write_depth == 0:
+                with self._meta_cache_lock:
+                    self._initialized_schemas.add(schema_key)
+                    self._table_exists_cache.clear()
+            return True
+
+    def _run_pragma_optimize(self, connection: sqlite3.Connection) -> bool:
+        if connection.in_transaction:
+            return False
+        try:
+            connection.execute(f"PRAGMA analysis_limit = {int(self.OPTIMIZE_ANALYSIS_LIMIT)}")
+            connection.execute("PRAGMA optimize")
+            self._last_optimize_at = time.monotonic()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def optimize(self, *, force: bool = False) -> bool:
+        """Run bounded SQLite planner optimization if due or forced."""
+        if not force and (time.monotonic() - self._last_optimize_at) < self.OPTIMIZE_INTERVAL_SECONDS:
+            return False
+        with self._lock:
+            connection = self._connection
+            if connection is None or connection.in_transaction:
+                return False
+            return self._run_pragma_optimize(connection)
+
+    def incremental_vacuum(self, pages: int = 256) -> int:
+        """Reclaim up to *pages* freelist pages when ``auto_vacuum = INCREMENTAL``.
+
+        Returns the number of freelist pages actually reclaimed (0 when the
+        database is still in legacy ``auto_vacuum = NONE`` mode or busy).
+        """
+        page_budget = max(1, int(pages))
+        with self._lock:
+            connection = self._connection
+            if connection is None or connection.in_transaction:
+                return 0
+            try:
+                mode = int(connection.execute("PRAGMA auto_vacuum").fetchone()[0])
+                if mode != 2:
+                    return 0
+                before = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+                if before <= 0:
+                    return 0
+                connection.execute(f"PRAGMA incremental_vacuum({page_budget})")
+                after = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+                return max(0, before - after)
+            except sqlite3.Error:
+                return 0
+
+    def enqueue_batched_write(self, callback, *, key: str | None = None) -> bool:
+        """Queue a non-critical write callback for coalesced micro-batch commit."""
+        return self._write_batcher.enqueue(callback, key=key)
+
+    def flush_batched_writes(self, *, timeout: float = 5.0) -> int:
+        """Flush all pending micro-batched writes synchronously."""
+        return self._write_batcher.flush(timeout=timeout)
+
+    def batched_write_stats(self) -> dict[str, int]:
+        """Return micro-batcher counters for diagnostics and health checks."""
+        return self._write_batcher.stats()
 
     @property
     def configuration_store(self) -> "StorageRuntime":
@@ -548,26 +861,40 @@ class StorageRuntime:
         )
 
     def close(self) -> None:
+        """Close this runtime and its attached configuration store."""
         started = time.perf_counter()
+        self._write_batcher.close()
         with self._reader_condition:
             self._reader_closing = True
-            while self._active_readers:
+            self._reader_condition.notify_all()
+            while self._active_readers or self._creating_readers:
                 self._reader_condition.wait()
         self._lock.acquire()
         lock_acquired = time.perf_counter()
         try:
             with self._reader_condition:
-                readers = tuple(self._reader_connections.values())
-                self._reader_connections.clear()
+                readers = tuple(self._all_readers)
+                self._all_readers.clear()
+                self._idle_readers.clear()
             for reader in readers:
                 reader.close()
             if self._connection is not None:
+                self._run_pragma_optimize(self._connection)
+                if self._wal_file_size() > self._tuning_profile.journal_size_limit:
+                    self._truncate_wal_best_effort(self._connection)
                 self._connection.close()
                 self._connection = None
+            with self._meta_cache_lock:
+                self._table_exists_cache.clear()
+                self._initialized_schemas.clear()
+            configuration_store = self._configuration_store
+            self._configuration_store = None
         finally:
             finished = time.perf_counter()
             self._lock.release()
             self._report_slow_operation("close", started, lock_acquired, finished)
+        if configuration_store is not None:
+            configuration_store.close()
 
     def __enter__(self) -> "StorageRuntime":
         return self
@@ -582,11 +909,26 @@ class StorageRuntime:
             self._require_connection()
         checkpoint = None
         result = None
+        mode_used = "PASSIVE"
         try:
-            checkpoint = sqlite3.connect(str(self._database_path), timeout=0.0, isolation_level=None)
-            checkpoint.execute("PRAGMA synchronous = FULL")
+            checkpoint = sqlite3.connect(str(self._database_path), timeout=0.2, isolation_level=None)
+            checkpoint.execute("PRAGMA synchronous = NORMAL")
+            checkpoint.execute("PRAGMA busy_timeout = 200")
+            checkpoint.execute(f"PRAGMA journal_size_limit = {int(self._tuning_profile.journal_size_limit)}")
             row = checkpoint.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             result = tuple(int(value) for value in row)
+            if (
+                result[0] == 0
+                and result[2] == result[1]
+                and self._wal_file_size() > self._tuning_profile.journal_size_limit
+                and self._active_readers == 0
+            ):
+                truncated = self._truncate_wal_best_effort(checkpoint)
+                if truncated is not None:
+                    result = truncated
+                    mode_used = "TRUNCATE"
+            if (time.monotonic() - self._last_optimize_at) >= self.OPTIMIZE_INTERVAL_SECONDS:
+                self._run_pragma_optimize(checkpoint)
             return result
         finally:
             if checkpoint is not None:
@@ -595,8 +937,8 @@ class StorageRuntime:
             if elapsed_ms >= self.SLOW_OPERATION_SECONDS * 1000:
                 details = "" if result is None else (
                     f"busy={result[0]} wal_frames={result[1]} checkpointed_frames={result[2]}")
-                logger.warning("V2 SQLite WAL checkpoint slow elapsed_ms=%d mode=PASSIVE%s",
-                               elapsed_ms, " " + details if details else "")
+                logger.warning("V2 SQLite WAL checkpoint slow elapsed_ms=%d mode=%s%s",
+                               elapsed_ms, mode_used, " " + details if details else "")
 
     @contextmanager
     def transaction(self, *, require_outermost: bool = False) -> Iterator[sqlite3.Connection]:
@@ -634,6 +976,9 @@ class StorageRuntime:
                 commit_started = time.perf_counter()
                 connection.execute(f"RELEASE SAVEPOINT {savepoint}" if nested else "COMMIT")
                 commit_ms = round((time.perf_counter() - commit_started) * 1000)
+                if not nested:
+                    with self._meta_cache_lock:
+                        self._write_epoch += 1
             except BaseException:
                 body_ms = round((time.perf_counter() - body_started) * 1000)
                 if connection.in_transaction:
@@ -643,6 +988,7 @@ class StorageRuntime:
                         connection.execute(f"RELEASE SAVEPOINT {savepoint}")
                     else:
                         connection.execute("ROLLBACK")
+                    self._transaction_rollback_epoch += 1
                     rollback_ms = round((time.perf_counter() - rollback_started) * 1000)
                 raise
             finally:
@@ -690,7 +1036,14 @@ class StorageRuntime:
                     connection = stack.enter_context(self._reader_connection())
                 lock_acquired = time.perf_counter()
                 if owns_diagnostic:
-                    diagnostic = {"slow_child": False, "writer_owned": writer_owned}
+                    with self._meta_cache_lock:
+                        snapshot_epoch = self._write_epoch
+                    diagnostic = {
+                        "slow_child": False,
+                        "writer_owned": writer_owned,
+                        "snapshot_epoch": snapshot_epoch,
+                        "table_cache": {},
+                    }
                     self._read_snapshot_diagnostics.current = diagnostic
                 with self._snapshot_on(connection):
                     yield connection
@@ -705,39 +1058,87 @@ class StorageRuntime:
 
     @contextmanager
     def _reader_connection(self) -> Iterator[sqlite3.Connection]:
-        with self._reader_condition:
-            if self._reader_closing or self._connection is None:
-                raise StorageOpenError("V2 storage runtime is closed")
-            self._active_readers += 1
-        try:
+        depth = getattr(self._read_connections, "depth", 0)
+        if depth > 0:
             connection = getattr(self._read_connections, "connection", None)
-            if connection is None:
+            if connection is not None:
+                self._read_connections.depth = depth + 1
                 try:
-                    connection = sqlite3.connect(
-                        str(self._database_path), timeout=5.0, isolation_level=None,
-                        check_same_thread=False)
-                    connection.row_factory = sqlite3.Row
-                    connection.execute("PRAGMA foreign_keys = ON")
-                    connection.execute("PRAGMA synchronous = FULL")
-                    connection.execute("PRAGMA busy_timeout = 5000")
-                    connection.execute("PRAGMA wal_autocheckpoint = 0")
-                    connection.execute("PRAGMA query_only = ON")
-                    connection.execute("PRAGMA cache_size = -65536")
-                    connection.execute("PRAGMA mmap_size = 268435456")
-                    connection.execute("PRAGMA temp_store = MEMORY")
-                except sqlite3.Error as error:
-                    if connection is not None:
-                        connection.close()
-                    raise StorageOpenError("unable to read V2 SQLite store") from error
-                self._read_connections.connection = connection
+                    yield connection
+                finally:
+                    self._read_connections.depth = depth
+                return
+
+        connection: sqlite3.Connection | None = None
+        need_create = False
+        with self._reader_condition:
+            while True:
+                if self._reader_closing or self._connection is None:
+                    raise StorageOpenError("V2 storage runtime is closed")
+                if self._idle_readers:
+                    connection = self._idle_readers.pop()
+                    self._active_readers += 1
+                    break
+                if len(self._all_readers) + self._creating_readers < self._reader_pool_size:
+                    self._creating_readers += 1
+                    self._active_readers += 1
+                    need_create = True
+                    break
+                self._reader_condition.wait()
+
+        if need_create:
+            created: sqlite3.Connection | None = None
+            try:
+                created = sqlite3.connect(
+                    str(self._database_path), timeout=5.0, isolation_level=None,
+                    check_same_thread=False)
+                created.row_factory = sqlite3.Row
+                created.execute("PRAGMA foreign_keys = ON")
+                created.execute("PRAGMA synchronous = NORMAL")
+                created.execute("PRAGMA busy_timeout = 5000")
+                created.execute("PRAGMA wal_autocheckpoint = 0")
+                created.execute("PRAGMA query_only = ON")
+                created.execute(
+                    f"PRAGMA cache_size = -{int(self._tuning_profile.effective_reader_cache_size_kib())}"
+                )
+                created.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
+                created.execute("PRAGMA temp_store = MEMORY")
+            except BaseException as error:
+                if created is not None:
+                    try:
+                        created.close()
+                    except Exception:
+                        pass
                 with self._reader_condition:
-                    self._reader_connections[current_thread()] = connection
+                    self._creating_readers -= 1
+                    self._active_readers -= 1
+                    self._reader_condition.notify_all()
+                if isinstance(error, sqlite3.Error):
+                    raise StorageOpenError("unable to read V2 SQLite store") from error
+                raise
+            connection = created
+            with self._reader_condition:
+                self._all_readers.append(connection)
+                self._creating_readers -= 1
+                self._reader_condition.notify_all()
+
+        assert connection is not None
+        self._read_connections.connection = connection
+        self._read_connections.depth = 1
+        try:
             yield connection
         finally:
+            self._read_connections.depth = 0
+            self._read_connections.connection = None
+            try:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             with self._reader_condition:
+                self._idle_readers.append(connection)
                 self._active_readers -= 1
-                if self._active_readers == 0:
-                    self._reader_condition.notify_all()
+                self._reader_condition.notify_all()
 
     @contextmanager
     def _snapshot_on(self, connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
@@ -804,25 +1205,27 @@ class StorageRuntime:
         connection: sqlite3.Connection | None = None
         try:
             self._data_root.mkdir(parents=True, exist_ok=True)
+            is_new_db = not self._database_path.exists() or self._database_path.stat().st_size == 0
             connection = sqlite3.connect(
                 str(self._database_path),
                 timeout=5.0,
                 isolation_level=None,
                 check_same_thread=False,
+                cached_statements=0,
             )
             connection.row_factory = sqlite3.Row
+            if is_new_db:
+                connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = FULL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
-            # The store is routinely hundreds of MB because generated images
-            # still live in BLOB columns.  SQLite's 2 MB default page cache
-            # makes every lookup re-read those pages; 64 MB plus a read-only
-            # mmap keeps hot metadata and payload pages resident without
-            # changing the on-disk format.
-            connection.execute("PRAGMA cache_size = -65536")
-            connection.execute("PRAGMA mmap_size = 268435456")
+            connection.execute(f"PRAGMA journal_size_limit = {int(self._tuning_profile.journal_size_limit)}")
+            # Scale cache_size and mmap_size to host RAM so low-memory VPS hosts stay
+            # bounded while high-RAM hosts map hot tables into OS page cache.
+            connection.execute(f"PRAGMA cache_size = -{int(self._tuning_profile.cache_size_kib)}")
+            connection.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
             connection.execute("PRAGMA temp_store = MEMORY")
         except (OSError, sqlite3.Error) as error:
             if connection is not None:
@@ -850,6 +1253,18 @@ class StorageRuntime:
                     self._initialize_schema()
             finally:
                 connection.execute("PRAGMA foreign_keys = ON")
+            if not self._configuration_only:
+                if self._schema_indexes_changed:
+                    self._run_pragma_optimize(connection)
+                else:
+                    self._last_optimize_at = time.monotonic()
+                # Fold migration/index WAL frames back into the main file while we hold
+                # the sole connection so mmap covers all hot pages immediately.
+                wal_threshold = min(self._STARTUP_WAL_TRUNCATE_MIN_BYTES, self._tuning_profile.journal_size_limit)
+                if self._schema_indexes_changed or self._wal_file_size() > wal_threshold:
+                    self._truncate_wal_best_effort(connection)
+            self._install_write_tracker(connection)
+            self._initial_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
         except sqlite3.Error as error:
             self.close()
             raise StorageOpenError("V2 schema validation or migration failed") from error
@@ -938,6 +1353,8 @@ class StorageRuntime:
                 self._migrate_v65_to_v66(connection)
                 self._migrate_v66_to_v67(connection)
                 self._migrate_v67_to_v68(connection)
+                self._migrate_v68_to_v69(connection)
+                self._ensure_performance_indexes(connection)
                 return
             if "runtime_metadata" not in existing_tables:
                 raise StorageOpenError("V2 data root is partially initialized")
@@ -1698,12 +2115,23 @@ class StorageRuntime:
                 self._migrate_v67_to_v68(connection)
                 version = SCHEMA_VERSION_V68
                 existing_tables = _existing_tables(connection)
-            if version != SCHEMA_VERSION:
+            if version == SCHEMA_VERSION_V68:
+                _validate_table_shapes(connection, V68_SCHEMA_STATEMENTS, V68_REQUIRED_TABLES)
+                _validate_integrity(connection)
+                for previous in range(2, 69):
+                    getattr(self, f"_validate_v{previous}_migration_record")(connection)
+                self._migrate_v68_to_v69(connection)
+                version = SCHEMA_VERSION_V69
+                existing_tables = _existing_tables(connection)
+            forward_compatible = version != SCHEMA_VERSION and version in FORWARD_COMPATIBLE_SCHEMA_VERSIONS
+            if version != SCHEMA_VERSION and not forward_compatible:
                 raise StorageOpenError("V2 data root has an incompatible schema version")
-            missing = V68_REQUIRED_TABLES.difference(existing_tables)
+            early_v70 = version == "companion-v2.storage.v70" and self._prepare_early_v70_laya_schema(connection)
+            missing = V69_REQUIRED_TABLES.difference(existing_tables)
             if missing:
                 raise StorageOpenError("V2 data root is missing required schema objects")
-            _validate_table_shapes(connection, V68_SCHEMA_STATEMENTS, V68_REQUIRED_TABLES)
+            _validate_table_shapes(connection, V69_SCHEMA_STATEMENTS, V69_REQUIRED_TABLES,
+                                   allow_extra=forward_compatible)
             # Each schema migration runs a full integrity check at its boundary.
             # Rechecking every page and foreign key on every normal startup makes
             # open time grow with the data store, even when the schema is current.
@@ -1776,6 +2204,52 @@ class StorageRuntime:
             self._validate_v66_migration_record(connection)
             self._validate_v67_migration_record(connection)
             self._validate_v68_migration_record(connection)
+            if not early_v70:
+                self._validate_v69_migration_record(connection)
+            self._schema_indexes_changed = self._ensure_performance_indexes(connection)
+
+    @staticmethod
+    def _ensure_performance_indexes(connection: sqlite3.Connection) -> bool:
+        changed = False
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IS NOT NULL"
+            )
+        }
+        existing = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL"
+            )
+        }
+        for table_name, name, statement in StorageRuntime._PERFORMANCE_INDEX_STATEMENTS:
+            if table_name in tables and name not in existing:
+                connection.execute(statement)
+                changed = True
+        if "conversation_native_turns" in tables or "conversation_native_observations" in tables:
+            from .native_conversation_schema import ensure_native_conversation_migrations
+            if ensure_native_conversation_migrations(connection):
+                changed = True
+        if "astrbot_core_reply_observations" in tables:
+            from .core_reply_telemetry_schema import ensure_core_reply_telemetry_migrations
+            if ensure_core_reply_telemetry_migrations(connection):
+                changed = True
+        return changed
+
+    @staticmethod
+    def _prepare_early_v70_laya_schema(connection):
+        records = tuple(tuple(row) for row in connection.execute(
+            "SELECT migration_id, from_version, to_version, fingerprint FROM schema_migrations "
+            "WHERE migration_id IN (?, ?) ORDER BY migration_id",
+            tuple(record[0] for record in _EARLY_V70_MIGRATIONS)))
+        if records != _EARLY_V70_MIGRATIONS:
+            return False
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(laya_decision_events)")}
+        if "scope_key" not in columns:
+            for statement in V69_MIGRATION_STATEMENTS:
+                connection.execute(statement)
+        return True
 
     def _migrate_v53_to_v54(self, connection):
         for statement in V54_MIGRATION_STATEMENTS:
@@ -2091,6 +2565,28 @@ class StorageRuntime:
         if row is None or (row["from_version"] != SCHEMA_VERSION_V67 or row["to_version"] != SCHEMA_VERSION_V68
                            or row["fingerprint"] != MIGRATION_V67_TO_V68_FINGERPRINT):
             raise StorageOpenError("V2 data root has an untrusted v68 migration record")
+
+    def _migrate_v68_to_v69(self, connection):
+        for statement in V69_MIGRATION_STATEMENTS:
+            connection.execute(statement)
+        _validate_table_shapes(connection, V69_SCHEMA_STATEMENTS, V69_REQUIRED_TABLES)
+        _validate_integrity(connection)
+        connection.execute("INSERT INTO schema_migrations VALUES (?, ?, ?, ?, ?)", (
+            MIGRATION_V68_TO_V69_ID, SCHEMA_VERSION_V68, SCHEMA_VERSION_V69,
+            MIGRATION_V68_TO_V69_FINGERPRINT, datetime.now(timezone.utc).isoformat()))
+        changed = connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = ? AND value = ?",
+                                     (SCHEMA_VERSION_V69, "schema_version", SCHEMA_VERSION_V68))
+        if changed.rowcount != 1:
+            raise StorageOpenError("V2 v69 migration lost its schema boundary")
+
+    @staticmethod
+    def _validate_v69_migration_record(connection):
+        row = connection.execute("SELECT * FROM schema_migrations WHERE migration_id = ?",
+                                 (MIGRATION_V68_TO_V69_ID,)).fetchone()
+        if row is None or (row["from_version"] != SCHEMA_VERSION_V68 or row["to_version"] != SCHEMA_VERSION_V69
+                           or row["fingerprint"] not in (MIGRATION_V68_TO_V69_FINGERPRINT,
+                                                         _V69_LOCAL_INDEX_ONLY_FINGERPRINT)):
+            raise StorageOpenError("V2 data root has an untrusted v69 migration record")
 
     def _migrate_v52_to_v53(self, connection):
         for statement in V53_MIGRATION_STATEMENTS:
@@ -3251,6 +3747,8 @@ def _validate_table_shapes(
     connection: sqlite3.Connection,
     statements: tuple[str, ...],
     tables: frozenset[str],
+    *,
+    allow_extra: bool = False,
 ) -> None:
     # Let SQLite interpret its DDL so column checks cannot drift from the schema.
     expected = sqlite3.connect(":memory:")
@@ -3268,8 +3766,21 @@ def _validate_table_shapes(
             for pragma in ("table_info", "foreign_key_list"):
                 query = f'PRAGMA {pragma}("{table}")'
                 actual_rows = [tuple(row) for row in connection.execute(query)]
-                if actual_rows != expected.execute(query).fetchall():
-                    raise StorageOpenError(f"V2 table structure does not match: {table}")
+                expected_rows = [tuple(row) for row in expected.execute(query).fetchall()]
+                if actual_rows == expected_rows:
+                    continue
+                # Newer additive releases may append a defaulted column.  Accept
+                # that shape without weakening the strict check for the current
+                # schema or allowing a changed/removed declared column.
+                if (allow_extra and pragma == "table_info"
+                        and len(actual_rows) > len(expected_rows)
+                        and actual_rows[:len(expected_rows)] == expected_rows
+                        and all(row[4] is not None or row[3] == 0 for row in actual_rows[len(expected_rows):])):
+                    continue
+                if (allow_extra and pragma == "foreign_key_list"
+                        and all(row in actual_rows for row in expected_rows)):
+                    continue
+                raise StorageOpenError(f"V2 table structure does not match: {table}")
             # Runtime owners may add optimization indexes after the schema is
             # current (the native-conversation module indexes conversation_batches).
             # An extra index cannot corrupt the declared shape, so require every

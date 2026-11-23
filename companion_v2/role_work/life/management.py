@@ -9,6 +9,7 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, SourceRef, VersionRef
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.sources.dependencies import active_validation_batch, validation_batch
 from companion_v2.sources.models import SourceRecord
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -67,11 +68,11 @@ class RoleLifeManagement:
                 return
             cursor = page[-1].activity_id
 
-    def _project_activity(self, a, operator, access):
+    def _project_activity(self, a, operator, access, *, now=None):
         unavailable = None
         if a.work.source:
             check = self.app.role_journal.sources.validate_reference_for_audience(a.work.source,
-                recipient=self.context.actor.subject, observed_at=self.app.now())
+                recipient=self.context.actor.subject, observed_at=now or self.app.now())
             unavailable = check.failure.code if check.failure else None
         task = None
         if a.work.kind == "reading":
@@ -97,28 +98,36 @@ class RoleLifeManagement:
             "unavailable_reason": unavailable, "task": task,
             "view_token": self.token(operator, access, a.activity_id, a.revision)}
 
-    def _journal(self, key, operator, access):
+    def _journal(self, key, operator, access, *, now=None, row=None, target=None):
+        now = now or self.app.now()
         journal = self.app.role_journal
-        head = journal.head(key)
+        entry_key = digest(key)
+        if row is not None:
+            head = codec.head_from_row(row)
+        else:
+            head = journal.head(key)
         if head.state is JournalState.ABSENT:
             return None
-        row = self.runtime.read_one("SELECT context_json FROM role_journals WHERE entry_key = ?", (digest(key),))
-        target = codec.context(json.loads(row["context_json"]))
+        if target is None:
+            ctx_row = row if row is not None else self.runtime.read_one(
+                "SELECT context_json FROM role_journals WHERE entry_key = ?", (entry_key,)
+            )
+            target = codec.context(json.loads(ctx_row["context_json"]))
         if target.scope != self.context.scope:
             return None
         data = {"kind": key.kind.value, "local_date": key.local_date, "revision": head.revision,
                 "state": head.state.value, "body": None, "afterglow": None, "recall": None,
                 "summary": None, "dream_fragments": [], "unavailable_reason": None,
-                "view_token": self.token(operator, access, digest(key), head.revision)}
+                "view_token": self.token(operator, access, entry_key, head.revision)}
         if head.state is JournalState.ACTIVE:
             try:
-                entry = journal.get(key)
+                entry = journal.get(key, observed_at=now)
                 for source in entry.draft.sources:
                     require(journal.sources.validate_reference_for_audience(source,
-                        recipient=self.context.actor.subject, observed_at=self.app.now()))
+                        recipient=self.context.actor.subject, observed_at=now))
                 data.update(body=entry.draft.body, afterglow=entry.draft.afterglow,
                             recall=entry.draft.recall.value if entry.draft.recall else None)
-                derived = journal.derivatives(key)
+                derived = journal.derivatives(key, observed_at=now, _validated_entry=entry)
                 if derived:
                     data.update(summary=derived.material.summary, dream_fragments=derived.material.dream_fragments)
             except TaskError as error:
@@ -127,22 +136,48 @@ class RoleLifeManagement:
 
     def status(self, operator, *, before=None, after_activity=None):
         access = self.authorize(operator)
-        config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
-                                                      observed_at=self.app.now()))
         # Cursor pages include unavailable/deleted records; a damaged source never hides the rest of the archive.
         if before is not None:
             date.fromisoformat(before)
         if after_activity is not None and (not isinstance(after_activity, str) or len(after_activity) > 512):
             raise ValueError("invalid activity cursor")
-        rows = self.runtime.read_all("""SELECT context_json FROM role_journals WHERE owner_key = ?
+        now = self.app.now()
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, now):
+            return self._status_in_snapshot(operator, access, now, before=before, after_activity=after_activity)
+
+    def _status_in_snapshot(self, operator, access, now, *, before=None, after_activity=None):
+        config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
+                                                      observed_at=now))
+        rows = self.runtime.read_all("""SELECT * FROM role_journals WHERE owner_key = ?
             AND local_date IN (SELECT DISTINCT local_date FROM role_journals WHERE owner_key = ?
                 AND (? IS NULL OR local_date < ?) ORDER BY local_date DESC LIMIT 50)
             ORDER BY local_date DESC, kind""", (digest(self.owner), digest(self.owner), before, before))
+        batch = active_validation_batch(self.runtime, now)
+        if batch is not None and rows:
+            row_cache = batch.extras.setdefault("role_journal.rows", {})
+            entry_keys = []
+            for row in rows:
+                ek = row["entry_key"]
+                row_cache[ek] = row
+                entry_keys.append(ek)
+            deriv_cache = batch.extras.setdefault("role_journal.derivatives_rows", {})
+            for ek in entry_keys:
+                deriv_cache.setdefault(ek, None)
+            placeholders = ",".join("?" for _ in entry_keys)
+            for drow in self.runtime.read_all(
+                f"SELECT * FROM role_journal_derivatives WHERE entry_key IN ({placeholders})",
+                tuple(entry_keys),
+            ):
+                deriv_cache[drow["entry_key"]] = drow
         journals = []
+        distinct_dates = set()
+        last_local_date = None
         for row in rows:
             target = codec.context(json.loads(row["context_json"]))
+            distinct_dates.add(target.key.local_date)
+            last_local_date = target.key.local_date
             if target.scope == self.context.scope:
-                journals.append(self._journal(target.key, operator, access))
+                journals.append(self._journal(target.key, operator, access, now=now, row=row, target=target))
         archive = self.app.role_life.archive_activities(self.owner, self.context.scope,
                                                        after_id=after_activity, limit=31)
         activities = archive[:30]
@@ -190,19 +225,19 @@ class RoleLifeManagement:
             item.get("retryable") is not None and item.get("state") in ("unknown", "uncertain", "accepted")
             for item in receipts)
         daily = self.app.journal_schedule._schedules.get(self.life.schedule_id)
-        sleep_schedule = self.app.life_runtime.sleep_schedule_status(self.life, config)
+        body_sleep = self.app.role_state.body_clock.read(self.context, now=now)
+        sleep_schedule = self.app.life_runtime.sleep_schedule_status(self.life, config, body_sleep=body_sleep, now=now)
         return {"role_id": self.owner.persona_id, "participant": self.context.scope.native_scope_id,
             "host_state": self.app.state, "config": values(config), "edit_token": config.edit_token,
             "view_token": self.token(operator, access), "failure_code": self.life.failure_code,
             "next_diary_at": daily.next_at.isoformat() if daily else None,
             "next_sleep_at": sleep_schedule["next_sleep_at"], "sleep_schedule": sleep_schedule,
             "next_reading_at": self.life.next_reading_at,
-            "body_sleep": self.app.role_state.body_clock.read(self.context),
-            "activities": [{**self._project_activity(a, operator, access),
+            "body_sleep": body_sleep,
+            "activities": [{**self._project_activity(a, operator, access, now=now),
                             "book_progress": books.get(a.work.source)} for a in activities],
             "next_activity": cursor, "journals": journals,
-            "next_date": codec.context(json.loads(rows[-1]["context_json"])).key.local_date
-                if len({codec.context(json.loads(r["context_json"])).key.local_date for r in rows}) == 50 else None,
+            "next_date": last_local_date if len(distinct_dates) == 50 else None,
             "receipts": receipts[-60:], "running": list(self.life._workers),
             "journal_unresolved": journal_unresolved}
 
@@ -210,10 +245,12 @@ class RoleLifeManagement:
         """Small shared-schedule projection for role-state management views."""
         if access is None:
             self.authorize(operator)
+        now = self.app.now()
         config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
-                                                      observed_at=self.app.now()))
-        return {"sleep_schedule": self.app.life_runtime.sleep_schedule_status(self.life, config),
-                "body_sleep": self.app.role_state.body_clock.read(self.context)}
+                                                      observed_at=now))
+        body_sleep = self.app.role_state.body_clock.read(self.context, now=now)
+        return {"sleep_schedule": self.app.life_runtime.sleep_schedule_status(self.life, config, body_sleep=body_sleep, now=now),
+                "body_sleep": body_sleep}
 
     def operation_id(self, prefix, operator, key):
         # Preserve pre-partitioning retries only in their original private scope.

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import time
 from zoneinfo import ZoneInfo
 
 from companion_v2.capabilities.models import CapabilityDesiredState
@@ -20,6 +21,7 @@ from companion_v2.execution.models import TaskError, digest, encode, require, st
 from companion_v2.foundation.refs import OperationRef, VersionRef
 from companion_v2.qzone import feed as feed_reader
 from companion_v2.qzone import protocol as P
+from companion_v2.qzone.media import DEFAULT_MEDIA_BUDGET_SECONDS, DEFAULT_MEDIA_CONCURRENCY
 from companion_v2.qzone.capability import (COMMENT_ACTION, EXTENSION, LIKE_ACTION, MAX_REFERENCES_PER_SCOPE,
     PUBLISH_ACTION, READ_ACTION, REFERENCE_TTL_MINUTES, package_descriptor)
 from companion_v2.qzone.policy import (QzoneRuntimeStore, action_reason, block_reason, clear_failure,
@@ -104,7 +106,9 @@ class QzoneService:
     """Configured, throttled and receipted access to one role's Zone."""
 
     def __init__(self, runtime, settings, transport, *, now=None, references=None,
-                 verify_delays=VERIFY_DELAYS, publish_verify_delays=PUBLISH_VERIFY_DELAYS):
+                 verify_delays=VERIFY_DELAYS, publish_verify_delays=PUBLISH_VERIFY_DELAYS,
+                 vision_callback=None, media_budget_seconds=DEFAULT_MEDIA_BUDGET_SECONDS,
+                 media_max_concurrency=DEFAULT_MEDIA_CONCURRENCY):
         self.runtime = runtime
         self.settings = settings
         self.transport = transport
@@ -119,6 +123,9 @@ class QzoneService:
         self.package = package_descriptor()
         self.verify_delays = tuple(verify_delays)
         self.publish_verify_delays = tuple(publish_verify_delays)
+        self.vision_callback = vision_callback
+        self.media_budget_seconds = float(media_budget_seconds)
+        self.media_max_concurrency = max(1, int(media_max_concurrency))
 
     # ---- shared gates -------------------------------------------------
 
@@ -244,14 +251,22 @@ class QzoneService:
                 # agenda domain, never here.
                 "agenda_suggestions": [item.summary() for item in self.agenda_suggestions(context)]}
 
+    def _update_state(self, context, transform, *, at):
+        owner = owner_key(context)
+        with self.runtime.transaction():
+            return self.store.write(owner, transform(self.store.read(owner)), at=at)
+
     async def _credential(self, context, at):
         try:
             return await self.transport.credential()
         except TaskError as error:
             recoverable = P.missing_credential_reason(str(error)) or error.code == "qzone_credential_missing"
-            state = note_failure(self.state(context), reason=str(error), source="credential", at=at,
-                                 recoverable=recoverable)
-            self.store.write(owner_key(context), state, at=at)
+            self._update_state(
+                context,
+                lambda current: note_failure(current, reason=str(error), source="credential", at=at,
+                                             recoverable=recoverable),
+                at=at,
+            )
             raise
 
     def _settings_gate(self, context, at):
@@ -285,12 +300,14 @@ class QzoneService:
                                            subject=context.actor.subject, scope=context.scope))
 
     def _success(self, context, at):
-        state = clear_failure(self.state(context))
-        self.store.write(owner_key(context), state, at=at)
+        self._update_state(context, clear_failure, at=at)
 
     def _failure(self, context, at, *, reason, source):
-        state = note_failure(self.state(context), reason=reason, source=source, at=at)
-        self.store.write(owner_key(context), state, at=at)
+        self._update_state(
+            context,
+            lambda current: note_failure(current, reason=reason, source=source, at=at),
+            at=at,
+        )
 
     def _answer(self, outcome, context, at, *, source):
         """Turn one transport answer into a payload, or into an explicit refusal."""
@@ -338,7 +355,8 @@ class QzoneService:
 
     # ---- operations ---------------------------------------------------
 
-    async def scan(self, context, *, scope="friends", limit=None, detail=False):
+    async def scan(self, context, *, scope="friends", limit=None, detail=False,
+                   media_budget_seconds=None, media_max_concurrency=None):
         """Read the Zone: one person's timeline or the friend timeline, bounded."""
         at = self.now()
         settings = self._settings_gate(context, at)
@@ -350,13 +368,23 @@ class QzoneService:
                                              context=context, source="feed")
         elif scope == "friends":
             posts = await self._friends(credential, bound, at=at, context=context)
+        elif scope == "owner":
+            owner_uin = str(settings.get("owner_uin") or "").strip()
+            if not owner_uin.isdigit():
+                raise TaskError("qzone_owner_missing", "请先在 QQ 空间设置里填写主人的 QQ 号")
+            posts = await self._recent_posts(credential, uin=int(owner_uin), num=bound, at=at,
+                                             context=context, source="feed")
         else:
-            raise TaskError("qzone_scope_invalid", "刷空间只支持自己的动态或好友动态")
+            raise TaskError("qzone_scope_invalid", "刷空间只支持自己的动态、好友动态或主人动态")
         references = self.references.issue(posts, owner_key=owner_key(context), scope_key=context.key, at=at)
         self._success(context, at)
         items = [reference.summary() for reference in references]
         if detail and posts:
-            items = await self._items_with_comments(credential, posts, references, bound, at, context)
+            items = await self._items_with_comments(
+                credential, posts, references, bound, at, context,
+                media_budget_seconds=media_budget_seconds,
+                media_max_concurrency=media_max_concurrency,
+            )
         return {"scope": scope, "count": len(items), "items": items}
 
     async def _friends(self, credential, limit, *, at, context):
@@ -383,10 +411,16 @@ class QzoneService:
             posts = (*posts, *(post for post in more if (post.author_uin, post.post_id) not in seen))
         return posts[:limit]
 
-    async def _items_with_comments(self, credential, posts, references, limit, at, context):
+    async def _items_with_comments(self, credential, posts, references, limit, at, context,
+                                   *, media_budget_seconds=None, media_max_concurrency=None):
         """Comments of the scanned posts, read through the detail form of the list call."""
         by_id = {post.post_id: reference for post, reference in zip(posts, references)}
         items = [reference.summary() for reference in references]
+        items = await self._describe_media_items(
+            items, references,
+            budget_seconds=media_budget_seconds,
+            max_concurrency=media_max_concurrency,
+        )
         targets = [post for post in posts if post.own][:3] or list(posts[:1])
         details = {}
         for post in targets:
@@ -405,6 +439,65 @@ class QzoneService:
                     if post.liked or await self._read_like(credential, post, at=at, context=context):
                         item["liked"] = True
                         self.references.mark_liked(by_id[post.post_id])
+        return items
+
+    async def _describe_media_items(self, items, references, *, budget_seconds=None, max_concurrency=None):
+        """Attach bounded descriptions for pictures and clips; never fail the read."""
+        if not items:
+            return items
+        from . import media
+
+        total_budget = (
+            self.media_budget_seconds if budget_seconds is None else max(0.0, float(budget_seconds))
+        )
+        concurrency = max(
+            1,
+            int(self.media_max_concurrency if max_concurrency is None else max_concurrency),
+        )
+        deadline = time.monotonic() + total_budget
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def describe_one(index, post):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                items[index]["media_error"] = "媒体解析超时"
+                return
+            try:
+                described = await asyncio.wait_for(
+                    media.describe_post_async(
+                        post,
+                        vision_callback=self.vision_callback,
+                        timeout_budget=remaining,
+                        max_concurrency=concurrency,
+                        semaphore=semaphore,
+                    ),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                items[index]["media_error"] = "媒体解析超时"
+                return
+            except Exception:  # noqa: BLE001 - media is best effort
+                items[index]["media_error"] = "媒体解析失败"
+                return
+            if described.get("images"):
+                items[index]["image_texts"] = [
+                    item.get("text") or item.get("note") or "" for item in described["images"]]
+            if described.get("videos"):
+                items[index]["video_texts"] = [{
+                    "seconds": item.get("seconds"), "frames": item.get("frames") or [],
+                    "audio": item.get("audio") or "", "note": item.get("note") or "",
+                } for item in described["videos"]]
+
+        tasks = []
+        for index, reference in enumerate(references):
+            if index >= len(items):
+                break
+            post = reference.post
+            if not getattr(post, "images", ()) and not getattr(post, "videos", ()):
+                continue
+            tasks.append(describe_one(index, post))
+        if tasks:
+            await asyncio.gather(*tasks)
         return items
 
     async def _read_like(self, credential, post, *, at, context):
@@ -444,7 +537,7 @@ class QzoneService:
         self.references.mark_used(reference, LIKE)
         if verified:
             self.references.mark_liked(reference)
-        self.store.write(owner_key(context), note_action(self.state(context), kind=LIKE, at=at), at=at)
+        self._update_state(context, lambda current: note_action(current, kind=LIKE, at=at), at=at)
         return {"status": "done" if verified else "accepted", "verified": verified,
                 "message": "点赞已确认" if verified else "点赞请求已受理，等待 QQ 空间同步",
                 "operation_id": operation.operation_id, "receipt_ref": operation.operation_id}
@@ -490,7 +583,7 @@ class QzoneService:
         self._answer(outcome, context, at, source="post.comment")
         self._complete(operation, at)
         self.references.mark_used(reference, COMMENT)
-        self.store.write(owner_key(context), note_action(self.state(context), kind=COMMENT, at=at), at=at)
+        self._update_state(context, lambda current: note_action(current, kind=COMMENT, at=at), at=at)
         return {"status": "done", "message": "回复已发布", "post_ref": post_ref,
                 "operation_id": operation.operation_id, "receipt_ref": operation.operation_id}
 
@@ -511,7 +604,6 @@ class QzoneService:
             text, limit=P.MAX_PUBLISH_CHARS, field="说说正文")
         media_key = digest([body, [image.content_hash for image in images]]) if images else ""
         refs = _source_refs(source_refs)
-        code, message = publish_topic_reason = (None, None)
         try:
             normalized_topic = normalize_topic(topic)
         except ValueError:
@@ -612,9 +704,6 @@ class QzoneService:
         published_id = str(payload.get("tid") or payload.get("id") or "")
         verified = await self._verify_publish(credential, body, at=at, context=context,
                                                images=uploaded, post_id=published_id)
-        updated = note_action(state, kind="publish", at=at)
-        self.store.write(owner_key(context), note_publish(updated, text=body, media_key=media_key, at=at, day=local_day(at),
-                                                          topic=normalized_topic), at=at)
         result = {"status": "done" if verified else "accepted", "verified": verified,
                   "message": "说说已发布" if verified else "说说已提交，等待 QQ 空间同步",
                   "operation_id": operation.operation_id, "receipt_ref": operation.operation_id,
@@ -629,6 +718,14 @@ class QzoneService:
             result["agenda_proposal"] = proposal.document()
             result["message"] += "；日程提案仍待确认"
         with self.runtime.transaction() as connection:
+            latest_state = self.state(context)
+            updated = note_action(latest_state, kind="publish", at=at)
+            self.store.write(
+                owner_key(context),
+                note_publish(updated, text=body, media_key=media_key, at=at, day=local_day(at),
+                             topic=normalized_topic),
+                at=at,
+            )
             connection.execute("INSERT INTO runtime_metadata(key,value) VALUES (?,?)",
                 ("qzone.publish.receipt:" + operation.operation_id, json.dumps(result, ensure_ascii=False)))
             self._complete(operation, at)

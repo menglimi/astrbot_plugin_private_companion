@@ -194,7 +194,16 @@ async def prepare_core_reply_decision(event, prepared, *, application, now=None)
     # extra inference entirely.
     if prepared.get("channel") == "group":
         admission = prepared.get("group_admission") or {}
-        if admission.get("mentioned") is True:
+        trigger = prepared.get("group_trigger") or {}
+        policy = admission.get("participation_policy") or {}
+        forced = policy.get("mention_force_reply_enabled") is True and (
+            admission.get("mentioned") is True or trigger.get("mentioned") is True
+            or trigger.get("native_wakeup") is True or admission.get("reason") == "direct_word"
+        )
+        if admission.get("mentioned") is True or forced:
+            if forced:
+                prepared["prompt_instruction"] = (prepared.get("prompt_instruction", "") +
+                    "\n\n本群已开启被 @ 强制应答。直接回应点名或唤醒词所在的消息，无需调用群聊参与判断。").strip()
             result = {
                 "status": "skipped", "reason": "explicit_mention",
                 "applied_decision": {"action": "reply"}, "suppress_reply": False,

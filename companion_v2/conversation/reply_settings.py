@@ -97,6 +97,31 @@ GROUP_WAKEUP_LIMITS = {"group_wakeup_question_threshold": (0, 100),
 GROUP_TOOL_PROFILES = frozenset(("lean", "standard", "full"))
 GROUP_TOOL_DEFAULTS = {"group_tool_profile": "full"}
 
+# Role-level (with optional window override) private-chat tool manifest.
+# ``full`` preserves existing behavior; ``lean`` keeps core companion tools
+# (agenda, calendar, memory, interaction); ``custom`` filters by the selected
+# functional groups; ``none`` disables Companion tools in private chat while
+# preserving tools configured on the host persona card.  Because the resolved
+# set depends only on configuration, ``tools_hash`` stays invariant across turns.
+PRIVATE_TOOL_PROFILES = frozenset(("full", "lean", "custom", "none"))
+PRIVATE_TOOL_GROUP_ORDER = (
+    "agenda",
+    "calendar",
+    "memory",
+    "records",
+    "interaction",
+    "media",
+    "diagnostics",
+    "relay",
+    "extensions",
+)
+PRIVATE_TOOL_GROUPS = frozenset(PRIVATE_TOOL_GROUP_ORDER)
+LEAN_PRIVATE_TOOL_GROUPS = frozenset(("agenda", "calendar", "memory", "interaction"))
+PRIVATE_TOOL_DEFAULTS = {
+    "private_tool_profile": "full",
+    "private_tool_groups": "、".join(PRIVATE_TOOL_GROUP_ORDER),
+}
+
 # These switches are deliberately part of the sealed reply snapshot.  The
 # prompt and the outbound policy must agree about the group audience that was
 # authorized when the turn started; reading live persona settings here would
@@ -146,7 +171,56 @@ ROLE_SHARED_FIELDS = (frozenset(asdict(SegmentationPolicy())) | SPACING_FIELDS
     | frozenset(GROUP_SAFETY_DEFAULTS) | frozenset(SILENCE_DEFAULTS) | frozenset(OUTBOUND_DEFAULTS) | frozenset(TEXT_DEFAULTS)
     | frozenset(FORWARD_DEFAULTS) | frozenset(CONTEXT_IMAGE_DEFAULTS)
     | frozenset(IMAGE_NARRATION_DEFAULTS) | frozenset(UNDERSTANDING_DEFAULTS)
-    | frozenset(DIAGNOSTIC_DEFAULTS) | frozenset(GROUP_TOOL_DEFAULTS) | ROLE_PROMPT_FIELDS)
+    | frozenset(DIAGNOSTIC_DEFAULTS) | frozenset(GROUP_TOOL_DEFAULTS)
+    | frozenset(PRIVATE_TOOL_DEFAULTS) | ROLE_PROMPT_FIELDS)
+
+
+def private_tool_groups_set(raw):
+    """Parse and validate a configured set of private-chat tool functional groups."""
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        tokens = list(raw)
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return frozenset()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except (ValueError, TypeError) as error:
+                raise ConfigurationError("reply_configuration_invalid",
+                                         "invalid private tool groups list") from error
+            if type(parsed) is not list:
+                raise ConfigurationError("reply_configuration_invalid",
+                                         "private tool groups JSON must be a list")
+            tokens = parsed
+        else:
+            normalized = text
+            for separator in ("、", ",", "，", ";", "；", "\n", "\r", "\t"):
+                normalized = normalized.replace(separator, " ")
+            tokens = [part.strip() for part in normalized.split() if part.strip()]
+    else:
+        raise ConfigurationError("reply_configuration_invalid", "private tool groups must be text")
+    result = []
+    seen = set()
+    for token in tokens:
+        if type(token) is not str:
+            raise ConfigurationError("reply_configuration_invalid", "private tool group must be a string")
+        name = token.strip()
+        if name not in PRIVATE_TOOL_GROUPS or name in seen:
+            raise ConfigurationError("reply_configuration_invalid", "invalid or duplicate private tool group")
+        seen.add(name)
+        result.append(name)
+    return frozenset(result)
+
+
+def private_tool_settings(values):
+    """Validate and return normalized private-chat tool profile settings."""
+    profile = values.get("private_tool_profile", PRIVATE_TOOL_DEFAULTS["private_tool_profile"])
+    if type(profile) is not str or profile not in PRIVATE_TOOL_PROFILES:
+        raise ConfigurationError("reply_configuration_invalid", "invalid private tool profile")
+    raw_groups = values.get("private_tool_groups", PRIVATE_TOOL_DEFAULTS["private_tool_groups"])
+    groups = private_tool_groups_set(raw_groups)
+    return {"private_tool_profile": profile, "private_tool_groups": groups}
 
 
 def outbound_settings(values):
@@ -308,7 +382,7 @@ def validate(values):
     understanding = set(UNDERSTANDING_DEFAULTS)
     spacing = set(SPACING_DEFAULTS)
     diagnostics = set(DIAGNOSTIC_DEFAULTS)
-    tool = set(GROUP_TOOL_DEFAULTS)
+    tool = set(GROUP_TOOL_DEFAULTS) | set(PRIVATE_TOOL_DEFAULTS)
     optional = set(values) - expected - {"image_position"}
     provided = set(values)
     if (not legacy_required <= provided
@@ -323,6 +397,7 @@ def validate(values):
     try:
         if values.get("group_tool_profile", "full") not in GROUP_TOOL_PROFILES:
             raise ValueError("invalid group tool profile")
+        private_tool_settings(values)
         diagnostic_limit = values.get("reply_diagnostic_limit", DIAGNOSTIC_DEFAULTS["reply_diagnostic_limit"])
         if type(diagnostic_limit) is not int or not 10 <= diagnostic_limit <= 300:
             raise ValueError("invalid reply diagnostic limit")
@@ -409,6 +484,7 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
     defaults.update(UNDERSTANDING_DEFAULTS)
     defaults.update(DIAGNOSTIC_DEFAULTS)
     defaults.update(GROUP_TOOL_DEFAULTS)
+    defaults.update(PRIVATE_TOOL_DEFAULTS)
     validate(defaults)
     limits = {"threshold": (1, 65536), "min_segment_chars": (1, 65536), "max_segments": (1, 64),
               "part_gap_ms": (0, 60000), "voice_cooldown_seconds": (0, 86400),
@@ -579,7 +655,8 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
                     groups_key: replace(groups, value="\n".join(selected),
                         source=legacy.source, explicit=legacy.explicit,
                         source_revision=legacy.source_revision)})
-        return snapshot
+        from companion_v2.relationships.account_link_settings import overlay_snapshot
+        return overlay_snapshot(self.runtime, target, fields, snapshot)
 
     def preview_set(self, target, fields, *, changes):
         target = self._stable_group_target(target)

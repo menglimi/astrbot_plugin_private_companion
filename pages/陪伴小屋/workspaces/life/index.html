@@ -10,29 +10,93 @@
 </head>
 <body>
   <main>
-    <header>
-      <div class="host-controls"><button id="start-host" class="secondary" type="button">启动当前配置</button>
+    <header id="life-toolbar" class="life-toolbar">
+      <div class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span><span>核心管理员 · 角色级</span></div>
+      <div class="host-controls">
+        <button id="start-host" class="secondary" type="button">启动当前配置</button>
         <button id="stop-host" class="quiet" type="button">停止运行</button>
-        <button id="refresh" class="secondary" type="button">刷新记录</button></div></header>
+        <button id="refresh" class="secondary" type="button">刷新记录</button>
+      </div>
+    </header>
     <section class="scope" aria-label="当前范围">
-      <div><span>角色</span><strong id="role">—</strong></div><div><span>私聊对象</span><strong id="participant">—</strong></div>
-      <div><span>运行状态</span><strong id="host-state">正在连接…</strong></div><div><span>生活日程</span><strong id="routine-state">—</strong></div>
+      <div class="kpi-card">
+        <span class="kpi-label">角色</span>
+        <strong id="role" class="kpi-value">—</strong>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">执行窗口</span>
+        <strong id="participant" class="kpi-value">—</strong>
+      </div>
+      <div class="kpi-card kpi-status-card" id="host-state-card">
+        <span class="kpi-label">运行状态</span>
+        <span class="kpi-status-row"><i class="status-dot" aria-hidden="true"></i><strong id="host-state" class="kpi-value">正在连接…</strong></span>
+      </div>
+      <div class="kpi-card kpi-status-card" id="routine-state-card">
+        <span class="kpi-label">生活日程</span>
+        <span class="kpi-status-row"><i class="status-dot" aria-hidden="true"></i><strong id="routine-state" class="kpi-value">—</strong></span>
+      </div>
     </section>
-    <p id="next-routines" class="muted schedule-hint"></p>
-    <section class="sleep-plan" aria-label="角色共享作息">
-      <div><span>自动睡眠范围</span><strong id="sleep-scope">正在读取…</strong></div>
-      <div><span>唯一执行窗口</span><strong id="sleep-executor">—</strong></div>
-      <div><span>下次入睡 / 计划唤醒</span><strong id="sleep-next">—</strong></div>
-      <div><span>当前睡眠唤醒</span><strong id="sleep-active-wake">—</strong></div>
-    </section>
-    <section class="sleep-physiology" aria-label="角色睡眠状态">
-      <div><span>睡眠压力</span><strong id="sleep-pressure">—</strong></div>
-      <div><span>欠睡</span><strong id="sleep-debt">—</strong></div>
-      <div><span>近 24 小时负荷</span><strong id="sleep-workload">—</strong></div>
-      <div><span>推荐睡眠时长</span><strong id="sleep-recommended">—</strong></div>
-    </section>
+    <div class="scope-banner" role="note">
+      <div class="scope-banner-main">
+        <svg class="scope-banner-icon" viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M8 7.2v3.6M8 5.2v.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <p class="muted scope-note">日记、梦境与生活记录按角色保存；执行窗口只决定到点事件和主动投递的落点，不改变日记归属。</p>
+      </div>
+      <p id="next-routines" class="muted schedule-hint" hidden></p>
+    </div>
+    <details id="sleep-overview" class="sleep-overview" open>
+      <summary class="sleep-overview-summary">
+        <span class="sleep-overview-title">
+          <svg class="sleep-overview-icon" viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
+            <path d="M12.8 9.8A5.4 5.4 0 0 1 6.2 3.2a5.5 5.5 0 1 0 6.6 6.6Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          </svg>
+          <span>角色共享作息与睡眠状态</span>
+        </span>
+        <span id="sleep-summary-pills" class="sleep-summary-pills"></span>
+      </summary>
+      <div class="sleep-overview-body">
+        <div class="sleep-group">
+          <div class="sleep-group-head">
+            <span class="sleep-group-label">睡眠生理指标</span>
+            <span class="sleep-group-sub">基于近期清醒时长与活动负荷推算</span>
+          </div>
+          <section class="sleep-physiology" aria-label="角色睡眠状态">
+            <div class="metric-card" id="sleep-pressure-card">
+              <div class="metric-head"><span>睡眠压力</span><strong id="sleep-pressure">—</strong></div>
+              <div class="metric-bar" aria-hidden="true"><i id="sleep-pressure-bar"></i></div>
+            </div>
+            <div class="metric-card" id="sleep-debt-card">
+              <div class="metric-head"><span>欠睡</span><strong id="sleep-debt">—</strong></div>
+              <small class="metric-caption" id="sleep-debt-hint">累计睡眠缺口</small>
+            </div>
+            <div class="metric-card" id="sleep-workload-card">
+              <div class="metric-head"><span>近 24 小时负荷</span><strong id="sleep-workload">—</strong></div>
+              <div class="metric-bar" aria-hidden="true"><i id="sleep-workload-bar"></i></div>
+            </div>
+            <div class="metric-card" id="sleep-recommended-card">
+              <div class="metric-head"><span>推荐睡眠时长</span><strong id="sleep-recommended">—</strong></div>
+              <small class="metric-caption">按生理状态动态推荐</small>
+            </div>
+          </section>
+        </div>
+        <div class="sleep-group">
+          <div class="sleep-group-head">
+            <span class="sleep-group-label">作息排程与执行</span>
+            <span class="sleep-group-sub">按角色跨会话共享同一套睡眠节律</span>
+          </div>
+          <section class="sleep-plan" aria-label="角色共享作息">
+            <div class="plan-card"><span>自动睡眠范围</span><strong id="sleep-scope">正在读取…</strong></div>
+            <div class="plan-card"><span>唯一执行窗口</span><strong id="sleep-executor">—</strong></div>
+            <div class="plan-card"><span>下次入睡 / 计划唤醒</span><strong id="sleep-next">—</strong></div>
+            <div class="plan-card" id="sleep-active-wake-card"><span>当前睡眠唤醒</span><strong id="sleep-active-wake">—</strong></div>
+          </section>
+        </div>
+      </div>
+    </details>
     <div id="notice" role="status" aria-live="polite" hidden></div>
-    <details id="settings"><summary>日程与偏好</summary>
+    <details id="settings" class="settings-card"><summary>日程与偏好</summary>
       <form id="config-form">
         <div class="config-grid">
           <label class="check"><input id="enabled" type="checkbox">启用生活日程总开关</label>

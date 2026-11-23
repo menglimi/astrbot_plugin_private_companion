@@ -17,7 +17,11 @@ from threading import Lock
 from types import MappingProxyType
 from typing import Awaitable, Callable
 
-from companion_v2.capabilities.models import CapabilityPackageDescriptor
+from companion_v2.capabilities.models import (
+    CapabilityAuthorizationState,
+    CapabilityDesiredState,
+    CapabilityPackageDescriptor,
+)
 from companion_v2.capabilities.privacy import CORE_GROUP_ACTIONS, PRIVACY_ACTIONS, is_core
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.execution.models import (
@@ -37,6 +41,7 @@ from .media.models import CapturedImage, check_manifest
 from .media.generated import GROUP_IMAGE_ACTIONS, IMAGE_ACTIONS, REJECTED_ADOPTION
 from .media.screen import ACTION as SCREEN_ACTION, REJECTED_ADOPTION as SCREEN_REJECTED_ADOPTION
 from .messages import source_from_document
+from .tool_failures import blocks_repeat, failure_guidance, retry_disposition_for
 
 
 MAX_RESULT_BYTES = 65536
@@ -174,17 +179,21 @@ class ExternalToolResponse:
     images: tuple[CapturedImage, ...] = field(default=(), repr=False)
     dependencies: tuple[SourceRef, ...] = field(default=(), repr=False)
     error_code: str | None = None
+    retry_disposition: str | None = None
 
     def __post_init__(self):
         for name in ("invocation_id", "origin_key", "arguments_hash"):
             _opaque(getattr(self, name), field=name)
         if not isinstance(self.binding, ProviderBinding) or self.state not in ("succeeded", "failed", "unknown"):
             raise ValueError("external response requires its original binding and explicit outcome")
-        TaskResult("uncertain" if self.state == "unknown" else self.state, self.effect,
-                   receipt_ref=self.receipt_ref, operation_id=self.operation_id)
         if (self.error_code is not None and (type(self.error_code) is not str
                 or re.fullmatch(r"[a-z][a-z0-9_]{0,95}", self.error_code) is None)):
             raise ValueError("external error code must be a bounded stable identifier")
+        result = TaskResult("uncertain" if self.state == "unknown" else self.state, self.effect,
+                   receipt_ref=self.receipt_ref, operation_id=self.operation_id,
+                   retry_disposition=retry_disposition_for(self.error_code, self.state)
+                   if self.retry_disposition is None else self.retry_disposition)
+        object.__setattr__(self, "retry_disposition", result.retry_disposition)
         if self.state == "succeeded":
             if not isinstance(self.source, SourceRecord):
                 raise ValueError("successful extension result requires a governed original")
@@ -265,6 +274,17 @@ class ExternalToolExecutor:
         """Public admission check for trusted callers outside the model tool loop."""
         return self._admit(descriptor, context, at)
 
+    def is_invokable(self, action, context, at=None):
+        """Whether ``context.actor`` may execute ``action`` right now."""
+        provider = self.providers.get(action)
+        if provider is None:
+            return False
+        try:
+            self._admit(provider.descriptor, context, self.tasks.now() if at is None else at)
+        except TaskError:
+            return False
+        return True
+
     def resolve(self, descriptor):
         """The declaration a dispatch would use after any host rebinding."""
         return self._provider(descriptor)[1]
@@ -308,16 +328,19 @@ class ExternalToolExecutor:
                 action, current.provider, current.capability,
                 previous.version, current.version, previous.generation, current.generation)
 
-    def _admit(self, descriptor, context, at):
+    def _admit(self, descriptor, context, at, *, for_catalog=False):
         action = descriptor.tool.action
         privacy = action in PRIVACY_ACTIONS
         actor = getattr(context, "actor", None)
         core_admin = actor is not None and is_core(self.runtime, actor.subject)
         core_group = action in CORE_GROUP_ACTIONS
+        if not for_catalog:
+            self._require_group_admin(action, context)
         core = core_admin if privacy else False
-        # 现实设备工具对群聊保持常驻挂载，避免按发言人增删工具导致提示词缓存
-        # 反复失效；真正执行前由 _require_group_admin 只放行核心管理员。
-        if context.scope.kind is ScopeKind.GROUP and core_group:
+        # 隐私能力与现实设备工具在群聊目录中按窗口/角色配置常驻挂载，不随当前
+        # 发言人身份切换增删工具（避免 Provider 工具前缀缓存 tools_hash 反复失效）；
+        # 真正执行时由 for_catalog=False 与 _require_group_admin 严格只放行核心管理员。
+        if context.scope.kind is ScopeKind.GROUP and (core_group or (for_catalog and privacy)):
             core = True
         # The core administrator's own group turn keeps the same image tools as
         # a private turn: the per-window consent enrolled for other members is
@@ -339,7 +362,8 @@ class ExternalToolExecutor:
         # 房间能力对核心管理员只是一个开关：模块已装配即视为可用，不再要求
         # 写入角色能力行或逐能力授权；是否开放由扩展自身的启用/暂停决定。
         room_switch = core_admin and package.extension_id == "together"
-        if not core and not room_switch:
+        game_core = core_admin and package.extension_id == "game"
+        if not core and not room_switch and not game_core:
             require(self.tasks.authorize_context(context, action="extension.tool.invoke", observed_at=at))
         installed = require(self.capabilities.installation(extension_id=package.extension_id))
         if (installed.package_id, installed.package_version, installed.artifact_hash) != (
@@ -349,20 +373,61 @@ class ExternalToolExecutor:
                           package_id=package.package_id, package_version=package.package_version))
         if catalog != package:
             raise TaskError("external_package_changed", "tool differs from the trusted package catalog")
-        if not room_switch:
+        if not room_switch and not game_core:
             require(self.capabilities.require_role_enabled(extension_id=package.extension_id,
                     role=context.role_binding.role, bot_id=context.scope.bot_id))
         if core or room_switch:
+            return package
+        if game_core:
+            if installed.desired_state is not CapabilityDesiredState.ACTIVE:
+                raise TaskError("capability_not_admissible", "the capability is not active for new configuration")
+            projected = self.capabilities.projection(
+                extension_id=package.extension_id,
+                role=context.role_binding.role,
+                scope=context.scope,
+            )
+            selection = require(projected).role_selection
+            if selection is not None and not selection.enabled:
+                raise TaskError("capability_role_not_enabled", "game is disabled for this role")
+            consent = self.capabilities.consent(
+                extension_id=package.extension_id,
+                capability_id=current.binding.capability,
+                subject=context.actor.subject,
+                scope=context.scope,
+            )
+            if consent.is_success:
+                return package
+            if consent.failure.code != "capability_consent_missing":
+                raise TaskError(consent.failure.code, consent.failure.reason)
+            previous = self.capabilities.latest_route_authorization(
+                extension_id=package.extension_id,
+                capability_id=current.binding.capability,
+                subject=context.actor.subject,
+                scope=context.scope,
+            )
+            if previous is not None:
+                if previous.state is CapabilityAuthorizationState.ACTIVE:
+                    return package
+                raise TaskError("capability_consent_revoked", "game permission was revoked on this route")
             return package
         return require(self.capabilities.authorize(extension_id=package.extension_id,
                        capability_id=current.binding.capability, subject=context.actor.subject, scope=context.scope))
 
     def _require_group_admin(self, action, context):
-        if context.scope.kind is not ScopeKind.GROUP or action not in CORE_GROUP_ACTIONS:
+        if context.scope.kind is not ScopeKind.GROUP:
+            return
+        if action not in CORE_GROUP_ACTIONS and action not in PRIVACY_ACTIONS:
             return
         actor = getattr(context, "actor", None)
-        if actor is None or not is_core(self.runtime, actor.subject):
-            raise TaskError("reality_admin_only", "现实设备操作只允许核心管理员使用")
+        if actor is not None and is_core(self.runtime, actor.subject):
+            return
+        if action == "screen.capture":
+            raise TaskError("screen_scope_denied", "桌面截屏在群聊中只允许核心管理员使用")
+        if action == "reality.camera.observe":
+            raise TaskError("reality_camera_private_required", "摄像头观察在群聊中只允许核心管理员使用")
+        if action in PRIVACY_ACTIONS:
+            raise TaskError("reality_admin_only", "现实感知工具在群聊中只允许核心管理员使用")
+        raise TaskError("reality_admin_only", "现实设备操作只允许核心管理员使用")
 
     def catalog_for(self, context):
         return self.catalog_with_diagnostics(context)[0]
@@ -375,7 +440,7 @@ class ExternalToolExecutor:
             for provider in self.providers.values():
                 action = provider.descriptor.tool.action
                 try:
-                    self._admit(provider.descriptor, context, self.tasks.now())
+                    self._admit(provider.descriptor, context, self.tasks.now(), for_catalog=True)
                 except TaskError as error:
                     reason = ("not_supported_for_group" if context.scope.kind is ScopeKind.GROUP
                               and action not in GROUP_IMAGE_ACTIONS else error.code)
@@ -478,6 +543,41 @@ class ExternalToolExecutor:
                 return row
         return None
 
+    def repeated_failure(self, context, action, arguments_json, turn_id):
+        """Both execution paths retain the original failure and attempt budget."""
+        from .native_tool_results import PREFIX, operation_row
+
+        candidates = self.runtime.read_all("""SELECT i.*,
+            json_extract(t.record_json, '$.retry_disposition') AS retry_disposition
+            FROM extension_tool_invocations i JOIN conversation_batches b ON b.batch_id = i.batch_id
+            LEFT JOIN execution_tasks t ON t.task_id = i.task_id
+            WHERE b.origin_key = ? AND i.action = ?
+            AND (i.state IN ('queued', 'running', 'unknown') OR i.state = 'failed' AND i.parent_task_id = ?)
+            AND (i.parent_task_id = ? OR i.arguments_json = ? OR i.action = 'qzone.post.publish')
+            ORDER BY i.created_at, i.invocation_id""", (context.key, action, turn_id, turn_id, arguments_json))
+        effectful = self.providers[action].descriptor.side_effect is not SideEffect.NONE
+        for row in candidates:
+            if blocks_repeat(action=action, state=row["state"], effectful=effectful,
+                    disposition=row["retry_disposition"] or retry_disposition_for(row["error_code"], row["state"]),
+                    same_arguments=row["arguments_json"] == arguments_json, same_turn=row["parent_task_id"] == turn_id):
+                return {**self.snapshot(row, context, self.tasks.now())[0], "replayed": True}
+        native = self.runtime.read_all("""SELECT json_extract(value, '$.invocation_id') AS invocation_id
+            FROM runtime_metadata WHERE substr(key, 1, ?) = ?
+            AND json_extract(value, '$.origin_key') = ? AND json_extract(value, '$.action') = ?
+            AND json_extract(value, '$.task_id') IS NOT NULL
+            AND (json_extract(value, '$.state') IN ('queued', 'running', 'unknown')
+                 OR json_extract(value, '$.state') = 'failed' AND json_extract(value, '$.turn_id') = ?)
+            AND (json_extract(value, '$.turn_id') = ? OR json_extract(value, '$.arguments_json') = ?
+                 OR json_extract(value, '$.action') = 'qzone.post.publish') ORDER BY rowid""",
+            (len(PREFIX), PREFIX, context.key, action, turn_id, turn_id, arguments_json))
+        for candidate in native:
+            row = operation_row(self.runtime, candidate["invocation_id"])
+            if blocks_repeat(action=action, state=row["state"], effectful=effectful,
+                    disposition=row["retry_disposition"] or retry_disposition_for(row["error_code"], row["state"]),
+                    same_arguments=row["arguments_json"] == arguments_json, same_turn=row["parent_task_id"] == turn_id):
+                return {**self.snapshot(row, context, self.tasks.now())[0], "replayed": True}
+        return None
+
     async def execute(self, run, call):
         descriptor = self.providers[call.action].descriptor
         self._require_group_admin(call.action, run.task.spec.context)
@@ -491,12 +591,9 @@ class ExternalToolExecutor:
             if call.action in IMAGE_ACTIONS:
                 self.messages.generated_images.require_capacity(run.task.spec.request_ref, run.task.spec.context, self.tasks.now())
                 self.messages.image_quota.admit(run.task, self.tasks.now())
-            unresolved = connection.execute("""SELECT 1 FROM extension_tool_invocations
-                WHERE parent_task_id = ? AND action = ? AND arguments_json = ?
-                AND state IN ('queued', 'running', 'unknown') LIMIT 1""",
-                (run.task.task_id, call.action, call.arguments_json)).fetchone()
-            if unresolved:
-                raise TaskError("external_effect_unresolved", "an original unknown call cannot be retried under another ID")
+            prior = self.repeated_failure(run.task.spec.context, call.action, call.arguments_json, run.task.task_id)
+            if prior is not None:
+                return prior
             identifier = "extension-" + digest([run.task.task_id, call.call_id])
             child_id = "child-" + identifier
             connection.execute("""INSERT INTO extension_tool_invocations
@@ -618,6 +715,7 @@ class ExternalToolExecutor:
             invocation = ExternalToolInvocation(row["invocation_id"], row["parent_task_id"], row["tool_call_id"],
                 run.task.spec.context, descriptor, row["arguments_json"], run.task.spec.deadline_at, before_dispatch,
                 task_run=run)
+        retry_disposition = None
         try:
             provider, dispatch_descriptor = self._provider(descriptor)
             if dispatch_descriptor.binding != descriptor.binding:
@@ -626,12 +724,13 @@ class ExternalToolExecutor:
                 invocation = replace(invocation, descriptor=dispatch_descriptor)
             response = await provider.invoke(invocation)
             self._record_response(invocation, response)
+            retry_disposition = response.retry_disposition
         except asyncio.CancelledError:
             self._unknown(invocation.invocation_id)
             raise
         except Exception:
             self._unknown(invocation.invocation_id)
-        return self._result(self._row(invocation.invocation_id))
+        return self._result(self._row(invocation.invocation_id), retry_disposition=retry_disposition)
 
     def _record_response(self, invocation, response):
         if (not isinstance(response, ExternalToolResponse) or
@@ -729,11 +828,14 @@ class ExternalToolExecutor:
             WHERE i.batch_id = ?""", (batch_id,))
         return sum(len(encode(json.loads(row["payload_json"])).encode("utf-8")) for row in rows)
 
-    @staticmethod
-    def _result(row):
+    def _result(self, row, *, retry_disposition=None):
+        if retry_disposition is None:
+            task = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (row["task_id"],))
+            retry_disposition = json.loads(task["record_json"]).get("retry_disposition") if task else None
         return TaskResult("uncertain" if row["state"] in ("running", "unknown") else row["state"], row["effect"],
                           result_ref=row["invocation_id"] if row["state"] == "succeeded" else None,
-                          receipt_ref=row["receipt_ref"], operation_id=row["operation_id"])
+                          receipt_ref=row["receipt_ref"], operation_id=row["operation_id"],
+                          retry_disposition=retry_disposition or retry_disposition_for(row["error_code"], row["state"]))
 
     def snapshot(self, row, context, at):
         if isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
@@ -748,13 +850,19 @@ class ExternalToolExecutor:
         if (task.spec.kind, task.spec.request_ref) != (descriptor.kind, row["invocation_id"]):
             raise TaskError("external_task_mismatch", "original child does not belong to this invocation")
         state = row["state"] if row["state"] in ("succeeded", "failed") else "unknown"
-        if state == "succeeded" and (task.state, task.effect, task.operation_id, task.result_ref) != (
-                "succeeded", row["effect"], row["operation_id"], row["invocation_id"]):
-            raise TaskError("external_task_unresolved", "original child has not accepted its final receipt")
-        if state == "failed" and row["receipt_ref"] is not None and task.state != "failed":
-            raise TaskError("external_task_unresolved", "original child has not accepted the owner's failure receipt")
+        task_row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (row["task_id"],))
+        task_data = json.loads(task_row["record_json"]) if task_row is not None else {}
+        if state in ("succeeded", "failed") and row["receipt_ref"] is not None:
+            expected_result_ref = row["invocation_id"] if state == "succeeded" else None
+            accepted_state = task.state == state or (state == "failed" and task.state in ("dead_letter", "expired")
+                and task.reason in ("attempt_budget_exhausted", "retry_would_exceed_deadline"))
+            if not accepted_state or (task.effect, task.operation_id, task.result_ref, task_data.get("receipt_ref")) != (
+                    row["effect"], row["operation_id"], expected_result_ref, row["receipt_ref"]):
+                raise TaskError("external_task_unresolved", "original child has not accepted its final receipt")
         result = {"invocation_id": row["invocation_id"], "state": state, "effect": row["effect"],
-                  "operation_id": row["operation_id"], "receipt_ref": row["receipt_ref"], "code": row["error_code"]}
+                  "operation_id": row["operation_id"], "receipt_ref": row["receipt_ref"], "code": row["error_code"],
+                  "retry_disposition": task_data.get("retry_disposition") or retry_disposition_for(row["error_code"], state)}
+        result.update(failure_guidance(row["error_code"], state, action=row["action"]))
         material = None
         if state == "succeeded":
             adoption = self.messages.generated_images.adoption_status(row, context, at)

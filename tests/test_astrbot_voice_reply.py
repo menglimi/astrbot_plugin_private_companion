@@ -13,16 +13,16 @@ import struct
 from types import SimpleNamespace as NS
 import unittest
 import wave
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from astrbot_host.voice import NativeVoiceReply
+from astrbot_host.voice import NativeVoiceReply, singsing_config_origin, singsing_route_available
 from companion_v2.conversation.delivery import DeliveryEnvelope
 from companion_v2.conversation.media.models import ImageDescriptor, PromptImage, OWNER
 from companion_v2.conversation.voice_reply import VoiceReplyDelivery
 from companion_v2.delivery.media import ImageDeliveryEnvelope, payload_hash
 from companion_v2.execution.models import digest
 from companion_v2.foundation.refs import SourceRef, VersionRef
-from tests.native_adapter_support import NativeFixture
+from tests.native_adapter_support import FakePlatform, NativeFixture
 from tests.test_management_access import NOW
 
 
@@ -30,6 +30,20 @@ RECORD = {"type": "record", "data": {"file": "base64://YQ=="}}
 
 
 class VoiceSenderTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_connection_rebuild_during_voice_does_not_send_old_content(self):
+        envelope = await self.original()
+        original = self.native.platform
+
+        async def voice(*_args):
+            self.native.platform = FakePlatform()
+            return RECORD
+
+        self.native_sender.voice = voice
+        receipt = await self.native_sender.send(envelope)
+        self.assertEqual(receipt.status, "not_sent")
+        self.assertEqual(original.client._api._wsr_api.calls, [])
+        self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
+
     async def original(self):
         await super().envelope()
         return DeliveryEnvelope("part-base", "operation-base", self.native_context, 1, "你好", digest("你好"),
@@ -191,6 +205,89 @@ class NativeVoiceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(temporary.name)
         self.audio = self.root / "audio.wav"
         self.audio.write_bytes(b"RIFFsynthetic-audio")
+
+    async def test_isolated_group_uses_original_profile_and_current_session(self):
+        original = "test:GroupMessage:group"
+        isolated = "test:GroupMessage:member_group"
+        event = NS(unified_msg_origin=isolated, get_extra=lambda key, default: key == "_session_isolated",
+                   message_obj=NS(session_id="group"))
+        profile = {"enable": True, "trigger_probability": 0}
+        other = {"enable": True, "trigger_probability": 1}
+        config = {original: profile, isolated: other}
+        provider = NS(get_audio=AsyncMock(return_value=str(self.audio)),
+                      provider_config={"type": "fishaudio_tts_api", "model": "drama-3"},
+                      headers={"model": "drama-3"})
+        provider_lookup = AsyncMock(return_value=provider)
+        context = NS(get_config=lambda scope: {"provider_tts_settings": config[scope]},
+                     get_using_tts_provider_async=provider_lookup)
+        task = NS(scope=NS(kind=NS(value="group"), platform="test", session_id="group"))
+        self.assertEqual(singsing_config_origin(event), original)
+        with patch("astrbot_host.voice.get_astrbot_temp_path", return_value=str(self.root)), \
+                patch("astrbot.core.star.session_llm_manager.SessionServiceManager.is_tts_enabled_for_session",
+                      new_callable=AsyncMock, return_value=True) as session_enabled:
+            self.assertTrue(await singsing_route_available(context, isolated, "", config_umo=original))
+            self.assertIsNotNone(await NativeVoiceReply(context).render(
+                task, "歌词", singing=True, singing_umo=isolated, singing_config_umo=original))
+            provider_lookup.assert_awaited_with(isolated)
+            session_enabled.assert_awaited_with(isolated)
+            provider.get_audio.assert_awaited_once_with("[singsing]歌词")
+            self.assertEqual(config, {original: {"enable": True, "trigger_probability": 0},
+                                      isolated: {"enable": True, "trigger_probability": 1}})
+            config[original], config[isolated] = other, profile
+            self.assertFalse(await singsing_route_available(context, isolated, "", config_umo=original))
+            del event.message_obj.session_id
+            self.assertFalse(await singsing_route_available(context, isolated, "",
+                                                           config_umo=singsing_config_origin(event)))
+
+    async def test_singsing_prefix_is_only_sent_to_selected_drama_3_provider(self):
+        calls = []
+
+        async def get_audio(text):
+            calls.append(text)
+            return str(self.audio)
+
+        provider = NS(get_audio=get_audio,
+                      provider_config={"type": "fishaudio_tts_api", "model": "drama-3"})
+        tts_config = {"enable": True}
+        umo = "test:FriendMessage:qualified"
+        context = NS(get_config=lambda origin: {"provider_tts_settings": tts_config if origin == umo else
+                                               {"enable": True, "trigger_probability": 0.5}},
+                     get_using_tts_provider=lambda _: provider)
+        task = NS(scope=NS(kind=NS(value="private"), platform="test", session_id="private"))
+        voice = NativeVoiceReply(context)
+        with patch("astrbot_host.voice.get_astrbot_temp_path", return_value=str(self.root)), \
+                patch("astrbot_host.voice._find_mimo_voice_clone") as fallback, \
+                patch("astrbot.core.star.session_llm_manager.SessionServiceManager.is_tts_enabled_for_session",
+                      new_callable=AsyncMock, return_value=True) as session_enabled:
+            self.assertFalse(await singsing_route_available(context, umo, ""))
+            tts_config["trigger_probability"] = 0.5
+            self.assertFalse(await singsing_route_available(context, umo, ""))
+            tts_config["trigger_probability"] = 0
+            self.assertFalse(await singsing_route_available(context, "test:FriendMessage:other", ""))
+            self.assertTrue(await singsing_route_available(context, umo, ""))
+            self.assertIsNotNone(await voice.render(task, " [singsing]月儿弯弯 ", singing=True, singing_umo=umo))
+            session_enabled.assert_awaited_with(umo)
+            tts_config["trigger_probability"] = 1
+            self.assertIsNone(await voice.render(task, "月儿弯弯", singing=True, singing_umo=umo))
+            tts_config["trigger_probability"] = 0
+            session_enabled.return_value = False
+            self.assertFalse(await singsing_route_available(context, umo, ""))
+            self.assertIsNone(await voice.render(task, "月儿弯弯", singing=True, singing_umo=umo))
+            session_enabled.return_value = True
+            tts_config["enable"] = False
+            self.assertFalse(await singsing_route_available(context, umo, ""))
+            self.assertIsNone(await voice.render(task, "月儿弯弯", singing=True, singing_umo=umo))
+            self.assertIsNotNone(await voice.render(task, " [singsing][singing]月儿弯弯 "))
+            tts_config["enable"] = True
+            provider.headers = {"model": "s2.1-pro"}
+            self.assertFalse(await singsing_route_available(context, umo, ""))
+            self.assertIsNone(await voice.render(task, "月儿弯弯", singing=True, singing_umo=umo))
+            provider.headers["model"] = "drama-3"
+            provider.provider_config["model"] = "s2.1-pro"
+            self.assertFalse(await singsing_route_available(context, umo, ""))
+            self.assertIsNone(await voice.render(task, "月儿弯弯", singing=True, singing_umo=umo))
+            fallback.assert_not_called()
+        self.assertEqual(calls, ["[singsing]月儿弯弯", "[singsing][singing]月儿弯弯"])
 
     async def test_selected_provider_and_explicit_tts_provider_use_original_session(self):
         task_context = NS(scope=NS(kind=NS(value="private"), platform="qq-main", session_id="200"))

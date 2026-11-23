@@ -14,6 +14,7 @@ from PIL import Image, UnidentifiedImageError
 from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.refs import RoleOwnerRef
 from companion_v2.qzone.capability import PUBLISH_ACTION
+from companion_v2.storage.image_payloads import load_image
 
 
 MAX_IMAGES = 9
@@ -118,7 +119,11 @@ def candidate_image(application, context, at, candidate_id, planner):
          asset.asset_id, asset.version.lineage_id, asset.version.revision))
     if row is None:
         raise TaskError("qzone_image_invalid", "分享候选的图片原件已不可用")
-    image = PublishImage.read(bytes(row["content"]), source_id=source.source_id)
+    try:
+        content = load_image(getattr(application.runtime, "data_root", None), row["content"])
+    except (OSError, TypeError, ValueError):
+        raise TaskError("qzone_image_invalid", "分享候选的图片原件已不可用") from None
+    image = PublishImage.read(content, source_id=source.source_id)
     if image.content_hash != asset.content_hash:
         raise TaskError("qzone_image_invalid", "分享候选图片与原件不一致")
     return image

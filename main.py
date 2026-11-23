@@ -39,8 +39,10 @@ from .astrbot_host.multi_controller import AstrBotMultiController
 from .astrbot_host.conversation_reset import install_native_reset_marker
 from .astrbot_host.core_reply import (
     CORE_REPLY_CONTEXT_EXTRA,
+    SILENT_SEND_DENIAL_CODES,
     activate_core_reply_delivery_guard,
     adopt_core_reply_event,
+    finish_core_reply_presence,
     inject_core_reply_prompt,
     prepare_core_reply_event,
     repair_tool_call_history,
@@ -57,6 +59,27 @@ from .astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_co
 from .astrbot_host.core_reply_tool_guard import (
     close_core_reply_tool_guard, install_core_reply_tool_guard, mark_managed_turn,
 )
+from .astrbot_host.core_reply_mentions import prepare_bare_mention_request
+from .astrbot_host.core_reply_forwards import (
+    apply_debounced_private_merge,
+    await_event_forwards_parsed,
+    claim_core_reply_forward_injection,
+    coalesce_debounced_forwards,
+    combine_text_and_forward_summary,
+    ensure_event_forwards_parsed,
+    event_has_media_or_reply,
+    event_has_top_level_forwards,
+    event_will_enter_astrbot_llm,
+    format_forwards_for_observation,
+    forward_burst_debounce_policy,
+    get_parsed_forwards,
+    inject_core_reply_forwards,
+    merge_followup_forwards,
+    parse_event_forwards,
+    prepare_forward_only_request,
+    private_debounce_input,
+    resolve_forward_intake_policy,
+)
 from .astrbot_host.core_reply_native_send import inject_core_reply_send_tool
 from .astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context, inject_core_reply_perception_policy,
@@ -66,7 +89,7 @@ from .astrbot_host.native_extensions.host_events import (
 )
 from .astrbot_host.core_reply_segmentation import (
     activate_core_reply_segmentation, prepare_core_reply_segmentation,
-    prepare_core_reply_streaming_boundary,
+    prepare_core_reply_streaming_boundary, prepare_core_result_decoration,
 )
 from .astrbot_host.core_reply_tracking import (
     activate_core_reply_tracking, adopt_core_reply_tracking, finish_core_reply_tracking,
@@ -82,12 +105,16 @@ from .astrbot_host.calendar_command import parse_calendar_command
 from .astrbot_host.functional_commands import classify_functional_command, inject_functional_command_instruction
 from .astrbot_host.group_command import receive_group_llm_command
 from .astrbot_host.reset_command import receive_reset_command
+from .astrbot_host.phone_command import receive_phone_confirmation
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
+from companion_v2.conversation.group_timing import SELF_MENTION
 from companion_v2.conversation import debounce_log
 from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replace_group_plain_text
 from companion_v2.adapters.astrbot.group import group_event_route
+from companion_v2.adapters.astrbot.voice_stt import has_external_stt_extra, read_stt_extra
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
+from .astrbot_host.core_reply_followup_guard import CoreReplyFollowUpGuard
 from .astrbot_host.event_routing import (
     COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
 )
@@ -131,8 +158,10 @@ CORE_REPLY_IDENTITY_FAILURE_PREFIXES = (
     "host_persona_", "host_conversation_", "host_native_lookup_timeout", "host_core_reply_capture_failed",
 )
 RETRYABLE_HOST_STARTUP_CODES = frozenset({
-    "host_platform_unavailable", "host_account_unavailable", "host_persona_unavailable",
+    "host_platform_unavailable", "host_platform_changed", "host_account_unavailable",
+    "host_account_changed", "host_persona_unavailable",
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
+    "host_provider_required", "host_provider_unavailable",
     "staging_preflight_failed",
 })
 # A denied final send is the one refusal the user feels as silence, and it is
@@ -168,6 +197,94 @@ def _can_continue_astrbot_core_reply(code):
     return False
 
 
+def _chain_has_populated_content(chain: Any) -> bool:
+    """Return True when a message result chain contains non-empty text or a non-Plain component."""
+    if not chain:
+        return False
+    if not isinstance(chain, (list, tuple)):
+        return True
+    for part in chain:
+        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+        if kind == "Plain" or type(part).__name__ == "Plain":
+            if str(getattr(part, "text", "") or "").strip():
+                return True
+            continue
+        return True
+    return False
+
+
+def _has_populated_event_result(event: Any) -> bool:
+    """Return True when an upstream handler already attached a concrete reply result on ``event``."""
+    getter = getattr(event, "get_result", None)
+    result = getter() if callable(getter) else None
+    if result is None:
+        return False
+    if isinstance(result, str):
+        return bool(result.strip())
+    is_stopped = getattr(result, "is_stopped", None)
+    if callable(is_stopped) and is_stopped():
+        return True
+    if _chain_has_populated_content(getattr(result, "chain", None)) or getattr(result, "async_stream", None) is not None:
+        return True
+    content_type = getattr(getattr(result, "result_content_type", None), "name", None)
+    return content_type in {"LLM_RESULT", "STREAMING_RESULT", "STREAMING_FINISH", "AGENT_RUNNER_ERROR"}
+
+
+def _is_external_stt_cache_only(event: Any) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）suppressed a group voice turn to cache-only."""
+    return read_stt_extra(event, "cache_only") is True and read_stt_extra(event, "should_reply") is False
+
+
+def _is_explicit_non_hijacking_external_stt(event: Any) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）explicitly declared a non-hijacking turn."""
+    hijacked = read_stt_extra(event, "hijacked")
+    non_hijacking = read_stt_extra(event, "non_hijacking")
+    if hijacked is True or non_hijacking is False:
+        return False
+    if hijacked is False or non_hijacking is True:
+        return True
+    return read_stt_extra(event, "notify_only_sent") is True
+
+
+def _should_skip_hijacked_external_stt(event: Any) -> bool:
+    """Return True ONLY when an external STT plugin genuinely hijacked or replied to this turn.
+
+    Non-hijacking ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）sets
+    ``_hear_voice_should_reply=True`` and ``_hear_voice_cache_only=False`` alongside
+    ``_hear_voice_non_hijacking=True`` and ``_hear_voice_hijacked=False`` (both on success and
+    under ``on_stt_fail="pass"`` / ``"notify_pass"``; ``notify_pass`` may also set
+    ``_hear_voice_notify_only_sent=True`` and fall back to ``event.send()`` which sets
+    ``_has_send_oper=True``). Only legacy un-flagged STT plugins treat ``_has_send_oper`` as a
+    hijack takeover clue. Events without any external STT extra are never treated as an
+    external STT hijack.
+    """
+    if not has_external_stt_extra(event):
+        return False
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    hijacked = read_stt_extra(event, "hijacked")
+    non_hijacking = read_stt_extra(event, "non_hijacking")
+    notify_only_sent = read_stt_extra(event, "notify_only_sent")
+    if hijacked is True or non_hijacking is False:
+        return True
+    if hijacked is False or non_hijacking is True or notify_only_sent is True:
+        is_stopped = getattr(event, "is_stopped", None)
+        if callable(is_stopped) and is_stopped():
+            return True
+        if getter("provider_request") is not None:
+            return True
+        return False
+    if getattr(event, "_has_send_oper", False):
+        return True
+    is_stopped = getattr(event, "is_stopped", None)
+    if callable(is_stopped) and is_stopped():
+        return True
+    if getter("provider_request") is not None:
+        return True
+    return _has_populated_event_result(event)
+
+
 @register(
     PLUGIN_NAME,
     "menglimi",
@@ -175,6 +292,9 @@ def _can_continue_astrbot_core_reply(code):
     PLUGIN_VERSION,
 )
 class PrivateCompanionV2StagingPlugin(Star):
+    PLATFORM_STARTUP_COALESCE_SECONDS = 1.5
+    PLATFORM_BATCH_COALESCE_SECONDS = 0.05
+
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
         self._imports_retired = False
         try:
@@ -213,7 +333,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 logger.warning("[CompanionV2] 启动时已自动修复旧策略字段：%s", repaired)
             # One public facade exposes the body and its seven internal modules.
             # Independent third-party integrations use their documented APIs.
-            self.extension_api = UnifiedCompanionExtensionAPI(self.staging)
+            self.extension_api = UnifiedCompanionExtensionAPI(self.staging, claim=True)
             global _ACTIVE_EXTENSION_API
             _ACTIVE_EXTENSION_API = self.extension_api
             try:
@@ -360,12 +480,90 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._private_followup = manager
         return manager
 
-    def _fold_private_follow_up(self, event, target, event_ref, text):
+    def _core_reply_followup_guard(self):
+        guard = getattr(self, "_core_followup_guard", None)
+        if guard is None:
+            guard = CoreReplyFollowUpGuard()
+            self._core_followup_guard = guard
+        return guard
+
+    def _cleanup_captured_core_followup(self, event, prepared, *, event_ref="", channel="",
+                                        reason="follow_up_captured"):
+        """Release plugin turn state when an admitted event never runs its own core turn."""
+        followups = getattr(self, "_private_followup", None)
+        if followups is not None:
+            followups.finish_event(event)
+        finish_core_reply_tracking(event, log_completion=False)
+        if isinstance(prepared, dict):
+            phase = "completed" if reason == "follow_up_captured" else "failed"
+            self._observe_core_phase(prepared, phase)
+        restore_core_reply_event(event)
+        finish_core_reply_presence(event, force=True)
+        if reason == "follow_up_captured":
+            getter = getattr(event, "get_extra", None)
+            captured = getter("_follow_up_captured") if callable(getter) else None
+            target_run_id = captured.get("target_run_id") if isinstance(captured, Mapping) else None
+            logger.info(
+                "[CompanionV2] 核心追发消息已并入在途轮次，清理本条跟踪状态 "
+                "event_ref=%s channel=%s target_run_id=%s",
+                event_ref or "unknown", channel or "unknown", target_run_id or "-")
+
+    async def _enter_core_reply_followup_guard(self, event, *, event_ref="", channel="", prepared=None):
+        """Serialize media follow-ups and attach cleanup for host follow-up absorption."""
+        def on_turn_done(done_event, done_task):
+            getter = getattr(done_event, "get_extra", None)
+            captured = getter("_follow_up_captured") if callable(getter) else None
+            if captured:
+                self._cleanup_captured_core_followup(
+                    done_event, prepared, event_ref=event_ref, channel=channel,
+                    reason="follow_up_captured")
+                return
+            if done_task.cancelled():
+                self._cleanup_captured_core_followup(
+                    done_event, prepared, event_ref=event_ref, channel=channel,
+                    reason="task_cancelled")
+                return
+            try:
+                failed = done_task.exception() is not None
+            except Exception:
+                failed = False
+            if failed:
+                self._cleanup_captured_core_followup(
+                    done_event, prepared, event_ref=event_ref, channel=channel,
+                    reason="task_failed")
+
+        try:
+            return await self._core_reply_followup_guard().enter(
+                event, event_ref=event_ref, channel=channel, on_turn_done=on_turn_done)
+        except asyncio.CancelledError:
+            self._cleanup_captured_core_followup(
+                event, prepared, event_ref=event_ref, channel=channel, reason="wait_cancelled")
+            raise
+
+    async def _guard_passthrough_core_reply(self, event, *, event_ref="", channel=""):
+        """Protect degraded AstrBot passthrough turns when they will enter core LLM."""
+        if (not getattr(event, "is_at_or_wake_command", False)
+                or getattr(event, "call_llm", False)
+                or getattr(event, "_has_send_oper", False)):
+            return
+        outcome = await self._enter_core_reply_followup_guard(event, event_ref=event_ref, channel=channel)
+        if outcome.get("reason") == "closed":
+            suppress_default_reply(event)
+
+    def _fold_private_follow_up(self, event, target, event_ref, text, *, allow_empty=False):
         """Join a post-debounce message to the first model request when possible."""
         target_key = getattr(target, "target_id", None)
         if not isinstance(target_key, str) or not target_key:
             return False
-        active = self._private_reply_followups().fold(target_key, event, text)
+        active_window = self._private_reply_followups().active_for(target_key)
+        if active_window is None:
+            return False
+        guard = getattr(self, "_core_followup_guard", None)
+        if guard is not None and guard.has_pending_media_barrier(
+                event, owner_event=active_window.event):
+            return False
+        active = self._private_reply_followups().fold(
+            target_key, event, text, allow_empty=allow_empty)
         if active is None:
             return False
         self._suppress_merged_private_event(
@@ -384,24 +582,47 @@ class PrivateCompanionV2StagingPlugin(Star):
         pending, entries = resolved
         if not pending:
             return
+        existing_forwards = get_parsed_forwards(event)
+        merged_forwards = merge_followup_forwards(
+            event, pending, policy=resolve_forward_intake_policy(self.staging))
+        forwards_updated = (merged_forwards is not None and merged_forwards is not existing_forwards)
         extra_text = "\n".join(str(item[1]).strip() for item in pending if str(item[1]).strip())
-        if not extra_text:
+        if not extra_text and not forwards_updated:
             return
-        prompt = getattr(request, "prompt", None)
-        if isinstance(prompt, str) and prompt.strip():
-            request.prompt = prompt.rstrip() + "\n" + extra_text
-        else:
-            request.prompt = extra_text
+        if extra_text:
+            prompt = getattr(request, "prompt", None)
+            if isinstance(prompt, str) and prompt.strip():
+                request.prompt = prompt.rstrip() + "\n" + extra_text
+            else:
+                request.prompt = extra_text
+            if hasattr(request, "retrieval_query"):
+                current_query = getattr(request, "retrieval_query", None)
+                if isinstance(current_query, str) and current_query.strip():
+                    request.retrieval_query = current_query.rstrip() + "\n" + extra_text
+                else:
+                    request.retrieval_query = request.prompt
         prepared = prepared_state.get("prepared") if isinstance(prepared_state, dict) else None
         if isinstance(prepared, dict):
             base = str(prepared.get("text") or "").rstrip()
-            prepared["text"] = (base + "\n" + extra_text).strip() if base else extra_text
+            if forwards_updated:
+                old_summary = format_forwards_for_observation(existing_forwards)
+                if old_summary and base.endswith(old_summary):
+                    base = base[: -len(old_summary)].rstrip()
+                elif old_summary and base == old_summary:
+                    base = ""
+                if extra_text:
+                    base = (base + "\n" + extra_text).strip() if base else extra_text
+                adaptation_enabled = prepared.get("forward_adaptation_enabled", True) is not False
+                prepared["text"] = combine_text_and_forward_summary(
+                    base, merged_forwards, adaptation_enabled=adaptation_enabled)
+            elif extra_text:
+                prepared["text"] = (base + "\n" + extra_text).strip() if base else extra_text
             prepared["debounced_inputs"] = merged_input_sequence(entries)
             prepared["debounced_message_count"] = len(entries)
         logger.info(
             "[CompanionV2] 首轮模型请求前合并私聊后续消息 event_ref=%s count=%d message=%s",
             (prepared or {}).get("event_ref") if isinstance(prepared, dict) else None,
-            len(pending), extra_text[:120])
+            len(pending), (extra_text or "[合并转发聊天记录]")[:120])
 
     def _suppress_merged_private_event(self, event, target, event_ref, *, reason="private_debounce_merged"):
         suppress_default_reply(event)
@@ -479,33 +700,60 @@ class PrivateCompanionV2StagingPlugin(Star):
                 "staging_application_not_running" if app_state != "running" else
                 "staging_target_not_claimed")
 
+    def _platform_loaded_signal(self) -> asyncio.Event:
+        signal = getattr(self, "_platform_loaded_event", None)
+        if signal is None:
+            signal = asyncio.Event()
+            self._platform_loaded_event = signal
+        return signal
+
+    def _platform_loaded_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_platform_loaded_hook_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._platform_loaded_hook_lock = lock
+        return lock
+
     async def initialize(self) -> None:
         if self._session_settings_warm_task is None or self._session_settings_warm_task.done():
             self._session_settings_warm_task = asyncio.create_task(
                 warm_session_settings(), name="companion-v2-session-settings-warmup")
-        # Started here, not after the host is up: the driver polls and no-ops
-        # until a running session exists, so a slow boot cannot lose it.
+        # Start both drivers before host startup; each checks its own readiness.
+        if getattr(self, "_automatic_backup", None) is None:
+            from .astrbot_host.automatic_backup import AutomaticBackup
+            self._automatic_backup = AutomaticBackup(self.staging).start()
         if self._qzone_life_publisher is None:
             from .astrbot_host.qzone_life_publish import QzoneLifePublisher
             self._qzone_life_publisher = QzoneLifePublisher(self.staging).start()
         if self.staging.settings is None or not self.staging.settings.enabled:
             logger.info("[CompanionV2] 共享宿主已加载，等待账号与人格配置")
             return
+        should_wait = getattr(self.staging, "should_wait_for_initial_platform", None)
+        if callable(should_wait) and should_wait():
+            logger.info("[CompanionV2] 等待平台适配器加载完成后再装配共享宿主")
+            self._schedule_host_start(wait_for_platform_seconds=self.PLATFORM_STARTUP_COALESCE_SECONDS)
+            return
         if not await self._try_start_host():
             self._schedule_host_start()
 
     async def _try_start_host(self) -> bool:
+        if getattr(self.staging, "_stopped_by_user", False):
+            return True
         try:
             readiness = self.staging.startup_readiness()
         except Exception as error:
-            self._note_startup_failure("readiness", getattr(error, "code", "startup_readiness_failed"),
-                                       type(error).__name__, str(error))
-            return True
+            code = getattr(error, "code", None) or "startup_readiness_failed"
+            if code == "host_terminated":
+                return True
+            retry = self._retry_startup_failure(code)
+            self._note_startup_failure("readiness", code, type(error).__name__, str(error), retrying=retry)
+            return not retry
         if readiness in ("host_platform_unavailable", "host_account_unavailable"):
             return False
         if readiness is not None:
-            self._note_startup_failure("readiness", readiness)
-            return True
+            retry = self._retry_startup_failure(readiness)
+            self._note_startup_failure("readiness", readiness, retrying=retry)
+            return not retry
 
         initialized_profile = False
         if self.staging.session is None:
@@ -520,7 +768,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             if not loaded.unwrap()["loaded"]:
                 # Account/persona mappings are sufficient to create the shared
                 # installation. The old core-window binding was only a first-run bootstrap.
-                initialized = await self.staging.initialize_profile()
+                initialized = await self.staging.initialize_profile(automatic=True)
                 if initialized.failure is not None:
                     if initialized.failure.code == "host_terminated":
                         return True
@@ -530,9 +778,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                     return not retry
                 initialized_profile = True
 
-        started = await self.staging.start()
+        if getattr(self.staging, "_stopped_by_user", False):
+            return True
+        started = await self.staging.start(automatic=True)
         if started.failure is not None:
-            if started.failure.code == "host_terminated":
+            if started.failure.code in ("host_terminated", "host_manually_stopped"):
                 return True
             retry = self._retry_startup_failure(started.failure.code)
             self._note_startup_failure("start", started.failure.code,
@@ -545,7 +795,9 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @staticmethod
     def _retry_startup_failure(code: str) -> bool:
-        return code in RETRYABLE_HOST_STARTUP_CODES or code.startswith("host_native_lookup_timeout")
+        return (isinstance(code, str)
+                and (code in RETRYABLE_HOST_STARTUP_CODES
+                     or code.startswith("host_native_lookup_timeout")))
 
     def _note_startup_failure(self, stage: str, code: str, error_type: str | None = None,
                               detail: str | None = None, *, retrying: bool = False) -> None:
@@ -558,7 +810,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         self._startup_failure_key = key
         self._startup_failure_at = now
         suffix = "，将自动重试" if retrying else "，请修正配置或重新加载插件"
-        if stage == "load_existing":
+        if code == "host_provider_required":
+            logger.warning(
+                "[CompanionV2] 共享启动模型（model.provider_id）留空且 AstrBot 当前暂无可用的文本 Provider%s "
+                "stage=%s code=%s detail=%s（请确认 AstrBot 已启用文本模型，或在插件配置中指定共享启动模型）",
+                suffix, stage, code, detail or "unavailable")
+        elif stage == "load_existing":
             logger.warning("[CompanionV2] 已固定 profile 加载失败%s code=%s detail=%s",
                            suffix, code, detail or "unavailable")
         elif stage == "initialize":
@@ -568,27 +825,64 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.warning("[CompanionV2] staging profile 自动启动失败%s code=%s detail=%s",
                            suffix, code, detail or "unavailable")
         else:
-            logger.warning("[CompanionV2] 保存的运行档暂不能启动 code=%s error_type=%s detail=%s",
-                           code, error_type or "unknown", detail or "unavailable")
+            logger.warning("[CompanionV2] 保存的运行档暂不能启动%s code=%s error_type=%s detail=%s",
+                           suffix, code, error_type or "unknown", detail or "unavailable")
 
-    def _schedule_host_start(self) -> None:
-        if self.staging._terminated:
+    def _schedule_host_start(self, *, wait_for_platform_seconds: float = 0.0) -> None:
+        if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):
             return
         session = self.staging.session
         if (self.staging._accepting and session is not None
                 and session.application.state == "running"):
-            return
-        task = self._host_start_task
+            try:
+                bridges_current = self.staging.native_bridges_current()
+            except Exception as error:
+                logger.warning("[CompanionV2] 平台桥接状态检查失败 error_type=%s", type(error).__name__)
+                bridges_current = False
+            if bridges_current:
+                return
+            self.staging._accepting = False
+        task = getattr(self, "_host_start_task", None)
         if task is None or task.done():
             self._host_start_task = asyncio.create_task(
-                self._wait_for_host_start(), name="companion:host-startup")
+                self._wait_for_host_start(wait_for_platform_seconds=wait_for_platform_seconds),
+                name="companion:host-startup")
 
-    async def _wait_for_host_start(self) -> None:
+    async def _wait_for_host_start(self, *, wait_for_platform_seconds: float = 0.0) -> None:
         loop = asyncio.get_running_loop()
+        if (wait_for_platform_seconds > 0
+                and not self.staging._terminated
+                and not getattr(self.staging, "_stopped_by_user", False)):
+            should_wait = getattr(self.staging, "should_wait_for_initial_platform", None)
+            all_loaded = getattr(self.staging, "all_configured_platforms_loaded", None)
+            if callable(should_wait) and should_wait():
+                signal = self._platform_loaded_signal()
+                signal.clear()
+                try:
+                    await asyncio.wait_for(signal.wait(), timeout=wait_for_platform_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                batch_window = getattr(self, "PLATFORM_BATCH_COALESCE_SECONDS", 0.05)
+                if (not self.staging._terminated
+                        and not getattr(self.staging, "_stopped_by_user", False)
+                        and batch_window > 0
+                        and callable(all_loaded)
+                        and not all_loaded()):
+                    deadline = loop.time() + batch_window
+                    while loop.time() < deadline and not all_loaded():
+                        signal.clear()
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            await asyncio.wait_for(signal.wait(), timeout=remaining)
+                        except asyncio.TimeoutError:
+                            break
         started_at = loop.time()
         delay = 0.5
         warned = False
         while not self.staging._terminated:
+            generation_before = getattr(self, "_platform_loaded_generation", 0)
             try:
                 finished = await self._try_start_host()
             except asyncio.CancelledError:
@@ -598,6 +892,17 @@ class PrivateCompanionV2StagingPlugin(Star):
                                getattr(error, "code", "startup_failed"), type(error).__name__)
                 return
             if finished:
+                if (getattr(self, "_platform_loaded_generation", 0) != generation_before
+                        and not self.staging._terminated
+                        and not getattr(self.staging, "_stopped_by_user", False)
+                        and self.staging.session is not None):
+                    recover = getattr(self.staging, "recover_accounts", None)
+                    if callable(recover):
+                        await recover()
+                    checker = getattr(self.staging, "native_bridges_current", None)
+                    if callable(checker) and not checker():
+                        self.staging._accepting = False
+                        continue
                 return
             if not warned and loop.time() - started_at >= 30:
                 logger.warning("[CompanionV2] 运行档尚未进入接收状态，恢复任务仍在运行并会自动重试")
@@ -607,7 +912,22 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_platform_loaded()
     async def on_companion_platform_loaded(self) -> None:
-        if self.staging.settings is not None and self.staging.settings.enabled:
+        self._platform_loaded_generation = getattr(self, "_platform_loaded_generation", 0) + 1
+        signal = getattr(self, "_platform_loaded_event", None)
+        if signal is not None:
+            signal.set()
+        if self.staging.settings is None or not self.staging.settings.enabled:
+            return
+        if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):
+            return
+        task = getattr(self, "_host_start_task", None)
+        if task is not None and not task.done():
+            return
+        async with self._platform_loaded_lock():
+            task = getattr(self, "_host_start_task", None)
+            if task is not None and not task.done():
+                return
+            await self.staging.recover_accounts()
             self._schedule_host_start()
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=240000)
@@ -688,6 +1008,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         event_ref = prepared.get("event_ref")
         origin_key = prepared.get("origin_key")
         channel = prepared.get("channel")
+        session = getattr(self.staging, "session", None)
+        connection_callbacks = {}
+        if prepared.get("connection_lease") is not None:
+            connection_callbacks = {
+                "assert_connection_current": lambda: session.assert_connection_current(prepared),
+                "wait_connection_changed": lambda: session.wait_connection_changed(prepared),
+            }
 
         async def authorize_core_send(current):
             return await self.staging.authorize_core_reply(event, target, current)
@@ -697,10 +1024,14 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._record_no_reply(event, "core_reply_send_denied", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, stage="delivery",
                                   turn=event_ref, code=reason)
-            logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
-                           "event_ref=%s code=%s 说明=%s", event_ref, reason,
-                           CORE_REPLY_SEND_DENIAL_HINTS.get(
-                               reason, "发送前复核未通过，这条已生成的回复没有发出"))
+            hint = CORE_REPLY_SEND_DENIAL_HINTS.get(
+                reason, "发送前复核未通过，这条已生成的回复没有发出")
+            if reason in SILENT_SEND_DENIAL_CODES:
+                logger.info("[CompanionV2] 核心回复按撤回静默跳过发送 event_ref=%s code=%s 说明=%s",
+                            event_ref, reason, hint)
+            else:
+                logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
+                               "event_ref=%s code=%s 说明=%s", event_ref, reason, hint)
 
         def observe_core_send(current, text):
             observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
@@ -739,6 +1070,7 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
         return {
+            **connection_callbacks,
             "authorize": authorize_core_send,
             "on_denied": note_core_send_denied,
             "on_sent": observe_core_send,
@@ -793,8 +1125,17 @@ class PrivateCompanionV2StagingPlugin(Star):
                          getattr(competing, "handler_full_name", "unknown"))
             return
         # Ordinary listeners (e.g. prefix-free sign-in) run before intake.
-        # A plugin may answer without stopping propagation; respect that reply.
-        if getattr(event, "_has_send_oper", False):
+        # A plugin may answer without stopping propagation; respect that reply,
+        # unless upstream astrbot_plugin_hear_voice（兼容 _gemini_stt_*）explicitly
+        # declared a non-hijacking turn (e.g. notify_pass).
+        if getattr(event, "_has_send_oper", False) and not _is_explicit_non_hijacking_external_stt(event):
+            return
+        if _is_external_stt_cache_only(event):
+            suppress_default_reply(event)
+            logger.debug("[CompanionV2] 外部 hear_voice/gemini_stt 群语音概率门控设为仅缓存，跳过本轮回复")
+            return
+        if _should_skip_hijacked_external_stt(event):
+            logger.debug("[CompanionV2] 外部 hear_voice/gemini_stt 已接管本轮语音回复，跳过重复受理")
             return
         if not self.staging.claims(event):
             # 不是本插件的目标：这条消息从来没有进入它的预期范围，回复与否都不是
@@ -909,6 +1250,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                                       channel=channel, event_ref=event_ref, stage="admission")
                 return
         if channel == "private":
+            phone_command = await receive_phone_confirmation(self.staging, event, target=target)
+            if phone_command is not None:
+                suppress_default_reply(event)
+                if phone_command.failure is not None:
+                    self._record_no_reply(event, phone_command.failure.code, origin_key=origin_key,
+                                          channel=channel, event_ref=event_ref, stage="command")
+                return
             # 全部重置必须在建批次之前执行并直发回执：窗口重置会取消在途批次。
             try:
                 reset_command = await receive_reset_command(self.staging, event, target=target)
@@ -926,17 +1274,41 @@ class PrivateCompanionV2StagingPlugin(Star):
                 return
         is_calendar_command = (channel == "private"
                                and parse_calendar_command(str(getattr(event, "message_str", "") or "")))
-        plain_text = (PrivateDebounce.private_plain_text(event)
-                      if channel == "private" and not is_calendar_command else None)
+        debounce_input = (private_debounce_input(event)
+                          if channel == "private" and not is_calendar_command else None)
+        plain_text = debounce_input[0] if debounce_input is not None else None
+        event_has_forward = (debounce_input[1] if debounce_input is not None
+                             else event_has_top_level_forwards(event))
+        forward_policy = (resolve_forward_intake_policy(self.staging)
+                          if event_has_forward else None)
         target_key = getattr(target, "target_id", None) if channel == "private" else None
         if (plain_text is not None and isinstance(target_key, str) and target_key
-                and self._fold_private_follow_up(event, target, event_ref, plain_text)):
-            return
+                and self._private_reply_followups().active_for(target_key) is not None):
+            if event_has_forward:
+                await parse_event_forwards(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
+            if self._fold_private_follow_up(
+                    event, target, event_ref, plain_text, allow_empty=event_has_forward):
+                return
         debounce_manager = None
         debounce_pending = None
         if plain_text is not None and isinstance(target_key, str) and target_key:
             debounce_manager = self._private_debounce_manager()
             debounce_pending = debounce_manager.reserve(target_key, event, plain_text)
+        forward_parse_task = None
+        if event_has_forward:
+            if debounce_pending is not None:
+                forward_parse_task = ensure_event_forwards_parsed(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
+            else:
+                await parse_event_forwards(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
         group_debounce_manager = None
         group_pending = None
         group_debounced_entries = None
@@ -996,15 +1368,21 @@ class PrivateCompanionV2StagingPlugin(Star):
                             or candidate.failure.code == "host_group_preflight_failed"):
                         logger.info("[CompanionV2] V2 群回复材料暂不可用，继续 AstrBot 核心处理 event_ref=%s code=%s",
                                     event_ref, candidate.failure.code)
+                        await self._guard_passthrough_core_reply(event, event_ref=event_ref, channel=channel)
                         return
                     suppress_default_reply(event)
-                    logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
-                                   event_ref, candidate.failure.code)
+                    if candidate.failure.code == "host_text_invalid":
+                        logger.debug("[CompanionV2] 群回复候选跳过无正文消息 event_ref=%s code=%s",
+                                     event_ref, candidate.failure.code)
+                    else:
+                        logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
+                                       event_ref, candidate.failure.code)
                     return
                 group_admission = candidate.unwrap()
             except Exception as error:
                 logger.warning("[CompanionV2] 群回复候选检查异常，继续 AstrBot 核心处理 event_ref=%s error_type=%s",
                                event_ref, type(error).__name__)
+                await self._guard_passthrough_core_reply(event, event_ref=event_ref, channel=channel)
                 return
             if not group_admission["admitted"]:
                 suppress_default_reply(event)
@@ -1025,11 +1403,18 @@ class PrivateCompanionV2StagingPlugin(Star):
             reply_enabled = True
             logger.warning("[CompanionV2] 会话回复开关暂不可读，继续核心授权检查 event_ref=%s error_type=%s",
                            event_ref, type(error).__name__)
-        if not reply_enabled:
+        except BaseException:
             if debounce_pending is not None:
                 await debounce_manager.abort(debounce_pending, event=event)
+            raise
+        if not reply_enabled:
+            aborted = True
+            if debounce_pending is not None:
+                aborted = await debounce_manager.abort(debounce_pending, event=event)
                 if debounce_manager.superseded_by_same_event(debounce_pending, event):
                     return
+            if aborted and forward_parse_task is not None and not forward_parse_task.done():
+                forward_parse_task.cancel()
             suppress_default_reply(event)
             self._record_no_reply(event, "session_reply_disabled", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, turn=event_ref)
@@ -1067,48 +1452,92 @@ class PrivateCompanionV2StagingPlugin(Star):
         core_reply_plan = None
         debounced_entries = None
         if debounce_pending is not None:
-            prepare_context = getattr(self.staging, "prepare_core_reply_context", None)
-            context_result = None
-            if callable(prepare_context):
-                try:
-                    context_result = await prepare_context(event, target, group_admission=None)
-                except Exception as error:
-                    logger.warning("[CompanionV2] 私聊防抖上下文读取失败，保留原核心回复 event_ref=%s error_type=%s",
-                                   event_ref, type(error).__name__)
-            if context_result is not None and context_result.failure is None:
-                core_reply_plan = context_result.unwrap()
-                policy = getattr(core_reply_plan, "debounce", None)
-            else:
-                policy = None
-            status = await debounce_manager.configure(debounce_pending, event, policy)
-            if status == "configuring":
-                status = await debounce_manager.wait_for_resolution(debounce_pending, event)
-            if status == "active":
-                status = await debounce_manager.wait_for_quiet(debounce_pending, event)
-                if status == "ready":
-                    debounced_entries = await debounce_manager.finish(debounce_pending, event)
-                    if debounced_entries is None:
-                        status = "superseded"
-                if status == "ready" and debounced_entries:
-                    merged_text = debounce_manager.combined(debounce_pending, debounced_entries)
-                    if not PrivateDebounce.replace_private_plain_text(event, merged_text):
-                        suppress_default_reply(event)
-                        self._record_no_reply(event, "private_debounce_merge_failed", origin_key=origin_key,
-                                              channel="private", event_ref=event_ref, stage="intake",
-                                              turn=event_ref)
-                        logger.warning("[CompanionV2] 私聊防抖合并失败 event_ref=%s", event_ref)
-                        return
-                    if core_reply_plan is not None:
-                        core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, merged_text)
-            if status == "superseded":
-                self._suppress_debounced_private_event(
-                    event, target, event_ref, debounce_manager, debounce_pending)
-                return
-            if status in {"closed", "aborted", "finished"}:
-                self._suppress_debounced_private_event(
-                    event, target, event_ref, debounce_manager, debounce_pending,
-                    reason="private_debounce_cancelled")
-                return
+            try:
+                prepare_context = getattr(self.staging, "prepare_core_reply_context", None)
+                context_result = None
+                if callable(prepare_context):
+                    try:
+                        context_result = await prepare_context(event, target, group_admission=None)
+                    except Exception as error:
+                        logger.warning("[CompanionV2] 私聊防抖上下文读取失败，保留原核心回复 event_ref=%s error_type=%s",
+                                       event_ref, type(error).__name__)
+                if context_result is not None and context_result.failure is None:
+                    core_reply_plan = context_result.unwrap()
+                    policy = getattr(core_reply_plan, "debounce", None)
+                else:
+                    policy = None
+                burst_has_forwards = event_has_forward or any(
+                    event_has_top_level_forwards(item[0])
+                    for item in debounce_pending.pending.entries
+                )
+                effective_policy = forward_burst_debounce_policy(
+                    policy, has_forwards=burst_has_forwards)
+                status = await debounce_manager.configure(debounce_pending, event, effective_policy)
+                if status == "configuring":
+                    status = await debounce_manager.wait_for_resolution(debounce_pending, event)
+                if status == "active":
+                    status = await debounce_manager.wait_for_quiet(debounce_pending, event)
+                    if status == "ready":
+                        debounced_entries = await debounce_manager.finish(debounce_pending, event)
+                        if debounced_entries is None:
+                            status = "superseded"
+                    if status == "ready" and debounced_entries:
+                        merged_text = debounce_manager.combined(debounce_pending, debounced_entries)
+                        aggregated_forwards = await coalesce_debounced_forwards(
+                            event, debounced_entries,
+                            policy=forward_policy or resolve_forward_intake_policy(self.staging),
+                            native_context=getattr(self.staging, "context", None),
+                        )
+                        if not apply_debounced_private_merge(
+                                event, merged_text, has_forwards=aggregated_forwards is not None):
+                            suppress_default_reply(event)
+                            self._record_no_reply(event, "private_debounce_merge_failed", origin_key=origin_key,
+                                                  channel="private", event_ref=event_ref, stage="intake",
+                                                  turn=event_ref)
+                            logger.warning("[CompanionV2] 私聊防抖合并失败 event_ref=%s", event_ref)
+                            return
+                        if core_reply_plan is not None:
+                            plan_text = combine_text_and_forward_summary(merged_text, aggregated_forwards)
+                            core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, plan_text)
+                if status == "bypass" and forward_parse_task is not None:
+                    parsed = await await_event_forwards_parsed(
+                        event, policy=forward_policy,
+                        native_context=getattr(self.staging, "context", None),
+                    )
+                    if core_reply_plan is not None and parsed is not None:
+                        plan_text = combine_text_and_forward_summary(plain_text or "", parsed)
+                        core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, plan_text)
+                if status == "superseded":
+                    if forward_parse_task is not None:
+                        await await_event_forwards_parsed(
+                            event, policy=forward_policy,
+                            native_context=getattr(self.staging, "context", None),
+                        )
+                    self._suppress_debounced_private_event(
+                        event, target, event_ref, debounce_manager, debounce_pending)
+                    return
+                if status == "finished":
+                    if forward_parse_task is not None:
+                        await await_event_forwards_parsed(
+                            event, policy=forward_policy,
+                            native_context=getattr(self.staging, "context", None),
+                        )
+                    self._suppress_debounced_private_event(
+                        event, target, event_ref, debounce_manager, debounce_pending,
+                        reason="private_debounce_cancelled")
+                    return
+                if status in {"closed", "aborted"}:
+                    if forward_parse_task is not None and not forward_parse_task.done():
+                        forward_parse_task.cancel()
+                    self._suppress_debounced_private_event(
+                        event, target, event_ref, debounce_manager, debounce_pending,
+                        reason="private_debounce_cancelled")
+                    return
+            except BaseException:
+                aborted = await debounce_manager.abort(debounce_pending, event=event)
+                if aborted and forward_parse_task is not None and not forward_parse_task.done():
+                    forward_parse_task.cancel()
+                raise
         if (channel == "group" and group_admission is not None
                 and group_admission.get("reason") != "repeat"):
             debounce_log.wake(
@@ -1124,12 +1553,14 @@ class PrivateCompanionV2StagingPlugin(Star):
         except Exception as error:
             logger.warning("[CompanionV2] V2 回复材料准备失败，继续 AstrBot 核心回复 event_ref=%s error_type=%s",
                          event_ref, type(error).__name__)
+            await self._guard_passthrough_core_reply(event, event_ref=event_ref, channel=channel)
             return
         if admission.failure is not None:
             failure = admission.failure
             if _can_continue_astrbot_core_reply(failure.code):
                 logger.warning("[CompanionV2] V2 回复材料暂不可用，继续 AstrBot 核心回复 event_ref=%s code=%s",
                                event_ref, failure.code)
+                await self._guard_passthrough_core_reply(event, event_ref=event_ref, channel=channel)
                 return
             suppress_default_reply(event)
             if failure.code == "private_access_dialogue_denied":
@@ -1237,16 +1668,62 @@ class PrivateCompanionV2StagingPlugin(Star):
                             event_ref, prepared.get("turn_id"), action, closing.get("reason"))
             return
         prepare_core_reply_streaming_boundary(event)
+        if (channel == "group"
+                and (prepared.get("group_trigger") or {}).get("bare_mention")
+                and not str(getattr(event, "message_str", "") or "").strip()):
+            # AstrBot's aiocqhttp adapter strips the leading self-@ from
+            # message_str; keep event.message_str clean via an explicit
+            # conversation-bound request so _apply_kb() never embeds
+            # "<提及自己>", falling back only if no session conversation can be bound.
+            if not await prepare_bare_mention_request(
+                    event, native_context=getattr(self.staging, "context", None)):
+                event.message_str = SELF_MENTION
+                if getattr(event, "message_obj", None) is not None:
+                    event.message_obj.message_str = SELF_MENTION
+        if get_parsed_forwards(event) is not None:
+            if (not str(getattr(event, "message_str", "") or "").strip()
+                    and not event_has_media_or_reply(event)):
+                if not await prepare_forward_only_request(
+                        event, native_context=getattr(self.staging, "context", None)):
+                    event.message_str = "[合并转发聊天记录]"
+                    if getattr(event, "message_obj", None) is not None:
+                        event.message_obj.message_str = "[合并转发聊天记录]"
+            claim_core_reply_forward_injection(event)
+        guard_outcome = await self._enter_core_reply_followup_guard(
+            event, event_ref=event_ref, channel=channel, prepared=prepared)
+        if guard_outcome.get("reason") in {"stopped", "closed"}:
+            if guard_outcome.get("reason") == "closed":
+                suppress_default_reply(event)
+            cleanup_reason = (
+                "wait_stopped" if guard_outcome.get("reason") == "stopped" else "wait_closed"
+            )
+            self._cleanup_captured_core_followup(
+                event, prepared, event_ref=event_ref, channel=channel, reason=cleanup_reason)
+            return
         event.is_wake = True
         event.is_at_or_wake_command = True
-        if channel == "private":
+        if (channel == "private" and not guard_outcome.get("had_active_turn")
+                and event_will_enter_astrbot_llm(event)
+                and (plain_text is not None or bool(str(prepared.get("text") or "").strip()))):
             entries = (debounced_entries if debounced_entries is not None else
                        ((event, str(prepared.get("text") or event.message_str or ""),
                          getattr(event, "created_at", None)),))
+            if not any(len(entry) >= 2 and str(entry[1]).strip() for entry in entries):
+                entries = ((event, str(prepared.get("text") or event.message_str or "[合并转发聊天记录]"),
+                            getattr(event, "created_at", None)),)
             self._private_reply_followups().start(
                 target_key or getattr(target, "target_id", ""), event, event_ref, entries)
         logger.info("[CompanionV2] 交由 AstrBot 核心回复管线 event_ref=%s channel=%s",
                     event_ref, channel)
+
+    def _video_fusion(self):
+        fusion = getattr(self, "_video_fusion_service", None)
+        if fusion is None:
+            from .astrbot_host.video.fusion import VideoFusionService
+
+            fusion = VideoFusionService()
+            self._video_fusion_service = fusion
+        return fusion
 
     async def _route_core_video_to_image_provider(self, event):
         from .astrbot_host.core_reply_perception import event_has_video
@@ -1259,12 +1736,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         scope = getattr(context, "scope", None)
         if getattr(getattr(scope, "kind", None), "value", None) not in ("private", "group"):
             return
-        if not event_has_video(event) and not peek(key_from_context(context)):
-            return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
         if settings.get("video_understanding_enabled") is not True or not media_scope_enabled(
                 settings, "video_understanding", scope):
+            return
+        include_quoted = bool(settings.get("video_understanding_quoted_enabled", True))
+        if not event_has_video(event, include_quoted=include_quoted) and not peek(key_from_context(context)):
             return
         native = getattr(self.staging, "context", None)
         if native is None:
@@ -1274,7 +1752,16 @@ class PrivateCompanionV2StagingPlugin(Star):
         config_getter = getattr(native, "get_config", None)
         if not all(callable(method) for method in (getter, all_providers, config_getter)):
             return
-        from astrbot.core.astr_main_agent import _provider_supports_modality
+        try:
+            from astrbot.core.astr_main_agent import _provider_supports_modality
+        except ModuleNotFoundError as error:
+            if error.name != "astrbot.core.astr_main_agent":
+                raise
+
+            def _provider_supports_modality(provider, modality):
+                config = getattr(provider, "provider_config", None)
+                modalities = config.get("modalities") if isinstance(config, Mapping) else None
+                return not modalities or isinstance(modalities, list) and modality in modalities
 
         selected = event.get_extra("selected_provider")
         current = getter(selected) if isinstance(selected, str) and selected else None
@@ -1414,6 +1901,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         with measure_core_preparation(event, "prompt_injection", now=self.staging.now):
             inject_core_reply_perception_policy(event, req)
             inject_core_reply_prompt(event, req)
+            inject_core_reply_forwards(event, req, prepared=prepared)
         mark_core_reply_inflight(event)
         application = getattr(getattr(self.staging, "session", None), "application", None)
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
@@ -1469,30 +1957,32 @@ class PrivateCompanionV2StagingPlugin(Star):
                     url=url, id=f"companion-video-frame:{video.descriptor.position}:{descriptor.index}"
                 )).mark_as_temp())
 
+    @staticmethod
+    async def _call_video_loader_with_budget(loader, target, *, maximum_bytes: int):
+        """Pass ``maximum_bytes`` on the first call; fall back only for 1-arg test stubs."""
+        try:
+            return await loader(target, maximum_bytes=maximum_bytes)
+        except TypeError as error:
+            if "maximum_bytes" not in str(error) and "unexpected keyword" not in str(error):
+                raise
+            return await loader(target)
+
     async def _attach_core_reply_video_material(self, event, prepared, request, originals,
-                                                application, context, settings):
-        """Try native MP4 understanding first, then use sampled frames per failed video."""
+                                                application, context, settings, *,
+                                                question="", fetch_errors=()):
+        """Try visual video understanding (native Gemini / OpenAI relay + compression), then sample frames on failure."""
+        from pathlib import Path
         from astrbot.core.agent.message import TextPart
         from companion_v2.conversation.media.models import MAX_TURN_BYTES, MAX_TURN_FRAMES
-        from companion_v2.conversation.media.video.models import MAX_TURN_VIDEO_MS, MAX_VIDEOS
+        from companion_v2.conversation.media.video.models import MAX_TURN_VIDEO_MS, MAX_VIDEOS, MAX_VIDEO_BYTES
+        from .astrbot_host.core_reply_perception import neutralize_video_placeholder
         from .astrbot_host.video.container import inspect_container
         from .astrbot_host.video.core_understanding import (
             select_native_video_routes, summarize_original_video)
         from .astrbot_host.video.loader import decode_video
 
         parts = getattr(request, "extra_user_content_parts", None)
-        if not isinstance(parts, list) or not originals or len(originals) > MAX_VIDEOS:
-            return
-        try:
-            movies = await asyncio.gather(*(asyncio.to_thread(inspect_container, content)
-                                            for _position, content in originals))
-        except Exception as error:
-            logger.warning("[CompanionV2] 原视频校验失败 event_ref=%s code=%s",
-                           prepared.get("event_ref"), getattr(error, "code", type(error).__name__))
-            return
-        if (sum(movie.duration_ms for movie in movies) > MAX_TURN_VIDEO_MS
-                or sum(len(content) for _position, content in originals) > MAX_TURN_BYTES):
-            logger.warning("[CompanionV2] 视频输入超过本轮预算 event_ref=%s", prepared.get("event_ref"))
+        if not isinstance(parts, list) or (not originals and not fetch_errors) or len(originals) > MAX_VIDEOS:
             return
 
         routes = ()
@@ -1503,64 +1993,137 @@ class PrivateCompanionV2StagingPlugin(Star):
                     event, self.staging.now())
             except Exception as error:
                 logger.warning("[CompanionV2] 原生视频路由暂不可用 error_type=%s", type(error).__name__)
+
+        fusion = self._video_fusion()
         staged = []
-        fallback_frames = []
+        pending_frame_videos = []
+        fallback_source_bytes = 0
         native_count = 0
-        for number, (position, content) in enumerate(originals, 1):
-            deadline = time.monotonic() + settings.get("video_understanding_wait_seconds", 45)
-            native_succeeded = False
-            for provider, model in routes:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
+
+        for number, entry in enumerate(originals, 1):
+            if len(entry) == 2:
+                position, content = entry
+                suffix, placeholder_obj = ".mp4", None
+            else:
+                position, content, suffix, placeholder_obj = entry
+            ext = (Path(f"clip{suffix}").suffix or ".mp4").lower()
+            if ext == ".ts":
+                continue
+
+            outcome = await fusion.analyze_video(
+                content,
+                suffix=ext,
+                routes=routes,
+                settings=settings,
+                question=question,
+                summarize_fn=summarize_original_video,
+            )
+            if outcome.status == "summary":
+                staged.append(TextPart(text=(
+                    f"<companion_video_native_summary>视频 {number} 的原视频理解转述"
+                    "（模型直接读取整段视频，转述可能有误差；据此回应，不自行补造细节）：\n"
+                    f"{outcome.text}\n</companion_video_native_summary>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频内容已由陪伴理解服务完成转述（文件名 {label}），请直接参考下方转述，无需再次读取原文件。]",
+                    )
+                native_count += 1
+                continue
+
+            if outcome.status == "rejected":
+                staged.append(TextPart(text=(
+                    f"<companion_video_notice>视频 {number} 未处理：{outcome.error_reason}</companion_video_notice>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 超出配置限制未发送：{outcome.error_reason}]",
+                    )
+                continue
+
+            decoded_video = None
+            candidate = outcome.prepared_bytes or content
+            if 0 < len(candidate) <= MAX_VIDEO_BYTES:
                 try:
-                    text = await summarize_original_video(content, provider, model,
-                        {**settings, "video_understanding_wait_seconds": remaining})
-                    staged.append(TextPart(text=(
-                        f"<companion_video_native_summary>视频 {number} 的原视频理解转述"
-                        "（模型直接读取整段视频，转述可能有误差；据此回应，不自行补造细节）：\n"
-                        f"{text}\n</companion_video_native_summary>"
-                    )).mark_as_temp())
-                    native_count += 1
-                    native_succeeded = True
-                    break
+                    movie = await asyncio.to_thread(inspect_container, candidate)
+                    if getattr(movie, "duration_ms", 0) <= MAX_TURN_VIDEO_MS:
+                        decoded_video = await decode_video(candidate, position)
+                        fallback_source_bytes += len(candidate)
                 except Exception as error:
-                    logger.warning("[CompanionV2] 原生视频理解失败 event_ref=%s position=%s model=%s code=%s",
-                                   prepared.get("event_ref"), position, model,
+                    logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
+                                   prepared.get("event_ref"), position,
                                    getattr(error, "code", type(error).__name__))
-            if native_succeeded:
+            if decoded_video is not None:
+                # Defer appending frame parts and neutralizing placeholders until
+                # after turn frame/byte budget enforcement so evicted frames never
+                # leave misleading "已提取关键帧" placeholders or orphan captions.
+                pending_frame_videos.append((number, decoded_video, placeholder_obj))
                 continue
-            try:
-                video = await decode_video(content, position)
-            except Exception as error:
-                logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
-                               prepared.get("event_ref"), position,
-                               getattr(error, "code", type(error).__name__))
-                continue
-            fallback_frames.extend(video.frames)
-            self._append_core_reply_video_frames(staged, (video,), start_number=number)
-        if (sum(len(content) for _position, content in originals)
-                + sum(len(frame.content) for frame in fallback_frames) > MAX_TURN_BYTES
-                or len(fallback_frames) > MAX_TURN_FRAMES):
+
+            reason = outcome.error_reason or "视频无法读取或抽帧。"
+            staged.append(TextPart(text=(
+                f"<companion_video_notice>视频 {number} 理解降级：{reason}</companion_video_notice>"
+            )).mark_as_temp())
+            if placeholder_obj is not None:
+                label = placeholder_obj.name or f"视频{number}"
+                neutralize_video_placeholder(
+                    placeholder_obj.part,
+                    f"[视频 {label} 理解失败（{reason}），切勿猜测或编造视频内容。]",
+                )
+
+        for index, placeholder_obj, error_reason in fetch_errors:
+            label = (getattr(placeholder_obj, "name", "") if placeholder_obj is not None else "") or f"视频{index}"
+            staged.append(TextPart(text=(
+                f"<companion_video_notice>视频 {label} 获取失败：{error_reason}</companion_video_notice>"
+            )).mark_as_temp())
+            if placeholder_obj is not None:
+                neutralize_video_placeholder(
+                    placeholder_obj.part,
+                    f"[视频 {label} 暂无法读取（{error_reason}），请如实告知对方。]",
+                )
+
+        total_frame_count = sum(len(video.frames) for _num, video, _ph in pending_frame_videos)
+        total_frame_bytes = fallback_source_bytes + sum(
+            len(frame.content)
+            for _num, video, _ph in pending_frame_videos
+            for frame in video.frames
+        )
+        attached_frame_count = 0
+        if pending_frame_videos and (
+                total_frame_bytes > MAX_TURN_BYTES or total_frame_count > MAX_TURN_FRAMES):
             logger.warning("[CompanionV2] 视频抽帧超过本轮预算 event_ref=%s", prepared.get("event_ref"))
-            return
-        parts.extend(staged)
+            for number, _video, placeholder_obj in pending_frame_videos:
+                staged.append(TextPart(text=(
+                    f"<companion_video_notice>视频 {number} 理解降级：视频抽帧超出本轮上下文预算，未附带画面帧。</companion_video_notice>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 抽帧超出本轮预算未能提供画面，切勿猜测或编造视频内容。]",
+                    )
+        else:
+            for number, video, placeholder_obj in pending_frame_videos:
+                self._append_core_reply_video_frames(staged, (video,), start_number=number)
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 已由陪伴提取关键帧（共 {len(video.frames)} 帧），请直接参考画面帧。]",
+                    )
+            attached_frame_count = total_frame_count
+
         if staged:
+            parts.extend(staged)
             logger.info("[CompanionV2] 视频已送入核心回复 event_ref=%s native=%s sampled_frames=%s",
-                        prepared.get("event_ref"), native_count, len(fallback_frames))
+                        prepared.get("event_ref"), native_count, attached_frame_count)
 
     async def _attach_core_reply_videos(self, prepared, request, *, event=None):
-        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。
-
-        消息是独立事件：用户先裸发一条视频、再单独发一条 @ 时，第二轮事件里没有
-        任何 Video 组件，核心既写不出占位符也扫不到视频。位置在
-        ``capture_text_only`` 把它折成「[视频不可用]」之前就存进了进程内缓存
-        （``astrbot_host/core_reply_video_sources.py``），这里按**既有**开关决定
-        要不要用它，不新增任何配置键。
-
-        一次性语义：位置在任何判断之前就被取出（``take`` 是弹出），所以无论这一轮
-        最终有没有挂上，下一轮都不会再拿同一条视频试第二次。
-        """
+        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。"""
         from .astrbot_host.core_reply_video_sources import key_from_context, take
         state = prepared if isinstance(prepared, Mapping) else {}
         context = state.get("context")
@@ -1570,9 +2133,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         locators = take(key_from_context(context))
         if not locators:
             return
-        from .astrbot_host.core_reply_perception import video_request_state
-        # audio_url 里的 MP4 会被 AstrBot 当音频预处理；已补挂的原生转述或抽帧才可跳过。
-        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled"):
+        from .astrbot_host.core_reply_perception import extract_video_question, video_request_state
+        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled", "external_summary"):
             return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
@@ -1582,35 +2144,42 @@ class PrivateCompanionV2StagingPlugin(Star):
         if not media_scope_enabled(settings, "video_understanding", scope):
             return
         from companion_v2.conversation.media.video.models import MAX_VIDEOS
+        from .astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
         from .astrbot_host.video.loader import fetch_native_video_bytes
+        from .astrbot_host.video.openai_compat_video import sanitize_video_error
         originals = []
-        for locator in locators[:MAX_VIDEOS]:
+        fetch_errors = []
+        for idx, locator in enumerate(locators[:MAX_VIDEOS], 1):
             try:
-                originals.append((locator.position, await fetch_native_video_bytes(locator)))
+                raw = await self._call_video_loader_with_budget(
+                    fetch_native_video_bytes,
+                    locator,
+                    maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+                )
+                originals.append((locator.position, raw, ".mp4", None))
             except Exception as error:
-                # 位置过期、下载失败、解码超时、超出体积预算：这一轮安静地少一段
-                # 视频，文字回复照常进行。
                 logger.warning("[CompanionV2] 群聊视频补挂跳过 position=%s code=%s",
                                getattr(locator, "position", None),
                                getattr(error, "code", type(error).__name__))
-                return
+                fetch_errors.append((idx, None, sanitize_video_error(error)))
+        question = extract_video_question(event, request, state)
         await self._attach_core_reply_video_material(event, state, request, originals,
-                                                     application, context, settings)
+                                                     application, context, settings,
+                                                     question=question, fetch_errors=fetch_errors)
 
     async def _attach_core_reply_current_videos(self, event, request):
-        """Supply this event's host-resolved video to the core chat request."""
+        """Supply current or quoted host-resolved / remote ref videos to the core chat request."""
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         prepared = state.get("prepared") if isinstance(state, dict) else None
         context = prepared.get("context") if isinstance(prepared, Mapping) else None
         scope = getattr(context, "scope", None)
         if getattr(getattr(scope, "kind", None), "value", None) not in ("private", "group"):
             return
-        from .astrbot_host.core_reply_perception import video_placeholder_paths, video_request_state
+        from .astrbot_host.core_reply_perception import (
+            extract_video_question, neutralize_video_placeholder,
+            video_placeholders, video_request_state)
 
-        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled"):
-            return
-        paths = video_placeholder_paths(request)
-        if not paths:
+        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled", "external_summary"):
             return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
@@ -1620,20 +2189,49 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         if not media_scope_enabled(settings, "video_understanding", scope):
             return
+        include_quoted = bool(settings.get("video_understanding_quoted_enabled", True))
+        placeholders = video_placeholders(request, include_quoted=include_quoted)
+        if not placeholders:
+            return
+        from pathlib import Path
+        from urllib.parse import urlparse
         from companion_v2.conversation.media.video.models import MAX_VIDEOS
-        from .astrbot_host.video.loader import read_host_resolved_video_bytes
+        from .astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
+        from .astrbot_host.video.loader import (
+            fetch_placeholder_ref_video_bytes, read_host_resolved_video_bytes)
+        from .astrbot_host.video.openai_compat_video import sanitize_video_error
 
         originals = []
-        for position, path in enumerate(paths[:MAX_VIDEOS]):
+        fetch_errors = []
+        for position, item in enumerate(placeholders[:MAX_VIDEOS]):
+            parsed_name = item.name or (urlparse(item.value).path if "://" in item.value else item.value)
+            suffix = (Path(parsed_name).suffix or ".mp4").lower()
             try:
-                originals.append((position, await read_host_resolved_video_bytes(path)))
+                if item.location == "path":
+                    raw = await self._call_video_loader_with_budget(
+                        read_host_resolved_video_bytes,
+                        item.value,
+                        maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+                    )
+                else:
+                    raw = await fetch_placeholder_ref_video_bytes(
+                        item.value, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
+                originals.append((position, raw, suffix, item))
             except Exception as error:
                 logger.warning("[CompanionV2] 当前视频读取失败 event_ref=%s position=%s code=%s",
                                prepared.get("event_ref"), position,
                                getattr(error, "code", type(error).__name__))
-                return
+                fetch_errors.append((position + 1, item, sanitize_video_error(error)))
+        for index, placeholder_obj in enumerate(placeholders[MAX_VIDEOS:], MAX_VIDEOS + 1):
+            label = placeholder_obj.name or f"视频{index}"
+            neutralize_video_placeholder(
+                placeholder_obj.part,
+                f"[视频 {label} 超出单轮理解数量上限（最多 {MAX_VIDEOS} 个），已跳过读取，请勿自行抓取外部链接。]",
+            )
+        question = extract_video_question(event, request, prepared)
         await self._attach_core_reply_video_material(event, prepared, request, originals,
-                                                     application, context, settings)
+                                                     application, context, settings,
+                                                     question=question, fetch_errors=fetch_errors)
 
     def _video_understanding_settings(self, application, context):
         """读这个窗口的媒体理解设置；读不到就返回 {}（等于本轮不挂）。
@@ -1672,6 +2270,9 @@ class PrivateCompanionV2StagingPlugin(Star):
         # declared. Installed last so it sees a round before the dispatch observer.
         install_core_reply_tool_guard(event, run_context)
         observe_core_agent_begin(event, run_context)
+        followup_guard = getattr(self, "_core_followup_guard", None)
+        if followup_guard is not None:
+            followup_guard.mark_agent_begin(event)
 
     @filter.on_agent_done()
     async def observe_companion_core_agent_done(self, event: AstrMessageEvent, run_context, response):
@@ -1688,6 +2289,9 @@ class PrivateCompanionV2StagingPlugin(Star):
         # Empty/error results can end the runner without a final send hook.
         # A subsequent native delivery reopens the observation phase itself.
         finish_core_reply_tracking(event, log_completion=False)
+        followup_guard = getattr(self, "_core_followup_guard", None)
+        if followup_guard is not None:
+            followup_guard.finish_turn(event)
 
     @filter.on_using_llm_tool()
     async def observe_companion_core_tool_begin(self, event: AstrMessageEvent, tool, tool_args):
@@ -1739,6 +2343,9 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.after_message_sent(priority=1000000)
     async def observe_companion_core_reply_sent(self, event: AstrMessageEvent):
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
+        followup_guard = getattr(self, "_core_followup_guard", None)
+        if followup_guard is not None:
+            followup_guard.finish_turn(event)
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
         await close_core_reply_turn(event)
@@ -1808,6 +2415,41 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
+        prepare_core_result_decoration(event)
+
+    @filter.on_decorating_result(priority=-1000001)
+    async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):
+        """Check the complete final result before AstrBot splits or speaks it."""
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        result = event.get_result()
+        if (not isinstance(state, dict) or not state.get("delivery_guard_active")
+                or getattr(getattr(result, "result_content_type", None), "name", None) != "LLM_RESULT"
+                or not getattr(result, "chain", None)):
+            return
+        get_config = getattr(getattr(self, "context", None), "get_config", None)
+        if not callable(get_config):
+            return
+        config = get_config(event.unified_msg_origin)
+        settings = config.get("platform_settings") if isinstance(config, Mapping) else None
+        if not isinstance(settings, Mapping):
+            return
+        if (config.get("t2i") or getattr(result, "use_t2i_", False)
+                or settings.get("reply_prefix") or settings.get("reply_with_quote")
+                or settings.get("reply_with_mention")):
+            return
+        if event.get_platform_name() == "aiocqhttp":
+            try:
+                if len(result.get_plain_text()) > int(settings["forward_threshold"]):
+                    return
+            except (KeyError, TypeError, ValueError):
+                return
+        from astrbot.core.message.message_event_result import MessageChain
+        from .astrbot_host.core_reply_voice import capture_core_voice_message
+        from .astrbot_host.core_reply_idempotency import should_drop_native_tool_response
+
+        visible = capture_core_voice_message(event, MessageChain(chain=list(result.chain)))
+        if should_drop_native_tool_response(event, visible):
+            result.chain.clear()
 
     def _observe_session(self, event: AstrMessageEvent) -> None:
         try:
@@ -1881,6 +2523,12 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await group_debounce_manager.close()
             except Exception as error:
                 logger.warning("[CompanionV2] 群聊防抖停机清理失败 error_type=%s", type(error).__name__)
+        followup_guard = getattr(self, "_core_followup_guard", None)
+        if followup_guard is not None:
+            try:
+                followup_guard.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 核心追发媒体保护停机清理失败 error_type=%s", type(error).__name__)
         settings_task = getattr(self, "_session_settings_warm_task", None)
         self._session_settings_warm_task = None
         if settings_task is not None and not settings_task.done():
@@ -1896,6 +2544,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await qzone_publisher.close()
             except Exception as error:
                 logger.warning("[CompanionV2] 生活说说停机清理失败 error_type=%s", type(error).__name__)
+        video_fusion = getattr(self, "_video_fusion_service", None)
+        self._video_fusion_service = None
+        if video_fusion is not None:
+            try:
+                video_fusion.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 视频通道停机清理失败 error_type=%s", type(error).__name__)
         startup_task = getattr(self, "_host_start_task", None)
         self._host_start_task = None
         if startup_task is not None and not startup_task.done():
@@ -1904,16 +2559,45 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await startup_task
             except asyncio.CancelledError:
                 pass
+        automatic_backup = getattr(self, "_automatic_backup", None)
+        self._automatic_backup = None
+        if automatic_backup is not None:
+            try:
+                await automatic_backup.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 自动滚动备份停机清理失败 error_type=%s", type(error).__name__)
         retire_reset_marker = getattr(self, "_retire_context_reset_marker", None)
         if retire_reset_marker is not None:
             retire_reset_marker()
             self._retire_context_reset_marker = None
+        setup_api = (getattr(self.staging, "_setup_api", None)
+                     or getattr(getattr(self.staging, "web_api", None), "setup", None))
+        if setup_api is not None and callable(getattr(setup_api, "aclose", None)):
+            try:
+                await setup_api.aclose()
+            except Exception as error:
+                logger.warning("[CompanionV2] 设置测试任务停机清理失败 error_type=%s", type(error).__name__)
         try:
-            await self.staging.terminate()
-            from .astrbot_host.laya_client import cancel_laya_warmup
-            await cancel_laya_warmup()
-            logger.info("[CompanionV2] 共享宿主已停止" if self.staging.runtime is None
-                        else "[CompanionV2] 共享宿主正在收尾")
+            try:
+                await self.staging.terminate()
+                logger.info("[CompanionV2] 共享宿主已停止" if self.staging.runtime is None
+                            else "[CompanionV2] 共享宿主正在收尾")
+            finally:
+                try:
+                    from .astrbot_host.huawei_health.service import close_all_huawei_health_services
+                    await close_all_huawei_health_services()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 华为健康服务停机清理失败 error_type=%s", type(error).__name__)
+                try:
+                    from .astrbot_host.laya_client import shutdown_laya_resources
+                    await shutdown_laya_resources()
+                except Exception as error:
+                    logger.warning("[CompanionV2] Laya 资源停机清理失败 error_type=%s", type(error).__name__)
+                try:
+                    from .astrbot_host.service_balance_script import shutdown_balance_script_workers
+                    shutdown_balance_script_workers()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 余额脚本线程池停机清理失败 error_type=%s", type(error).__name__)
         finally:
             global _ACTIVE_EXTENSION_API
             if _ACTIVE_EXTENSION_API is getattr(self, "extension_api", None):

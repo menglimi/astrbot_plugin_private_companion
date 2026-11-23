@@ -154,6 +154,7 @@ class HostSettings:
     streaming: bool = False
     segmentation: SegmentationPolicy = SegmentationPolicy()
     voice_reply_enabled: bool = False
+    voice_singsing_enabled: bool = False
     voice_reply_policy: VoiceReplyPolicy = VoiceReplyPolicy()
     additional_providers: tuple[TextProviderSettings, ...] = ()
     fallback_provider_id: str = ""
@@ -239,8 +240,9 @@ class HostSettings:
             streaming=_boolean(model.get("streaming", False)),
             segmentation=segmentation,
             voice_reply_enabled=_boolean(voice_section.get("enabled", False)),
+            voice_singsing_enabled=_boolean(voice_section.get("singsing_enabled", False)),
             voice_reply_policy=voice_policy,
-            tariff=UsageTariff(
+            tariff=(lambda inp, cached, out: UsageTariff(inp, cached, out, configured=any((inp, cached, out))))(
                 _integer(model.get("input_microusd_per_million", 0), minimum=0, maximum=10**12),
                 _integer(model.get("cached_input_microusd_per_million", 0), minimum=0, maximum=10**12),
                 _integer(model.get("output_microusd_per_million", 0), minimum=0, maximum=10**12),

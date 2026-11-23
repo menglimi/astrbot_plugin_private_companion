@@ -29,6 +29,7 @@ an event and delegates.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from companion_v2.execution.models import TaskError
 
@@ -151,6 +152,20 @@ def event_identity(event: object) -> dict[str, str] | None:
             "participant_id": participant_id}
 
 
+_LEADING_MENTION = re.compile(
+    r"^\s*(?:\[At:[^\]]*\]|\[CQ:at,[^\]]*\]|<@!?[^>]+>)\s*",
+    re.IGNORECASE,
+)
+
+
+def _without_leading_mentions(value: str) -> str:
+    previous = None
+    while value != previous:
+        previous = value
+        value = _LEADING_MENTION.sub("", value, count=1)
+    return value
+
+
 def message_text(event: object) -> str:
     """The plain text of a message event, tolerating the shapes AstrBot ships.
 
@@ -166,12 +181,12 @@ def message_text(event: object) -> str:
     """
     value = getattr(event, "text", None)
     if isinstance(value, str) and value.strip():
-        return value
+        return _without_leading_mentions(value)
     message = getattr(event, "message_obj", None)
     for attribute in ("message_str", "message_str_"):
         value = getattr(message, attribute, None)
         if isinstance(value, str) and value.strip():
-            return value
+            return _without_leading_mentions(value)
     parts = getattr(message, "message", None)
     if isinstance(parts, (list, tuple)):
         pieces = []
@@ -180,7 +195,7 @@ def message_text(event: object) -> str:
             kind = getattr(kind, "value", kind)
             if kind == "Plain" and isinstance(getattr(part, "text", None), str):
                 pieces.append(part.text)
-        return "".join(pieces)
+        return _without_leading_mentions("".join(pieces))
     return ""
 
 

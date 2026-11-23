@@ -22,7 +22,9 @@ from .topics import allowed_scenes, normalize_scene, normalize_topic, topic_spec
 KIND = "qzone.runtime.v1"
 COOLDOWN_STEPS = (12.0, 24.0, 24.0 * 7)
 FAILURE_MEMORY_SECONDS = 7 * 24 * 3600
-SIMILARITY_THRESHOLD = 2
+SIMILARITY_THRESHOLD = 8
+SIMILARITY_RATIO = 0.30
+SHORT_TEXT_SIMILARITY_CHARS = 16
 RECENT_PUBLISH_TEXTS = 8
 PUBLISH_KINDS = ("publish",)
 
@@ -125,7 +127,8 @@ def action_reason(state, settings, *, kind, at, day):
     if kind == "publish":
         if not settings.get("publish_enabled"):
             return "发空间未开启"
-        if state.publish_day == day and state.publish_count >= int(settings.get("publish_max_daily") or 1):
+        if (settings.get("daily_limits_enabled", True) and state.publish_day == day
+                and state.publish_count >= int(settings.get("publish_max_daily") or 1)):
             return "今天的说说已经发过了"
     last = _moment(state.last_action_at.get(kind))
     gap = timedelta(minutes=int(settings.get("action_min_interval_minutes") or 30))
@@ -150,6 +153,34 @@ def _ngrams(text, size):
     if len(compact) < size:
         return {compact} if compact else set()
     return {compact[index:index + size] for index in range(len(compact) - size + 1)}
+
+
+def _too_similar(previous, current):
+    """Return True for genuine near-duplicates without rejecting unrelated posts sharing a phrase."""
+    left = "".join(str(previous or "").split())
+    right = "".join(str(current or "").split())
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    first = _ngrams(left, 3)
+    second = _ngrams(right, 3)
+    shared = len(first & second)
+    union = len(first | second)
+    if not union:
+        return False
+    jaccard = shared / union
+    if shared >= SIMILARITY_THRESHOLD and jaccard >= SIMILARITY_RATIO:
+        return True
+    # Very short posts cannot accumulate 8 shared 3-grams; catch exact containment
+    # or heavy overlap only when the shorter post covers most of the longer one.
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if len(shorter) <= SHORT_TEXT_SIMILARITY_CHARS:
+        if shorter in longer and len(shorter) / len(longer) >= 0.5:
+            return True
+        if shared >= 3 and jaccard >= 0.5:
+            return True
+    return False
 
 
 def topic_reason(state, settings, *, topic, scene, confidence, topic_confirmed, at, day):
@@ -207,7 +238,8 @@ def topic_reason(state, settings, *, topic, scene, confidence, topic_confirmed, 
         daily_max = int(settings.get(f"{topic_key}_daily_max", settings.get("publish_max_daily") or 1))
     except (TypeError, ValueError):
         daily_max = 1
-    if topic_day == day and state.topic_publish_count.get(topic_key, 0) >= daily_max:
+    daily_count = state.topic_publish_count.get(topic_key, 0) if topic_day == day else 0
+    if settings.get("daily_limits_enabled", True) and daily_count >= daily_max:
         return "qzone_topic_daily_limit", "这个主题今天的发布额度已经用完"
     last = _moment(state.topic_last_action_at.get(topic_key))
     try:
@@ -240,7 +272,7 @@ def publish_reason(state, settings, *, text, at, day, topic=None, scene=None,
     for previous in state.recent_publish_texts:
         if "".join(previous.split()) == compact:
             return "这条说说和刚发过的重复"
-        if ngram_shared(previous, compact) >= SIMILARITY_THRESHOLD:
+        if _too_similar(previous, compact):
             return "这条说说和刚发过的太像"
     return ""
 
@@ -299,6 +331,7 @@ class QzoneRuntimeStore:
         return state
 
 
-__all__ = ["COOLDOWN_STEPS", "KIND", "QzoneRuntimeState", "QzoneRuntimeStore", "SIMILARITY_THRESHOLD",
+__all__ = ["COOLDOWN_STEPS", "KIND", "QzoneRuntimeState", "QzoneRuntimeStore",
+           "SHORT_TEXT_SIMILARITY_CHARS", "SIMILARITY_RATIO", "SIMILARITY_THRESHOLD",
            "action_reason", "block_reason", "clear_failure", "ngram_shared", "note_action", "note_failure",
            "note_publish", "publish_reason", "topic_reason"]

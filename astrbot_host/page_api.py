@@ -1,6 +1,7 @@
 """Authenticated page directory; the host supplies every target and API path."""
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -8,16 +9,27 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from astrbot.api import logger
-from astrbot.api.web import request
+from astrbot.api.web import json_response, request
 from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.storage.runtime import StorageOpenError
 
 from .management_identity import dashboard_operator
+from .browser_preferences import (
+    BROWSER_PREFERENCE_KEYS,
+    BROWSER_PREFERENCE_MAX_AGE,
+    MAX_BROWSER_PREFERENCES_BYTES,
+    browser_preference_cookie_name,
+    encode_browser_preferences,
+    read_browser_preferences,
+    valid_browser_preference,
+)
 from .display_names import display_names
 from .group_remarks import GroupRemarks
 from .identity_derivation import role_display_name
+from .search_catalog import build_search_catalog
 from .settings import HostControlError
 
 
@@ -60,7 +72,34 @@ class PageWebAPI:
                 (PREFIX + "/page/display-preferences", self.display_preferences, ["GET"],
                  "Read this Dashboard account's Companion display preferences"),
                 (PREFIX + "/page/display-preferences", self.save_display_preferences, ["POST"],
-                 "Save this Dashboard account's Companion display preferences")]
+                 "Save this Dashboard account's Companion display preferences"),
+                (PREFIX + "/page/browser-preferences", self.browser_preferences, ["GET"],
+                 "Read this browser's Companion role and card preferences"),
+                (PREFIX + "/page/browser-preferences", self.save_browser_preferences, ["POST"],
+                 "Save Companion role and card preferences in this browser's cookies"),
+                (PREFIX + "/search/catalog", self.search_catalog, ["GET"],
+                 "Read searchable model tasks, plugin schema and native extension metadata")]
+
+    async def search_catalog(self):
+        """Return non-secret searchable metadata for global search and all-features overview."""
+        from .web_api import outcome_response
+
+        try:
+            username = request.username
+            if (
+                type(username) is not str
+                or not username.strip()
+                or username.startswith("api_key:")
+            ):
+                raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+            if request.query:
+                raise TaskError("page_request_invalid", "search catalog does not accept query overrides")
+            if getattr(self.controller, "_terminated", False):
+                raise TaskError("staging_host_terminated", "plugin is stopped")
+            catalog = await asyncio.to_thread(build_search_catalog, self.controller)
+            return outcome_response(Outcome.success(catalog))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def workspace_entry(self):
         """Refresh the current page's short-lived resource token through AstrBot.
@@ -152,9 +191,9 @@ class PageWebAPI:
                 or len(username.strip()) > 128):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if request.plugin_name != PREFIX.lstrip("/"):
-            raise TaskError("page_request_invalid", "display preferences are only available to this plugin")
+            raise TaskError("page_request_invalid", "page preferences are only available to this plugin")
         if request.query:
-            raise TaskError("page_request_invalid", "display preferences do not accept query overrides")
+            raise TaskError("page_request_invalid", "page preferences do not accept query overrides")
         if getattr(self.controller, "_terminated", False):
             raise TaskError("staging_host_terminated", "plugin is stopped")
         return username.strip()
@@ -210,7 +249,7 @@ class PageWebAPI:
         try:
             username = self._display_preferences_identity()
             async with self._display_preferences_lock:
-                preferences = self._read_display_preferences().get(username)
+                preferences = (await asyncio.to_thread(self._read_display_preferences)).get(username)
             return outcome_response(Outcome.success({"preferences": preferences}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -244,9 +283,12 @@ class PageWebAPI:
                            "followLight": value["followLight"],
                            "largeText": value["largeText"]}
             async with self._display_preferences_lock:
-                rows = self._read_display_preferences()
-                rows[username] = preferences
-                self._write_display_preferences(rows)
+                def save():
+                    rows = self._read_display_preferences()
+                    rows[username] = preferences
+                    self._write_display_preferences(rows)
+
+                await asyncio.to_thread(save)
             return outcome_response(Outcome.success({"preferences": preferences}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -256,6 +298,54 @@ class PageWebAPI:
         except OSError:
             return outcome_response(Outcome.failed(
                 "display_preferences_unavailable", "the display preferences could not be saved"))
+
+    def _browser_preference_cookie_name(self):
+        username = self._display_preferences_identity()
+        runtime = getattr(self.controller, "runtime", None)
+        if runtime is None:
+            raise TaskError("staging_not_initialized", "load the explicit V2 profile first")
+        return browser_preference_cookie_name(runtime.installation_id, username)
+
+    async def browser_preferences(self):
+        from .web_api import outcome_response
+
+        try:
+            name = self._browser_preference_cookie_name()
+            preferences = read_browser_preferences(request.cookies, name)
+            return json_response(outcome_response(Outcome.success({"preferences": preferences})),
+                                 headers={"Cache-Control": "no-store"})
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+
+    async def save_browser_preferences(self):
+        from .web_api import outcome_response
+
+        try:
+            name = self._browser_preference_cookie_name()
+            raw = await request.body()
+            if len(raw) > MAX_BROWSER_PREFERENCES_BYTES:
+                raise ValueError("request is too large")
+            value = json.loads(raw.decode("utf-8"))
+            if (type(value) is not dict or not value or not set(value) <= set(BROWSER_PREFERENCE_KEYS)
+                    or any(not valid_browser_preference(key, item) for key, item in value.items())):
+                raise ValueError("invalid browser preferences")
+            preferences = read_browser_preferences(request.cookies, name) | value
+            encoded = encode_browser_preferences(preferences)
+            response = json_response(outcome_response(Outcome.success({"preferences": preferences})),
+                                     headers={"Cache-Control": "no-store"})
+            if all(item is None for item in preferences.values()):
+                response.delete_cookie(name, path=request.path, httponly=True, samesite="lax")
+            else:
+                response.set_cookie(name, encoded, path=request.path,
+                                    max_age=BROWSER_PREFERENCE_MAX_AGE,
+                                    expires=BROWSER_PREFERENCE_MAX_AGE,
+                                    httponly=True, samesite="lax")
+            return response
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed(
+                "browser_preferences_invalid", "check the browser preferences and retry"))
 
     async def targets(self):
         from .web_api import outcome_response
@@ -274,13 +364,32 @@ class PageWebAPI:
                     raise TaskError("staging_not_initialized", "load the explicit V2 profile first")
                 runtime = controller.runtime
                 settings_snapshot = controller.settings
-                operator = dashboard_operator(runtime, username, at=controller.now())
+                observed_at = controller.now()
+                inventory = getattr(controller.web_api, "target_inventory", None)
+
+            def _accepts_refresh_routes(fn):
+                try:
+                    sig = inspect.signature(fn)
+                except (TypeError, ValueError):
+                    return False
+                param = sig.parameters.get("refresh_routes")
+                if param is not None and param.kind in (
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                ):
+                    return True
+                return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+            def prepare_targets():
+                operator = dashboard_operator(runtime, username, at=observed_at)
                 require(ObjectAccessPolicy(runtime).feature_access(operator,
                     scope=ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, "page.management"),
-                    action="memory.manage", observed_at=controller.now()))
-                inventory = getattr(controller.web_api, "target_inventory", None)
+                    action="memory.manage", observed_at=observed_at))
+                raw_targets = None
                 if callable(inventory):
-                    targets = inventory()
+                    targets = (inventory(refresh_routes=False)
+                               if _accepts_refresh_routes(inventory) else inventory())
+                    raw_targets = targets
                 else:
                     settings = controller.resolved_settings()
                     targets = [{"target_id": settings.profile_id, "scope_kind": "private",
@@ -316,21 +425,34 @@ class PageWebAPI:
                                      "config", "perception_native", "reality_access", "screen_access", "game_access", "persona", "legacy",
                                      "qzone_extension", "image_material")}}
                                  for role in target["roles"]]} for target in targets]
-            public = await display_names(controller).targets(GroupRemarks(runtime).apply(public))
+                return operator, GroupRemarks(runtime).apply(public), raw_targets
+
+            operator, remarked, raw_targets = await asyncio.to_thread(prepare_targets)
+            public = await display_names(controller).targets(remarked)
             async with controller._control_lock:
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading display names")
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
+                ensure_routes = getattr(controller.web_api, "_ensure_role_routes", None)
+                if callable(ensure_routes) and raw_targets is not None:
+                    ensure_routes(raw_targets)
+                recheck_at = controller.now()
+
+            def recheck_access():
                 require(ObjectAccessPolicy(runtime).feature_access(operator,
                     scope=ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, "page.management"),
-                    action="memory.manage", observed_at=controller.now()))
-                return outcome_response(Outcome.success({"installation_id": runtime.installation_id,
-                    # Backups cover the whole installation, not one relationship, so the
-                    # endpoint sits beside the target list rather than inside a role.
-                    "backup_api": PREFIX + "/backup",
-                    "acquaintance_api": PREFIX + "/acquaintance",
-                    "accounts_api": PREFIX + "/accounts",
-                    "operator_id": operator.subject.subject_id, "operator_name": username, "targets": public}))
+                    action="memory.manage", observed_at=recheck_at))
+
+            await asyncio.to_thread(recheck_access)
+            return outcome_response(Outcome.success({"installation_id": runtime.installation_id,
+                # Backups cover the whole installation, not one relationship, so the
+                # endpoint sits beside the target list rather than inside a role.
+                "backup_api": PREFIX + "/backup",
+                "acquaintance_api": PREFIX + "/acquaintance",
+                "accounts_api": PREFIX + "/accounts",
+                "operator_id": operator.subject.subject_id, "operator_name": username, "targets": public}))
         except (TaskError, HostControlError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("page_storage_unavailable", "the page directory store is not available"))

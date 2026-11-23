@@ -11,16 +11,17 @@ const SOURCE = fs.readFileSync(path.join(ROOT, "image-materials-page.js"), "utf8
 const CSS = fs.readFileSync(path.join(ROOT, "output-page.css"), "utf8");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const ok = data => ({status: "ok", data});
+const emptyOutfit = {local_date: "2026-10-01", state: "empty"};
 const image = id => ({
   image_id: id, created_at: `2026-10-01T0${id.slice(-1)}:00:00Z`,
   action: "generate", width: 768, height: 1024,
   thumbnail: "data:image/jpeg;base64,ZmFrZQ==",
 });
 
-function inventory({enabled = true, label = "已登记参考图", wardrobe = [], references} = {}) {
+function inventory({enabled = true, dailyOutfit = enabled, label = "已登记参考图", wardrobe = [], references} = {}) {
   return {
     settings: {
-      references: {enabled, daily_outfit_enabled: enabled},
+      references: {enabled, daily_outfit_enabled: dailyOutfit},
       wardrobe: {enabled},
     },
     references: references || (label ? [{asset_id: "asset-1", label, roles: ["outfit"], state: "active", mime_type: "image/jpeg", revision: 1}] : []),
@@ -32,6 +33,13 @@ function inventory({enabled = true, label = "已登记参考图", wardrobe = [],
 function makeNode() {
   const handlers = new Map();
   const submit = {disabled: false};
+  const outfit = {
+    set innerHTML(html) {
+      node.innerHTML = node.innerHTML.replace(/(<section[^>]*data-im-outfit-photo[^>]*>)[\s\S]*?(<\/section>)/,
+        (_full, start, end) => start + html + end);
+    },
+    querySelectorAll() { return []; },
+  };
   const matches = (target, selector) => target?.matches?.(selector) === true;
   const targetFor = (selector, dataset = {}, extra = {}) => ({
     ...extra,
@@ -46,7 +54,10 @@ function makeNode() {
     addEventListener(type, handler) { handlers.set(type, handler); },
     removeEventListener(type) { handlers.delete(type); },
     contains() { return true; },
-    querySelector(selector) { return selector === "[data-im-wardrobe-submit]" ? submit : null; },
+    querySelector(selector) {
+      if (selector === "[data-im-outfit-photo]") return outfit;
+      return selector === "[data-im-wardrobe-submit]" ? submit : null;
+    },
     fire(type, next) { target = next; handlers.get(type)?.({type, target}); },
     click(selector, dataset = {}) { node.fire("click", targetFor(selector, dataset)); },
     input(selector, value) { node.fire("input", targetFor(selector, {}, {value})); },
@@ -261,16 +272,53 @@ test("角色切换后旧请求不能覆盖新角色", async () => {
   fixture.page.mount(fixture.node);
   selected = "b";
   fixture.page.refresh();
-  assert.equal(pending.length, 4);
-  pending[2].resolve(ok(inventory({label: "新角色"})));
-  pending[3].resolve(ok({items: [image("img-new")], next_cursor: null}));
+  assert.equal(pending.length, 6);
+  pending[3].resolve(ok(inventory({label: "新角色"})));
+  pending[4].resolve(ok({items: [image("img-new")], next_cursor: null}));
+  pending[5].resolve(ok({...emptyOutfit, state: "succeeded", photo: {
+    thumbnail: "data:image/jpeg;base64,bmV3", activities: ["新角色的行程"],
+  }}));
   await tick();
   pending[0].resolve(ok(inventory({label: "旧角色"})));
   pending[1].resolve(ok({items: [image("img-old")], next_cursor: null}));
+  pending[2].resolve(ok({...emptyOutfit, state: "succeeded", photo: {
+    thumbnail: "data:image/jpeg;base64,b2xk", activities: ["旧角色的行程"],
+  }}));
   await tick();
   assert.match(fixture.node.innerHTML, /新角色/);
+  assert.match(fixture.node.innerHTML, /新角色的行程/);
   assert.doesNotMatch(fixture.node.innerHTML, /旧角色/);
   assert.doesNotMatch(fixture.node.innerHTML, /img-old/);
+});
+
+test("空衣柜可以生成穿搭图并预览当天的行程和天气", async () => {
+  let outfit = emptyOutfit;
+  const fixture = harness({response: request => {
+    if (request.pathname.endsWith("/album")) return Promise.resolve(ok({items: [], next_cursor: null}));
+    if (request.pathname.endsWith("/daily-outfit/photo")) return Promise.resolve(ok(outfit));
+    if (request.pathname.endsWith("/daily-outfit/generate") && request.method === "POST") {
+      outfit = {...emptyOutfit, state: "succeeded", photo: {
+        thumbnail: "data:image/jpeg;base64,ZmFrZQ==",
+        activities: ["乘车去展馆", "户外散步"],
+        weather: {role_location: "杭州", condition: "小雨", temperature_c: 14},
+      }};
+      return Promise.resolve(ok({local_date: outfit.local_date, state: "created"}));
+    }
+    return Promise.resolve(ok(inventory({enabled: false, dailyOutfit: true, label: ""})));
+  }});
+  fixture.page.mount(fixture.node);
+  await tick();
+  assert.match(fixture.node.innerHTML, /今天还没有穿搭图/);
+  assert.doesNotMatch(fixture.node.innerHTML, /data-im-generate-outfit[^>]*disabled/);
+  fixture.node.click("[data-im-generate-outfit]");
+  await tick();
+  const post = fixture.requests.find(request => request.method === "POST");
+  assert.equal(post.pathname, "image-materials/daily-outfit/generate");
+  assert.ok(post.body.operation_key);
+  assert.match(fixture.node.innerHTML, /alt="今日角色穿搭图"/);
+  assert.match(fixture.node.innerHTML, /重新生成/);
+  assert.match(fixture.node.innerHTML, /乘车去展馆、户外散步/);
+  assert.match(fixture.node.innerHTML, /杭州 · 小雨 · 14°C/);
 });
 
 test("相册分页、参考登记、撤回、衣柜和每日穿搭均沿用当前角色路由", async () => {
@@ -338,4 +386,70 @@ test("未知服务异常使用操作提示且不回显内部消息", async () =>
   await tick();
   assert.doesNotMatch(fixture.node.innerHTML, /internal failure|dashboard:synthetic-admin/);
   assert.match(fixture.node.innerHTML, /未读到|读取|刷新/);
+});
+
+test("点击每日穿搭图复用高清 Lightbox 并校验左侧配置卡操作按钮防折行样式", async () => {
+  const openedItems = [];
+  const outfitPhoto = {
+    local_date: "2026-11-22",
+    state: "succeeded",
+    photo: {
+      image_id: "wardrobe-outfit:a1b2c3d4:2026-11-22:deadbeef",
+      filename: "20261122-013000-wardrobe-outfit-0123456789ab.png",
+      mime_type: "image/png",
+      width: 832,
+      height: 1216,
+      size_bytes: 1_500_000,
+      created_at: "2026-11-22T01:30:00Z",
+      local_date: "2026-11-22",
+      thumbnail: "data:image/jpeg;base64,ZmFrZQ==",
+      weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+      activities: ["午间开指热身"],
+    },
+  };
+  const requests = [];
+  const bridge = {
+    apiGet(pathname, query) {
+      requests.push({method: "GET", pathname, query});
+      if (pathname.endsWith("/album")) return Promise.resolve(ok({items: [], next_cursor: null}));
+      if (pathname.endsWith("/daily-outfit/photo")) return Promise.resolve(ok(outfitPhoto));
+      return Promise.resolve(ok(inventory({enabled: true, dailyOutfit: true})));
+    },
+    apiPost: () => Promise.resolve(ok({})),
+  };
+  const context = {
+    window: {
+      CompanionProduct: {
+        scopeKey: () => "scope-a",
+        role: () => ({image_material_api: "image-materials"}),
+        relative: value => value,
+        bridgeNow: () => bridge,
+      },
+      CompanionOutputPage: {
+        openLightbox(item) { openedItems.push(item); return true; },
+      },
+      crypto: {randomUUID: () => "uuid-outfit"},
+    },
+    console, AbortController, setTimeout, clearTimeout, Promise, Math, Date, Error,
+    Object, String, Array, Set, JSON,
+  };
+  vm.runInNewContext(SOURCE, context, {filename: "image-materials-page.js"});
+  const node = makeNode();
+  context.window.CompanionImageMaterialsPage.mount(node);
+  await tick();
+
+  assert.match(node.innerHTML, /data-im-open-outfit/);
+  assert.match(node.innerHTML, /查看原图/);
+  node.click("[data-im-open-outfit]");
+  assert.equal(openedItems.length, 1);
+  assert.equal(openedItems[0].image_id, outfitPhoto.photo.image_id);
+  assert.equal(openedItems[0].filename, outfitPhoto.photo.filename);
+  assert.equal(openedItems[0].action, "wardrobe.outfit");
+  assert.equal(openedItems[0].local_date, "2026-11-22");
+  assert.equal(openedItems[0]._albumEndpoint, "image-materials/album");
+  assert.equal(openedItems[0].weather.role_location, "维也纳");
+
+  assert.match(CSS, /#homeShell\[data-away="true"\] \.output-material-settings \.wb-actions\{padding-right:0\}/);
+  assert.match(CSS, /\.output-page \.wb-save,\.output-page \.wb-actions \.button\{[^}]*white-space:nowrap/);
+  assert.match(CSS, /\.image-materials-outfit-trigger\{[^}]*cursor:zoom-in/);
 });

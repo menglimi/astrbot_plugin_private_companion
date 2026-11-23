@@ -37,6 +37,9 @@
     person_nickname_operation_unresolved: "上一次称呼修改尚未完成，请刷新核对后重试。",
     stranger_target_request_invalid: "这次添加缺少有效账号信息，请刷新页面后重试。",
     stranger_target_unavailable: "收到方不可用：无法核对这个账号的当前配置，记录已保留。",
+    stranger_block_request_invalid: "这次屏蔽缺少有效账号信息，请刷新页面后重试。",
+    stranger_unblock_request_invalid: "这次解除屏蔽缺少有效账号信息，请刷新页面后重试。",
+    stranger_remove_request_invalid: "这次删除缺少有效账号信息，请刷新页面后重试。",
     legacy_plan_stale: "配置刚被其他操作更新，页面已重新读取；请再确认一次。",
     host_account_unavailable: "收到方当前未连接，无法应用配置；请在 AstrBot 中恢复该账号连接后重试。",
     host_persona_unavailable: "该收到方缺少可用人格，请先在账号与会话中补齐映射。",
@@ -213,17 +216,18 @@
     ? Array.from(value).slice(0, limit - 1).join("") + "…" : value;
 
   function readDirectoryPreferences() {
-    const toggle = $("hide-idle-users");
-    if (!toggle) return;
-    let stored = null;
-    try { stored = window.localStorage?.getItem("companion-v2.hide-idle-users"); } catch (_) { stored = null; }
-    hideIdleUsers = stored === null ? true : stored !== "false";
-    toggle.checked = hideIdleUsers;
+    /* “暂无往来”的普通用户永不在目录、图谱或往来分层里显示；
+       不提供关闭这个行为的入口，也不再读取旧 localStorage 偏好。 */
+    hideIdleUsers = true;
   }
   function saveDirectoryPreference() {
-    try { window.localStorage?.setItem("companion-v2.hide-idle-users", String(hideIdleUsers)); } catch (_) { /* 页面桥可能禁用存储 */ }
+    hideIdleUsers = true;
   }
   function hasInteraction(person) {
+    // A route that exists in the directory is already a relationship someone
+    // configured or discovered.  Counting only messages made those people fall
+    // back into the "暂无往来" bucket right after setup.  Keep route presence as
+    // interaction; only truly empty/unrelated people belong in the idle group.
     return Boolean(person?.private_chat || person?.group_member
       || number(person?.total?.msg_count) > 0
       || number(person?.private?.msg_count) > 0
@@ -239,7 +243,7 @@
       if (filter === "stable" && !isPrivateUser(person)) return false;
       if (filter === "temporary" && !person.group_member) return false;
       if (filter === "discovered" && knownPerson(person)) return false;
-      if (filter !== "discovered" && !includeHidden && hideIdleUsers && isIdleOrdinaryUser(person)) return false;
+      if (isIdleOrdinaryUser(person)) return false;
       return true;
     });
   }
@@ -303,7 +307,7 @@
     if (!data) return [];
     return data.persons.filter((person) => {
       if (!matchesSearch(person)) return false;
-      if (hideIdleUsers && isIdleOrdinaryUser(person)) return false;
+      if (isIdleOrdinaryUser(person)) return false;
       if (graphScope === "private") return isPrivateUser(person);
       if (graphScope === "group") return person.group_member;
       return true;
@@ -527,7 +531,7 @@
     meta.append(node("span", peerLabel(person)),
       node("span", personaDisplayLabel(person)),
       node("span", accountLabel(person)));
-    if (person.display_route_count > 1) meta.append(node("span", `${person.display_route_count} 个内部归属`, "route-count"));
+    if (person.display_route_count > 1) meta.append(node("span", `${person.display_route_count} 个角色关系`, "route-count"));
     const contexts = node("span", undefined, "card-contexts");
     const totalMessages = number(person.total?.msg_count);
     contexts.append(contextBadge(`${totalMessages} 条消息 · 最近 ${shortTime(person.total?.last_seen)}`,
@@ -543,20 +547,15 @@
     $("people-result-count").textContent = `${people.length} 人`;
     const visibilitySummary = $("people-visibility-summary");
     if (visibilitySummary) {
-      const hidden = data ? peopleForCurrentFilter({includeHidden: true}).length - people.length : 0;
-      visibilitySummary.textContent = filter === "discovered" ? "仅在 AstrBot 中发现的会话，可在此单独配置" : hideIdleUsers
-        ? hidden ? `已隐藏 ${hidden} 位无交往普通用户` : "默认隐藏无交往普通用户"
-        : "已显示全部用户";
+      visibilitySummary.textContent = filter === "discovered"
+        ? "仅在 AstrBot 中发现、且已有会话或配置的用户"
+        : "无往来用户不会显示";
     }
-    const toggle = $("hide-idle-users");
-    if (toggle) { toggle.checked = hideIdleUsers; toggle.disabled = filter === "discovered"; }
     if (!people.length) {
       const empty = node("div", undefined, "empty-state");
-      const hidden = data ? peopleForCurrentFilter({includeHidden: true}).length : 0;
-      const title = data ? searchTerm ? "没有符合的往来用户"
-        : hideIdleUsers && hidden ? "无交往普通用户已隐藏" : "这里还没有符合的用户" : "正在读取用户目录…";
-      empty.append(node("strong", title), node("p", data && hideIdleUsers && hidden
-        ? "关闭“隐藏无交往的普通用户”后可查看完整目录。" : "收到私聊或群聊记录后，用户会出现在这里。"));
+      const title = data ? searchTerm ? "没有符合的往来用户" : "这里还没有符合的用户"
+        : "正在读取用户目录…";
+      empty.append(node("strong", title), node("p", "无往来的普通用户不会出现在这里。"));
       grid.append(empty);
       return;
     }
@@ -788,7 +787,7 @@
     ].join("");
   }
   function renderNetworkOverview() {
-    const people = data ? data.persons.filter(matchesSearch) : [];
+    const people = data ? data.persons.filter(person => matchesSearch(person) && !isIdleOrdinaryUser(person)) : [];
     const visibleGroups = allGroups().filter(group => !searchTerm
       || groupSearchText(group).includes(searchTerm)
       || peopleInGroup(group, {honorSearch: false}).some(matchesSearch));
@@ -796,7 +795,6 @@
       {key: "both", match: person => person.private_chat && person.group_member},
       {key: "private", match: person => person.private_chat && !person.group_member},
       {key: "group", match: person => !person.private_chat && person.group_member},
-      {key: "idle", match: person => !person.private_chat && !person.group_member},
     ];
     const maxMessages = Math.max(1, ...people.map(person => number(person.total?.msg_count)));
     const counts = {};
@@ -1330,7 +1328,11 @@
       },
     });
   }
-  function select(person) {
+  function select(person, confirmed = false) {
+    if (!confirmed && selected !== person && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) select(person, true); });
+      return;
+    }
     selected = person;
     renderPeople();
     renderDetail();
@@ -1339,8 +1341,12 @@
     selectedGroupId = groupRouteKey(group);
     renderGroups();
   }
-  function switchTab(next) {
+  function switchTab(next, confirmed = false) {
     if (!["network", "people", "groups"].includes(next)) return;
+    if (!confirmed && next !== activeView && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) switchTab(next, true); });
+      return;
+    }
     activeView = next;
     document.querySelector(".relationship-app").dataset.view = next;
     const pageMeta = {
@@ -1376,7 +1382,11 @@
       if (active) { panel.classList.remove("is-entering"); void panel.offsetWidth; panel.classList.add("is-entering"); }
     });
   }
-  function navigateToPerson(id) {
+  function navigateToPerson(id, confirmed = false) {
+    if (!confirmed && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) navigateToPerson(id, true); });
+      return;
+    }
     const person = data?.persons.find((item) => personRouteKey(item) === id || item.subject_id === id);
     if (!person) return;
     filter = personFilter(person) || "stable";
@@ -1384,7 +1394,11 @@
     switchTab("people");
     select(person);
   }
-  function navigateToGroup(id, route = "") {
+  function navigateToGroup(id, route = "", confirmed = false) {
+    if (!confirmed && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) navigateToGroup(id, route, true); });
+      return;
+    }
     const groups = allGroups();
     const group = groups.find((item) => route && groupRouteKey(item) === route)
       || groups.find((item) => groupKey(item) === id);
@@ -1430,12 +1444,15 @@
     stranger_notice_daily_cap: "未回（超每日上限）",
     stranger_notice_delivery_unavailable: "未回（通道不可用）",
     stranger_notice_send_failed: "未回（发送失败）",
+    stranger_blocked: "未回（已屏蔽）",
   };
   const STRANGER_STARTUP_LABELS = {
     host_provider_required: "宿主还没有可用的模型服务",
     host_provider_unavailable: "宿主配置的模型服务当前不可用",
   };
   const strangerRouteKey = (item) => JSON.stringify([item.platform_id || "", item.login || "", item.peer || ""]);
+  /* 同一行的不同动作各自有忙碌态：添加、屏蔽、解除、删除互不冒充。 */
+  const strangerKey = (item, kind) => strangerRouteKey(item) + "|" + kind;
 
   function strangerRow(item) {
     const route = strangerRouteKey(item);
@@ -1460,16 +1477,47 @@
       chip.textContent = state;
       action.append(chip);
     }
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary";
-    button.dataset.action = "allow-stranger";
-    button.dataset.route = route;
-    button.disabled = Boolean(state) || Boolean(strangerSubmitting);
-    button.textContent = strangerSubmitting === route ? "正在添加…" : "允许此账号私聊";
-    if (item.target_state === "unavailable") button.title = "这个收到方当前不可用：账号未配置或未连接，暂时无法添加。";
-    button.addEventListener("click", () => confirmStrangerTarget(item));
-    action.append(button);
+    if (item.blocked) {
+      const muted = document.createElement("span");
+      muted.className = "stranger-state is-blocked";
+      muted.textContent = "已屏蔽";
+      action.append(muted);
+    }
+    const busy = (kind) => strangerSubmitting === strangerKey(item, kind);
+    const anyBusy = Boolean(strangerSubmitting);
+    const allow = document.createElement("button");
+    allow.type = "button";
+    allow.className = "secondary";
+    allow.dataset.action = "allow-stranger";
+    allow.dataset.route = route;
+    allow.disabled = Boolean(state) || anyBusy || Boolean(item.blocked);
+    allow.textContent = busy("allow") ? "正在添加…" : "允许此账号私聊";
+    if (item.blocked) allow.title = "已屏蔽这个账号：先解除屏蔽，再决定是否允许私聊。";
+    else if (item.target_state === "unavailable") allow.title = "这个收到方当前不可用：账号未配置或未连接，暂时无法添加。";
+    allow.addEventListener("click", () => confirmStrangerTarget(item));
+    const block = document.createElement("button");
+    block.type = "button";
+    block.className = "secondary";
+    block.dataset.action = item.blocked ? "unblock-stranger" : "block-stranger";
+    block.dataset.route = route;
+    block.disabled = anyBusy;
+    block.textContent = item.blocked
+      ? (busy("unblock") ? "正在解除…" : "解除屏蔽")
+      : (busy("block") ? "正在屏蔽…" : "屏蔽");
+    block.title = item.blocked
+      ? "恢复给这个账号回固定文案；记录与次数保留。"
+      : "不再给这个账号回固定文案，也不占冷却和当天额度；记录保留，可随时解除。";
+    block.addEventListener("click", () => confirmStrangerCommand(item, item.blocked ? "unblock" : "block"));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary is-danger";
+    remove.dataset.action = "remove-stranger";
+    remove.dataset.route = route;
+    remove.disabled = anyBusy;
+    remove.textContent = busy("remove") ? "正在删除…" : "删除记录";
+    remove.title = "只删除这条陌生号记录；不改动任何目标、权限或聊天记录。";
+    remove.addEventListener("click", () => confirmStrangerCommand(item, "remove"));
+    action.append(allow, block, remove);
     row.append(identity, action);
     return row;
   }
@@ -1550,23 +1598,23 @@
     return new Error("没有收到添加操作的明确回执，当前状态可能已变化；正在重新读取。");
   }
 
-  async function confirmStrangerTarget(item) {
+  /* 三个动作共用同一个确认层：宿主有 confirm 就用它，没有就退回页内 dialog。
+     工作区在 sandbox 里，能盖住插件视口的模态层只有宿主开得出来。 */
+  async function confirmStranger(item, options, submit) {
     if (!bridge || strangerSubmitting) return;
-    /* 工作区在 sandbox 里，能盖住插件视口的模态层只有宿主开得出来；
-       宿主声明了确认能力就走它，没声明/没答复时保留下面的内联确认框。 */
     if (typeof bridge.confirm === "function") {
       const confirmed = await bridge.confirm({
-        title: "允许此账号私聊",
-        message: "仅添加该账号到此收到方，权限沿用现有设置。",
+        title: options.title,
+        message: options.message,
         details: [{title: "本次范围", fields: [
           `发信账号：${item.peer || "未知"}`,
           `收到方：${item.login || "未知"}`,
           `平台：${item.platform_id || "未知"}`,
         ]}],
-        confirmText: "确认添加",
+        confirmText: options.confirmText,
         cancelText: "取消",
       });
-      if (confirmed === true) { void submitStrangerTarget(item); return; }
+      if (confirmed === true) { void submit(); return; }
       if (confirmed === false) return;
     }
     const dialog = document.createElement("dialog");
@@ -1574,7 +1622,7 @@
     dialog.setAttribute("aria-labelledby", "stranger-dialog-title");
     const title = document.createElement("h2");
     title.id = "stranger-dialog-title";
-    title.textContent = "允许此账号私聊";
+    title.textContent = options.title;
     const facts = document.createElement("dl");
     facts.className = "stranger-dialog-facts";
     for (const [label, value] of [["发信账号", item.peer], ["收到方", item.login], ["平台", item.platform_id]]) {
@@ -1586,7 +1634,7 @@
     }
     const message = document.createElement("p");
     message.className = "stranger-dialog-note";
-    message.textContent = "仅添加该账号到此收到方，权限沿用现有设置。";
+    message.textContent = options.message;
     const actions = document.createElement("div");
     actions.className = "stranger-dialog-actions";
     const cancel = document.createElement("button");
@@ -1596,16 +1644,16 @@
     const accept = document.createElement("button");
     accept.type = "button";
     accept.className = "secondary";
-    accept.textContent = "确认添加";
+    accept.textContent = options.confirmText;
     actions.append(cancel, accept);
     dialog.append(title, facts, message, actions);
     let closed = false;
-    const close = (submit) => {
+    const close = (confirmed) => {
       if (closed) return;
       closed = true;
       dialog.close();
       dialog.remove();
-      if (submit) void submitStrangerTarget(item);
+      if (confirmed) void submit();
     };
     cancel.addEventListener("click", () => close(false));
     accept.addEventListener("click", () => close(true));
@@ -1620,10 +1668,32 @@
     }
   }
 
+  function confirmStrangerTarget(item) {
+    void confirmStranger(item, {
+      title: "允许此账号私聊",
+      message: "仅添加该账号到此收到方，权限沿用现有设置。",
+      confirmText: "确认添加",
+    }, () => submitStrangerTarget(item));
+  }
+
+  function confirmStrangerCommand(item, kind) {
+    const removing = kind === "remove";
+    const unblocking = kind === "unblock";
+    void confirmStranger(item, {
+      title: removing ? "删除陌生号记录" : unblocking ? "解除屏蔽" : "屏蔽此账号",
+      message: removing
+        ? "只删除这条陌生号记录；已配置的目标、权限和聊天记录都不动。"
+        : unblocking
+          ? "恢复给这个账号回固定文案；次数与最近时间保留。"
+          : "不再给这个账号回固定文案，也不占冷却和当天额度；记录与次数保留，可随时解除。",
+      confirmText: removing ? "确认删除" : unblocking ? "解除屏蔽" : "确认屏蔽",
+    }, () => submitStrangerCommand(kind, item));
+  }
+
   async function submitStrangerTarget(item) {
     if (!bridge || strangerSubmitting) return;
     const route = strangerRouteKey(item);
-    strangerSubmitting = route;
+    strangerSubmitting = strangerKey(item, "allow");
     renderStrangers();
     try {
       const result = unwrap(await bridge.apiPost("acquaintance/stranger-target",
@@ -1666,12 +1736,57 @@
   /* 被拒私聊不在目录里（没有身份/路由），但管理员需要看到“谁在敲门”。
      只读、有界：账号与时间而已，不会建身份或签发权限；添加动作只为这条记录
      的收到方追加一个具体私聊目标，权限沿用现有设置。 */
+
+  const STRANGER_COMMAND_PATHS = {
+    block: "acquaintance/stranger-block",
+    unblock: "acquaintance/stranger-unblock",
+    remove: "acquaintance/stranger-remove",
+  };
+
+  /* 屏蔽只写这一行的静音标记，删除只删这条联系记录：两者都不碰目标或权限。 */
+  async function submitStrangerCommand(kind, item) {
+    if (!bridge || strangerSubmitting || !STRANGER_COMMAND_PATHS[kind]) return;
+    const route = strangerRouteKey(item);
+    strangerSubmitting = strangerKey(item, kind);
+    renderStrangers();
+    try {
+      const result = unwrap(await bridge.apiPost(STRANGER_COMMAND_PATHS[kind],
+        {platform_id: item.platform_id, login: item.login, peer: item.peer}, {timeoutMs: 30000}));
+      if (kind === "remove") {
+        strangerItems = strangerItems.filter((entry) => strangerRouteKey(entry) !== route);
+        notice("已删除这条陌生号记录；未改动任何目标或权限。");
+      } else {
+        const blocked = kind === "block" ? true : Boolean(result?.blocked);
+        strangerItems = strangerItems.map((entry) => (strangerRouteKey(entry) === route
+          ? {...entry, blocked} : entry));
+        notice(blocked ? "已屏蔽：不再回固定文案，记录与次数保留。" : "已解除屏蔽。");
+      }
+      renderStrangers();
+      const count = $("stranger-count");
+      if (count) count.textContent = `${strangerItems.length} 人`;
+    } catch (error) {
+      notice(strangerFailure(error).message, true);
+    } finally {
+      strangerSubmitting = "";
+      renderStrangers();
+      /* 回执已经落到行上；重读只用来核对，不回退这一行的结果。 */
+      void loadStrangers();
+    }
+  }
+
+  let strangerSequence = 0;
+  let refreshLoading = false;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+
   async function loadStrangers() {
     const section = $("stranger-contacts");
     if (!section || !bridge) return;
     const status = $("stranger-status");
+    const seq = ++strangerSequence;
+    const dirSeq = requestSequence;
     try {
       const payload = unwrap(await bridge.apiGet("acquaintance/strangers", {}));
+      if (seq !== strangerSequence || dirSeq !== requestSequence) return;
       strangerItems = Array.isArray(payload?.items) ? payload.items : [];
       renderStrangers();
       const count = $("stranger-count");
@@ -1679,6 +1794,7 @@
       if (status) status.hidden = true;
       section.hidden = false;
     } catch {
+      if (seq !== strangerSequence || dirSeq !== requestSequence) return;
       // A failed read must not erase what the page already showed: keep the last
       // successful copy, put the rows back to that state, and say it is stale.
       renderStrangers();
@@ -1691,7 +1807,7 @@
       section.hidden = false;
     }
   }
-  async function supplementDirectory(sequence, edits) {
+  async function supplementDirectory(sequence, edits, manual = false) {
     try {
       const result = unwrap(await bridge.apiGet(endpoint, {}));
       if (sequence !== requestSequence) return;
@@ -1700,7 +1816,7 @@
         return;
       }
       applyDirectory(result, {background: true});
-      setSyncState("ready", "V2 数据已同步");
+      setSyncState("ready", manual ? `V2 数据已同步 · 刚刚已刷新 ${formatClock()}` : "V2 数据已同步");
     } catch (error) {
       if (sequence !== requestSequence) return;
       const failure = localized(error);
@@ -1719,20 +1835,30 @@
     }
   }
 
-  async function load({preserveNotice = false} = {}) {
+  async function load({preserveNotice = false, manual = false} = {}) {
+    if (manual && refreshLoading) return false;
     const sequence = ++requestSequence;
     const refresh = $("refresh");
+    refreshLoading = true;
     refresh.disabled = true;
-    refresh.classList.add("is-loading");
+    refresh.classList.add("is-loading", "is-refreshing");
+    refresh.setAttribute?.("aria-busy", "true");
     setSyncState("", "正在读取");
     try {
       const result = unwrap(await bridge.apiGet(endpoint, {read_mode: "stored"}));
       if (sequence !== requestSequence) return;
       applyDirectory(result);
-      void loadStrangers();
-      setSyncState("ready", result.directory_refresh_pending ? "本地关系已读取，正在更新补充资料" : "V2 数据已同步");
+      if (manual) {
+        await loadStrangers();
+        if (sequence !== requestSequence) return;
+      } else {
+        void loadStrangers();
+      }
+      setSyncState("ready", result.directory_refresh_pending
+        ? "本地关系已读取，正在更新补充资料"
+        : (manual ? `V2 数据已同步 · 刚刚已刷新 ${formatClock()}` : "V2 数据已同步"));
       if (!preserveNotice) notice("");
-      if (result.directory_refresh_pending) void supplementDirectory(sequence, memberChangeSequence);
+      if (result.directory_refresh_pending) void supplementDirectory(sequence, memberChangeSequence, manual);
       return true;
     } catch (error) {
       if (sequence !== requestSequence) return;
@@ -1751,8 +1877,10 @@
       return false;
     } finally {
       if (sequence === requestSequence) {
+        refreshLoading = false;
         refresh.disabled = false;
-        refresh.classList.remove("is-loading");
+        refresh.classList.remove("is-loading", "is-refreshing");
+        refresh.setAttribute?.("aria-busy", "false");
       }
     }
   }
@@ -1774,17 +1902,9 @@
   document.querySelectorAll(".chip").forEach((item) => item.addEventListener("click", () => {
     filter = item.dataset.filter;
     updateFilterButtons();
-    if (selected && !visiblePeople().some((person) => personRouteKey(person) === personRouteKey(selected))) select(null);
     renderPeople();
   }));
-  const idleToggle = $("hide-idle-users");
-  if (idleToggle) idleToggle.addEventListener("change", () => {
-    hideIdleUsers = Boolean(idleToggle.checked);
-    saveDirectoryPreference();
-    if (selected && !visiblePeople().some((person) => personRouteKey(person) === personRouteKey(selected))) selected = null;
-    renderPeople();
-    renderDetail();
-  });
+
   document.querySelectorAll(".group-status-filter").forEach((item) => item.addEventListener("click", () => {
     groupStatusFilter = item.dataset.groupFilter || "all";
     updateGroupFilters();
@@ -1801,7 +1921,6 @@
     graphExpandedCluster = "";
     $("clear-search").hidden = !searchTerm;
     renderNetworkOverview(); renderGraph(); renderPeople(); renderGroups();
-    if (selected && !visiblePeople().some((person) => personRouteKey(person) === personRouteKey(selected))) select(null);
   });
   $("clear-search").addEventListener("click", () => {
     $("directory-search").value = "";
@@ -1818,14 +1937,30 @@
     event.preventDefault();
     activateGraphNode(target);
   });
-  $("refresh").addEventListener("click", () => { notice(""); load(); });
+  $("refresh").addEventListener("click", async () => {
+    if (!await window.CompanionPrivateMembers.beforeLeave()) return;
+    notice(""); load({manual: true});
+  });
   /* 这里只做转发：设置弹窗由外壳（陪伴小屋）统一渲染，工作区里再画一份会
      出现两套配置控件争同一个 sparse owner。 */
   $("open-private-access")?.addEventListener("click", () => {
     parent.postMessage({channel: "companion-workspace", kind: "open-settings", target: "private-access"}, "*");
   });
   $("stranger-add")?.addEventListener("submit", addStrangerManually);
-  document.addEventListener("companion-mappings-change", () => { if (bridge) void load(); });
+  document.addEventListener("companion-mappings-change", async () => {
+    if (bridge && await window.CompanionPrivateMembers.beforeLeave()) void load();
+  });
+  document.addEventListener("companion-context-change", () => {
+    if (!bridge || !data) return;
+    const target = bridge.getContext?.()?.member_edit;
+    if (target) {
+      const person = data.persons.find(item => item.subject_id === target.subject_id
+        && (item.display_routes || [item]).some(route => route.bot_id === target.bot_id && route.role_id === target.role_id
+          && route.platform === target.platform && route.account_id === target.account_id));
+      if (person) { switchTab("people"); select(person); return; }
+    }
+    renderDetail();
+  });
   document.addEventListener("companion-navigate-failed", (event) => {
     notice(event.detail?.message || "目标入口暂时不可用，请重新读取群聊目录后再试。", true);
   });
@@ -1835,7 +1970,12 @@
     switchTab(activeView);
     bridge = window.AstrBotPluginPage;
     if (!bridge) { setSyncState("error", "页面桥未连接"); notice(errors.dashboard_identity_required, true); return; }
-    try { await bridge.ready(); await load(); }
+    try {
+      await bridge.ready();
+      bridge.registerDraftHandler?.({save:()=>window.CompanionPrivateMembers.saveDraft(),
+        discard:()=>window.CompanionPrivateMembers.discardDraft()});
+      await load();
+    }
     catch (error) { setSyncState("error", "读取未完成"); notice(localized(error).message, true); }
   })();
 })();

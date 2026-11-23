@@ -54,29 +54,29 @@ test("今日时间线随当前时间前移，近期安排置顶，已过时段�
   assert.doesNotMatch(html,/现在 12:00/);
   assert(html.indexOf("正在阅读")<html.indexOf("下午安排"));
   assert(html.indexOf("下午安排")<html.indexOf("傍晚安排"));
-  assert.match(html,/查看已过时段 2 项/);
+  assert.match(html,/查看已结束 2 项/);
   assert.doesNotMatch(html.split('<details class="home-agenda-more" data-home-agenda-past')[0],/今早完成|早已过去/);
-  assert.match(renderSchedule({now,state,life:life([])}),/>当前没有进行中的活动<\/p>/);
+  assert.match(renderSchedule({now,state,life:life([])}),/现在空档/);
   assert.doesNotMatch(renderSchedule({now,state,life:life([])}),/现在 12:00/);
-  assert.doesNotMatch(html,/昨天完成|明日安排|明日活动|已取消安排|<b>/);
+  assert.doesNotMatch(html,/昨天完成|明日安排|明日活动|已取消安排|<b>没有执行回执/);
   const summary={parentElement:{open:false}};
   documentEvents.click({target:{closest:selector=>selector.includes("data-home-agenda-past")?summary:null}});
   const expanded=renderSchedule({now,state,life:life(activities)});
-  assert.match(expanded,/data-home-agenda-past open><summary>收起已过时段 2 项/);
+  assert.match(expanded,/data-home-agenda-past open><summary>收起已结束 2 项/);
   assert(expanded.indexOf("早已过去")<expanded.indexOf("今早完成"),"最近结束的安排先展示");
   summary.parentElement.open=true;
   documentEvents.click({target:{closest:selector=>selector.includes("data-home-agenda-past")?summary:null}});
-  assert.match(renderSchedule({now,state,life:life(activities)}),/data-home-agenda-past ><summary>查看已过时段 2 项/);
+  assert.match(renderSchedule({now,state,life:life(activities)}),/data-home-agenda-past ><summary>查看已结束 2 项/);
   const progressed=renderSchedule({now:Date.parse("2026-09-30T06:30:00Z"),state,life:life(activities)});
   assert.match(progressed,/下午安排/);
   assert.match(progressed,/当前计划时段/);
   assert.doesNotMatch(progressed,/现在 14:30/);
   const passed=renderSchedule({now:Date.parse("2026-09-30T07:10:00Z"),state,life:life(activities)});
-  assert.match(passed,/已过时段 3 项/);
+  assert.match(passed,/已结束 3 项/);
   assert.doesNotMatch(passed.split('<details class="home-agenda-more" data-home-agenda-past')[0],/下午安排/);
   const finished=renderSchedule({now:Date.parse("2026-09-30T12:00:00Z"),state,life:life([])});
   assert.match(finished,/今日安排已结束/);
-  assert.match(finished,/查看已过时段 3 项/);
+  assert.match(finished,/查看已结束 3 项/);
   assert.equal((finished.match(/今日安排已结束/g)||[]).length,1);
 });
 
@@ -89,8 +89,8 @@ test("滚动时间线标出空档长度，并在数据不完整时停止推断",
   assert.match(homeCss,/\.home-agenda-scroll\{[^}]*overflow-y:auto/);
   assert.match(homeCss,/\.home-agenda-item\[data-current="true"\]/);
   assert.match(homeCss,/\.home-agenda-gap\[data-current="true"\]/);
-  assert.match(html,/当前未安排/);
-  assert.match(html,/12:00 – 18:00 · 6小时/);
+  assert.match(html,/现在空档/);
+  assert.match(html,/下一项 18:00/);
   assert.match(html,/下一项 18:00/);
 
   const current=status([event("正在阅读","2026-09-30T02:00:00Z","2026-09-30T05:00:00Z")]);
@@ -113,14 +113,25 @@ test("节目单把安排标题和说明放在时间之前，短空档不占主�
   ]);
   const activities=[{activity_id:"active",state:"active",title:"正在阅读",started_at:"2026-09-30T03:30:00Z",due_at:"2026-09-30T05:00:00Z",checkpoint:"读完这一章"}];
   const html=renderSchedule({now,state,life:life(activities)});
-  assert.match(html,/home-agenda-program-meta/);
-  assert.match(html,/今日上演/);
-  assert.match(html,/已经落幕/);
-  assert.match(html,/counter-reset:agenda-act 1/);
+  assert.match(html,/home-agenda-summary/);
+  assert.match(html,/接下来/);
+  assert.match(html,/已结束/);
+  assert.match(html,/counter-reset:agenda-act 0/);
   assert.match(html,/正在阅读/);
   assert.match(html,/读完这一章/);
   assert.doesNotMatch(html,/30分钟/,"短空档不应占主列表");
   assert.doesNotMatch(html,/今天已结束/);
+});
+
+test("今日时间线按时间升序显示，即使接口返回倒序", () => {
+  const state=status([
+    event("晚上安排","2026-09-30T15:50:00Z","2026-09-30T16:20:00Z"),
+    event("下午安排","2026-09-30T12:00:00Z","2026-09-30T12:30:00Z"),
+    event("傍晚安排","2026-09-30T09:20:00Z","2026-09-30T09:50:00Z"),
+  ]);
+  const html=renderSchedule({now,state,life:life([])});
+  assert(html.indexOf("傍晚安排")<html.indexOf("下午安排"));
+  assert(html.indexOf("下午安排")<html.indexOf("晚上安排"));
 });
 
 test("共享睡眠以确认标记睡眠中，跨日计划有日期，并说明缺少执行窗口", () => {
@@ -241,3 +252,6 @@ test("四项图标用不同状态呈现，无法归类的自由描述原样保�
   assert.match(noSymptoms,/data-visual="well"[^>]*title="健康 · 身体状态正常，暂无明显不适"/);
   assert.match(noSymptoms,/data-visual="well"/);assert.doesNotMatch(noSymptoms,/data-visual="strained"/);
 });
+
+
+

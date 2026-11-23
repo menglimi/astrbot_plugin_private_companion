@@ -60,15 +60,16 @@
     account_config_running: "角色映射正在应用，请稍候再读取状态。",
     account_config_invalid: "绑定配置不完整或会话来源已变化，请重新核对。",
     account_config_save_failed: "保存失败，请检查插件数据目录是否可写后重试。",
-    account_model_provider_invalid: "共享启动模型请求没有通过校验（与角色映射、会话来源无关），请刷新后重试；若仍失败，请到插件配置里设置模型。",
-    account_model_provider_failed: "共享启动模型保存失败，请刷新状态并检查插件配置后重试。",
+    account_model_provider_invalid: "陪伴通用模型（全局默认）请求没有通过校验（与角色映射、会话来源无关），请刷新后重试；若仍失败，请到插件配置里设置模型。",
+    account_model_provider_failed: "陪伴通用模型（全局默认）保存失败，请刷新状态并检查插件配置后重试。",
+    model_fallback_duplicate: "全局备用模型不能与陪伴通用模型（主模型）相同，请选择其他 Provider 或留空。",
     account_session_unavailable: "这个会话已切换或不在当前目录中，请刷新。",
     account_session_persona_pinned: "AstrBot 已固定此会话人格，请在角色映射中调整。",
     account_session_persona_unmapped: "这个人格尚未绑定到当前 Bot，请先添加人格绑定。",
     account_core_window_required: "已确认的核心管理员窗口需要保留。",
     host_must_stop: "当前任务仍在收尾，请稍后保存映射。",
     setup_targets_unavailable: "会话目录暂时不可读取。",
-    host_provider_unavailable: "所选共享启动模型当前不可用，请重新选择。",
+    host_provider_unavailable: "所选陪伴通用模型或备用模型当前不可用，请重新选择。",
     host_control_failed: "角色运行环境准备失败，请查看 AstrBot 日志中的 CompanionV2 异常详情。",
     host_module_unavailable: "插件模块加载失败，请重新加载 V2 插件；若仍失败，请检查安装包并查看 AstrBot 日志。",
     host_native_lookup_timeout: "AstrBot 读取原生状态超时，请刷新状态后重试。",
@@ -130,6 +131,7 @@
   let bridge = null;
   let host = null;
   let status = null;
+  let runtimeStatusRead = false;
   let busy = false;
   let topologySelection = null;
   let topologyHover = null;
@@ -1305,80 +1307,105 @@
     return config.providers?.find(item => item.id === providerId)?.name || providerId || "未选择";
   }
   function renderSharedModel() {
-    const select = $("shared-model-provider"), save = $("save-shared-model"), note = $("shared-model-note");
+    const select = $("shared-model-provider"), fallbackSelect = $("shared-model-fallback"),
+      save = $("save-shared-model"), note = $("shared-model-note");
     if (!select || !save || !note) return;
     if (!modelConfig) {
       select.innerHTML = `<option value="">正在读取模型连接…</option>`;
       select.disabled = true; save.disabled = true;
+      if (fallbackSelect) {
+        fallbackSelect.innerHTML = `<option value="">正在读取…</option>`;
+        fallbackSelect.disabled = true;
+      }
       note.textContent = "正在读取已加载的模型连接…";
       note.dataset.kind = "info";
       return;
     }
     const providers = Array.isArray(modelConfig?.providers) ? modelConfig.providers : [];
     const current = String(modelConfig?.provider_id || "");
-    const configured = String(modelConfig?.configured_provider_id || "");
+    const savedFallback = String(modelConfig?.fallback_provider_id || "");
     const source = String(modelConfig?.provider_source || "");
     const previous = select.value;
-    select.innerHTML = `<option value="">请选择已加载的文本模型</option>${providers.map(provider => {
+    const optionMarkup = provider => {
       const name = String(provider.name || "");
       const label = name && name !== provider.id
         ? `${escapeHTML(name)}（${escapeHTML(provider.id)}）` : escapeHTML(provider.id);
       return `<option value="${escapeHTML(provider.id)}">${label}</option>`;
-    }).join("")}`;
+    };
+    select.innerHTML = `<option value="">请选择已加载的文本模型</option>${providers.map(optionMarkup).join("")}`;
     const desired = providers.some(item => item.id === previous) ? previous
       : providers.some(item => item.id === current) ? current : "";
     select.value = desired;
     select.disabled = busy || modelSaving || !providers.length;
+    if (fallbackSelect) {
+      const prevFallback = fallbackSelect.dataset?.touched === "1" ? fallbackSelect.value : savedFallback;
+      const fallbackChoices = providers.filter(item => item.id !== desired);
+      fallbackSelect.innerHTML = `<option value="">不使用备用模型</option>${fallbackChoices.map(optionMarkup).join("")}`;
+      const desiredFallback = fallbackChoices.some(item => item.id === prevFallback) ? prevFallback : "";
+      fallbackSelect.value = desiredFallback;
+      fallbackSelect.disabled = busy || modelSaving || !providers.length;
+    }
     save.disabled = busy || modelSaving || !providers.length || !select.value;
-    save.textContent = source === "auto" ? "固定启动模型" : "保存启动模型";
+    save.textContent = source === "auto" ? "固定陪伴通用模型" : "保存陪伴通用模型";
     if (!providers.length) {
       note.textContent = "AstrBot 没有读取到已加载的文本模型。请先在 AstrBot 模型配置中添加并启用一个 Provider。";
       note.dataset.kind = "error";
     } else if (!current) {
-      note.textContent = "尚未选择插件启动模型。先在这里保存，角色映射才能准备启动；启动后再到「模型与连接」细调任务路由。";
+      note.textContent = "尚未选择陪伴通用模型（全局默认，原称共享启动模型）。先在这里保存，角色映射才能准备启动；启动后再到「模型与连接」细调任务路由。";
       note.dataset.kind = "info";
     } else if (source === "fallback") {
-      note.textContent = "已保存的启动模型不可用，已自动改用 AstrBot 当前模型。";
+      note.textContent = "已保存的陪伴通用模型不可用，已自动改用 AstrBot 当前模型。";
       note.dataset.kind = "info";
     } else if (source === "auto") {
-      note.textContent = "已自动跟随 AstrBot 当前模型；无需手动保存，可直接准备并启动。";
+      note.textContent = savedFallback
+        ? `主模型已自动跟随 AstrBot 当前模型；当前全局备用模型：${modelProviderName(savedFallback)}。`
+        : "已自动跟随 AstrBot 当前模型；无需手动保存，可直接准备并启动。";
       note.dataset.kind = "info";
     } else if (!providers.some(item => item.id === current)) {
-      note.textContent = `已保存的启动模型 ${current} 当前不可用，请重新选择。`;
+      note.textContent = `已保存的陪伴通用模型 ${current} 当前不可用，请重新选择。`;
       note.dataset.kind = "error";
     } else {
       const running = isAccepting() || status?.state === "running";
+      const fallbackText = savedFallback ? ` · 备用：${modelProviderName(savedFallback)}` : "";
       note.textContent = running
-        ? `当前启动模型：${modelProviderName(current)}。宿主已在运行，保存后将在下次启动或重载时生效。`
-        : `当前启动模型：${modelProviderName(current)}。保存角色映射后即可点「准备并启动」。`;
+        ? `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。宿主已在运行，保存后将在下次启动或重载时生效。`
+        : `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。保存角色映射后即可点「准备并启动」。`;
       note.dataset.kind = "info";
     }
   }
   async function saveSharedModel() {
     if (busy || modelSaving) return;
-    const select = $("shared-model-provider"), button = $("save-shared-model");
+    const select = $("shared-model-provider"), fallbackSelect = $("shared-model-fallback"),
+      button = $("save-shared-model");
     const providerId = String(select?.value || "");
     if (!providerId) { notice("请先选择一个已加载的文本模型。", "error"); return; }
+    const savedFallback = String(modelConfig?.fallback_provider_id || "");
+    const fallbackValue = fallbackSelect ? String(fallbackSelect.value || "") : "";
+    const fallbackChanged = Boolean(fallbackSelect && (fallbackSelect.dataset?.touched === "1" || fallbackValue !== savedFallback));
+    const body = fallbackChanged
+      ? {provider_id: providerId, fallback_provider_id: fallbackValue === providerId ? "" : fallbackValue}
+      : {provider_id: providerId};
     modelSaving = true;
     setLoading(button, true);
     setBusy(true);
-    notice("正在保存共享模型连接…", "info");
+    notice("正在保存陪伴通用模型（全局默认）…", "info");
     try {
-      const result = await api("POST", `${accountApi}/model-provider`, {provider_id: providerId}, 60000);
+      const result = await api("POST", `${accountApi}/model-provider`, body, 60000);
       if (result?.model) modelConfig = result.model;
+      if (fallbackSelect?.dataset) delete fallbackSelect.dataset.touched;
       let refreshed = true;
       try { await readStatus(); } catch { refreshed = false; }
       if (!refreshed) {
-        notice("共享模型已保存；运行状态暂未读到，请点「刷新状态」核对后再准备启动。", "info");
+        notice("陪伴通用模型（全局默认）已保存；运行状态暂未读到，请点「刷新状态」核对后再准备启动。", "info");
       } else if (result?.prepared) {
-        notice("共享模型已保存，角色运行环境已准备。现在可以点「准备并启动」。", "success");
+        notice("陪伴通用模型（全局默认）已保存，角色运行环境已准备。现在可以点「准备并启动」。", "success");
       } else if (result?.initialization_error) {
-        notice(`共享模型已保存；角色运行环境尚未就绪：${failureMessage(result.initialization_error)}。请先完成角色映射，再点「准备并启动」。`, "info");
+        notice(`陪伴通用模型（全局默认）已保存；角色运行环境尚未就绪：${failureMessage(result.initialization_error)}。请先完成角色映射，再点「准备并启动」。`, "info");
       } else {
-        notice("共享模型已保存。请点「准备并启动」完成角色准备。", "success");
+        notice("陪伴通用模型（全局默认）已保存。请点「准备并启动」完成角色准备。", "success");
       }
     } catch (error) {
-      notice(`共享模型保存未完成：${publicError(error)}`, "error");
+      notice(`陪伴通用模型保存未完成：${publicError(error)}`, "error");
     } finally {
       modelSaving = false;
       setBusy(false);
@@ -1927,7 +1954,7 @@
     finally { setBusy(false); updateBindingCheck(); }
   }
 
-  function renderStatus() {
+  function renderStatus({showNotice = true} = {}) {
     if (!status || !host) return;
     $("connection").textContent = "插件连接正常";
     $("connection").dataset.state = "ready";
@@ -1936,18 +1963,66 @@
     paintStatusValue("runtime-state", stateLabel(status.state || status.session_state || (status.configured ? "new" : "unloaded")));
     paintStatusValue("accepting", isAccepting() ? "正在运行" : "未运行");
     $("safety-note").textContent = isAccepting()
-      ? "已归入角色的人格自动处理其会话；主动消息按各窗口权限发送。"
+      ? "已接入账号下归入角色的人格自动处理其会话；主动消息按各窗口权限发送。"
       : hasSavedRoleMappings() ? "角色映射已保存；准备并启动后开始处理对应会话。"
         : "保存角色映射后，插件会自动准备并运行对应窗口。";
     $("safety-note").hidden = !$("safety-note").textContent;
-    if (status.last_failure?.code || status.settings_error) {
+    if (showNotice && (status.last_failure?.code || status.settings_error)) {
       const code = status.last_failure?.code || status.settings_error;
       const operation = status.last_failure?.code ? failureOperations[status.last_failure.operation] : "";
       notice((operation ? operation + "：" : "") + failureMessage(code), "error");
-    } else {
+    } else if (showNotice) {
       notice("");
     }
+    renderAccountConnections();
     updateControls();
+  }
+  function accountRuntimeReason(row) {
+    const reasons = {
+      host_platform_unavailable: "平台实例尚未加载，等待连接。",
+      host_account_unavailable: "账号客户端当前不可用，等待恢复。",
+      host_account_offline: "账号连接当前不可用，等待恢复。",
+      host_account_identity_unavailable: "连接已更换，当前适配器尚未提供可核验的账号身份，等待验证。",
+      host_account_changed: "实际 Bot 身份或账号映射发生变化，请核对账号配置。",
+      host_platform_changed: "平台类型或标识与已保存的配置不一致，请核对平台配置。",
+      host_account_identity_changed: "实际 Bot 身份与已保存的账号不一致，请核对账号配置。",
+      host_account_recovering: "正在重新接入账号并准备会话。",
+      host_platform_probe_failed: "暂时无法读取平台连接状态，将自动重试。",
+      host_account_recovery_failed: "账号连接已恢复，但会话准备失败；将自动重试，可查看 AstrBot 日志中的 CompanionV2 详情。",
+    };
+    const defaults = {
+      online: "客户端可用。",
+      waiting: "等待账号连接后自动接入。",
+      recovering: "正在重新接入账号并准备会话。",
+      identity_changed: "实际 Bot 身份发生变化，请核对账号配置。",
+      error: "账号接入未完成，请查看 AstrBot 日志中的 CompanionV2 详情。",
+    };
+    return reasons[row.reason_code] || labelFor(row.reason_code) || defaults[row.state] || "账号状态暂未确认。";
+  }
+  function renderAccountConnections() {
+    const root = $("account-runtime-list"), summary = $("account-runtime-summary");
+    if (!root || !summary) return;
+    const rows = status.account_connections;
+    if (!Array.isArray(rows)) {
+      summary.textContent = "账号状态暂未提供";
+      root.innerHTML = "";
+      return;
+    }
+    const names = {online: "已接入", waiting: "等待连接", recovering: "恢复中",
+      identity_changed: "账号身份变化", error: "接入异常"};
+    const online = rows.filter(row => row.state === "online").length;
+    summary.textContent = rows.length ? `${rows.length} 个已配置 · ${online} 个已接入` : "尚未配置 Bot 账号";
+    root.innerHTML = rows.map(row => {
+      const state = Object.hasOwn(names, row.state) ? row.state : "unknown";
+      const recovered = row.last_recovered_at ? new Date(row.last_recovered_at) : null;
+      const recoveredAt = recovered && !Number.isNaN(recovered.getTime())
+        ? `<p class="account-runtime-recovered">最近恢复：<time datetime="${escapeHTML(recovered.toISOString())}">${escapeHTML(recovered.toLocaleString())}</time></p>` : "";
+      return `<li class="account-runtime-card" data-state="${state}">
+        <div class="account-runtime-title"><strong>${escapeHTML(accountChoiceLabel(row))}</strong><span class="account-runtime-badge">${names[state] || "状态未确认"}</span></div>
+        <p class="account-runtime-meta">平台 ${escapeHTML(row.platform_id)} · Bot ${escapeHTML(row.bot_id)}</p>
+        <p class="account-runtime-reason">${escapeHTML(accountRuntimeReason(row))}</p>${recoveredAt}
+      </li>`;
+    }).join("");
   }
   function updateControls() {
     $("refresh").disabled = busy;
@@ -2000,6 +2075,20 @@
       }
     }
     throw lastError || new Error("没有发现可用的 Companion V2 管理接口。");
+  }
+  async function refreshRuntimeStatus() {
+    if (!host || busy || runtimeStatusRead || document.visibilityState === "hidden") return;
+    runtimeStatusRead = true;
+    try {
+      const value = await api("GET", `${host.prefix}/status`);
+      if (busy) return;
+      status = value;
+      renderStatus({showNotice: false});
+    } catch {
+      $("account-runtime-summary").textContent = "状态刷新失败，当前显示上次结果；可点击刷新状态重试";
+    } finally {
+      runtimeStatusRead = false;
+    }
   }
   function publicError(error) {
     const label = labelFor(error?.code);
@@ -2071,6 +2160,10 @@
   });
   $("start-host")?.addEventListener("click", startHost);
   $("shared-model-provider")?.addEventListener("change", renderSharedModel);
+  $("shared-model-fallback")?.addEventListener("change", event => {
+    if (event.target?.dataset) event.target.dataset.touched = "1";
+    renderSharedModel();
+  });
   $("save-shared-model")?.addEventListener("click", saveSharedModel);
   $("topology-session-prev").addEventListener("click", () => changeTopologySessionPage(-1));
   $("topology-session-next").addEventListener("click", () => changeTopologySessionPage(1));
@@ -2125,10 +2218,12 @@
     }
   }
   boot();
+  setInterval(refreshRuntimeStatus, 10000);
+  document.addEventListener("visibilitychange", refreshRuntimeStatus);
+  window.addEventListener("focus", refreshRuntimeStatus);
   /* Native session discovery walks AstrBot's platform/persona directories and
-     is much heavier than a status read.  The page already refreshes on every
-     explicit action and on focus; 30s is enough for a background tab that is
-     left open, while halving those native scans. */
+     is much heavier than a status read. Refresh runtime state separately so
+     connection recovery remains visible while a mapping draft is being edited. */
   setInterval(() => {
     if (host && !busy && !bindingsDirty && !groupTargetsDirty
         && document.visibilityState !== "hidden" && !topologySelection) void readBindingConfig();

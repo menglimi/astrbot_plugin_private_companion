@@ -1,7 +1,22 @@
 /* Opaque-origin compatible bridge for bundled workspaces. */
 "use strict";
 (() => {
-  const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve;
+  const target = globalThis.crypto;
+  if (!target || typeof target.randomUUID === "function") return;
+  const randomUUID = () => {
+    const bytes = new Uint8Array(16);
+    if (typeof target.getRandomValues === "function") target.getRandomValues(bytes);
+    else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+  try { Object.defineProperty(target, "randomUUID", {value: randomUUID, configurable: true}); }
+  catch { target.randomUUID = randomUUID; }
+})();
+(() => {
+  const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve,draftHandler=null;
   const DEFAULT_REQUEST_TIMEOUT_MS=18000,MAX_REQUEST_TIMEOUT_MS=300000;
   const ready=new Promise(resolve=>{readyResolve=resolve;});
   const send=payload=>parent.postMessage({channel:"companion-workspace",...payload},"*");
@@ -29,7 +44,16 @@
   window.addEventListener("message",event=>{
     if(event.source!==parent||event.data?.channel!=="companion-workspace")return;
     const message=event.data;
-    if(message.kind==="context"){context=message.context;readyResolve(context);return;}
+    if(message.kind==="context"){
+      context=message.context;readyResolve(context);
+      document.dispatchEvent(new CustomEvent("companion-context-change",{detail:context}));return;
+    }
+    if(message.kind==="draft-action"){
+      Promise.resolve().then(()=>draftHandler?.[message.action]?.()).then(result=>
+        send({kind:"draft-action-result",requestId:message.requestId,result:result===true?true:{error:result?.error||"改动仍未处理，请回到成员详情核对。"}}),
+        ()=>send({kind:"draft-action-result",requestId:message.requestId,result:{error:"操作未完成，草稿仍保留。"}}));
+      return;
+    }
     if(message.kind==="host-mappings-refreshed"){
       document.dispatchEvent(new CustomEvent("companion-mappings-change",{detail:message}));return;
     }
@@ -48,6 +72,35 @@
     }
     if(message.kind==="navigate-failed"){
       document.dispatchEvent(new CustomEvent("companion-navigate-failed",{detail:message}));return;
+    }
+    if(message.kind==="focus-selector"&&typeof message.selector==="string"&&message.selector){
+      const tryFocus=(attempt=0)=>{
+        let node=null;
+        try{node=document.querySelector(message.selector);}catch(_){return;}
+        if(!node){
+          if(attempt<25){const t=setTimeout(()=>tryFocus(attempt+1),80);t?.unref?.();}
+          return;
+        }
+        for(let p=node.parentElement;p;p=p.parentElement){if(p.tagName==="DETAILS")p.open=true;}
+        const target=node.closest?.(".shared-model-select, .shared-model-panel, section, label")||node;
+        const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+          ||["low","off"].includes(document.documentElement?.dataset?.motion);
+        node.scrollIntoView?.({behavior:reduced?"instant":"smooth",block:"center"});
+        if(node.matches?.("button,input,select,textarea,a"))node.focus?.({preventScroll:true});
+        else if(typeof node.focus==="function"){
+          if(!node.hasAttribute?.("tabindex"))node.tabIndex=-1;
+          node.focus({preventScroll:true});
+        }
+        if(message.highlight!==false&&target?.classList){
+          target.classList.remove("is-search-target");
+          void target.offsetWidth;
+          target.classList.add("is-search-target");
+          const timer=setTimeout(()=>target.classList?.remove?.("is-search-target"),2400);
+          timer?.unref?.();
+        }
+      };
+      tryFocus();
+      return;
     }
     if(message.kind==="confirm-result"&&pendingConfirms.has(message.requestId)){
       const item=pendingConfirms.get(message.requestId);pendingConfirms.delete(message.requestId);
@@ -78,14 +131,49 @@
   });}
   window.AstrBotPluginPage={ready:()=>ready,getContext:()=>context,
     confirm:request=>hostConfirm(request),
+    registerDraftHandler:handler=>{draftHandler=handler;},
+    reportDraft:metadata=>send({kind:"draft-state",draft:metadata}),
     apiGet:(path,body,options)=>request("GET",path,body,options),
     apiPost:(path,body,options)=>request("POST",path,body,options)};
+  const measureContentHeight=()=>{
+    const body=document.body;
+    if(!body)return 0;
+    const readStyle=el=>typeof getComputedStyle==="function"?getComputedStyle(el):null;
+    const bodyStyle=readStyle(body);
+    const padBottom=bodyStyle?parseFloat(bodyStyle.paddingBottom)||0:0;
+    const root=document.querySelector?.("main");
+    if(root){
+      const rootStyle=readStyle(root);
+      const marginBottom=rootStyle?parseFloat(rootStyle.marginBottom)||0:0;
+      if(typeof root.getBoundingClientRect==="function"){
+        const rect=root.getBoundingClientRect();
+        const scrollY=Number.isFinite(window.scrollY)?window.scrollY:0;
+        const top=rect.top+scrollY;
+        const bottom=Math.max(rect.bottom+scrollY,top+(root.scrollHeight||0));
+        const measured=Math.ceil(bottom+marginBottom+padBottom);
+        if(Number.isFinite(measured)&&measured>0)return measured;
+      }
+      const fallback=Math.ceil((root.offsetHeight||root.scrollHeight||0)+marginBottom+padBottom);
+      if(Number.isFinite(fallback)&&fallback>0)return fallback;
+    }
+    return Math.ceil(body.offsetHeight||body.scrollHeight||0);
+  };
   document.addEventListener("DOMContentLoaded",async()=>{
     document.querySelectorAll("#start-host,#stop-host").forEach(el=>el.hidden=true);
     await ready;
     if(context.tab)document.querySelector('[data-tab="'+CSS.escape(context.tab)+'"]')?.click();
     let last=0;
-    new ResizeObserver(()=>{const height=document.body.scrollHeight;if(height!==last){last=height;send({kind:"resize",height});}}).observe(document.body);
+    const reportHeight=()=>{
+      const height=measureContentHeight();
+      if(height>0&&height!==last){last=height;send({kind:"resize",height});}
+    };
+    reportHeight();
+    if(typeof ResizeObserver==="function"){
+      const observer=new ResizeObserver(reportHeight);
+      const root=document.querySelector?.("main");
+      if(root)observer.observe(root);
+      if(document.body&&document.body!==root)observer.observe(document.body);
+    }
   });
   send({kind:"ready"});
 })();

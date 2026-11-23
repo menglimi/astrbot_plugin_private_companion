@@ -163,20 +163,21 @@ class GroupParticipationTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.choices.decision(context, batch)["basis"], "final_reply")
         self.assertEqual(len(self.native.provider.client.state.calls), 1)
         payload, _ = self.native.provider.client.state.calls[0]
-        self.assertEqual(payload["messages"][0]["content"], self.native.persona["prompt"])
-        self.assertIn(INSTRUCTION, payload["messages"][1]["content"])
+        system_text = "\n".join(m["content"] for m in payload["messages"] if m["role"] == "system")
+        self.assertTrue(system_text.startswith(self.native.persona["prompt"]))
+        self.assertIn(INSTRUCTION, system_text)
         self.assertEqual(self.parts(batch)[0]["state"], "delivered")
 
     async def test_group_air_reference_uses_confirmed_history_without_blocking_reply(self):
         await self.setup_delivery()
-        _, first, _ = await self.receive("晚安")
+        _, first, _ = await self.receive("晚安。")
         self.assertEqual(self.parts(first)[0]["state"], "delivered")
         _, second, _ = await self.receive("谢谢，明天见", sender="201")
         saved = json.loads(self.app.messages.batch(second)["contributions_json"])["reply_settings"]["settings"]
         self.assertEqual({key: saved[key] for key in GROUP_AIR_DEFAULTS}, GROUP_AIR_DEFAULTS)
         payload, _ = self.native.provider.client.state.calls[-1]
-        instruction = payload["messages"][1]["content"]
-        self.assertIn("最近 180 秒的已授权历史里有 1 轮已确认 Bot 回复", instruction)
+        instruction = "\n".join(m["content"] for m in payload["messages"] if m["role"] == "system")
+        self.assertIn(f"最近 {GROUP_AIR_DEFAULTS['group_air_guard_window_seconds']} 秒的已授权历史里有 1 轮已确认 Bot 回复", instruction)
         self.assertIn("连续接话参考值 3 轮", instruction)
         self.assertIn("礼貌收尾循环参考值 2 次", instruction)
         self.assertEqual(self.parts(second)[0]["state"], "delivered")
@@ -397,7 +398,11 @@ class GroupParticipationTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         private, private_batch = await self.accepted()
         self.assertEqual(self.app.messages.batch(private_batch)["state"], "ready")
         self.assertNotIn(ACTION, {t.action for t in self.app.tools.catalog_for(private)})
-        self.assertNotIn(INSTRUCTION, self.native.provider.client.state.calls[-1][0]["messages"][1]["content"])
+        system_text = "\n".join(
+            m["content"] for m in self.native.provider.client.state.calls[-1][0]["messages"]
+            if m["role"] == "system"
+        )
+        self.assertNotIn(INSTRUCTION, system_text)
         foreign, _, _ = await self.receive(target="group-b")
         for context in (private, foreign):
             with self.subTest(scope=context.scope.key), self.assertRaises(TaskError):

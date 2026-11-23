@@ -77,20 +77,29 @@ window.CompanionHostOptionsPage = (() => {
         </div>
       </div>`;
     };
-    return `<section class="host-options-panel" aria-label="语音默认值">
-      <header class="host-options-heading"><div><h3>语音回复 · 开关与概率</h3>
-        <p>这一页只管“发不发语音、多大概率发”。本页默认值保存后需重启陪伴插件才会应用到新回复。发音人、音色、语速与试听在「模型与连接 → 语音」，分段与发送位置在「表达 → 语音」。</p></div></header>
+    return `<details class="host-options-panel voice-global" aria-label="全局语音默认值">
+      <summary class="voice-global-summary">
+        <span class="voice-global-title"><strong>全局语音默认值</strong>
+          <small>所有对象共用；保存后需重载陪伴插件才会应用到新回复。</small></span>
+        <span class="voice-global-state${value.enabled ? " is-on" : " is-off"}">${value.enabled
+          ? `总开关已开启 · 基础概率 ${base}%` : "总开关已关闭"}</span>
+      </summary>
+      <div class="voice-global-body">
       <nav class="host-options-jumps" aria-label="语音的其他配置位置">
-        <a class="button small" href="#manage/models">发音人与音色 · 模型与连接</a>
-        <a class="button small" href="#manage/models">试听与语种 · 同上（语音配置）</a>
+        <a class="button small" href="#manage/models/voice">发音人与音色 · 模型与连接</a>
+        <a class="button small" href="#manage/models/voice">试听与语种 · 同上（语音配置）</a>
         <a class="button small" href="#manage/expression/text">分段与发送位置 · 表达 / 文本</a>
       </nav>
-      ${!value.enabled ? '<p class="host-options-warning" role="note">语音总开关关闭时，对象页启用语音也不会合成。</p>' : ""}
+      ${!value.enabled ? '<p class="host-options-warning" role="note">语音总开关关闭时，本页窗口设置开启也不会合成。</p>' : ""}
       <form data-host-form="voice" novalidate>
         <div class="host-options-row"><div class="host-options-copy"><strong>允许语音回复</strong>
           <small>全局总开关。对象的「启用语音」也需要打开。</small></div>
           <label class="host-options-switch"><input type="checkbox" name="enabled" data-wb-field="enabled" ${value.enabled ? "checked" : ""}>
             <span>${value.enabled ? "已开启" : "已关闭"}</span></label></div>
+        <div class="host-options-row"><div class="host-options-copy"><strong>普通回复自主唱歌</strong>
+          <small>须通过本轮语音准入，只支持已选的 Fish Audio Drama 3。请保持 AstrBot 与本会话的 TTS 开启，并在 AstrBot 将该会话所用预设的自动转语音概率设为 0；此处不会修改 AstrBot 设置。替代使用时请关闭独立的 SingSing 插件。</small></div>
+          <label class="host-options-switch"><input type="checkbox" name="singsing_enabled" data-wb-field="singsing_enabled" ${value.singsing_enabled ? "checked" : ""}>
+            <span>${value.singsing_enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>基础触发概率</strong>
           <small>私聊或群聊没有覆盖值时使用。</small></div>
           <label class="host-options-percent"><input type="number" name="probability" min="0" max="100" step="1"
@@ -101,7 +110,8 @@ window.CompanionHostOptionsPage = (() => {
           <button type="submit" class="button small primary" ${state.saving === "voice" ? "disabled" : ""}>${state.saving === "voice" ? "正在保存…" : "保存语音默认值"}</button>
         </footer>
       </form>
-    </section>`;
+      </div>
+    </details>`;
   }
 
   function renderPoke() {
@@ -239,6 +249,7 @@ window.CompanionHostOptionsPage = (() => {
     try {
       if (group === "voice") {
         changes = {enabled: !!formElement(form, "enabled")?.checked,
+          singsing_enabled: !!formElement(form, "singsing_enabled")?.checked,
           probability: fraction(form, "probability"),
           private_probability: fraction(form, "private_probability", "private_probability_inherit"),
           group_probability: fraction(form, "group_probability", "group_probability_inherit")};
@@ -350,6 +361,7 @@ window.CompanionHostOptionsPage = (() => {
   function searchEntries() {
     const voice = [
       ["enabled", "允许语音回复", "全局总开关", ["TTS", "语音总开关"]],
+      ["singsing_enabled", "普通回复自主唱歌", "语音默认值", ["SingSing", "语音", "唱歌"]],
       ["probability", "基础触发概率", "语音默认值", ["TTS", "默认概率"]],
       ["private_probability", "私聊默认概率", "语音默认值", ["TTS", "私聊覆盖"]],
       ["group_probability", "群聊默认概率", "语音默认值", ["TTS", "群聊覆盖"]],
@@ -362,6 +374,8 @@ window.CompanionHostOptionsPage = (() => {
       ["back_times", "连续回戳次数", "收到戳一戳", ["连戳", "回戳次数"]],
       ["model_reply_enabled", "模型即兴回复", "收到戳一戳", ["模型", "即兴回复"]],
       ["model_reply_probability", "模型回复概率", "收到戳一戳", ["模型", "即兴回复"]],
+      ["context_reply_enabled", "拍一拍上下文接话", "收到戳一戳", ["拍一拍", "戳一戳", "群聊接话", "上下文"]],
+      ["context_delay_seconds", "上下文接话延迟秒数", "收到戳一戳", ["拍一拍", "戳一戳", "延迟", "群聊接话"]],
       ["replies", "可选回复", "收到戳一戳", ["戳戳文案", "预设短句"]],
     ].map(([field, label, sectionTitle, aliases]) => ({group: "poke", groupTitle: "平台动作",
       field, label, help: "", section: "received", sectionTitle, sectionCount: 1, aliases}));

@@ -7,6 +7,9 @@
 :root{
   --bg:var(--t-canvas);
   --paper:var(--t-veil);
+  --surface:var(--t-surface);
+  --surface-soft:var(--t-surface-soft);
+  --surface-muted:var(--t-surface-soft);
   --ink:var(--t-text);
   --secondary:var(--t-text-soft);
   --muted:var(--t-text-faint);
@@ -14,7 +17,15 @@
   --accent-dark:var(--t-accent-hover);
   --lavender:var(--t-accent-quiet);
   --line:var(--t-line);
+  --line-strong:var(--t-line-firm);
   --green:var(--t-ok);
+  --amber:var(--t-warn-ink);
+  --danger:var(--t-risk-ink);
+  --mono:var(--numeric-font);
+  --font-mono:var(--numeric-font);
+  --m-muted:var(--t-text-faint);
+  --m-line2:var(--t-line-firm);
+  --m-ink2:var(--t-text-soft);
   --shadow:var(--t-shadow);
   /* --radius 原先只由 styles.css 那几套已删除的硬编码色板定义，
      删掉后 styles.css 的 .panel / .empty-state / dialog 等就没有圆角值了

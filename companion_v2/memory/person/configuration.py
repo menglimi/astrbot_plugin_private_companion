@@ -20,6 +20,8 @@ def configuration_fields():
                         apply_mode=ApplyMode.IMMEDIATE, core_only=True),
         FieldDefinition("person.cross_window_awareness_enabled", GROUP, "person", ValueKind.BOOLEAN, True,
                         layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), apply_mode=ApplyMode.IMMEDIATE, core_only=True),
+        FieldDefinition("person.cross_window_cross_group_enabled", GROUP, "person", ValueKind.BOOLEAN, True,
+                        layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), apply_mode=ApplyMode.IMMEDIATE, core_only=True),
         FieldDefinition("person.cross_window_continuity_enabled", GROUP, "person", ValueKind.BOOLEAN, True,
                         layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), apply_mode=ApplyMode.IMMEDIATE, core_only=True),
         FieldDefinition("person.cross_window_continuity_minutes", GROUP, "person", ValueKind.INTEGER, 30,

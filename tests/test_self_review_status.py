@@ -205,6 +205,39 @@ class SelfReviewStatusTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["code"], "self_review_material_changed")
         self.assertIsNone(status["last_run_at"])
 
+    async def test_status_strips_internal_owner_result_sentinel_code(self):
+        app, context = await self.start()
+        service = app.self_review
+        at = self.clock.now()
+
+        await self.settlement(service, context, at)
+        service.results[context.key] = {
+            "state": "succeeded",
+            "task_id": "self-review:test",
+            "code": "owner_result",
+        }
+        status = service.status(context)
+        self.assertEqual(status["state"], "succeeded")
+        self.assertIsNone(status["code"])
+
+        service.results[context.key] = {
+            "state": "completed",
+            "task_id": "self-review:test",
+            "code": "owner_result",
+        }
+        completed = service.status(context)
+        self.assertEqual(completed["state"], "completed")
+        self.assertIsNone(completed["code"])
+
+        service.results[context.key] = {
+            "state": "failed",
+            "task_id": "self-review:test",
+            "code": "self_review_output_invalid",
+        }
+        failed = service.status(context)
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(failed["code"], "self_review_output_invalid")
+
 
 class SelfReviewFailureRecordTests(unittest.IsolatedAsyncioTestCase):
     """Both non-success branches leave a record the next process can read."""

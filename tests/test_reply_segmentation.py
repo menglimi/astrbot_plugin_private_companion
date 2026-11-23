@@ -18,10 +18,33 @@ class ReplySegmentationTests(unittest.TestCase):
     def test_v1_edge_markers_recover_but_inline_markers_only_clean(self):
         for source in (f"甲{MARKER}\n乙", f"甲\n{MARKER}乙", f"甲\n{MARKER}\n乙"):
             self.assertEqual(tuple(p.strip() for p in self.policy.parts(source)), ("甲", "乙"))
-        for token in (MARKER, "<< private_companion_split >>", "{{ split_marker }}",
+        for token in ("{{ split_marker }}",
                       "&lt;&lt;PRIVATE_COMPANION_SPLIT&gt;&gt;", "&#x3C;&#x3C;PRIVATE_COMPANION_SPLIT&#x3E;&#x3E;",
                       r"\<\<PRIVATE_COMPANION_SPLIT\>\>"):
             self.assertEqual(self.policy.parts("hello" + token + "world"), ("hello world",))
+        for token in (MARKER, "<< private_companion_split >>"):
+            self.assertEqual(self.policy.parts("hello" + token + "world"), ("hello", "world"))
+
+    def test_near_miss_model_markers_are_recovered_with_a_small_tolerance(self):
+        # Providers sometimes insert a line break, omit one angle bracket, or
+        # make a one-character typo while emitting the reserved boundary.
+        near_misses = (
+            "<<PRIVATE_COMPANION_SPLI>>",       # one missing character
+            "<<PRIVATE_COMPANION_SPLXX>>",      # two edits (replacement + insertion)
+            "<PRIVATE_COMPANION_SPLIT>>",         # one missing opening bracket
+            "<<PRIVATE_COMPANION_SPLIT>",       # one missing closing bracket
+            "<<PRIVATE_COMPANION_SPLIT\n>>",    # line break inside the marker
+            "< < PRIVATE_COMPANION_SPLIT > >", # extra spacing around syntax
+        )
+        for token in near_misses:
+            with self.subTest(token=token):
+                self.assertEqual(self.policy.parts(f"甲\n{token}\n乙"), ("甲\n", "乙"))
+                self.assertEqual(self.policy.parts(f"甲{token}乙"), ("甲", "乙"))
+
+        # The tolerance remains narrow enough that an unrelated angle-bracket
+        # expression is preserved as ordinary text.
+        self.assertEqual(self.policy.parts("甲\n<<PRIVATE_COMPANION_SOMETHING>>\n乙"),
+                         ("甲\n<<PRIVATE_COMPANION_SOMETHING>>\n乙",))
 
     def test_repeated_leading_trailing_markers_never_send_empty_messages(self):
         source = f"{MARKER}\n{MARKER}\n甲\n{MARKER}\n{MARKER}\n乙\n{MARKER}\n"
@@ -32,6 +55,7 @@ class ReplySegmentationTests(unittest.TestCase):
     def test_disabled_and_llm_disabled_still_remove_control_tokens(self):
         for policy in (SegmentationPolicy(), replace(self.policy, llm_controlled=False)):
             self.assertEqual(policy.parts(f"甲\n{MARKER}\n乙"), ("甲\n乙",))
+        self.assertEqual(SegmentationPolicy(enabled=False).parts(f"甲{MARKER}乙"), ("甲 乙",))
 
     def test_rule_only_prompt_injects_nothing(self):
         policy = replace(self.policy, llm_controlled=False,

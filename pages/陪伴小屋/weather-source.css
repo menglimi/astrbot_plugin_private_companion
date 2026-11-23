@@ -7,7 +7,7 @@
 .weather-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: calc(var(--sp-2) * 1.75) calc(var(--sp-4) * 1.25); margin: 0; padding: 0; border: 0; }
 .weather-source-grid .perception-setting { min-width: 0; }
 .weather-source-grid input, .weather-source-grid select, .weather-source-grid textarea { box-sizing: border-box; width: 100%; min-width: 0; }
-.weather-source-grid textarea { min-height: calc(var(--sp-5) * 4); resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); }
+.weather-source-grid textarea { min-height: calc(var(--sp-5) * 4); resize: vertical; font-family: var(--numeric-font); }
 .weather-source-wide, .weather-source-private-key { grid-column: 1 / -1; }
 .weather-source-grid small { overflow-wrap: anywhere; }
 .weather-source-auth-card { grid-column: 1 / -1; padding: var(--sp-4); border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-soft); }

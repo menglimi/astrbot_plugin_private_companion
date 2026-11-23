@@ -42,6 +42,17 @@ LOW_LATENCY_CACHE_LIMIT = 64
 MAX_REVIEW_ATTEMPTS = 3
 
 
+def _upload_display_name(raw):
+    """Extract a bounded, path-free display label from an uploaded filename."""
+    if type(raw) is not str:
+        return ""
+    basename = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = "".join(ch for ch in basename if ord(ch) >= 32).strip()
+    if cleaned in ("", ".", ".."):
+        return ""
+    return cleaned[:160]
+
+
 class ReactionLibrary:
     def __init__(self, service):
         self.service, self.store, self.messages = service, service.store, service.app.messages
@@ -66,6 +77,10 @@ class ReactionLibrary:
                        else str(metadata.get(k, "")))[:1500] for k in fields}
         manual_fields = sorted(k for k in fields if payload[k].strip()) \
             if collection_source in ("manual", "legacy_migration") else []
+        if not payload["name"].strip():
+            fallback_name = _upload_display_name(metadata.get("source_filename"))
+            if fallback_name:
+                payload["name"] = fallback_name
         payload.update(descriptor=asdict(image.descriptor),
                        analysis="auto_reviewed" if auto_reviewed else "legacy_imported"
                        if collection_source == "legacy_migration" else "manual" if payload["description"] else "pending",
@@ -96,12 +111,10 @@ class ReactionLibrary:
     def captured(self, item):
         descriptor = image_descriptor(item["payload"]["descriptor"])
         if isinstance(descriptor, AnimationDescriptor):
-            with self.store.db() as db:
-                rows = db.execute("SELECT content FROM reaction_frames WHERE owner=? AND id=? ORDER BY position",
-                                  (item["owner"], item["id"])).fetchall()
-            if len(rows) != len(descriptor.frames):
+            frame_bytes = self.store.reaction_frames(item["owner"], item["id"])
+            if len(frame_bytes) != len(descriptor.frames):
                 raise TaskError("reaction_frames_missing", "original animation frames are unavailable")
-            frames = tuple(CapturedImage(frame.image, row[0]) for frame, row in zip(descriptor.frames, rows))
+            frames = tuple(CapturedImage(frame.image, raw) for frame, raw in zip(descriptor.frames, frame_bytes))
             return CapturedAnimation(descriptor, item["content"], frames)
         return CapturedImage(descriptor, item["content"])
 
@@ -168,7 +181,7 @@ class ReactionLibrary:
         payload = dict(item["payload"])
         fields = ("name", "description", "visible_text", "tags", "emotions", "intents")
         protected = set(payload.get("manual_fields", ()))
-        if payload.get("analysis") == "manual" and not protected:
+        if payload.get("analysis") == "manual" and "manual_fields" not in payload:
             protected.update(k for k in fields if payload.get(k))
         for name in fields:
             if name not in result:

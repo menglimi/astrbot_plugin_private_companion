@@ -4,8 +4,9 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
 
-from astrbot_host.core_reply_context import CURRENT_TIME_INSTRUCTION, build_core_reply_prompt
+from astrbot_host.core_reply_context import CURRENT_TIME_MEANING, build_core_reply_prompt
 from companion_v2.foundation.refs import ScopeKind
+from companion_v2.system_prompts.catalog import CORE_REPLY_TIME_STYLE
 
 
 class CoreReplyTimeContextTests(unittest.TestCase):
@@ -43,8 +44,17 @@ class CoreReplyTimeContextTests(unittest.TestCase):
         self.assertEqual(perception["current_local_time"]["local_time"], "22:55")
         self.assertEqual(perception["current_local_time"]["timezone"], "Asia/Shanghai")
         self.assertNotIn('"local_time":"22:55"', prompt.instruction)
-        self.assertIn(CURRENT_TIME_INSTRUCTION, prompt.perception_instructions)
+        self.assertIn(CURRENT_TIME_MEANING + "\n" + CORE_REPLY_TIME_STYLE, prompt.perception_instructions)
         self.assertEqual(prompt.perception_options, (True, True, True))
+        application.runtime = object()
+        with patch("astrbot_host.core_reply_context.SystemPromptContext") as prompts:
+            prompts.return_value.overrides.return_value = {"reply_style": "自己的风格", "reply_time_style": ""}
+            configured = build_core_reply_prompt(application, context, native_input, at=at)
+        self.assertEqual(configured.perception_style, "自己的风格")
+        self.assertIn(CURRENT_TIME_MEANING, configured.perception_instructions)
+        self.assertNotIn(CORE_REPLY_TIME_STYLE, "\n".join(configured.perception_instructions))
+        self.assertEqual(json.loads(configured.perception_context)["current_local_time"],
+                         perception["current_local_time"])
 
         # Native snapshots name their arrival time ``at``. Preparation can run
         # after another reply part has been sent, so its wall time is too late.

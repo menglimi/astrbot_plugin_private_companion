@@ -48,12 +48,12 @@ class ConversationAnimationTests(ImageFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual([item["start_ms"] for item in frame_materials], [0, 40, 80])
 
         def image_evidence(payload):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             materials = json.loads(content[0]["text"])["materials"]
             return next(item["evidence"] for item in materials if item["owner"] == "conversation.image")
 
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             self.assertEqual(len([part for part in content if part["type"] == "image_url"]), 3)
             self.assertTrue(all(part["image_url"]["url"].startswith("data:image/png;base64,")
                                 for part in content if part["type"] == "image_url"))
@@ -192,7 +192,7 @@ class ConversationAnimationTests(ImageFixture, unittest.IsolatedAsyncioTestCase)
     async def test_tool_continuation_and_confirmed_memory_retain_every_frame_dependency(self):
         payloads = []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             payloads.append(content)
             if not any(m["role"] == "tool" for m in payload["messages"]):
                 return completion(tools=[NS(id="frames-memo", type="function", function=NS(name=tool_alias("memo.list"), arguments='{}'))])

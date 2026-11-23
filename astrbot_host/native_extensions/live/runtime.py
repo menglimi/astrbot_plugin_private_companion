@@ -45,6 +45,7 @@ class LiveRuntime(NativeService, LiveSettingsMethods, LiveRoomsMethods, LiveMedi
         self._mouth_sync_tasks: set[asyncio.Task] = set()
         self._soullink_tasks: set[asyncio.Task] = set()
         self._external_mouth_sync_tasks: dict[str, set[asyncio.Task]] = {}
+        self._background_tasks: set[asyncio.Task] = set()
         self._bili_live_client: Optional[BilibiliBlivedmClient | BilibiliLaplaceClient | BilibiliLiveClient | BilibiliOpenLiveClient] = None
         self._bili_live_task: Optional[asyncio.Task] = None
         cache_size = max(10, min(5000, self._safe_parse_int(self.config.get('bili_live_cache_size'), 80)))
@@ -84,30 +85,54 @@ class LiveRuntime(NativeService, LiveSettingsMethods, LiveRoomsMethods, LiveMedi
         self._last_vts_auth_error = ''
         self._vts_auth_lock = asyncio.Lock()
 
+    async def _cancel_external_mouth_sync_tasks(self) -> None:
+        tasks: list[asyncio.Task] = []
+        for group in list(self._external_mouth_sync_tasks.values()):
+            if isinstance(group, set):
+                tasks.extend(task for task in list(group) if isinstance(task, asyncio.Task))
+        self._external_mouth_sync_tasks.clear()
+        pending = [task for task in tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def terminate(self):
         """插件卸载/停用时：断开 VTS 连接，清理资源"""
-        if self._native_provider is not None:
-            await self._native_provider.close()
-            self._native_provider = None
-        try:
-            await self._cancel_task_attr('_startup_task')
-            await self._cancel_task_set(self._l2d_tasks)
-            await self._cancel_task_set(self._mouth_sync_tasks)
-            await self._cancel_task_set(self._soullink_tasks)
-            await self._cancel_task_set(self._bilibili_ai_memory_tasks)
-            await self._cancel_task_attr('_bili_auto_reply_task')
-            await self._cancel_task_attr('_bili_area_load_task')
-            await self._cancel_task_attr('_twitch_auto_reply_task')
-            await self._stop_bili_live()
-            await self._stop_twitch_live(log=False)
-            await self._stop_subtitle_server()
-            await self._stop_soullink_runtime()
-            await self._vts_parameter_scheduler.stop()
-            await asyncio.gather(self.vts.disconnect(), self._parameter_vts.disconnect())
-            logger.info('[VTS] 插件已卸载，VTS 连接已关闭')
-        except Exception as e:
-            logger.warning(f'[VTS] 卸载时断开连接失败: {e}')
-        await flush_model_usage(self)
+        async def _step(name: str, action) -> None:
+            try:
+                await action()
+            except Exception as exc:
+                logger.warning('[VTS] 卸载清理步骤失败 step=%s: %s', name, exc)
+
+        provider = self._native_provider
+        self._native_provider = None
+        if provider is not None:
+            await _step('native_provider', provider.close)
+
+        steps = (
+            ('startup_task', lambda: self._cancel_task_attr('_startup_task')),
+            ('l2d_tasks', lambda: self._cancel_task_set(self._l2d_tasks)),
+            ('mouth_sync_tasks', lambda: self._cancel_task_set(self._mouth_sync_tasks)),
+            ('external_mouth_sync_tasks', self._cancel_external_mouth_sync_tasks),
+            ('soullink_tasks', lambda: self._cancel_task_set(self._soullink_tasks)),
+            ('bilibili_ai_memory_tasks', lambda: self._cancel_task_set(self._bilibili_ai_memory_tasks)),
+            ('background_tasks', lambda: self._cancel_task_set(self._background_tasks)),
+            ('bili_auto_reply_task', lambda: self._cancel_task_attr('_bili_auto_reply_task')),
+            ('bili_area_load_task', lambda: self._cancel_task_attr('_bili_area_load_task')),
+            ('twitch_auto_reply_task', lambda: self._cancel_task_attr('_twitch_auto_reply_task')),
+            ('bili_live', self._stop_bili_live),
+            ('twitch_live', lambda: self._stop_twitch_live(log=False)),
+            ('subtitle_server', self._stop_subtitle_server),
+            ('soullink_runtime', self._stop_soullink_runtime),
+            ('vts_parameter_scheduler', self._vts_parameter_scheduler.stop),
+            ('vts_disconnect', self.vts.disconnect),
+            ('parameter_vts_disconnect', self._parameter_vts.disconnect),
+            ('flush_model_usage', lambda: flush_model_usage(self)),
+        )
+        for name, action in steps:
+            await _step(name, action)
+        logger.info('[VTS] 插件已卸载，VTS 连接已关闭')
 
     def build_native(self, version):
         from companion_v2.live.provider import NativeLiveProvider

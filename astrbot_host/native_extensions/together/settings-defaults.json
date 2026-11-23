@@ -17,6 +17,7 @@
     "call_idle_seconds": 120,
     "sync_astrbot_conversation": true,
     "record_visible_turns": false,
+    "record_shared_experiences": true,
     "system_prompt": ""
   },
   "speech": {

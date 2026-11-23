@@ -86,10 +86,12 @@ def parse_routing(model):
         provider_id = raw.get("provider_id", "")
         if type(provider_id) is not str:
             raise ValueError("additional provider requires an ID")
+        inp_rate = raw.get("input_microusd_per_million", 0)
+        cached_rate = raw.get("cached_input_microusd_per_million", 0)
+        out_rate = raw.get("output_microusd_per_million", 0)
         profile = TextProviderSettings(provider_id=provider_id.strip(),
-            tariff=UsageTariff(raw.get("input_microusd_per_million", 0),
-                              raw.get("cached_input_microusd_per_million", 0),
-                              raw.get("output_microusd_per_million", 0)),
+            tariff=UsageTariff(inp_rate, cached_rate, out_rate,
+                               configured=any((inp_rate, cached_rate, out_rate))),
             # An undeclared provider carries the product ceiling: the global
             # ``model.max_output_tokens`` is the task default budget, so copying it
             # here would cap every task at the default and blame the provider.

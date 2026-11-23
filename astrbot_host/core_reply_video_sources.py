@@ -101,8 +101,33 @@ def key_from_context(context):
         return None
 
 
+_VIDEO_FILE_SUFFIXES = frozenset({
+    ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".flv", ".wmv", ".mpeg", ".mpg",
+    ".3gp", ".ogv",
+})
+_EXCLUDED_VIDEO_FILE_SUFFIXES = frozenset({".ts", ".m2ts", ".mts"})
+
+
+def _file_is_video(part):
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    file_attr = "file_" if hasattr(part, "file_") else "file"
+    for attr in ("name", "url", file_attr):
+        val = getattr(part, attr, None)
+        if not isinstance(val, str) or not val.strip() or val.startswith("base64://"):
+            continue
+        parsed = urlparse(val).path if "://" in val else val
+        suffix = Path(parsed).suffix.lower()
+        if suffix in _EXCLUDED_VIDEO_FILE_SUFFIXES:
+            return False
+        if suffix in _VIDEO_FILE_SUFFIXES:
+            return True
+    return False
+
+
 def video_positions(event, *, video_type, component_reader=None):
-    """读这条消息里的视频位置，取值顺序与 ``capture()`` 完全一致。
+    """读这条消息里的视频位置（含群/私聊 ``.mp4`` 等视频 File 段，排除 ``.ts``）。
 
     ``capture_text_only`` 只读文本骨架，从不触碰这里；位置是在它把组件折成
     ``[视频不可用]`` 之前取走的，所以这里必须能容忍任何异常：记不住位置不影响
@@ -118,11 +143,13 @@ def video_positions(event, *, video_type, component_reader=None):
         return ()
     found = []
     for position, part in enumerate(parts if isinstance(parts, (list, tuple)) else ()):
-        if type(part) is not video_type:
+        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+        is_native_video = (type(part) is video_type and kind == "Video")
+        is_video_file = (kind == "File" and _file_is_video(part))
+        if not (is_native_video or is_video_file):
             continue
-        if getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) != "Video":
-            continue
-        file = getattr(part, "file", None)
+        file_attr = "file_" if is_video_file and hasattr(part, "file_") else "file"
+        file = getattr(part, file_attr, None)
         value = file if type(file) is str and file.startswith("base64://") else getattr(part, "url", None) or file
         if type(value) is str and value:
             found.append(NativeVideoLocator(position, value))

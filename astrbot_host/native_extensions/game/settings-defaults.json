@@ -1,6 +1,6 @@
 {
   "server": {
-    "enabled": false,
+    "enabled": true,
     "host": "127.0.0.1",
     "access_host": "",
     "port": 6331,
@@ -15,6 +15,7 @@
     "tictactoe_enabled": true,
     "gomoku_enabled": true,
     "pig_dice_enabled": true,
+    "pig_dice_target_score": 50,
     "blackjack_enabled": true,
     "xiangqi_enabled": true,
     "turtle_soup_enabled": true,
@@ -24,74 +25,16 @@
     "draw_guess_max_guesses": 5,
     "draw_guess_duration_seconds": 120
   },
-  "logging": {
-    "level": "inherit"
-  },
-  "identity": {
-    "enable_trusted_browser": false,
-    "trusted_browser_ttl_days": 30
+  "xiangqi": {
+    "engine_path": "",
+    "allow_engine_download": true,
+    "download_proxy": ""
   },
   "context": {
     "enable_private_qq_game_context": true,
     "recent_game_result_ttl_minutes": 30
   },
-  "rooms": {
-    "enable_group_rooms": true,
-    "enable_private_rooms": true,
-    "allow_non_admin_group_creation": false,
-    "game_admin_qq_ids": "",
-    "max_group_rooms": 1,
-    "max_private_rooms": 1,
-    "empty_player_timeout_seconds": 60,
-    "idle_timeout_seconds": 300
-  },
-  "game": {
-    "commentary_cooldown_seconds": 45
-  },
-  "multiplayer": {
-    "turn_timeout_seconds": 60,
-    "swap_request_cooldown_seconds": 30,
-    "swap_request_expiry_seconds": 20
-  },
-  "gomoku": {
-    "enabled": true
-  },
-  "xiangqi": {
-    "enabled": true,
-    "engine_path": "",
-    "allow_engine_download": true,
-    "auto_download_engine": false,
-    "download_proxy": ""
-  },
-  "tictactoe": {
-    "enabled": true
-  },
-  "turtle_soup": {
-    "enabled": true,
-    "max_hints": 3,
-    "content_level": "normal",
-    "max_players": 6
-  },
-  "pig_dice": {
-    "enabled": true,
-    "target_score": 50
-  },
-  "draw_guess": {
-    "enabled": true,
-    "duration_seconds": 120,
-    "max_guesses": 5
-  },
-  "blackjack": {
-    "enabled": true,
-    "max_players": 1
-  },
-  "memory": {
-    "record_shared_experience": true
-  },
-  "companion_integration": {
-    "enable_emotional_afterglow": false,
-    "enable_proactive_invites": false,
-    "proactive_invite_probability_percent": 18,
-    "proactive_invite_cooldown_hours": 24
+  "logging": {
+    "level": "inherit"
   }
 }

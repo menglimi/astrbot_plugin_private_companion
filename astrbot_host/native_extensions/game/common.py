@@ -61,4 +61,10 @@ class GameCompanionExtensionAPI:
     def companion_v2_native(self):
         return self._plugin._native_provider if getattr(self._plugin, 'native_v2_tictactoe_enabled', False) or getattr(self._plugin, 'native_v2_gomoku_enabled', False) or getattr(self._plugin, 'native_v2_pig_dice_enabled', False) or getattr(self._plugin, 'native_v2_blackjack_enabled', False) or getattr(self._plugin, 'native_v2_xiangqi_enabled', False) or getattr(self._plugin, 'native_v2_turtle_soup_enabled', False) or getattr(self._plugin, 'native_v2_draw_guess_enabled', False) else None
 
+    def page_snapshot(self) -> dict[str, Any]:
+        return self._plugin.management_snapshot()
+
+    async def page_action(self, action_name: str, payload: dict[str, Any], current) -> dict[str, Any]:
+        return await self._plugin.management_action(action_name, payload, current)
+
 __all__ = [name for name in globals() if not name.startswith("__")]

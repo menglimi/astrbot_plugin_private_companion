@@ -94,21 +94,33 @@ window.CompanionHomeEnvironment = (() => {
         && input.onSceneChange(scene) !== false) input.currentScene = scene;
     }
     const alert = Array.isArray(weather?.alerts) ? weather.alerts[0] : null;
-    const summary = weatherText(settings, location) + (alert ? ` · ${alert.event_name || alert.title}` : "");
+    const eventName = String(alert?.event_name || "").trim();
+    const headline = String(alert?.title || "").trim();
+    const alertLabel = alert ? (eventName && eventName !== "其他预警" ? eventName
+      : headline && headline !== "其他预警" ? headline : "天气预警") : "";
+    const waiting = Boolean(input.loading) && !input.state?.settings;
+    const summary = waiting ? "正在准备地点与天气"
+      : weatherText(settings, location) + (alert ? ` · ${alertLabel}` : "");
     const condition = weather?.condition || "";
-    const icon = alert ? "triangle-alert" : iconFor(condition);
+    const icon = waiting ? "loader-circle" : alert ? "triangle-alert" : iconFor(condition);
     const canRefresh = settings.planning_weather_enabled === true && Boolean(location);
-    const locationLabel = weather?.location || location || "角色地点未设置";
-    const severity = ({minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重"})[alert?.severity] || alert?.severity || "级别待核对";
-    const detail = alert
-      ? `官方预警 · ${severity}${alert.ends_at ? ` · 至 ${new Date(alert.ends_at).toLocaleString("zh-CN")}` : ""}`
-      : weatherDetail(settings, location);
+    const locationLabel = waiting ? "正在读取小屋环境"
+      : !input.state?.settings ? "小屋环境暂不可读"
+      : weather?.location || location || "角色地点未设置";
+    const severityMap = {minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重",unknown:"级别待核对"};
+    const severity = severityMap[alert?.severity] || (alert?.severity && alert.severity !== "unknown" ? alert.severity : "级别待核对");
+    const detail = waiting ? "正在读取角色状态与天气设置，请稍候"
+      : alert
+        ? `官方预警 · ${severity}${alert.ends_at ? ` · 至 ${new Date(alert.ends_at).toLocaleString("zh-CN")}` : ""}`
+        : weatherDetail(settings, location);
     const timeISO = time.date.toISOString();
+    host.classList?.toggle?.("is-loading", waiting);
+    host.setAttribute?.("aria-busy", waiting ? "true" : "false");
     host.innerHTML = `<div class="home-environment-icon" aria-hidden="true"><i data-lucide="${icon}"></i></div>
       <div class="home-environment-copy"><strong>${escapeHTML(locationLabel)} · ${escapeHTML(summary)}</strong>
         <small>${escapeHTML(detail)}</small></div>
       <div class="home-environment-clock"><time datetime="${timeISO}">${time.label}</time><small class="home-environment-date">${escapeHTML(time.dateLabel)}</small><small>${escapeHTML(zone)} · ${time.phase}</small></div>
-      <button type="button" class="home-environment-refresh" data-home-weather-refresh aria-label="刷新天气" title="刷新天气"
+      <button type="button" class="home-environment-refresh${loading ? " is-refreshing" : ""}" data-home-weather-refresh aria-label="刷新天气" title="刷新天气"
         aria-busy="${loading}" ${!canRefresh || loading ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button>`;
     window.lucide?.createIcons({nodes:host.querySelectorAll("[data-lucide]"),attrs:{"aria-hidden":"true"}});
   }
@@ -133,6 +145,17 @@ window.CompanionHomeEnvironment = (() => {
   function scheduleClock() {
     clearTimeout(clockTimer);
     clockTimer = setTimeout(() => { paint(); scheduleClock(); }, 60000 - (Date.now() % 60000) + 30);
+  }
+  function suspend() {
+    if (clockTimer != null) {
+      clearTimeout(clockTimer);
+      clockTimer = null;
+    }
+    if (loading) {
+      sequence += 1;
+      loading = false;
+      context = "";
+    }
   }
   function render(root, next = {}) {
     if (!root) return;
@@ -161,5 +184,5 @@ window.CompanionHomeEnvironment = (() => {
     paint();
     if (clockTimer == null) scheduleClock();
   }
-  return {render, sceneForTime};
+  return {render, suspend, sceneForTime};
 })();

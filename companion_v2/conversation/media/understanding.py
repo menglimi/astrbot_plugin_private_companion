@@ -13,6 +13,11 @@ DEFAULTS = {
     "video_understanding_enabled": True,
     "video_understanding_max_chars": 2400,
     "video_understanding_wait_seconds": 45,
+    "video_understanding_target_mb": 10,
+    "video_understanding_max_duration_seconds": 120,
+    "video_understanding_oversize_action": "compress",
+    "video_understanding_quoted_enabled": True,
+    "video_understanding_qa_enabled": True,
     "video_understanding_prompt": "",
     "video_self_recognition_hint": "",
     "image_understanding_private_enabled": True,
@@ -35,9 +40,12 @@ SCOPE_PERMISSION_FIELDS = frozenset((
     "video_understanding_private_enabled", "video_understanding_group_enabled",
     "file_understanding_private_enabled", "file_understanding_group_enabled",
 ))
+OVERSIZE_ACTIONS = frozenset(("compress", "truncate", "reject"))
 LIMITS = {
     "video_understanding_max_chars": (200, 6000),
     "video_understanding_wait_seconds": (1, 60),
+    "video_understanding_target_mb": (1, 18),
+    "video_understanding_max_duration_seconds": (10, 1800),
     "file_understanding_max_size_mb": (1, 16),
     "file_understanding_max_chars": (1000, 48000),
     "file_understanding_timeout_seconds": (1, 30),
@@ -82,6 +90,8 @@ def settings(values):
             raise ConfigurationError("reply_configuration_invalid", "media understanding prompt is too long")
     if len(result["video_self_recognition_hint"]) > 1200:
         raise ConfigurationError("reply_configuration_invalid", "video identity hint is too long")
+    if result["video_understanding_oversize_action"] not in OVERSIZE_ACTIONS:
+        raise ConfigurationError("reply_configuration_invalid", "unknown video oversize action")
     if result["file_understanding_formats"] not in ("text_only", "text_and_documents"):
         raise ConfigurationError("reply_configuration_invalid", "unknown document format selection")
     if "file_understanding_format_groups" not in values:

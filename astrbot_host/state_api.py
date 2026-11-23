@@ -12,6 +12,7 @@ from companion_v2.agenda.planning_config import configured_weather_location, con
 from companion_v2.agenda.weather_reading import WeatherReading
 from companion_v2.proactive.weather_alerts import active_official_alerts
 from companion_v2.role_work.state.configuration import GROUP, target_for
+from companion_v2.storage.runtime import StorageOpenError
 from .growth_api import _source
 from .management_identity import dashboard_operator
 
@@ -57,26 +58,50 @@ class StateWebAPI:
                 (PREFIX + "/weather", self.weather, ["GET"], "Read configured role weather"),
                 (PREFIX + "/command", self.command, ["POST"], "Manage role state and calendar")]
 
+    def _snapshot(self, username=None):
+        controller = self.controller
+        if controller._terminated:
+            raise TaskError("staging_host_terminated", "the plugin has stopped")
+        if username is None:
+            username = request.username
+        if type(username) is not str or not username.strip():
+            raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+        session = controller.session or controller.last_session
+        runtime = controller.runtime
+        if session is None or runtime is None:
+            raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
+        return session, runtime, controller.now(), username
+
     async def _run(self, data=None, **query):
         from .web_api import outcome_response
         controller = self.controller
-        async with controller._control_lock:
-            try:
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "the plugin has stopped")
-                username = request.username
-                if type(username) is not str or not username.strip():
-                    raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                manager = StateManagement(session.application, session.profile.target)
-                return outcome_response(manager.command(operator, data) if data is not None else manager.status(operator, **query))
-            except TaskError as error:
-                return outcome_response(Outcome.failed(error.code, str(error)))
-            except (ValueError, TypeError, KeyError, OverflowError):
-                return outcome_response(Outcome.failed("state_command_invalid", "invalid state or calendar fields"))
+        username = request.username
+        try:
+            if data is None:
+                async with controller._control_lock:
+                    session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+                def execute():
+                    operator = dashboard_operator(runtime, resolved_username, at=observed_at)
+                    manager = StateManagement(session.application, session.profile.target)
+                    return manager.status(operator, **query)
+
+                return outcome_response(await asyncio.to_thread(execute))
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+                def execute_mutation():
+                    operator = dashboard_operator(runtime, resolved_username, at=observed_at)
+                    manager = StateManagement(session.application, session.profile.target)
+                    return manager.command(operator, data)
+
+                return outcome_response(await asyncio.to_thread(execute_mutation))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("state_storage_unavailable", "the state store is not available"))
+        except (ValueError, TypeError, KeyError, OverflowError):
+            return outcome_response(Outcome.failed("state_command_invalid", "invalid state or calendar fields"))
 
     async def status(self):
         from .web_api import outcome_response
@@ -91,18 +116,10 @@ class StateWebAPI:
             return outcome_response(Outcome.failed("state_query_invalid", "invalid state query"))
         return await self._run(after_id=query.get("after_id", ""), limit=limit)
 
-    def _weather_context(self):
-        controller = self.controller
-        if controller._terminated:
-            raise TaskError("staging_host_terminated", "the plugin has stopped")
-        username = request.username
-        if type(username) is not str or not username.strip():
-            raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-        session = controller.session or controller.last_session
-        if session is None or controller.runtime is None:
-            raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
+    @staticmethod
+    def _read_weather_context(session, runtime, username, observed_at):
         app, context = session.application, session.profile.target
-        operator = dashboard_operator(controller.runtime, username, at=controller.now())
+        operator = dashboard_operator(runtime, username, at=observed_at)
         with app.runtime.read_snapshot():
             StateManagement(app, context).life.authorize(operator)
             snapshot = require(app.configuration.read(operator, target=target_for(context),
@@ -112,25 +129,35 @@ class StateWebAPI:
                 "planning_timezone")}
         return app, context, settings
 
+    def _weather_context(self, username=None):
+        session, runtime, observed_at, resolved_username = self._snapshot(username)
+        return self._read_weather_context(session, runtime, resolved_username, observed_at)
+
     async def weather(self):
         from .web_api import outcome_response
         controller = self.controller
         try:
             query = request.query
+            username = request.username
             if (set(query.keys()) - {"refresh"}
                     or any(len(query.getlist(key)) != 1 for key in query.keys())
                     or query.get("refresh", "0") not in ("0", "1")):
                 raise ValueError("weather route has invalid query fields")
             force = query.get("refresh", "0") == "1"
             async with controller._control_lock:
-                app, context, settings = self._weather_context()
-                location = configured_weather_location(settings["planning_weather_location"])
-                timezone = settings["planning_timezone"]
-                if settings["planning_weather_enabled"] is not True:
-                    return outcome_response(Outcome.success({"state":"disabled", "location":location.name if location else None,
-                        "timezone":timezone, "server_time":app.now().isoformat()}))
-                if location is None:
-                    raise TaskError("planning_weather_location_required", "set the role location before reading current weather")
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+            app, context, settings = await asyncio.to_thread(
+                self._read_weather_context, session, runtime, resolved_username, observed_at)
+            location = configured_weather_location(settings["planning_weather_location"])
+            timezone = settings["planning_timezone"]
+            if settings["planning_weather_enabled"] is not True:
+                return outcome_response(Outcome.success({"state":"disabled", "location":location.name if location else None,
+                    "timezone":timezone, "server_time":app.now().isoformat()}))
+            if location is None:
+                raise TaskError("planning_weather_location_required", "set the role location before reading current weather")
+            async with controller._control_lock:
+                if controller._terminated:
+                    raise TaskError("staging_host_terminated", "the plugin has stopped")
                 port = app.calendar_planning.weather_port
                 if self._weather_application is not app:
                     self._weather_application, self._weather_reading = app, WeatherReading()
@@ -141,19 +168,23 @@ class StateWebAPI:
             alerts = await self._alerts(app, location, app.now())
 
             async with controller._control_lock:
-                current_app, current_context, current_settings = self._weather_context()
-                if current_app is not app or current_context != context:
-                    raise TaskError("staging_context_changed", "the active role changed during the weather read")
-                current_location = configured_weather_location(current_settings["planning_weather_location"])
-                if (current_settings["planning_weather_enabled"] is not True or current_location != location
-                        or configured_weather_max_age(current_settings) != configured_weather_max_age(settings)
-                        or app.calendar_planning.weather_port is not port):
-                    raise TaskError("weather_settings_changed", "weather settings changed during the read")
-                return outcome_response(Outcome.success({**result, "alerts": alerts,
-                    "timezone": current_settings["planning_timezone"],
-                    "server_time": app.now().isoformat()}))
+                current_session, current_runtime, current_at, current_user = self._snapshot(username)
+            current_app, current_context, current_settings = await asyncio.to_thread(
+                self._read_weather_context, current_session, current_runtime, current_user, current_at)
+            if current_app is not app or current_context != context:
+                raise TaskError("staging_context_changed", "the active role changed during the weather read")
+            current_location = configured_weather_location(current_settings["planning_weather_location"])
+            if (current_settings["planning_weather_enabled"] is not True or current_location != location
+                    or configured_weather_max_age(current_settings) != configured_weather_max_age(settings)
+                    or app.calendar_planning.weather_port is not port):
+                raise TaskError("weather_settings_changed", "weather settings changed during the read")
+            return outcome_response(Outcome.success({**result, "alerts": alerts,
+                "timezone": current_settings["planning_timezone"],
+                "server_time": app.now().isoformat()}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("state_storage_unavailable", "the state store is not available"))
         except (ValueError, TypeError, KeyError, OverflowError):
             return outcome_response(Outcome.failed("state_query_invalid", "invalid weather request"))
 

@@ -1,5 +1,6 @@
 """Optional V2 context for the exact private window that opened a room."""
 
+import asyncio
 from dataclasses import dataclass
 import json
 import logging
@@ -22,12 +23,12 @@ class RoomContext:
     context: object
 
 
-def current_room_context(runtime, room):
+def current_room_context(runtime, room, *, allow_closing: bool = False):
     """Local authorization, repeated after awaited host lookups and before writes."""
     controller = runtime.controller
     registry = getattr(controller, "native_extensions", None)
     binding = room.native_v2
-    if (binding is None or room.integration_closed or registry is None
+    if (binding is None or (room.integration_closed and not allow_closing) or registry is None
             or registry.active_service("together") is not runtime
             or any(member.role == "guest" for member in runtime._ensure_room_members(room).values())):
         return None
@@ -46,10 +47,10 @@ def current_room_context(runtime, room):
     return RoomContext(session, application, context)
 
 
-async def resolve_room_context(runtime, room):
+async def resolve_room_context(runtime, room, *, allow_closing: bool = False):
     """A stale room may keep chatting, but cannot read or write another window."""
     try:
-        resolved = current_room_context(runtime, room)
+        resolved = current_room_context(runtime, room, allow_closing=allow_closing)
         if resolved is None:
             return None
         registry = runtime.controller.native_extensions
@@ -58,7 +59,7 @@ async def resolve_room_context(runtime, room):
         if (not isinstance(persona, dict) or any(persona.get(key) != getattr(binding, key)
                 for key in ("persona_id", "prompt", "bot_id", "account_id"))):
             return None
-        current = current_room_context(runtime, room)
+        current = current_room_context(runtime, room, allow_closing=allow_closing)
         return current if current == resolved else None
     except Exception as error:
         logger.debug("[TogetherCompanion] V2 房间背景暂不可用: %s", type(error).__name__)
@@ -90,8 +91,14 @@ async def room_background(runtime, room, query):
     application = resolved.application
     if not runtime.enable_memory_context:
         application = _ApplicationView(application)
+    from astrbot_host.knowledge_sources import prepare_official_knowledge_hits
+    official_hits = await prepare_official_knowledge_hits(
+        application, resolved.context, str(query or ""), include_official=True)
     native_input = SimpleNamespace(text=query, event_id="together-background-" + uuid4().hex)
-    prompt = build_core_reply_prompt(application, resolved.context, native_input, at=runtime.controller.now())
+    prompt = await asyncio.to_thread(
+        build_core_reply_prompt, application, resolved.context, native_input, at=runtime.controller.now(),
+        official_knowledge_hits=official_hits, include_official_knowledge=True,
+    )
     return prompt.instruction
 
 
@@ -104,8 +111,10 @@ async def room_work_context(runtime, room):
         return {}
     at = runtime.controller.now()
     try:
-        materials = require(repository.latest_analysis(scope=resolved.context.scope,
-            resolved=resolved.context.actor, observed_at=at))
+        materials = require(await asyncio.to_thread(
+            repository.latest_analysis, scope=resolved.context.scope,
+            resolved=resolved.context.actor, observed_at=at
+        ))
         if not materials:
             return {"available": True, "context_available": False}
         item = materials[0]

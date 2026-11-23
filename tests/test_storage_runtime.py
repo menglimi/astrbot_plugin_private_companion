@@ -43,6 +43,38 @@ def operation() -> OperationRef:
 
 
 class StorageRuntimeTests(unittest.TestCase):
+    def test_finished_worker_readers_are_reaped_and_closed(self) -> None:
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            connections = []
+
+            def open_reader(runtime):
+                with runtime.read_snapshot() as connection:
+                    connection.execute("SELECT 1").fetchone()
+                    connections.append(connection)
+
+            def run_worker(runtime):
+                worker = threading.Thread(target=open_reader, args=(runtime,))
+                worker.start()
+                worker.join(5)
+                self.assertFalse(worker.is_alive())
+
+            try:
+                with StorageRuntime.open(data_root=Path(temporary), installation_id=INSTALLATION_ID) as runtime:
+                    run_worker(runtime)
+                    run_worker(runtime)
+                    # Bounded shared reader pool reuses the idle connection across sequential workers
+                    # rather than churning connections per thread, and closes all pooled readers on close().
+                    self.assertEqual(len(connections), 2)
+                    self.assertIs(connections[0], connections[1])
+                    self.assertEqual(len(runtime._all_readers), 1)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[0].execute("SELECT 1")
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[1].execute("SELECT 1")
+            finally:
+                for connection in connections:
+                    connection.close()
+
     def test_wal_reader_does_not_wait_for_writer_and_never_sees_uncommitted_data(self) -> None:
         with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
             runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)
@@ -128,7 +160,8 @@ class StorageRuntimeTests(unittest.TestCase):
             runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)
             try:
                 self.assertEqual(runtime.read_one("PRAGMA wal_autocheckpoint", ())[0], 0)
-                self.assertEqual(runtime.read_one("PRAGMA synchronous", ())[0], 2)
+                self.assertEqual(runtime.read_one("PRAGMA journal_mode", ())[0].lower(), "wal")
+                self.assertEqual(runtime.read_one("PRAGMA synchronous", ())[0], 1)
                 result = runtime.checkpoint_passive()
                 self.assertEqual(len(result), 3)
                 self.assertGreaterEqual(result[1], result[2])

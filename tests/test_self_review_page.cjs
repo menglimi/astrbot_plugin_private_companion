@@ -265,7 +265,7 @@ test('已停止注入的建议恢复可读后，不会同时出现在生效与�
     if (!request.route.endsWith('/self-review')) return {};
     if (request.params.state === 'decided') return page([], null);
     return readable
-      ? page([item('i-1')], null)
+      ? page([item('i-1'), item('i-2')], null)
       : page([item('i-1', {unavailable_reason: 'evidence_expired'}), item('i-2')], null);
   };
   await mount(h, answer);
@@ -324,4 +324,16 @@ test('读取成功但一条都没有：仍然说「暂无复盘记录」，并�
   assert.match(html, /最近一次复盘状态/);
   assert.match(html, /上次失败/, '后端注入的最近一次状态要被渲染出来');
   assert.match(html, /self_review_output_invalid/);
+  const visible = html.replace(/<[^>]+>/g, ' ');
+  assert.match(visible, /复盘输出格式不完整/, '失败码应在可见文本中给出中文说明');
+  assert.doesNotMatch(visible, /self_review_output_invalid/, '可见文本不得裸露下划线英文码');
+});
+
+test('成功态的 owner_result 内部哨兵码彻底剥离，不出现在可见文本或 HTML 中', async () => {
+  const h = harness();
+  await mount(h, () => page([], null,
+    {status: {state: 'succeeded', code: 'owner_result'}}));
+  const html = h.element.innerHTML;
+  assert.match(html, /最近一次已产出/);
+  assert.doesNotMatch(html, /owner_result/);
 });

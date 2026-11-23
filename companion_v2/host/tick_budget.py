@@ -18,8 +18,29 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import inspect
+import logging
+import sqlite3
 import time
 from typing import Callable
+
+
+logger = logging.getLogger(__name__)
+SLOW_UNIT_WARNING_SECONDS = 0.5
+SLOW_UNIT_LOG_INTERVAL_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class StagedOffload:
+    """One prepared off-loop maintenance step for single-pass or coalesced execution."""
+
+    kind: str  # "skip" or "offload"
+    scan: Callable[[], object] | None = None
+    apply: Callable[[object], object] | None = None
+    cleanup: Callable[[], None] | None = None
+    value: object = None
+    barrier_before: bool = False
+    barrier_after: bool = False
 
 
 @dataclass(frozen=True)
@@ -28,6 +49,8 @@ class TickUnit:
 
     name: str
     run: Callable[[], object]
+    offload: bool = False
+    stage: Callable[[], StagedOffload | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +92,8 @@ class TickScheduler:
         self._clock = clock
         self._cursor = 0
         self._rotated = False
+        self._slow_log_at: dict[str, float] = {}
+        self._slow_suppressed: dict[str, int] = {}
 
     @property
     def cursor(self) -> int:
@@ -94,7 +119,128 @@ class TickScheduler:
             if ran and self._rotated and self._clock() - started >= self._budget_seconds:
                 return TickReport(False, tuple(ran), results)
             unit = self._units[self._cursor]
-            results[unit.name] = unit.run()
+            if not self._rotated and unit.stage is not None:
+                batch: list[tuple[TickUnit, StagedOffload]] = []
+                probe = self._cursor
+                try:
+                    while probe < len(self._units):
+                        candidate = self._units[probe]
+                        if candidate.stage is None:
+                            break
+                        plan = candidate.stage()
+                        if plan is None:
+                            break
+                        if plan.barrier_before and batch:
+                            if plan.cleanup is not None:
+                                plan.cleanup()
+                            break
+                        batch.append((candidate, plan))
+                        probe += 1
+                        if plan.barrier_after:
+                            break
+                except BaseException:
+                    for _, b_plan in batch:
+                        if b_plan.cleanup is not None:
+                            b_plan.cleanup()
+                    raise
+                if batch:
+                    applied: set[int] = set()
+                    try:
+                        if any(plan.kind == "offload" for _, plan in batch):
+                            def _run_staged_batch():
+                                done_items = []
+                                op_err = None
+                                for idx, (b_unit, b_plan) in enumerate(batch):
+                                    if b_plan.kind == "skip":
+                                        done_items.append((idx, b_unit, b_plan, b_plan.value))
+                                        continue
+                                    try:
+                                        scanned = b_plan.scan()
+                                    except sqlite3.OperationalError as error:
+                                        op_err = (idx, b_unit, error)
+                                        break
+                                    done_items.append((idx, b_unit, b_plan, scanned))
+                                return done_items, op_err
+
+                            done_items, op_err = await asyncio.to_thread(_run_staged_batch)
+                        else:
+                            done_items = [
+                                (idx, b_unit, b_plan, b_plan.value)
+                                for idx, (b_unit, b_plan) in enumerate(batch)
+                            ]
+                            op_err = None
+
+                        for idx, b_unit, b_plan, scanned in done_items:
+                            if b_plan.kind == "skip":
+                                value = scanned
+                            else:
+                                value = b_plan.apply(scanned) if b_plan.apply is not None else scanned
+                                if inspect.isawaitable(value):
+                                    value = await value
+                            applied.add(idx)
+                            results[b_unit.name] = value
+                            ran.append(b_unit.name)
+                            self._cursor += 1
+                    finally:
+                        for idx, (_, b_plan) in enumerate(batch):
+                            if idx not in applied and b_plan.cleanup is not None:
+                                b_plan.cleanup()
+                    if op_err is not None:
+                        _idx, fail_unit, error = op_err
+                        results[fail_unit.name] = {
+                            "deferred": "sqlite_operational_error",
+                            "message": str(error)[:200],
+                        }
+                        return TickReport(False, tuple(ran), results)
+                    if self._cursor >= len(self._units):
+                        self._cursor = 0
+                        self._rotated = True
+                        return TickReport(True, tuple(ran), results)
+                    continue
+            unit_started = time.monotonic()
+            awaited = False
+            try:
+                if unit.offload:
+                    results[unit.name] = await asyncio.to_thread(unit.run)
+                else:
+                    result = unit.run()
+                    if inspect.isawaitable(result):
+                        awaited = True
+                        results[unit.name] = await result
+                    else:
+                        results[unit.name] = result
+            except sqlite3.OperationalError as error:
+                # A transient SQLite lock must not terminate the whole host
+                # loop. Keep the cursor on this unit so the next slice retries
+                # it; the rest of the rotation is deferred, not lost.
+                results[unit.name] = {
+                    "deferred": "sqlite_operational_error",
+                    "message": str(error)[:200],
+                }
+                return TickReport(False, tuple(ran), results)
+            finally:
+                unit_finished = time.monotonic()
+                elapsed = unit_finished - unit_started
+                if not unit.offload and not awaited and elapsed >= SLOW_UNIT_WARNING_SECONDS:
+                    last_logged = self._slow_log_at.get(unit.name, 0.0)
+                    if unit_finished - last_logged >= SLOW_UNIT_LOG_INTERVAL_SECONDS:
+                        self._slow_log_at[unit.name] = unit_finished
+                        suppressed = self._slow_suppressed.pop(unit.name, 0)
+                        if suppressed > 0:
+                            logger.warning(
+                                "[CompanionV2] 维护单元主线程耗时过长 unit=%s elapsed_ms=%d suppressed=%d",
+                                unit.name,
+                                round(elapsed * 1000),
+                                suppressed,
+                            )
+                        else:
+                            logger.warning(
+                                "[CompanionV2] 维护单元主线程耗时过长 unit=%s elapsed_ms=%d",
+                                unit.name,
+                                round(elapsed * 1000),
+                            )
+                    else:
+                        self._slow_suppressed[unit.name] = self._slow_suppressed.get(unit.name, 0) + 1
             ran.append(unit.name)
             self._cursor += 1
             if self._cursor >= len(self._units):
@@ -103,4 +249,8 @@ class TickScheduler:
                 return TickReport(True, tuple(ran), results)
             # The same yield the drive loop already made between components: it
             # lets intake, cancellation and other routes run inside one slice.
-            await asyncio.sleep(0)
+            # On the unbounded first rotation, offloaded batches already yield
+            # via ``asyncio.to_thread``; skipping extra yields between fast
+            # synchronous units keeps paired startup observations atomic.
+            if self._rotated:
+                await asyncio.sleep(0)

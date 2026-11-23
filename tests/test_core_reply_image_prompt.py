@@ -305,7 +305,12 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(native_tool_name("image.generate"), self.request.system_prompt)
         self.assertNotIn(native_tool_name("image.edit"), self.request.system_prompt)
         self.assertNotIn("reference_ids", self.request.system_prompt)
-        self.references.prompt_material.assert_not_called()
+        # Generate-only routes still receive text wardrobe/daily outfit without image reference IDs.
+        self.references.prompt_material.assert_called_once_with(self.session.context, local_date="2026-10-20")
+        material = self.state["_image_reference_material"]
+        self.assertEqual(material["references"], ())
+        self.assertEqual(material["wardrobe"]["tendency"], "居家")
+        self.assertEqual(material["daily_outfit"]["name"], "米色家居服")
 
     def test_optional_reference_failure_keeps_natural_image_generation(self):
         self.references.prompt_material.side_effect = TaskError("unavailable", "reference unavailable")

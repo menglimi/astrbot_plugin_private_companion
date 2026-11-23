@@ -23,15 +23,21 @@
         <div><dt>是否接收消息</dt><dd id="accepting">—</dd></div>
       </dl>
       <p id="safety-note" class="safety-note" hidden></p>
+      <section class="account-runtime" aria-labelledby="account-runtime-heading">
+        <div class="account-runtime-heading"><h3 id="account-runtime-heading">账号运行状态</h3><span id="account-runtime-summary" aria-live="polite">等待读取</span></div>
+        <p class="account-runtime-note">下列为已配置的 Bot 账号。已接入表示客户端可用，实际收发仍以消息记录为准；等待中的账号不会阻止其他账号运行。</p>
+        <ul id="account-runtime-list" class="account-runtime-list"></ul>
+      </section>
     </section>
 
     <section class="status-panel shared-model-panel" id="shared-model-panel" aria-labelledby="shared-model-heading">
       <div class="panel-heading">
-        <div><h2 id="shared-model-heading">共享启动模型</h2><p class="shared-model-intro">默认自动跟随 AstrBot 当前文本模型，无需手动保存；如需固定到某个 Provider，可在此选择并保存。</p></div>
+        <div><h2 id="shared-model-heading">陪伴通用模型（全局默认）</h2><p class="shared-model-intro">原称「共享启动模型」· 插件内部后台任务默认使用的主/备模型。主模型默认自动跟随 AstrBot 当前文本模型，也可在此固定并配置全局备用模型。</p></div>
       </div>
       <div class="shared-model-controls">
-        <label class="shared-model-select"><span>插件启动模型</span><select id="shared-model-provider" aria-label="插件启动共享模型"></select></label>
-        <button id="save-shared-model" class="button button-primary" type="button" disabled>固定共享模型</button>
+        <label class="shared-model-select"><span>陪伴通用模型（主模型）</span><select id="shared-model-provider" aria-label="陪伴通用模型（全局默认）"></select></label>
+        <label class="shared-model-select"><span>全局备用模型（可选）</span><select id="shared-model-fallback" aria-label="全局备用模型（回退 Provider）"></select></label>
+        <button id="save-shared-model" class="button button-primary" type="button" disabled>保存陪伴通用模型</button>
       </div>
       <p id="shared-model-note" class="shared-model-note" role="status" aria-live="polite">正在读取已加载的模型连接…</p>
     </section>

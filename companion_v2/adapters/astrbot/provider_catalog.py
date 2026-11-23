@@ -90,10 +90,23 @@ class TextVideoProvider:
         return await self.video.probe()
 
 
+def _genai_video_modality_allowed(native):
+    config = getattr(native, "provider_config", None)
+    if not isinstance(config, dict):
+        return True
+    declared = config.get("modalities")
+    if not isinstance(declared, list) or not declared:
+        return True
+    modalities = {item.strip().casefold() for item in declared if isinstance(item, str) and item.strip()}
+    if not modalities:
+        return True
+    return "video" in modalities or "audio" in modalities
+
+
 def attach_native_video(context, *, bridge, native_types, text, settings):
     """Expose native video for a verified dual-surface provider."""
     video_type = getattr(native_types, "video_provider_type", None)
-    if video_type is None or not isinstance(text.native, video_type):
+    if video_type is None or not isinstance(text.native, video_type) or not _genai_video_modality_allowed(text.native):
         return text
     video = native_types.video_provider_factory(context, bridge, native_types, text.native, settings)
     return TextVideoProvider(text, video)
@@ -155,7 +168,8 @@ def loaded_routing(fallback_provider_id, replacement_rules, provider_ids):
     return fallback, encoded
 
 
-def assemble_providers(context, *, bridge, native_types, primary_id, additional=(), defaults=None):
+def assemble_providers(context, *, bridge, native_types, primary_id, additional=(), defaults=None,
+                       only_ids=None, tariff_resolver=None):
     """Expose every loaded, verified AstrBot text provider to V2 routing.
 
     ``additional`` remains a compatibility layer for existing installations that
@@ -167,11 +181,12 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
     while the provider ceiling is the product ceiling ``MAX_MODEL_OUTPUT_TOKENS``.
     """
     additional = tuple(additional)
+    only_ids = frozenset(only_ids) if only_ids is not None else None
     overrides = {item.provider_id: item for item in additional}
     if len(overrides) != len(additional) or primary_id in overrides:
         raise ValueError("model provider profiles must have distinct IDs")
     if defaults is None:
-        defaults = TextProviderSettings(primary_id, UsageTariff(0, 0, 0))
+        defaults = TextProviderSettings(primary_id, UsageTariff.unconfigured())
     if not isinstance(defaults, TextProviderSettings):
         raise TypeError("default model provider profile is invalid")
 
@@ -185,7 +200,9 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
         # transport for requests carrying the original video bytes.
         if _text_provider(native_types, native):
             adapter_kind = "text"
-        elif native_types.video_provider_type is not None and isinstance(native, native_types.video_provider_type):
+        elif (native_types.video_provider_type is not None
+              and isinstance(native, native_types.video_provider_type)
+              and _genai_video_modality_allowed(native)):
             adapter_kind = "video"
         else:
             continue
@@ -195,7 +212,8 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
             logger.warning("Loaded AstrBot provider has no readable ID and stays unavailable to V2 (%s)",
                            _unavailable_detail(error))
             continue
-        if not provider_id or provider_id in seen or provider_id == primary_id:
+        if (not provider_id or provider_id in seen or provider_id == primary_id
+                or only_ids is not None and provider_id not in only_ids):
             continue
         seen.add(provider_id)
         candidates.append((provider_id, native, adapter_kind))
@@ -216,7 +234,7 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
                     function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
                     tariff=settings.tariff, maximum_output_tokens=settings.maximum_output_tokens,
                     maximum_input_estimate=settings.maximum_input_estimate, output_parameter=settings.output_parameter,
-                    streaming=settings.streaming)
+                    streaming=settings.streaming, tariff_resolver=tariff_resolver)
                 adapter = attach_native_video(context, bridge=bridge, native_types=native_types,
                                               text=adapter, settings=settings)
             if adapter.native is not native:

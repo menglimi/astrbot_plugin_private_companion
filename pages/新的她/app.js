@@ -144,10 +144,29 @@
     select.value = selected || "";
     select.disabled = !items.length;
   }
-  async function loadOptions() {
+  let optionsBusy = false, optionsSeq = 0;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  function setOptionRefreshState(active) {
+    for (const id of ["refresh-options", "refresh-personas"]) {
+      const btn = $(id);
+      if (!btn) continue;
+      btn.disabled = active;
+      btn.classList?.toggle?.("is-refreshing", active);
+      btn.setAttribute?.("aria-busy", active ? "true" : "false");
+      btn.textContent = active ? "读取中…" : "重新读取";
+    }
+  }
+  async function loadOptions(manual = false) {
+    if (optionsBusy) return;
+    const seq = ++optionsSeq;
+    optionsBusy = true;
+    setOptionRefreshState(true);
+    if (manual) notice("");
     try {
-      options = await api("GET", "designer/options", {});
-      if (!Array.isArray(options.models) || !Array.isArray(options.personas)) throw new Error("persona_designer_response_invalid");
+      const next = await api("GET", "designer/options", {});
+      if (disposed || seq !== optionsSeq) return;
+      if (!Array.isArray(next.models) || !Array.isArray(next.personas)) throw new Error("persona_designer_response_invalid");
+      options = next;
       loaded = true;
       fillSelect("model-select", options.models, doc().provider_id, "暂无文本模型");
       fillSelect("persona-select", options.personas, doc().source_persona_id || options.default_persona_id || options.personas[0]?.id, "暂无人设");
@@ -156,8 +175,16 @@
       $("confirm-model").disabled = !options.models.length;
       $("load-persona").disabled = !options.personas.length;
       if (options.persona_issue) notice(options.persona_issue);
+      else if (manual) notice(`刚刚已刷新 ${formatClock()}`);
       render();
-    } catch (error) { notice(errorText(error), true); }
+    } catch (error) {
+      if (!disposed && seq === optionsSeq) notice(errorText(error), true);
+    } finally {
+      if (seq === optionsSeq) {
+        optionsBusy = false;
+        setOptionRefreshState(false);
+      }
+    }
   }
   function validReply(value) {
     return value && typeof value.reply === "string" && value.reply.trim() && value.reply.length <= 16000
@@ -369,7 +396,7 @@
   });
   $("confirm-persona-switch").addEventListener("click", () => loadPersona(pendingPersonaId));
   $("switch-persona-dialog").addEventListener("close", () => { pendingPersonaId = ""; });
-  $("refresh-options").addEventListener("click", loadOptions); $("refresh-personas").addEventListener("click", loadOptions);
+  $("refresh-options").addEventListener("click", () => loadOptions(true)); $("refresh-personas").addEventListener("click", () => loadOptions(true));
   ["save-draft"].forEach(id => $(id).addEventListener("click", openSave));
   $("retry-save").addEventListener("click", () => saveSnapshot(root.retrySave));
   $("save-form").addEventListener("submit", event => {
@@ -406,7 +433,7 @@
       await poll();
     } catch (error) { notice(errorText(error), true); }
   }
-  window.addEventListener("pagehide", () => { disposed = true; clearTimeout(pollTimer); root = fresh(); render(); });
+  window.addEventListener("pagehide", () => { disposed = true; optionsSeq++; optionsBusy = false; clearTimeout(pollTimer); root = fresh(); render(); });
   window.addEventListener("pageshow", event => { if (event.persisted) { disposed = false; initialize(); } });
   render(); initialize();
 })();

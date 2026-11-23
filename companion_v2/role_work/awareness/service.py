@@ -18,7 +18,10 @@ import unicodedata
 
 from companion_v2.foundation.refs import ScopeKind, ScopeRef, SourceRef, VersionRef, normalize_utc
 
-from .models import ATTENTION_MINUTES, MAX_PROMPT_ITEMS, WINDOW_HOURS, valid_document
+from .models import (
+    ATTENTION_MINUTES, MAX_ALLOWED_PROMPT_ITEMS, MAX_PROMPT_ITEMS, RETENTION_HOURS, WINDOW_HOURS,
+    valid_document,
+)
 from .store import RoleAwarenessStore
 
 
@@ -125,17 +128,27 @@ class RoleAwareness:
         return self.store.observe_reply(connection, context, normalize_utc(at, field="awareness time"),
                                         text=text, event_key=event_key)
 
+    def record_together_experience(self, connection, context, at, *, text="", event_key=""):
+        """Persist one private-only desensitized Together room summary for the owner."""
+        if context.scope.kind is not ScopeKind.PRIVATE or not str(text or "").strip():
+            return None
+        return self.store.observe_together_experience(
+            connection, context, normalize_utc(at, field="awareness time"),
+            text=text, event_key=event_key)
+
     def snapshot(self, context, at, *, current_text=""):
         at = normalize_utc(at, field="awareness time")
         values = self._values(context)
-        if not self._enabled(context, values):
-            return None
+        awareness_enabled = self._enabled(context, values)
         document = self.store.read(context)
         if document is None or not valid_document(document):
             return None
         if context.scope.kind is ScopeKind.PRIVATE:
+            together = self._recent_together_activity(document, context, at)
+            if not awareness_enabled:
+                return {"recent_together_activity": together} if together else None
             hours = self._integer(values, "person.cross_window_private_group_hours", WINDOW_HOURS, 1, 48)
-            limit = self._integer(values, "person.cross_window_max_items", MAX_PROMPT_ITEMS, 1, 8)
+            limit = self._integer(values, "person.cross_window_max_items", MAX_PROMPT_ITEMS, 1, MAX_ALLOWED_PROMPT_ITEMS)
             minutes = self._integer(values, "person.cross_window_attention_minutes", ATTENTION_MINUTES, 0, 120)
             peer_reply_minutes = self._integer(values, "person.cross_window_peer_reply_minutes", 60, 1, 720)
             recent = self._recent_group_activity(document, context, at, hours=hours, limit=limit)
@@ -143,11 +156,13 @@ class RoleAwareness:
             peer_replies, peer_repliers = self._peer_replies(
                 document, context, at, minutes=peer_reply_minutes)
             continuity = self._continuity(document, context, at, current_text, values)
-            if not recent and not attention and not peer_replies and continuity is None:
+            if not recent and not together and not attention and not peer_replies and continuity is None:
                 return None
             payload = {}
             if recent:
                 payload["recent_group_activity"] = recent
+            if together:
+                payload["recent_together_activity"] = together
             if attention:
                 payload["attention"] = attention
             if peer_replies:
@@ -157,8 +172,21 @@ class RoleAwareness:
             if continuity is not None:
                 payload["continuity"] = continuity
             return payload
-        if context.scope.kind is ScopeKind.GROUP and self._private_contact(context, at, values):
-            return {"private_contact": True}
+        if not awareness_enabled:
+            return None
+        if context.scope.kind is ScopeKind.GROUP:
+            payload = {}
+            if self._private_contact(context, at, values):
+                payload["private_contact"] = True
+            if values.get("person.cross_window_cross_group_enabled", True) is not False:
+                cross_group = self._recent_cross_group_activity(
+                    document, context, at,
+                    hours=self._integer(values, "person.cross_window_private_group_hours", WINDOW_HOURS, 1, 48),
+                    limit=self._integer(values, "person.cross_window_max_items", MAX_PROMPT_ITEMS, 1, MAX_ALLOWED_PROMPT_ITEMS),
+                )
+                if cross_group:
+                    payload["cross_group_activity"] = cross_group
+            return payload or None
         return None
 
     @staticmethod
@@ -263,6 +291,30 @@ class RoleAwareness:
             "prior_reply": prior_reply,
         }
 
+    def _recent_cross_group_activity(self, document, context, at, *, hours=WINDOW_HOURS,
+                                     limit=MAX_PROMPT_ITEMS):
+        """The same human's own public words from *other* groups.
+
+        Group ids stay out of the prompt.  Other members, the role's replies and
+        private content are never included, so this cannot turn into a general
+        group-to-group transcript.
+        """
+        cutoff = at - timedelta(hours=hours)
+        subject = context.actor.subject.subject_id
+        current_group = context.scope.native_scope_id
+        items = []
+        for item in document["events"]:
+            when = _when(item["at"])
+            if (item["window"] != "group" or item["kind"] != "spoke"
+                    or item["subject"] != subject or item["group_id"] == current_group
+                    or not item["topic"] or not self._same_route(item, context)
+                    or when is None or when < cutoff or when > at
+                    or not self._source_current(item, at)):
+                continue
+            items.append({"at": item["at"], "topic": item["topic"]})
+        items.sort(key=lambda item: item["at"])
+        return items[-limit:]
+
     def _recent_group_activity(self, document, context, at, *, hours=WINDOW_HOURS, limit=MAX_PROMPT_ITEMS):
         cutoff = at - timedelta(hours=hours)
         subject = context.actor.subject.subject_id
@@ -276,6 +328,24 @@ class RoleAwareness:
                 continue
             items.append({"at": item["at"], "group_id": item["group_id"], "topic": item["topic"],
                           "peers": item["peer_count"]})
+        items.sort(key=lambda item: item["at"])
+        return items[-limit:]
+
+    def _recent_together_activity(self, document, context, at, *, hours=RETENTION_HOURS, limit=3):
+        """Private-only desensitized summaries from this person's recent Together rooms."""
+        if context.scope.kind is not ScopeKind.PRIVATE:
+            return []
+        cutoff = at - timedelta(hours=hours)
+        subject = context.actor.subject.subject_id
+        items = []
+        for item in document["events"]:
+            when = _when(item["at"])
+            if (item["window"] != "private" or item["kind"] != "together_room"
+                    or item["subject"] != subject or not item["topic"]
+                    or not self._same_route(item, context)
+                    or when is None or when < cutoff or when > at):
+                continue
+            items.append({"at": item["at"], "topic": item["topic"]})
         items.sort(key=lambda item: item["at"])
         return items[-limit:]
 

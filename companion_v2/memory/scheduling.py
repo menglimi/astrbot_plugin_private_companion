@@ -282,11 +282,15 @@ class MemorySchedule:
                      row["schedule_id"], row["revision"], batch_id))
                 if changed.rowcount and (continuation or result["remaining_sources"]):
                     connection.execute("UPDATE memory_schedules SET next_at = ? WHERE schedule_id = ? AND revision = ? AND enabled = 1",
-                                       (stamp(now + timedelta(minutes=1)), row["schedule_id"], row["revision"]))
+                                       (stamp(now + timedelta(seconds=5)), row["schedule_id"], row["revision"]))
         elif result["state"] in ("failed", "partial", "running"):
             with self.runtime.transaction() as connection:
                 connection.execute("UPDATE memory_schedules SET pending_batch = NULL WHERE schedule_id = ? AND revision = ? AND pending_batch = ?",
                                    (row["schedule_id"], row["revision"], batch_id))
+                # A partial/failed batch must not leave next_at at tomorrow's
+                # normal slot: the remaining sources would wait a whole day.
+                connection.execute("UPDATE memory_schedules SET next_at = ? WHERE schedule_id = ? AND revision = ? AND enabled = 1",
+                                   (stamp(now + timedelta(seconds=5)), row["schedule_id"], row["revision"]))
 
     def next_wake(self):
         if self.closed:

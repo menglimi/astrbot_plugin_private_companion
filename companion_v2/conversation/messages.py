@@ -20,6 +20,7 @@ from companion_v2.delivery.history import INSTRUCTION as HISTORY_INSTRUCTION
 from companion_v2.foundation.refs import ScopeKind, ScopeRef, SourceRef, VersionRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal
 from companion_v2.identity_policy.personas import ConversationRoute, RuntimeScope
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.sources.models import SourceRecord
 from companion_v2.sources.repositories import SourceRepository
 
@@ -208,9 +209,11 @@ class ConversationMessages:
         for event in events:
             record = self._read_source(event.source, context, event.capability, at)
             source_text.append(record.payload)
+        user_text = "\n".join(source_text)
         return self.knowledge.contributions(
             context,
-            text=role_instruction + "\n" + "\n".join(source_text),
+            text=role_instruction + "\n" + user_text,
+            query_text=user_text,
             at=at,
             batch_id=batch_id,
             sources=self.sources,
@@ -375,6 +378,10 @@ class ConversationMessages:
             return batch_id
 
     def _request(self, row, context, at, *, include_tools=True, historical=False):
+        with validation_batch(self.runtime, at):
+            return self._build_request(row, context, at, include_tools=include_tools, historical=historical)
+
+    def _build_request(self, row, context, at, *, include_tools=True, historical=False):
         if not historical:
             from .reset import require_current_batch
             require_current_batch(self.runtime, row["batch_id"], context.scope)
@@ -710,12 +717,21 @@ class ConversationMessages:
                     and self.tools is not None):
                 try:
                     actions = {tool.action for tool in self.tools.catalog_for(context, row["batch_id"])}
-                    if "image.edit" in actions:
+                    has_edit = "image.edit" in actions
+                    has_generate = "image.generate" in actions
+                    if has_edit or has_generate:
                         from zoneinfo import ZoneInfo
-                        from companion_v2.references.prompts import image_reference_instruction
+                        from companion_v2.references.prompts import (
+                            image_reference_instruction,
+                            text_wardrobe_instruction,
+                        )
                         local_date = calendar_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
                         material = self.reference_materials.prompt_material(context, local_date=local_date)
-                        instruction = image_reference_instruction(material)
+                        instruction = (
+                            image_reference_instruction(material)
+                            if has_edit
+                            else text_wardrobe_instruction(material)
+                        )
                         if instruction:
                             request = replace(request, instruction=request.instruction + "\n" + instruction)
                 except TaskError:
@@ -910,13 +926,14 @@ class ConversationMessages:
 
     @outcome
     def validate_generation(self, spec: TaskSpec, at: datetime):
-        row = self.batch(spec.request_ref)
-        if row["origin_key"] != spec.context.key or row["generation_task_id"] != spec.task_id or spec.kind != REPLY_KIND:
-            raise TaskError("message_task_mismatch", "generation must use the original batch task")
-        if row["state"] not in ("sealed", "ready"):
-            raise TaskError("message_batch_closed", "input batch was cancelled or withdrawn")
-        self._request(row, spec.context, at, include_tools=False)
-        return True
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            row = self.batch(spec.request_ref)
+            if row["origin_key"] != spec.context.key or row["generation_task_id"] != spec.task_id or spec.kind != REPLY_KIND:
+                raise TaskError("message_task_mismatch", "generation must use the original batch task")
+            if row["state"] not in ("sealed", "ready"):
+                raise TaskError("message_batch_closed", "input batch was cancelled or withdrawn")
+            self._request(row, spec.context, at, include_tools=False)
+            return True
 
     def _record_open_items_exposure(self, row, context, request):
         if self.open_items_context is None or context.scope.kind is not ScopeKind.PRIVATE:
@@ -980,8 +997,6 @@ class ConversationMessages:
     def request(self, run, *, include_tools=True):
         run.validate()
         at = self.tasks.now()
-        if include_tools:
-            self._prepare_daily_outfit(run, at)
         with self.runtime.read_snapshot():
             run.validate()
             row = self.batch(run.task.spec.request_ref)
@@ -1043,26 +1058,6 @@ class ConversationMessages:
         except (TypeError, ValueError, AttributeError, KeyError):
             return False
         return True
-
-    def _prepare_daily_outfit(self, run, at):
-        if (self.reference_materials is None or self.tools is None
-                or run.task.spec.context.scope.kind is not ScopeKind.PRIVATE):
-            return
-        context = run.task.spec.context
-        try:
-            if not any(tool.action == "image.edit" for tool in
-                       self.tools.catalog_for(context, run.task.spec.request_ref)):
-                return
-            row = self.batch(run.task.spec.request_ref)
-            saved = json.loads(row["contributions_json"])
-            perception = saved.get("perception") if isinstance(saved, dict) else None
-            timezone_name = (validate_perception_snapshot(perception["settings"])["calendar_timezone"]
-                             if perception is not None else self.timezone_name)
-            from zoneinfo import ZoneInfo
-            local_date = at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-            self.reference_materials.prepare_daily_outfit(context, local_date=local_date)
-        except TaskError:
-            return
 
     def journal_inputs(self, context: TaskContext, *, limit=50, after_id=None) -> JournalConversationInputPage:
         """Read one authorized page of active, accepted inbound messages for private writing."""

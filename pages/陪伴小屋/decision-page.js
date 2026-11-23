@@ -325,7 +325,7 @@ window.CompanionDecisionPage = (() => {
     window.CompanionReplyPage?.setDecisionView?.(view);
     const groupEditor = root.querySelector?.("#groupParticipationConfigWorkspace")?.companionConfigEditor;
     const groupSections = view === "safety" ? ["joke_guard"]
-      : view === "group" ? ["topics", "atmosphere", "repeat"] : [];
+      : view === "group" ? ["topics", "atmosphere", "repeat", "history"] : [];
     groupEditor?.setVisibleGroups?.(groupSections, groupSections[0] || "");
     renderPanels();
     return true;
@@ -564,9 +564,29 @@ window.CompanionDecisionPage = (() => {
     </div>`;
   }
 
+  const GUARD_ERRORS = {
+    bridge_unavailable: "页面还没有接上 AstrBot 管理界面，请刷新页面后再试。",
+    bridge_timeout: "连接超时，请核对连接后重试。",
+    invalid_response: "返回数据不完整，请刷新页面后核对。",
+    request_failed: "请求未成功完成，请稍后重试。",
+    harassment_config_invalid: "防骚扰设置未通过校验，请核对参数与关键词格式。",
+    harassment_entry_invalid: "黑名单条目信息不完整或格式无效，请检查窗口、用户 ID 与时长。",
+    harassment_export_invalid: "导出请求无效，请刷新页面后重试。",
+    harassment_import_invalid: "导入的防骚扰 JSON 无效，请核对文件结构后再试。",
+  };
+  function guardErrorText(error) {
+    const code = typeof error?.code === "string" ? error.code : "";
+    const message = typeof error?.message === "string" ? error.message : "";
+    const wbErrors = window.CompanionWorkbench?.errors || {};
+    if (code && (GUARD_ERRORS[code] || wbErrors[code])) return GUARD_ERRORS[code] || wbErrors[code];
+    if (message && (GUARD_ERRORS[message] || wbErrors[message])) return GUARD_ERRORS[message] || wbErrors[message];
+    if (message && !/^[a-z][a-z0-9_]{2,60}$/.test(message)) return message;
+    return "请求未成功完成，请刷新页面后重试。";
+  }
+
   async function guardRequest(method, path, body) {
     const bridge = window.CompanionProduct?.bridgeNow?.() || await window.CompanionProduct?.bridgeFor?.();
-    if (!bridge) throw new Error("bridge_unavailable");
+    if (!bridge) throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable"});
     const endpoint = harassment.endpoint + path;
     const response = method === "GET" ? await bridge.apiGet(endpoint) : await bridge.apiPost(endpoint, body);
     /* 失败回执有两层要认。
@@ -577,11 +597,35 @@ window.CompanionDecisionPage = (() => {
     const wrapped = response?.status === "error" ? response
       : ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
         : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
-    if (wrapped?.status === "error") throw Object.assign(new Error(wrapped.message || "request_failed"), {code: wrapped.message});
-    if (wrapped?.data?.status === "error") throw Object.assign(new Error(wrapped.data.message || "request_failed"), {code: wrapped.data.message});
+    if (wrapped?.status === "error") {
+      const code = wrapped.data?.code || wrapped.message || "request_failed";
+      throw Object.assign(new Error(wrapped.message || code), {code});
+    }
+    if (wrapped?.data?.status === "error") {
+      const code = wrapped.data.data?.code || wrapped.data.message || "request_failed";
+      throw Object.assign(new Error(wrapped.data.message || code), {code});
+    }
     const value = wrapped ? wrapped.data : response;
-    if (!value || typeof value !== "object") throw new Error("invalid_response");
+    if (!value || typeof value !== "object") throw Object.assign(new Error("invalid_response"), {code: "invalid_response"});
     return value;
+  }
+
+  let harassmentTicket = 0;
+
+  function resetHarassment(nextEndpoint = "") {
+    harassmentTicket += 1;
+    harassment.endpoint = nextEndpoint;
+    harassment.loading = false;
+    harassment.busy = false;
+    harassment.data = null;
+    harassment.draft = null;
+    harassment.notice = "";
+    harassment.bad = false;
+    harassment.missing = false;
+  }
+
+  function guardLive(ticket, endpoint) {
+    return ticket === harassmentTicket && Boolean(root) && root.isConnected !== false && harassment.endpoint === endpoint;
   }
 
   function guardAdopt(snapshot) {
@@ -591,7 +635,9 @@ window.CompanionDecisionPage = (() => {
   }
 
   async function loadHarassment() {
-    if (!harassment.endpoint || harassment.loading || harassment.busy) return;
+    const endpoint = harassment.endpoint;
+    if (!endpoint || harassment.loading || harassment.busy) return;
+    const ticket = ++harassmentTicket;
     harassment.loading = true;
     harassment.notice = "";
     harassment.missing = false;
@@ -599,34 +645,43 @@ window.CompanionDecisionPage = (() => {
     harassment.bad = false;
     renderPanels();
     try {
-      guardAdopt(await guardRequest("GET", ""));
+      const snapshot = await guardRequest("GET", "");
+      if (!guardLive(ticket, endpoint)) return;
+      guardAdopt(snapshot);
       harassment.bad = false;
     } catch (error) {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.bad = true;
       harassment.missing = routeMissing(error);
       harassment.notice = harassment.missing
         ? "该页只对私聊窗口生效，当前插件版本也可能没有提供这组接口。"
-        : "读取防骚扰设置失败：" + (error?.message || "未知错误");
+        : "读取防骚扰设置失败：" + guardErrorText(error);
     } finally {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.loading = false;
       renderPanels();
     }
   }
 
   async function guardMutate(path, body, done) {
-    if (harassment.busy) return;
+    const endpoint = harassment.endpoint;
+    if (!endpoint || harassment.busy) return;
+    const ticket = harassmentTicket;
     harassment.busy = true;
     harassment.notice = "正在处理…";
     renderPanels();
     try {
       const snapshot = await guardRequest("POST", path, body);
+      if (!guardLive(ticket, endpoint)) return;
       guardAdopt(snapshot);
       harassment.notice = done || "已保存。";
       harassment.bad = false;
     } catch (error) {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.bad = true;
-      harassment.notice = "操作失败：" + (error?.message || "未知错误");
+      harassment.notice = "操作失败：" + guardErrorText(error);
     } finally {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.busy = false;
       renderPanels();
     }
@@ -684,15 +739,25 @@ window.CompanionDecisionPage = (() => {
       return;
     }
     if (event.target?.closest?.("[data-guard-export]")) {
+      const endpoint = harassment.endpoint;
+      if (!endpoint || harassment.busy) return;
+      const ticket = harassmentTicket;
       harassment.busy = true;
+      renderPanels();
       void guardRequest("POST", "/export", {scope: ""}).then(document => {
+        if (!guardLive(ticket, endpoint)) return;
         harassment.exported = JSON.stringify(document, null, 2);
         harassment.notice = "已导出到下框。";
         harassment.bad = false;
       }).catch(error => {
-        harassment.notice = "导出失败：" + (error?.message || "未知错误");
+        if (!guardLive(ticket, endpoint)) return;
+        harassment.notice = "导出失败：" + guardErrorText(error);
         harassment.bad = true;
-      }).finally(() => { harassment.busy = false; renderPanels(); });
+      }).finally(() => {
+        if (!guardLive(ticket, endpoint)) return;
+        harassment.busy = false;
+        renderPanels();
+      });
       return;
     }
     if (event.target?.closest?.("[data-guard-import]")) {
@@ -705,13 +770,17 @@ window.CompanionDecisionPage = (() => {
 
   function mount(node, options = {}) {
     if (!node) return;
+    const nextScopeKind = typeof options.scopeKind === "string" ? options.scopeKind : "";
+    const nextEndpoint = typeof options.harassmentApi === "string" ? options.harassmentApi : "";
     if (root !== node) {
       unmount();
       root = node;
+    } else if (harassment.endpoint !== nextEndpoint || scopeKind !== nextScopeKind) {
+      resetHarassment(nextEndpoint);
     }
-    scopeKind = typeof options.scopeKind === "string" ? options.scopeKind : "";
+    scopeKind = nextScopeKind;
     /* 挂载方给的是插件相对路径（页面桥只收这种），这里只管在后面拼子路径。 */
-    harassment.endpoint = typeof options.harassmentApi === "string" ? options.harassmentApi : "";
+    harassment.endpoint = nextEndpoint;
     render(options.groupSettingsMarkup || "");
     if (harassment.endpoint && harassmentApplies() && !harassment.data) void loadHarassment();
   }
@@ -747,11 +816,7 @@ window.CompanionDecisionPage = (() => {
     }
     root = null;
     scopeKind = "";
-    harassment.endpoint = "";
-    harassment.data = null;
-    harassment.draft = null;
-    harassment.notice = "";
-    harassment.missing = false;
+    resetHarassment("");
     replyStatus = null;
     roleStatus = null;
     windowStatus = null;

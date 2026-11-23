@@ -6,6 +6,13 @@ import re
 VOICE_TAG_NAME_PATTERN = r"(?:p[\s._-]*c{1,2}[\s._-]*tts|tts)"
 VOICE_PROTOCOL_LT = r"(?:<|＜|&lt;|&#0*60;|&#x0*3c;)"
 VOICE_PROTOCOL_GT = r"(?:>|＞|&gt;|&#0*62;|&#x0*3e;)"
+SINGING_PROVIDER_CUE = "[singsing]"
+_SINGING_PROVIDER_CUE = re.compile(re.escape(SINGING_PROVIDER_CUE), re.I)
+_SINGING_BODY_CUE = re.compile(r"(?<!\[)\[singsing\](?!\]|\s*\()", re.I)
+
+
+def strip_singing_provider_cue(text):
+    return _SINGING_PROVIDER_CUE.sub("", text)
 
 
 def canonical_voice_tag(name):
@@ -61,7 +68,7 @@ def visible_speech(text):
     return _CONTROLS.sub("", text)
 
 
-def strip_performance_controls(text):
+def strip_performance_controls(text, *, singsing=False):
     """Drop delivery-only marks from body text that no speech span claims.
 
     Narrower than ``visible_speech``: only the pause family in angle brackets and
@@ -69,6 +76,8 @@ def strip_performance_controls(text):
     such as ``<soft>``/``<whisper>``, plain prose brackets such as ``<3`` or
     ``[1](url)``, and citations such as ``数组[0]`` are left exactly as written.
     """
+    if singsing:
+        text = _SINGING_BODY_CUE.sub("", text)
     return _BODY_CONTROL.sub("", text)
 
 

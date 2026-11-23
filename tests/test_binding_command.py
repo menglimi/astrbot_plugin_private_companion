@@ -168,6 +168,21 @@ class MessageTextTests(unittest.TestCase):
             with self.subTest(event=event.__dict__):
                 self.assertEqual(message_text(event), "")
 
+    def test_leading_native_mention_markers_do_not_hide_the_command(self):
+        """Group events may keep [At:...] / CQ at syntax in event.text.
+
+        The command parser only accepts a leading root, so a mention prefix used
+        to make ``陪伴群 关闭LLM`` look like ordinary chat and the command was
+        silently ignored.
+        """
+        self.assertEqual(message_text(Simple(text="[At:3491542998] 陪伴群 关闭LLM")),
+                         "陪伴群 关闭LLM")
+        self.assertEqual(message_text(Simple(text="[CQ:at,qq=3491542998] 陪伴群 开启LLM")),
+                         "陪伴群 开启LLM")
+        self.assertEqual(message_text(Simple(text="<@3491542998> /陪伴群 LLM状态")),
+                         "/陪伴群 LLM状态")
+        self.assertEqual(message_text(Simple(text="[At:1][At:2] 普通正文")), "普通正文")
+
     def test_a_blank_event_text_falls_through_to_the_message_object(self):
         """A whitespace-only event.text must not shadow a real command below it."""
         event = Simple(text="   ", message_obj=Simple(message_str="companion_bind"))

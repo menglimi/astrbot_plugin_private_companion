@@ -158,6 +158,10 @@ class MultiHostSegmentationTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
         config["voice_reply"] = {"enabled": True, "private_probability": 0.25, "group_probability": 0.8}
         self.controller = self.make_controller(config)
         app = await self.start_host()
+        # This provider fixture only returns conversation replies.
+        review = patch.object(app.self_review, "advance", return_value=False)
+        review.start()
+        self.addCleanup(review.stop)
         batches = []
         for event in (self.event("first", "private-first"), self.event("second", "private-second"),
                       self.group_event(identifier="group-first")):

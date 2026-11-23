@@ -1,0 +1,37 @@
+{
+  "stage": {
+    "floor": { "width": 12, "height": 0.5, "depth": 12, "x": 0, "y": -0.25, "z": 0, "color": "#d2c5b0" },
+    "walls": [
+      { "id": "back-wall", "width": 12, "height": 5, "depth": 0.5, "x": 0, "y": 2.5, "z": -6, "color": "#f0ede5" },
+      { "id": "side-wall", "width": 0.5, "height": 5, "depth": 12, "x": -6, "y": 2.5, "z": 0, "color": "#e8e3d8" }
+    ]
+  },
+  "entities": [
+    {
+      "id": "narrative-focus-desk",
+      "type": "group",
+      "position": { "x": -2.5, "y": 0, "z": -3 },
+      "children": [
+        { "type": "block", "params": { "id": "desk-surface", "x": 0, "y": 1.2, "z": 0, "w": 3.5, "h": 0.15, "d": 1.5, "tint": "#8b5a2b" } },
+        { "type": "block", "params": { "id": "desk-lamp", "x": -1.2, "y": 1.5, "z": -0.4, "w": 0.3, "h": 0.8, "d": 0.3, "tint": "#d4af37" } },
+        { "type": "block", "params": { "id": "open-book", "x": 0.5, "y": 1.35, "z": 0.2, "w": 0.6, "h": 0.1, "d": 0.4, "tint": "#fdfdf0" } },
+        { "type": "block", "params": { "id": "coffee-mug", "x": -0.8, "y": 1.45, "z": 0.3, "w": 0.25, "h": 0.3, "d": 0.25, "tint": "#ffffff" } }
+      ]
+    },
+    {
+      "id": "cozy-reading-corner",
+      "type": "group",
+      "position": { "x": 3.5, "y": 0, "z": 2 },
+      "children": [
+        { "type": "block", "params": { "id": "armchair-base", "x": 0, "y": 0.6, "z": 0, "w": 1.8, "h": 1.2, "d": 1.8, "tint": "#4a3c31" } },
+        { "type": "block", "params": { "id": "armchair-cushion", "x": 0, "y": 1.0, "z": 0, "w": 1.4, "h": 0.4, "d": 1.4, "tint": "#8b7355" } },
+        { "type": "block-array", "params": {
+          "base": { "x": 2, "y": 1.5, "z": -2 },
+          "items": [{ "y": 1.5 }, { "y": 1.9 }, { "y": 2.3 }],
+          "dims": { "w": 1.2, "h": 0.3, "d": 0.8 },
+          "tint": "#5c4033"
+        }}
+      ]
+    }
+  ]
+}

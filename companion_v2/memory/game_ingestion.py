@@ -4,8 +4,9 @@ import json
 
 from companion_v2.execution.models import TaskError, digest, encode, require
 from companion_v2.execution.service import outcome
-from companion_v2.foundation.refs import ScopeKind
+from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
 from companion_v2.conversation.native_tool_results import operation_rows
+from companion_v2.sources.models import SourceRecord
 
 from .models import Evidence, owner_key
 
@@ -39,6 +40,18 @@ COOPERATIVE_OUTCOMES = {
 CLOSE_ACTIONS = frozenset({"game.tictactoe.close", "game.gomoku.close", "game.pig_dice.close",
                            "game.blackjack.close", "game.xiangqi.close", "game.turtle_soup.close",
                            "game.draw_guess.close"})
+
+
+GAME_TYPE_LABELS = {
+    "tictactoe": "井字棋",
+    "gomoku": "五子棋",
+    "pig_dice": "掷骰竞分",
+    "blackjack": "二十一点",
+    "xiangqi": "中国象棋",
+    "turtle_soup": "海龟汤",
+    "draw_guess": "你画我猜",
+}
+ALLOWED_RESULT_KEYS = frozenset({"game", "room_access", "room_url"})
 
 
 def terminal_result(game):
@@ -99,7 +112,9 @@ class MemoryGameIngestion:
                     or type(native.get("result")) is not dict):
                 raise TaskError("memory_game_receipt_changed", "game result differs from its confirmed receipt")
             result = native["result"]
-            game = result.get("game") if set(result) == {"game"} else None
+            game = (result.get("game")
+                    if "game" in result and set(result).issubset(ALLOWED_RESULT_KEYS)
+                    else None)
             outcome_name = terminal_result(game)
             if outcome_name is None:
                 return {"state": "not_completed", "view_id": None}
@@ -120,6 +135,66 @@ class MemoryGameIngestion:
                 statements=({"text": statement, "evidence": (evidence,), "atoms": ()},),
                 entities=(game_label, "游戏:" + game_id), occurred_at=material.source.issued_at,
                 operation_key=identity))
+
+    @staticmethod
+    def _web_identity(context, game_id):
+        return "game-experience-web-" + digest([owner_key(context), context.scope, game_id])
+
+    @staticmethod
+    def _sanitized_web_game(game):
+        """Retain only public terminal facts for the governed web-completion source."""
+        return {
+            "game_id": game["game_id"],
+            "game_type": game["game_type"],
+            "status": game["status"],
+            "outcome": game["outcome"],
+        }
+
+    @outcome
+    def record_web_terminal(self, context, game):
+        """Record a terminal result completed from the native browser room into governed memory."""
+        with self.runtime.transaction() as connection:
+            self._active()
+            if getattr(getattr(context, "scope", None), "kind", None) is not ScopeKind.PRIVATE:
+                return {"state": "not_completed", "view_id": None}
+            self.memory.writer.access.check(context, "memory.propose")
+            outcome_name = terminal_result(game)
+            if outcome_name is None:
+                return {"state": "not_completed", "view_id": None}
+            game_id = game.get("game_id")
+            game_type = game.get("game_type")
+            game_label = GAME_TYPE_LABELS.get(game_type)
+            if (game_label is None or type(game_id) is not str
+                    or not 1 <= len(game_id) <= 128):
+                raise TaskError("memory_game_receipt_changed", "game terminal result is invalid")
+            label = COOPERATIVE_OUTCOMES.get(game_type, OUTCOMES).get(outcome_name)
+            if label is None:
+                raise TaskError("memory_game_receipt_changed", "game terminal result is invalid")
+            identity = self._web_identity(context, game_id)
+            existing = connection.execute(
+                "SELECT view_id, revision FROM memory_views WHERE view_id = ? AND owner_key = ?",
+                (identity, owner_key(context)),
+            ).fetchone()
+            if existing is not None:
+                return {"view_id": existing["view_id"], "revision": existing["revision"], "state": "saved"}
+            now = self.tasks.now()
+            payload = encode({"native": {"source": "web", "result": {"game": self._sanitized_web_game(game)}}})
+            source_id = "game.native:web-terminal:" + digest([owner_key(context), context.scope, game_id])
+            source_ref = SourceRef(source_id, "game.native", context.scope, VersionRef(source_id, 1), now)
+            source_record = SourceRecord(source_ref, context.audience, digest(payload), payload)
+            published = require(self.memory.writer.sources.publish(source_record, observed_at=now))
+            statement = f"Game 网页端确认当前会话的{game_label}对局 {game_id} 已结束，结果为{label}。"
+            evidence = Evidence(
+                published.reference, published.content_hash, 0, len(published.payload),
+                digest(published.payload), context.role_binding.role.subject_id, "observation",
+            )
+            return require(self.memory.experiences.save(
+                context, view_id=identity, expected_revision=0,
+                title=game_label + "终局：" + label,
+                statements=({"text": statement, "evidence": (evidence,), "atoms": ()},),
+                entities=(game_label, "游戏:" + game_id), occurred_at=now,
+                operation_key=identity,
+            ))
 
     @outcome
     def advance(self, context):
@@ -166,6 +241,24 @@ class MemoryGameIngestion:
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value""", (key, encode(cursor)))
             return report
 
+    def has_due_bindings(self, bindings) -> bool:
+        """Fast O(1) readiness probe so idle ticks skip worker-thread dispatch."""
+        if self.closed:
+            return False
+        windows = tuple(bindings)
+        if not windows:
+            return bool(self._last_advance)
+        now = self.tasks.now()
+        start, count = self._binding_offset % len(windows), min(16, len(windows))
+        for index in range(count):
+            context = windows[(start + index) % len(windows)][0]
+            if context.scope.kind is not ScopeKind.PRIVATE:
+                continue
+            previous = self._last_advance.get(context.key)
+            if previous is None or not (0 <= (now - previous).total_seconds() < 30):
+                return True
+        return False
+
     @outcome
     def advance_bound(self, bindings):
         self._active()
@@ -176,7 +269,7 @@ class MemoryGameIngestion:
             self._binding_offset = 0
             return report
         keys = {window[0].key for window in windows}
-        self._last_advance = {key: at for key, at in self._last_advance.items() if key in keys}
+        self._last_advance = {key: at for key, at in tuple(self._last_advance.items()) if key in keys}
         now = self.tasks.now()
         start, count = self._binding_offset % len(windows), min(16, len(windows))
         self._binding_offset = (start + count) % len(windows)

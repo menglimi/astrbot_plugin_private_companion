@@ -91,6 +91,17 @@ class PrivateReplyFollowUpTests(unittest.TestCase):
         self.assertEqual([item[1] for item in pending], ["补充一"])
         self.assertEqual([item[1] for item in entries], ["在吗", "补充一"])
 
+    def test_finish_event_removes_only_matching_event_identity(self):
+        manager = PrivateReplyFollowUps()
+        first = event("第一轮")
+        second = event("第二轮", 1)
+        manager.start("target", first, "event-1", ((first, "第一轮", first.created_at),))
+        manager.start("target", second, "event-2", ((second, "第二轮", second.created_at),))
+        self.assertFalse(manager.finish_event(first))
+        self.assertIs(manager.active_for("target").event, second)
+        self.assertTrue(manager.finish_event(second))
+        self.assertIsNone(manager.active_for("target"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -103,7 +103,8 @@ class ProactiveMemoryTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         app = await self.enabled_with_memory()
         await self.seed_diet_memory(app)
         self.assertEqual((await self.contact(app)).unwrap().task.state, "succeeded")
-        self.assertIn("owner 为 memory 的材料", self.contact_envelope().original.instruction)
+        self.assertIn("owner 为 memory 的材料", self.contact_envelope().original.user_instruction)
+        self.assertNotIn("owner 为 memory 的材料", self.contact_envelope().original.instruction)
 
     async def test_absent_memory_leaves_proactive_generation_unchanged(self):
         """A host that never wires memory keeps today's materials and prompt."""
@@ -116,6 +117,7 @@ class ProactiveMemoryTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         request = self.contact_envelope().original
         self.assertEqual(self.memory_materials(self.contact_envelope()), ())
         self.assertNotIn("owner 为 memory 的材料", request.instruction)
+        self.assertNotIn("owner 为 memory 的材料", request.user_instruction)
         # The pre-existing contact materials keep their own order and purposes.
         self.assertEqual([item.purpose for item in request.context.materials],
                          ["contact_intent", "communication_state"])

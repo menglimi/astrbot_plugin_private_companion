@@ -76,6 +76,9 @@ window.CompanionBackupPage = (() => {
     backup_cancel_confirmation_required: "放弃还原请求需要二次确认。",
     backup_restore_journal_pending: "上一次还原还没有回滚完成，请先重启插件让它收尾，再放弃请求。",
     backup_cancel_failed: "放弃还原请求失败，请检查数据根权限后重试。",
+    backup_delete_confirmation_required: "删除快照需要二次确认。",
+    backup_delete_incomplete: "这份快照不完整，请先刷新列表并使用隔离操作。",
+    backup_delete_failed: "未能完成删除。请检查目录权限或文件占用，再刷新列表核对结果。",
     backup_quarantine_confirmation_required: "隔离不完整快照需要二次确认。",
     backup_quarantine_failed: "隔离失败，可能是文件被占用或权限不足；没有删除任何东西。",
     backup_operation_failed: "备份操作没有完成，请稍后重试或查看插件日志。",
@@ -185,6 +188,7 @@ window.CompanionBackupPage = (() => {
       data.pendingProblem = waiting.problem || null;
       data.cancellable = waiting.cancellable === true;
       data.cancelling = false;
+      data.deleting = null;
       data.loading = false;
     } catch (error) {
       if (!live(ticket)) return;
@@ -206,9 +210,11 @@ window.CompanionBackupPage = (() => {
         LONG_TIMEOUT_MS);
       if (!live(ticket)) return;
       data.busy = "";
-      setNotice(created.retention?.failed
-        ? "快照已生成，自动清理未完成。"
-        : "快照已生成。");
+      const retention = created.retention;
+      const missed = Number(retention?.failed_count) || 0;
+      setNotice(retention?.failed
+        ? (missed ? `快照已生成，但有 ${missed} 份旧快照未能清理。` : "快照已生成，自动清理未完成。")
+        : "快照已生成。", retention?.failed === true);
       await load(ticket);
     } catch (error) {
       if (!live(ticket)) return;
@@ -327,12 +333,38 @@ window.CompanionBackupPage = (() => {
     }
   }
 
+  async function deleteSnapshot(snapshotId) {
+    if (data.busy || data.pending || data.pendingProblem || data.deleting !== snapshotId) return;
+    const item = data.snapshots.find(row => row.snapshot_id === snapshotId);
+    if (!item?.content_hash) return;
+    const ticket = token();
+    data.busy = "delete"; data.notice = ""; paint();
+    try {
+      await call("POST", ROUTE + "/delete", {
+        snapshot_id: snapshotId, confirmed_hash: item.content_hash, confirm: true,
+      }, LONG_TIMEOUT_MS);
+      if (!live(ticket)) return;
+      data.busy = ""; data.deleting = null;
+      if (data.preview?.snapshot_id === snapshotId) { data.preview = null; data.confirming = null; }
+      setNotice(`已删除 ${when(item.created_at)} 的备份快照，运行资料未改动。`);
+      await load(ticket);
+    } catch (error) {
+      if (!live(ticket)) return;
+      data.busy = ""; data.deleting = null;
+      setNotice(reason(error.code), true);
+      await load(ticket);
+    }
+  }
+
   function snapshotRow(item) {
     const id = String(item.snapshot_id || "");
     const busy = data.busy === "preview:" + id;
     const pendingSame = data.pending?.snapshot_id === id;
     /* 旧格式快照只能还原主库：列表上就要标出来，用户点预览前就该知道。 */
     const legacy = item.restore_scope === "main_database_only";
+    const deleting = data.deleting === id;
+    const deleteBlocked = Boolean(data.pending || data.pendingProblem);
+    const deleteDisabled = data.busy || deleteBlocked || !id || !item.content_hash;
     return `<li class="backup-snapshot-row">
       <div class="backup-snapshot-main">
         <div class="backup-snapshot-title">
@@ -341,12 +373,17 @@ window.CompanionBackupPage = (() => {
           ${legacy ? `<span class="backup-tag is-legacy">旧格式 · 仅主库</span>` : ""}
         </div>
         ${item.note ? `<p class="backup-snapshot-note">${e(item.note)}</p>` : ""}
+        ${deleting ? `<p class="backup-preview-warn">删除后无法用这份快照还原，当前运行资料不受影响。</p>` : ""}
         <small class="backup-snapshot-meta">${e(bytes(item.byte_size))} · 结构版本 ${e(item.schema_version || "未知")} · 摘要 <code title="${e(item.content_hash)}">${e(shortHash(item.content_hash))}</code></small>
       </div>
       <div class="backup-snapshot-actions">
-        <button class="button small" data-backup-preview="${e(id)}"${busy || pendingSame ? " disabled" : ""}>
-          ${busy ? "正在校验…" : "预览还原"}
-        </button>
+        ${deleting
+          ? `<button class="button small danger" data-backup-delete-confirm="${e(id)}"${deleteDisabled ? " disabled" : ""}>
+               ${data.busy === "delete" ? "正在删除…" : "确认删除"}</button>
+             <button class="button small" data-backup-delete-abort${data.busy ? " disabled" : ""}>再想想</button>`
+          : `<button class="button small" data-backup-preview="${e(id)}"${data.busy || pendingSame ? " disabled" : ""}>
+               ${busy ? "正在校验…" : "预览还原"}</button>
+             <button class="button small danger" data-backup-delete="${e(id)}"${deleteDisabled ? " disabled" : ""}${deleteBlocked ? ' title="请先完成或放弃待重启的还原请求"' : ""}>删除</button>`}
       </div>
     </li>`;
   }
@@ -576,7 +613,7 @@ window.CompanionBackupPage = (() => {
   }
 
   function onClick(event) {
-    const button = event.target?.closest?.("[data-backup-create],[data-backup-preview],[data-backup-stage],[data-backup-confirm],[data-backup-cancel],[data-backup-retry],[data-backup-cancel-request],[data-backup-cancel-confirm],[data-backup-cancel-abort],[data-backup-quarantine],[data-backup-quarantine-confirm],[data-backup-quarantine-abort]");
+    const button = event.target?.closest?.("[data-backup-create],[data-backup-preview],[data-backup-stage],[data-backup-confirm],[data-backup-cancel],[data-backup-retry],[data-backup-cancel-request],[data-backup-cancel-confirm],[data-backup-cancel-abort],[data-backup-quarantine],[data-backup-quarantine-confirm],[data-backup-quarantine-abort],[data-backup-delete],[data-backup-delete-confirm],[data-backup-delete-abort]");
     if (!button || !root?.contains(button)) return;
     if (button.hasAttribute("data-backup-retry")) {
       /* 就地等桥，不交给外层重渲染：外层会重建整页，用户刚在备注框里
@@ -590,12 +627,26 @@ window.CompanionBackupPage = (() => {
       create(root.querySelector("#backupNote")?.value || "");
       return;
     }
+    if (button.hasAttribute("data-backup-delete")) {
+      if (!data.busy && !data.pending && !data.pendingProblem) {
+        data.deleting = button.getAttribute("data-backup-delete"); paint();
+      }
+      return;
+    }
+    if (button.hasAttribute("data-backup-delete-confirm")) {
+      deleteSnapshot(button.getAttribute("data-backup-delete-confirm")); return;
+    }
+    if (button.hasAttribute("data-backup-delete-abort")) {
+      if (!data.busy) { data.deleting = null; paint(); }
+      return;
+    }
     if (button.hasAttribute("data-backup-preview")) {
+      data.deleting = null;
       preview(button.getAttribute("data-backup-preview"));
       return;
     }
     /* 暂存分两步：先切到「确认」态，再真的发请求。
-       这是整个页面唯一不可逆的入口，多一次点击是应该的。 */
+       先让用户看清要暂存的快照与还原范围。 */
     if (button.hasAttribute("data-backup-stage")) {
       data.confirming = data.preview?.snapshot_id || null; paint(); return;
     }

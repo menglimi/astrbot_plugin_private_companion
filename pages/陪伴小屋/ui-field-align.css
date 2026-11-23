@@ -1,0 +1,41 @@
+/* Cross-page equal-height field rows and reply-preview container queries.
+   Workbench field layout itself now lives cleanly in workbench.css using
+   container-aware two-row rules; this sheet no longer overrides .wb-fields,
+   .wb-field-main, or .wb-control. */
+.wb-fields,
+.ct-controls,
+.ct-rest,
+.ct-wake-fields,
+.ct-purpose-groups,
+.ct-gate-pause,
+.member-fields,
+.member-reply-fields,
+.member-contact-purpose-tuning-fields {
+  align-items: stretch;
+}
+
+/* The reply page keeps a sticky live preview beside the editor only when the
+   editor still has room for its own section rail.  At the old 1100px cutoff a
+   1280/1366 desktop squeezed the rail, the fields and the preview into three
+   narrow strips, and the preview's two-column body overflowed instead of
+   stacking.  Move the preview below the editor earlier, and let its body stack
+   when the preview itself is narrow. */
+#replyWorkspace { container-type: inline-size; }
+
+@media (max-width: 1450px) {
+  #replyWorkspace { grid-template-columns: minmax(0, 1fr); }
+  #replyWorkspace > [data-reply-part="preview"] { min-width: 0; }
+  .reply-preview {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+.reply-preview { container-type: inline-size; }
+
+@container (max-width: 620px) {
+  .reply-preview-grid { grid-template-columns: minmax(0, 1fr); }
+  .reply-preview-inputs,
+  .reply-preview-output-wrap { min-width: 0; }
+}

@@ -122,10 +122,10 @@ window.CompanionMemoryPage = (() => {
     info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></svg>',
     alert:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16h.01"/></svg>',
   };
-  let root = null, bridge = null, version = 0, timer = null, data = null;
+  let root = null, bridge = null, version = 0, timer = null, data = null, backgroundLoading = false;
 
   function blank() {
-    return {catalog:null, target:0, role:0, area:"facts", tab:"facts",
+    return {catalog:null, target:-1, role:0, area:"facts", tab:"facts",
       /* 语料：一次预读多页，本地筛选。corpus 是全量（含已归档提示），
          filter 只影响渲染，不改动数据。 */
       corpus:[], cursors:[""], page:0, next:null, hasMore:false, overview:null, history:false,
@@ -223,10 +223,9 @@ window.CompanionMemoryPage = (() => {
     stopTimer();
     /* 只在「整理与修复」里轮询：那是有后台任务的视图。事实流是被动数据，
        用户自己在看，8 秒刷一次只会把筛选与滚动位置晃掉。 */
-    if (data?.ready && role()?.memory_api && !document.hidden && !data.addOpen && ["reflections","facts"].includes(data.area)) {
+    if (data?.ready && role()?.memory_api && !document.hidden && !data.addOpen && data.area === "reflections") {
       // Poll only reads. Neither a timer nor a page reload can queue a model call.
-      const quiet = data.area === "facts" && (data.search || data.filter !== "all");
-      timer = setTimeout(() => { if (!data.busy && !data.loading && !quiet) load(); else schedule(); }, 8000);
+      timer = setTimeout(() => { if (!data.busy && !data.loading && !backgroundLoading) load({silent:true}); else schedule(); }, 8000);
     }
   }
   function notice(message, error=false) { data.notice = message; data.error = error; }
@@ -335,7 +334,6 @@ window.CompanionMemoryPage = (() => {
   /* ================= 视图：页头 ================= */
 
   function headMarkup() {
-    const target = current();
     /* 页头不放说明句。
        切到哪个视图，标题就是那件事，左侧轨道已经写了它是干什么的；
        再加一行「这里可以……每条都带……」是把导航重说一遍，占掉了第一屏。
@@ -346,14 +344,6 @@ window.CompanionMemoryPage = (() => {
     };
     return `<header class="mem-head">
       <div class="mem-head-title"><h2>${e(AREA_TITLE[data.area])}</h2></div>
-      <div class="mem-scope">
-        <label>会话对象<select id="memory-target" ${!data.catalog?"disabled":""}>${
-          data.catalog?.targets.map((t,i)=>`<option value="${i}" ${i===data.target?"selected":""}>${e((window.CompanionProduct?.targetLabel?.(t) || (t.scope_kind === "group"?"群聊 ":"私聊 ")+(t.display_name || (/^\d+$/.test(String(t.participant_id || t.group_id || "")) ? t.participant_id || t.group_id : "当前对象"))) + " · " + (window.CompanionProduct?.accountLabel?.(t) || t.account_name || "当前账号"))}</option>`).join("") || '<option>尚未读取目标</option>'
-        }</select></label>
-        <label>角色<select id="memory-role" ${!target?"disabled":""}>${
-          target?.roles.map((r,i)=>`<option value="${i}" ${i===data.role?"selected":""}>${e(window.CompanionProduct?.roleLabel?.(r,i) || "当前角色")}</option>`).join("") || '<option>尚未选择角色</option>'
-        }</select></label>
-      </div>
     </header>`;
   }
 
@@ -876,8 +866,8 @@ window.CompanionMemoryPage = (() => {
           ? `<section class="mem-block"><div class="mem-skeleton"><i></i><i></i><i></i></div>
              <p class="mem-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看记录。"}</p></section>`
           : !role()?.memory_api
-            ? `<section class="mem-block"><div class="mem-empty"><h3>群聊记录独立管理</h3>
-               <p>请选择有事实权限的私聊对象。</p></div></section>`
+            ? `<section class="mem-block"><div class="mem-empty"><h3>${current()?.scope_kind==="group"?"群聊记录独立管理":"未选择记忆窗口"}</h3>
+               <p>请选择当前小屋角色的私聊窗口；群聊记录请进入本群公共档案。</p></div></section>`
             : AREA_VIEW[data.area]()}
       </div>
     </div>`;
@@ -918,7 +908,7 @@ window.CompanionMemoryPage = (() => {
 
   async function directory() {
     const ticket = ++version;
-    stopTimer();
+    stopTimer(); backgroundLoading = false;
     data = blank(); data.loading = true; render();
     try {
       /* 归属是独立的一次读，而且**先读**：它决定这一页顶上那句话，读不到也要
@@ -932,9 +922,14 @@ window.CompanionMemoryPage = (() => {
       if (!live(ticket)) return;
       if (!Array.isArray(catalog.targets) || !catalog.installation_id || !catalog.operator_id
           || catalog.targets.some(t=>!Array.isArray(t.roles))) throw problem("invalid_response");
-      data.catalog = catalog; data.ready = true; data.loading = false;
-      const selected=window.CompanionProduct?.selection();
-      if(selected){const index=catalog.targets.findIndex(t=>t.target_id===selected.target_id);if(index>=0){data.target=index;data.role=Math.max(0,catalog.targets[index].roles.findIndex(r=>r.role_id===selected.role_id));}}
+      const product=window.CompanionProduct,selected=product?.selection?.();
+      const owner=product?.roleSelection?.();
+      const targets=owner?catalog.targets.filter(t=>t.bot_id===owner.bot_id)
+        .map(t=>({...t,roles:t.roles.filter(r=>r.role_id===owner.role_id)})).filter(t=>t.roles.length):catalog.targets;
+      data.catalog = {...catalog,targets}; data.ready = true; data.loading = false;
+      if(selected){data.target=targets.findIndex(t=>t.target_id===selected.target_id);
+        if(data.target>=0)data.role=Math.max(0,targets[data.target].roles.findIndex(r=>r.role_id===selected.role_id));}
+      else if(!product?.roleSelection)data.target=targets.length?0:-1;
       if (role()?.memory_api) {
         endpoint(); data.pending = restorePending(); data.pendingMutation = restoreMutation(); data.detailId = data.pending?.tracked_batch_id || null;
         await load();
@@ -974,10 +969,26 @@ window.CompanionMemoryPage = (() => {
     return {items:collected, next:cursor || null, hasMore:more, failed};
   }
 
-  async function load() {
+  function dataSnapshot() {
+    if (!data) return "";
+    return JSON.stringify({
+      ready: data.ready, area: data.area, page: data.page, history: data.history,
+      items: data.items || null, detail: data.detail || null, detailId: data.detailId || null,
+      corpus: data.corpus, next: data.next, hasMore: data.hasMore,
+      overview: data.overview || null, selId: data.selId, factDetail: data.factDetail || null,
+      revisions: data.revisions, notice: data.notice, error: data.error,
+      pending: data.pending || null, pendingMutation: data.pendingMutation || null,
+    });
+  }
+
+  async function load({silent=false}={}) {
     if (!root || !data.ready || !role()?.memory_api || data.busy) return;
+    if (silent && (data.loading || backgroundLoading)) return;
     const ticket = ++version;
-    stopTimer(); data.loading = true; render();
+    stopTimer();
+    const previousSnapshot = silent ? dataSnapshot() : null;
+    if (silent) backgroundLoading = true;
+    else { backgroundLoading = false; data.loading = true; render(); }
     try {
       const path = endpoint();
       if (data.area === "facts") {
@@ -1031,7 +1042,18 @@ window.CompanionMemoryPage = (() => {
         notice("");
       }
     } catch (error) { if (live(ticket)) failure(error); }
-    finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
+    finally {
+      if (live(ticket)) {
+        if (silent) {
+          backgroundLoading = false;
+          if (dataSnapshot() !== previousSnapshot) render();
+        } else {
+          data.loading = false;
+          render();
+        }
+        schedule();
+      }
+    }
   }
 
   /* 继续读取更早的事实（超出预读窗口时用）。追加而非替换，
@@ -1485,18 +1507,6 @@ window.CompanionMemoryPage = (() => {
       }
     } finally { if (live(ticket)) { data.busy = false; render(); schedule(); } }
   }
-  function changeScope(targetIndex, roleIndex) {
-    if (!data.catalog?.targets[targetIndex]?.roles[roleIndex]) return;
-    ++version; stopTimer();
-    const catalog = data.catalog;
-    data = {...blank(),catalog,target:targetIndex,role:roleIndex,ready:true};
-    window.CompanionProduct?.choose(catalog.targets[targetIndex].target_id,catalog.targets[targetIndex].roles[roleIndex].role_id,true);
-    if (role()?.memory_api) {
-      try { data.pending = restorePending(); data.pendingMutation=restoreMutation(); data.detailId = data.pending?.tracked_batch_id || null; load(); }
-      catch (error) { failure(error); render(); }
-    } else render();
-  }
-
   /* ================= 事件 ================= */
 
   async function switchArea(area) {
@@ -1599,8 +1609,6 @@ window.CompanionMemoryPage = (() => {
 
   function change(event) {
     const el = event.target;
-    if (el.id === "memory-target") { changeScope(Number(el.value),0); return; }
-    if (el.id === "memory-role") { changeScope(data.target,Number(el.value)); return; }
     if (el.id === "memory-export-include") { data.exportIncludeArchived = el.checked; return; }
   }
 
@@ -1714,7 +1722,7 @@ window.CompanionMemoryPage = (() => {
     });
   }
   function unmount() {
-    ++version; stopTimer(); clearTimeout(searchTimer);
+    ++version; stopTimer(); clearTimeout(searchTimer); backgroundLoading = false;
     root?.removeEventListener("click",click); root?.removeEventListener("change",change);
     root?.removeEventListener("submit",submit); root?.removeEventListener("input",input);
     root?.removeEventListener("keydown",keydown); root?.removeEventListener("scroll",scroll,true);
@@ -1723,7 +1731,7 @@ window.CompanionMemoryPage = (() => {
   document.addEventListener("visibilitychange",()=>{
     if (!data?.ready) return;
     if (document.hidden) { stopTimer(); return; }
-    if (!data.busy) load();
+    if (!data.busy && !data.loading && !backgroundLoading && !data.addOpen && data.area === "reflections") load({silent:true});
   });
   /* `state.data` 只为测试驱动而暴露：本页的 data 是模块私有的，
      测试要断言归档/导入这些流程时没有别的入口。 */

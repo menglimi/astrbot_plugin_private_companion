@@ -53,13 +53,19 @@ class Reservation:
         return self.pending.key
 
 
+DEFAULT_RESOLUTION_TIMEOUT_SECONDS = 30.0
+
+
 class PrivateDebounce:
     """Shared per-target debounce state for one running plugin instance."""
 
-    def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True):
+    def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True,
+                 resolution_timeout=DEFAULT_RESOLUTION_TIMEOUT_SECONDS):
         self.policy = policy
         self._clock = clock
         self._log_enabled = log_enabled
+        self._resolution_timeout = (float(resolution_timeout)
+                                    if resolution_timeout is not None and resolution_timeout > 0 else None)
         self._pending: dict[str, Pending] = {}
         self._lock = asyncio.Lock()
         self._sequence = 0
@@ -119,6 +125,17 @@ class PrivateDebounce:
         received = self._clock() if received_at is None else received_at
         pending = self._pending.get(key)
         created_at = getattr(event, "created_at", None)
+        stale_collecting = (
+            pending is not None
+            and pending.state == "collecting"
+            and self._resolution_timeout is not None
+            and (received - pending.latest_received) >= self._resolution_timeout
+        )
+        if stale_collecting:
+            pending.state = "aborted"
+            pending.wake.set()
+            self._pending.pop(key, None)
+            pending = None
         if pending is None or pending.state in {"finished", "aborted", "closed", "bypass"}:
             policy = self.policy
             pending = Pending(
@@ -148,8 +165,7 @@ class PrivateDebounce:
         return Reservation(pending, ticket)
 
     @staticmethod
-    def private_plain_text(event):
-        """Return text only when the complete native private message is Plain."""
+    def _private_text_parts(event):
         message_obj = getattr(event, "message_obj", None)
         kind = getattr(getattr(message_obj, "type", None), "value",
                        getattr(message_obj, "type", None))
@@ -161,31 +177,48 @@ class PrivateDebounce:
             return None
         if not parts:
             return None
-        texts = []
+        getter = getattr(event, "get_platform_name", None)
+        official = callable(getter) and getter() in {"qq_official", "qq_official_webhook"}
+        bodies = []
         for part in parts:
             kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
             text = getattr(part, "text", None)
-            if kind != "Plain" or not isinstance(text, str):
+            if kind == "Plain" and isinstance(text, str):
+                bodies.append(part)
+            elif not (official and kind == "At" and getattr(part, "qq", None) == "qq_official"):
                 return None
-            texts.append(text)
-        text = "".join(texts)
+        return (parts, bodies) if bodies else None
+
+    @staticmethod
+    def private_plain_text(event):
+        """Read plain private text, including QQ Official's synthetic bot mention."""
+        parsed = PrivateDebounce._private_text_parts(event)
+        if parsed is None:
+            return None
+        text = "".join(part.text for part in parsed[1])
         return text if text.strip() else None
 
     @staticmethod
     def replace_private_plain_text(event, text):
         """Replace only the body while retaining the latest native event identity."""
         message_obj = getattr(event, "message_obj", None)
-        try:
-            parts = tuple(message_obj.message)
-        except (AttributeError, TypeError):
+        parsed = PrivateDebounce._private_text_parts(event)
+        if parsed is None:
             return False
-        if not parts or any(
-                getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) != "Plain"
-                or not isinstance(getattr(part, "text", None), str) for part in parts):
-            return False
+        parts, bodies = parsed
         try:
-            parts[0].text = text
-            message_obj.message = [parts[0]]
+            bodies[0].text = text
+            output = []
+            body_added = False
+            for part in parts:
+                kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+                if kind == "Plain":
+                    if not body_added:
+                        output.append(part)
+                        body_added = True
+                else:
+                    output.append(part)
+            message_obj.message = output
             message_obj.message_str = text
             event.message_str = text
         except (AttributeError, TypeError):
@@ -235,10 +268,13 @@ class PrivateDebounce:
             self._ensure_wake_logged(pending)
             return "active"
 
-    async def wait_for_resolution(self, reservation, event):
+    async def wait_for_resolution(self, reservation, event, *, timeout=None):
         """Wait until the latest event installs a policy or releases the burst."""
         pending = reservation.pending
+        limit = self._resolution_timeout if timeout is None else timeout
+        deadline = (self._clock() + float(limit)) if (limit is not None and limit > 0) else None
         while True:
+            remaining = None
             async with self._lock:
                 if self._closed or pending.state == "closed":
                     return "closed"
@@ -247,13 +283,38 @@ class PrivateDebounce:
                     pending.wake.clear()
                     if pending.version != version:
                         continue
+                    if deadline is not None:
+                        remaining = deadline - self._clock()
+                        if remaining <= 0:
+                            if self._pending.get(pending.key) is pending:
+                                self._pending.pop(pending.key, None)
+                            pending.state = "aborted"
+                            pending.wake.set()
+                            return "aborted"
                 elif pending.state == "active":
                     return "active" if (pending.owner_ticket == reservation.ticket
                                          and pending.owner is event) else "superseded"
                 else:
                     return pending.state
             try:
-                await pending.wake.wait()
+                if remaining is None:
+                    await pending.wake.wait()
+                else:
+                    await asyncio.wait_for(pending.wake.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                async with self._lock:
+                    if self._closed or pending.state == "closed":
+                        return "closed"
+                    if pending.state == "collecting":
+                        if self._pending.get(pending.key) is pending:
+                            self._pending.pop(pending.key, None)
+                        pending.state = "aborted"
+                        pending.wake.set()
+                        return "aborted"
+                    if pending.state == "active":
+                        return "active" if (pending.owner_ticket == reservation.ticket
+                                             and pending.owner is event) else "superseded"
+                    return pending.state
             except asyncio.CancelledError:
                 raise
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
@@ -206,6 +207,94 @@ class ProviderDefaultRoutingTests(unittest.TestCase):
             NS(context=NS(materials=()), event=NS()), NOW)
         return values, match, selected
 
+    def mixed_snapshot(self, provider, fallback, *, provider_layer, fallback_layer):
+        """A snapshot whose provider and fallback can come from different layers."""
+        fields = {}
+        for definition in configuration_fields((self.profile,)):
+            suffix = definition.field_id.rsplit(".", 1)[-1]
+            value, source = definition.default, None
+            if suffix == "provider":
+                value, source = provider, provider_layer
+            elif suffix == "fallback":
+                value, source = fallback, fallback_layer
+            fields[definition.field_id] = (
+                # ``explicit`` is true only for a value saved on the snapshot's
+                # own target; inherited rows carry their parent layer instead.
+                EffectiveValue(value, source, source is not None and source.layer is self.TARGET.layer)
+                if source is not None
+                else EffectiveValue(definition.default, None, False))
+        return ConfigurationSnapshot(self.TARGET, self.profile.group, "r1.config-identity", 0, 0,
+                                     "edit-token", "resolution-token", fields, "model_gateway",
+                                     ApplyMode.NEXT_TASK)
+
+    def test_a_stale_inherited_provider_clears_a_fallback_that_now_collides(self):
+        # 继承的旧 Provider 已下线，回退成宿主模型后与显式保存的备用模型相同。
+        # 不清掉备用会让每次调用都以 model_fallback_duplicate 失败。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "host-conversation",
+            provider_layer=installation, fallback_layer=self.TARGET)
+
+        applied = self.router.apply_provider_default(
+            self.profile, snapshot, self.router.provider_default(None, self.profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+        fallback = applied.fields[self.profile.group + ".fallback"]
+
+        self.assertEqual(values["provider"], "host-conversation")
+        self.assertEqual(values["fallback"], "")
+        # The saved fallback was explicit on this target; the repair must clear
+        # that too, or resolve() would still raise model_fallback_duplicate.
+        self.assertFalse(fallback.explicit)
+        _, selected, _ = self.router._route_selection(
+            self.profile, values, NS(scope=None),
+            NS(context=NS(materials=()), event=NS()), NOW)
+        self.assertEqual([item.binding.provider for item in selected], ["host-conversation"])
+
+    def test_a_stale_saved_fallback_is_cleared_even_with_a_profile_default_fallback(self):
+        # 任务档声明了默认备用模型时，旧的失效备用值也必须清掉；否则它留在
+        # 路由链里，主模型正常也会因为解析不到 Provider 而拒绝调用。
+        profile = replace(self.profile, default_fallback="task-default")
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("handwritten", "gone",
+            provider_layer=self.TARGET, fallback_layer=installation)
+
+        applied = self.router.apply_provider_default(
+            profile, snapshot, self.router.provider_default(None, profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "handwritten")
+        self.assertEqual(values["fallback"], "task-default")
+        _, selected, _ = self.router._route_selection(
+            profile, values, NS(scope=None),
+            NS(context=NS(materials=()), event=NS()), NOW)
+        self.assertEqual([item.binding.provider for item in selected],
+                         ["handwritten", "task-default"])
+
+    def test_an_explicitly_saved_stale_provider_still_fails_loudly(self):
+        # 当前编辑层显式保存的值不在可回退范围：保存后 Provider 下线时，
+        # 调用必须照旧报 model_provider_unavailable，而不是静默换模型。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "", provider_layer=self.TARGET,
+                                       fallback_layer=installation)
+        applied = self.router.apply_provider_default(
+            self.profile, snapshot, self.router.provider_default(None, self.profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+        self.assertEqual(values["provider"], "gone")
+        with self.assertRaises(TaskError):
+            self.router._route_selection(self.profile, values, NS(scope=None),
+                NS(context=NS(materials=()), event=NS()), NOW)
+
+    def test_a_legacy_blank_on_the_installation_layer_is_recovered(self):
+        # 旧版把“跟随默认”编码成空串写进安装层。安装层没有编辑入口，这个空串
+        # 必须像失效 id 一样被回退，否则它会让每次调用失败、页面也无法保存。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("", "", provider_layer=installation,
+                                       fallback_layer=installation)
+
+        values, _, selected = self.routed(snapshot)
+
+        self.assertEqual(values["provider"], "host-conversation")
+        self.assertEqual([item.binding.provider for item in selected], ["host-conversation"])
+
     def test_an_unset_provider_keeps_the_host_conversation_default(self):
         values, match, selected = self.routed(self.snapshot())
 
@@ -225,6 +314,196 @@ class ProviderDefaultRoutingTests(unittest.TestCase):
             self.routed(self.snapshot({self.profile.group + ".provider": ""}))
 
         self.assertEqual(caught.exception.code, "model_provider_unavailable")
+
+    def router_with(self, resolver, profile=None):
+        profile = profile or self.profile
+        return ModelRouter(
+            NS(registry=registry_for((profile,))), (profile,),
+            tuple(self.provider(name) for name in ("host-conversation", "handwritten", "task-default")),
+            default_provider_resolver=resolver)
+
+    def test_a_stale_fallback_does_not_hide_a_failing_host_route(self):
+        # 主模型未设置时路线来自宿主会话；这条读取失败是真实配置错误。
+        # 备用模型恰好是安装层的旧值，不能让它的可回退性把宿主的报错也吞掉。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("", "gone", provider_layer=None,
+                                       fallback_layer=installation)
+
+        def unavailable(context, profile):
+            raise TaskError("model_provider_unavailable", "the session has no model")
+
+        with self.assertRaises(TaskError) as caught:
+            self.router_with(unavailable).provider_default(None, self.profile, snapshot)
+
+        self.assertEqual(caught.exception.code, "model_provider_unavailable")
+
+    def test_a_recovered_primary_collision_keeps_the_declared_fallback_default(self):
+        # 主模型回退成宿主路线后与旧的备用值撞车。备用值本身也失效时，应回退到
+        # 任务档声明的默认备用，而不是被清空、丢掉这份冗余。
+        profile = replace(self.profile, default_fallback="task-default")
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "gone", provider_layer=installation,
+                                       fallback_layer=installation)
+        router = self.router_with(lambda context, item: "host-conversation", profile)
+
+        applied = router.apply_provider_default(
+            profile, snapshot, router.provider_default(None, profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "host-conversation")
+        self.assertEqual(values["fallback"], "task-default")
+        _, selected, _ = router._route_selection(
+            profile, values, NS(scope=None),
+            NS(context=NS(materials=()), event=NS()), NOW)
+        self.assertEqual([item.binding.provider for item in selected],
+                         ["host-conversation", "task-default"])
+
+    def test_an_explicit_fallback_colliding_with_a_recovered_primary_uses_the_task_default(self):
+        # 主模型恢复成宿主路线后与显式备用撞车。备用本身可用，但相等会让每次
+        # 调用以 duplicate 失败；任务档声明的默认备用是唯一不重复的选择。
+        profile = replace(self.profile, default_fallback="task-default")
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "host-conversation", provider_layer=installation,
+                                       fallback_layer=self.TARGET)
+        router = self.router_with(lambda context, item: "host-conversation", profile)
+
+        applied = router.apply_provider_default(
+            profile, snapshot, router.provider_default(None, profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "host-conversation")
+        self.assertEqual(values["fallback"], "task-default")
+
+    def test_a_recovered_value_drops_the_dead_rows_revision(self):
+        # 回退值是运行时算出来的，不是那一行旧配置的内容；把它的 revision 一起
+        # 带出去，会让按 revision 追踪来源的诊断指错行。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "", provider_layer=installation,
+                                       fallback_layer=installation)
+        key = self.profile.group + ".provider"
+        snapshot = replace(snapshot, fields={
+            **snapshot.fields,
+            key: EffectiveValue("gone", installation, False, source_revision=7),
+        })
+
+        applied = self.router.apply_provider_default(
+            self.profile, snapshot, self.router.provider_default(None, self.profile, snapshot))
+
+        recovered = applied.fields[key]
+        self.assertEqual(recovered.value, "host-conversation")
+        self.assertIsNone(recovered.source)
+        self.assertEqual(recovered.source_revision, 0)
+
+    def test_a_declared_fallback_default_spares_the_host_route(self):
+        # 任务档已声明默认备用时，失效的备用值可由它恢复，宿主路线用不上。
+        # 此时去问宿主只会多出一次可能失败的读取，而恢复本身并不需要它。
+        profile = replace(self.profile, default_fallback="task-default")
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("handwritten", "gone", provider_layer=self.TARGET,
+                                       fallback_layer=installation)
+
+        def unavailable(context, item):
+            raise TaskError("model_provider_unavailable", "the session has no model")
+
+        self.assertIsNone(
+            self.router_with(unavailable, profile).provider_default(None, profile, snapshot))
+
+    def test_a_recovered_fallback_is_not_left_equal_to_the_primary(self):
+        # 主备是两个不同的失效 id 时，备用会按宿主路线恢复；若它与恢复后的
+        # 主模型相同，就不该留在字段里冒充一条实际会被丢弃的备用链路。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("removed-a", "removed-b", provider_layer=installation,
+                                       fallback_layer=installation)
+
+        applied = self.router.apply_provider_default(
+            self.profile, snapshot, self.router.provider_default(None, self.profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "host-conversation")
+        self.assertEqual(values["fallback"], "")
+
+    def test_a_settled_primary_survives_a_failing_host_route(self):
+        # 本层已显式选好主模型时，宿主路线只可能用于恢复失效的备用模型。
+        # 读不到宿主不该让整次调度失败：备用回退到任务档默认即可。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("handwritten", "gone", provider_layer=self.TARGET,
+                                       fallback_layer=installation)
+
+        def unavailable(context, item):
+            raise TaskError("model_provider_unavailable", "the session has no model")
+
+        router = self.router_with(unavailable)
+        applied = router.apply_provider_default(
+            self.profile, snapshot, router.provider_default(None, self.profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "handwritten")
+        self.assertEqual(values["fallback"], "task-default")
+
+    def test_a_blank_installation_fallback_stays_no_fallback(self):
+        # 空备用是「不使用备用模型」的合法选择，不是需要修复的旧值。把它恢复成
+        # 宿主路线会给原本没有备用的任务凭空造出一条故障转移。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("handwritten", "", provider_layer=installation,
+                                       fallback_layer=installation)
+
+        applied = self.router.apply_provider_default(
+            self.profile, snapshot, self.router.provider_default(None, self.profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["fallback"], "")
+
+    def test_a_recovered_primary_does_not_duplicate_an_unset_fallback(self):
+        # 主模型从失效值恢复成宿主路线时，未设置的备用不该被填成同一个值：
+        # 页面会显示一条实际被路由当作重复丢弃的备用链路。
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "", provider_layer=installation,
+                                       fallback_layer=None)
+
+        applied = self.router.apply_provider_default(
+            self.profile, snapshot, self.router.provider_default(None, self.profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "host-conversation")
+        self.assertEqual(values["fallback"], "")
+
+    def test_a_host_route_that_cannot_serve_the_task_yields_the_task_default(self):
+        # 安装层主模型失效、宿主模型是纯文本，而任务需要图片：恢复成宿主只会让
+        # 每次调用以能力不符失败，任务档默认才是可用的那条路由。
+        profile = replace(self.profile, capabilities=("text", "image"))
+        router = ModelRouter(
+            NS(registry=registry_for((profile,))), (profile,),
+            tuple(self.provider(name) for name in
+                  ("host-conversation", "handwritten", "task-default")),
+            default_provider_resolver=lambda context, item: "host-conversation")
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("gone", "", provider_layer=installation,
+                                       fallback_layer=installation)
+
+        applied = router.apply_provider_default(
+            profile, snapshot, router.provider_default(None, profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "task-default")
+
+    def test_a_provider_that_cannot_serve_the_task_counts_as_stale(self):
+        # 安装层留下一个存在但不支持该任务能力的 Provider，和已下线的 id 一样
+        # 会让每次调用失败；安装层没有编辑入口，所以同样必须被回退。
+        profile = replace(self.profile, capabilities=("text", "image"))
+        host = replace(self.provider("host-conversation"), capabilities=("text", "image"))
+        router = ModelRouter(
+            NS(registry=registry_for((profile,))), (profile,),
+            (host, self.provider("handwritten"), self.provider("task-default")),
+            default_provider_resolver=lambda context, item: "host-conversation")
+        installation = ConfigTarget(INSTALLATION, ConfigLayer.INSTALLATION)
+        snapshot = self.mixed_snapshot("handwritten", "", provider_layer=installation,
+                                       fallback_layer=installation)
+
+        applied = router.apply_provider_default(
+            profile, snapshot, router.provider_default(None, profile, snapshot))
+        values = {name.rsplit(".", 1)[-1]: item.value for name, item in applied.fields.items()}
+
+        self.assertEqual(values["provider"], "host-conversation")
 
 
 class SessionProviderIdTests(unittest.TestCase):

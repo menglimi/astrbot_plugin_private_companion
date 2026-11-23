@@ -32,21 +32,60 @@ window.CompanionSelfReviewPage = (() => {
   /* 请求根本没走完与「后端明确拒绝」是两件事：前者没有错误码，不能借用后者的话。 */
   const UNFINISHED = "读取失败：页面与服务之间的请求没有完成。";
   const CODE = /^[a-z][a-z0-9_]{2,60}$/;
+  const INTERNAL_SENTINEL_CODES = new Set(["owner_result", "ok", "succeeded", "completed", "done"]);
+  const FAILURE_STATES = new Set(["failed", "blocked"]);
   const KIND = {try_next_time:"下次尝试", keep:"值得保持", ask_user:"需要先询问", no_change:"无需调整"};
   const REVIEW_STATE = {not_run:"还没运行过", failed:"上次失败", blocked:"来源校验未通过",
     no_reviewable_window:"暂无可复盘窗口", already_attempted:"该窗口已复盘过",
     succeeded:"最近一次已产出", completed:"最近一次已产出"};
+  const REVIEW_FAILURE_REASONS = {
+    self_review_output_invalid:"复盘输出格式不完整",
+    self_review_material_changed:"复盘依据在运行期间发生了变化",
+    self_review_binding_changed:"角色绑定已变化，等待重新同步",
+    self_review_job_unavailable:"原始复盘任务材料暂不可用",
+    self_review_closed:"复盘服务已停止",
+    model_task_unregistered:"复盘模型路由尚未配置",
+    model_estimation_failed:"本地预估没能完成，请结合运行日志排查",
+    host_model_limit_input:"复盘材料超过模型输入上限",
+    host_model_limit_output:"复盘模型输出上限不足",
+    model_output_truncated:"复盘结果被模型输出上限截断",
+  };
   const e = value => String(value ?? "").replace(/[&<>"']/g, c =>
     ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[c]));
   const problem = code => Object.assign(new Error(reason(code)), {code});
   const when = value => typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12:false, month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})
     : "时间未知";
-  let root = null, bridge = null, generation = 0, operation = 0, data = null;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  let root = null, bridge = null, generation = 0, operation = 0, data = null, getSourcesFn = null;
 
   function fresh() {
-    return {sources:[], items:[], stopped:[], policy:null, status:null, phase:"loading",
-      loading:false, writing:false, confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
+    return {sources:[], items:[], stopped:[], policy:null, status:null, enabled:true, phase:"loading",
+      loading:false, refreshing:false, refreshedAt:"", writing:false, confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
+  }
+  function normalizeSources(list, existing = []) {
+    const existingByKey = new Map(existing.map(source => [source.key, source]));
+    const seen = new Set(), out = [];
+    for (const [index, item] of (Array.isArray(list) ? list : []).entries()) {
+      try {
+        const path = rel(item?.api || item?.growthApi);
+        const key = typeof item?.key === "string" && item.key ? item.key : path;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const label = typeof item?.label === "string" && item.label ? item.label : `角色 ${index + 1}`;
+        const prev = existingByKey.get(key);
+        out.push(prev ? {...prev, path, label} : {path, key, label, next:"", pages:0});
+      } catch { /* an invalid manifest entry cannot become a request route */ }
+    }
+    return out;
+  }
+  function syncSources() {
+    if (typeof getSourcesFn !== "function" || !data) return;
+    try {
+      const latest = getSourcesFn();
+      if (!Array.isArray(latest)) return;
+      data.sources = normalizeSources(latest, data.sources);
+    } catch (_) {}
   }
   function live(ticket) { return ticket === generation && root?.isConnected; }
   function note(message, error = false) { data.notice = message; data.error = error; }
@@ -103,11 +142,25 @@ window.CompanionSelfReviewPage = (() => {
     return errors[code] || "服务返回了未收录的状态（" + code + "），请刷新核对。";
   }
   /* 后端把这一角色最近一次复盘的结果随列表一起返回（state + 失败码）；页面此前
-     从未消费它，于是「复盘机制在，但最近一次没跑成」这件事一直看不出来。 */
+     从未消费它，于是「复盘机制在，但最近一次没跑成」这件事一直看不出来。
+     成功态或内部哨兵码（如 owner_result）必须过滤，失败码向用户展示中文说明并将原始码收敛至诊断属性。 */
+  function reviewStatusInfo(status) {
+    if (!status || typeof status !== "object" || typeof status.state !== "string" || !status.state) {
+      return {label: "—", code: ""};
+    }
+    const label = REVIEW_STATE[status.state] || (CODE.test(status.state) ? "状态未收录" : status.state);
+    const rawCode = typeof status.code === "string" ? status.code.trim() : "";
+    if (!rawCode || !FAILURE_STATES.has(status.state) || INTERNAL_SENTINEL_CODES.has(rawCode)) {
+      return {label, code: ""};
+    }
+    const detail = REVIEW_FAILURE_REASONS[rawCode] || errors[rawCode] || (!CODE.test(rawCode) ? rawCode : "");
+    return {
+      label: detail ? `${label}（${detail}）` : label,
+      code: rawCode,
+    };
+  }
   function reviewLabel(status) {
-    if (!status || typeof status !== "object" || typeof status.state !== "string" || !status.state) return "—";
-    const label = REVIEW_STATE[status.state] || "状态未收录";
-    return typeof status.code === "string" && status.code ? `${label}（${status.code}）` : label;
+    return reviewStatusInfo(status).label;
   }
   /* 一条建议的身份是「哪个记录归属 + 哪个 item_id」：同一批数据可能同时出现在
      活动列表与已停止列表里，跨来源的 item_id 也可能撞号。 */
@@ -157,7 +210,15 @@ window.CompanionSelfReviewPage = (() => {
   function actions(item, sourceKey) {
     const actionKey = sourceKey + "\u0000" + item.item_id;
     if (item.unavailable_reason) return `<span class="sr-state is-stopped">证据失效 · 暂停注入</span>`;
-    if (item.state !== "pending") return `<span class="sr-state${item.expires_at&&Date.parse(item.expires_at)<=Date.now()?" is-stopped":""}">${item.kind === "no_change" && item.state === "rejected" ? "已收起" : item.state === "accepted" ? item.expires_at&&Date.parse(item.expires_at)<=Date.now()?"已过期":"生效中" : "已驳回"}</span>`;
+    if (item.state !== "pending") {
+      const expired = item.expires_at && Date.parse(item.expires_at) <= Date.now();
+      const label = item.kind === "no_change" && item.state === "rejected" ? "已收起"
+        : item.state === "accepted" ? (expired ? "已过期" : "生效中") : item.state === "withdrawn" ? "已撤回" : "已驳回";
+      const choices = Array.isArray(item.actions) ? item.actions : [];
+      return `<span class="sr-state${expired ? " is-stopped" : ""}">${label}</span>
+        <div class="sr-actions">${choices.includes("withdraw")
+          ? `<button class="button small" type="button" data-review-action="withdraw" data-review-id="${e(item.item_id)}" data-review-source="${e(sourceKey)}">撤回指导</button>` : ""}</div>`;
+    }
     if (data.confirming === actionKey) return `<div class="sr-actions">
       <span>采纳后会在短期内作为该角色的工作指导。</span>
       <button class="button small primary" type="button" data-review-action="confirm" data-review-id="${e(item.item_id)}" data-review-source="${e(sourceKey)}">确认采纳</button>
@@ -197,13 +258,14 @@ window.CompanionSelfReviewPage = (() => {
     const metrics=[["自动应用",count(data.items.filter(item=>item.automatic&&!item.unavailable_reason).length),"条"],
       ["生效中",count(valid.length),"条"],["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—",""],
       ["空结果重查",duration(policy.empty_retry_seconds),"后重查"]];
+    const reviewMeta = reviewStatusInfo(data.status);
     const mechanisms=[
-      ["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—"],
-      ["证据门槛",Number.isInteger(policy.minimum_evidence)?`至少 ${policy.minimum_evidence} 条`:"—"],
-      ["空结果重查",duration(policy.empty_retry_seconds)+" 后重查"],
-      ["最近一次复盘状态",reviewLabel(data.status)],
-      ["指导类型","下次尝试 · 保持 · 询问 · 无需调整"],
-      ["生效方式","低风险建议自动应用；询问项进入审阅中心"],
+      ["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—",""],
+      ["证据门槛",Number.isInteger(policy.minimum_evidence)?`至少 ${policy.minimum_evidence} 条`:"—",""],
+      ["空结果重查",duration(policy.empty_retry_seconds)+" 后重查",""],
+      ["最近一次复盘状态",reviewMeta.label,reviewMeta.code],
+      ["指导类型","下次尝试 · 保持 · 询问 · 无需调整",""],
+      ["生效方式","低风险建议自动应用；询问项进入审阅中心",""],
     ];
     /* 读成功且一条都没有，才叫「暂无复盘记录」；读失败不能借这句话收场。 */
     const emptyCopy=data.phase==="loading"?"正在读取…"
@@ -216,12 +278,14 @@ window.CompanionSelfReviewPage = (() => {
     const failed=`<p class="sr-status is-error" role="status" aria-live="polite">${e(data.notice||UNFINISHED)}</p>
       <div class="sr-more"><button class="button small" type="button" data-review-refresh ${data.loading?"disabled":""}>重新读取</button></div>`;
     const read=`${data.notice?`<p class="sr-status${data.error?" is-error":""}" role="status" aria-live="polite">${e(data.notice)}</p>`:""}
+      <section class="sr-switch" aria-label="自我复盘开关"><label><input type="checkbox" data-review-enabled ${data.enabled?"checked":""} ${data.writing?"disabled":""}> <strong>启用自我复盘</strong></label>
+        <p>关闭后停止生成新的复盘建议，并停止把已采纳建议注入回复；历史记录仍可在下方查看。</p></section>
       ${data.sources.length?`<section class="sr-kpis" aria-label="复盘状态">${metrics.map(([label,value,unit])=>`<article><span>${label}</span><strong>${e(value)}${unit&&typeof value==="number"?` ${unit}`:""}</strong></article>`).join("")}</section>
-        <section class="sr-mechanism"><header><h2>复盘运行机制</h2><span>${data.loading?"":"已连接"}</span></header><div>${mechanisms.map(([label,value])=>`<article><strong>${label}</strong><span>${e(value)}</span></article>`).join("")}</div></section>
+        <section class="sr-mechanism"><header><h2>复盘运行机制</h2><span>${data.loading?"":"已连接"}</span></header><div>${mechanisms.map(([label,value,code])=>`<article><strong>${label}</strong><span${code?` data-status-code="${e(code)}" title="诊断码：${e(code)}"`:""}>${e(value)}</span></article>`).join("")}</div></section>
         <section class="sr-effective"><header><h2>生效中的自我指导</h2><span>${valid.length} 条</span></header>${active}</section>${stopped}`
         :`<div class="sr-empty">${emptyCopy}</div>`}`;
     root.innerHTML=`<div class="sr-toolbar"><span>${data.sources.length} 个记录归属${data.loading?" · 正在读取":""}</span>
-      <button class="lh-refresh" type="button" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
+      <span class="refresh-cluster">${data.refreshedAt?`<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>`:""}<button class="lh-refresh${data.refreshing?" is-refreshing":""}" type="button" data-review-refresh aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing?"true":"false"}" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></span></div>
       ${blind?failed:read}
       ${!blind&&data.sources.some(source=>source.next)?`<div class="sr-more"><button class="button small" type="button" data-review-more ${data.loading?"disabled":""}>加载更多</button></div>`:""}`;
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
@@ -231,29 +295,35 @@ window.CompanionSelfReviewPage = (() => {
   /* refresh 的重读页数有上限：已加载页数会被「加载更多」一路抬高，
      而刷新是写操作之后的常见路径，不能按页数无上限地串行发请求。 */
   const MAX_REFRESH_PAGES = 8;
-  /* 三种读法，区别只在「从哪一页开始」与「读到的行怎么并进现有列表」：
+  /* 三种读法：
        reset   换来源或首次读取：清空重来，从每个来源的第一页开始；
        append  「加载更多」：每个来源各取自己的下一页，按身份去重后接上；
-       refresh 重新读取与写操作之后：把**这次已经读过的页数**原地重读一遍，
-               新数据按身份覆盖旧行，这次没读到的旧行保留。
-     三种模式都不会让已经显示过的建议凭空消失——除非用户自己裁决了它。 */
-  async function load({mode = "reset", force = false} = {}) {
+       refresh 重新读取与写操作之后：同步最新来源并按已加载页数重读，完整成功的来源
+               以服务端结果权威替换（同时更新 policy 与 status），仅读取失败的来源保留旧项并提示。 */
+  async function load({mode = "reset", force = false, manual = false} = {}) {
     if (data.loading && !force) return;
+    const reset = mode === "reset", append = mode === "append", refresh = mode === "refresh";
+    if (refresh) syncSources();
     if (!data.sources.length) { data.phase = "failed"; note("暂无可读取的复盘记录。", true); render(); return; }
     const ticket = generation;
     const query = ++loadGeneration;
-    const reset = mode === "reset", append = mode === "append";
-    const previous = reset ? null : data.items.slice();
+    const previous = reset ? [] : data.items.slice();
+    const previousStopped = reset ? [] : data.stopped.slice();
     data.loading = true;
+    data.refreshing = refresh;
     if (reset) {
-      data.items = []; data.stopped=[];data.expired = 0; data.sourceErrors = [];data.policy=null;
-      data.status=null; data.phase = "loading"; note("");
+      data.items = []; data.stopped = []; data.expired = 0; data.sourceErrors = []; data.policy = null;
+      data.status = null; data.phase = "loading"; data.refreshedAt = ""; note("");
       data.sources.forEach(source => { source.next = ""; source.pages = 0; });
+    } else if (manual) {
+      note("");
     }
     render();
     const targets = append ? data.sources.filter(source => source.next) : data.sources;
-    const fetched = [], failures = [], stoppedKeys = new Set(data.stopped.map(itemKey));
-    let expired = 0, succeeded = 0;
+    const fetched = [], fetchedStopped = [], failures = [], failedLabels = [];
+    const succeededKeys = new Set();
+    const stoppedKeys = new Set(append ? previousStopped.map(itemKey) : []);
+    let expired = 0, succeeded = 0, nextPolicy = null, nextStatus = null;
     for (let offset = 0; offset < targets.length; offset += 8) {
       const batch = targets.slice(offset, offset + 8);
       const results = await Promise.allSettled(batch.map(async source => {
@@ -273,48 +343,67 @@ window.CompanionSelfReviewPage = (() => {
           cursor = typeof page.next_cursor === "string" ? page.next_cursor : "";
           if (!cursor) break;
         }
-        const decided = append?{items:[]}:await api(source,"GET","/self-review",{state:"decided",limit:50});
+        const decided = append ? {items:[]} : await api(source, "GET", "/self-review", {state:"decided", limit:50});
         /* 「已经读过几页」要累加：append 只读一页，但它把已读页数 +1。 */
         return {source, rows, cursor, pages: append ? loadedBefore + 1 : pages,
-          policy:first?.policy||null, status:first?.status||null, decided};
+          policy:first?.policy || null, status:first?.status || null,
+          enabled:typeof first?.enabled === "boolean" ? first.enabled : true, decided};
       }));
       if (!live(ticket) || query !== loadGeneration) return;
       results.forEach((settled, index) => {
         const source = batch[index];
         if (settled.status === "rejected") {
           failures.push(`${source.label}：${reason(settled.reason?.code)}`);
+          failedLabels.push(source.label);
           return;
         }
         succeeded++;
-        const {rows,cursor,pages,policy,status,decided}=settled.value;
+        succeededKeys.add(source.key);
+        const {rows, cursor, pages, policy, status, enabled, decided} = settled.value;
         source.next = cursor;
         source.pages = pages;
-        if(!data.policy&&policy)data.policy=policy;
-        if(!data.status&&status)data.status=status;
+        if (!nextPolicy && policy) nextPolicy = policy;
+        if (!nextStatus && status) nextStatus = status;
+        if (typeof enabled === "boolean") data.enabled = enabled;
         if (Number.isInteger(decided.expired_in_page)) expired += decided.expired_in_page;
         for (const item of rows) {
           const enriched = {...item, _sourceKey:source.key, _sourceLabel:source.label};
           const isExpired = item.expires_at && Date.parse(item.expires_at) <= Date.now();
           if (item.unavailable_reason || isExpired) {
             const key = itemKey(enriched);
-            if (!stoppedKeys.has(key)) { data.stopped.push(enriched); stoppedKeys.add(key); }
+            if (!stoppedKeys.has(key)) { fetchedStopped.push(enriched); stoppedKeys.add(key); }
           } else fetched.push(enriched);
         }
-        for(const item of Array.isArray(decided.items)?decided.items:[]){
-          if(item.state==="accepted"&&(item.unavailable_reason||item.expires_at&&Date.parse(item.expires_at)<=Date.now())){
-            const enriched={...item,_sourceKey:source.key,_sourceLabel:source.label};
-            const key=itemKey(enriched);
-            if(!stoppedKeys.has(key)){data.stopped.push(enriched);stoppedKeys.add(key);}
+        for (const item of Array.isArray(decided.items) ? decided.items : []) {
+          if (item.state === "withdrawn" || item.state === "accepted" && (item.unavailable_reason || item.expires_at && Date.parse(item.expires_at) <= Date.now())) {
+            const enriched = {...item, _sourceKey:source.key, _sourceLabel:source.label};
+            const key = itemKey(enriched);
+            if (!stoppedKeys.has(key)) { fetchedStopped.push(enriched); stoppedKeys.add(key); }
           }
         }
       });
     }
     if (!live(ticket) || query !== loadGeneration) return;
-    data.items = (reset ? fetched : mergeRows(previous, fetched))
-      .sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""));
+    if (nextPolicy) data.policy = nextPolicy;
+    if (nextStatus) data.status = nextStatus;
+    const activeSourceKeys = new Set(data.sources.map(source => source.key));
+    if (reset) {
+      data.items = fetched;
+      data.stopped = fetchedStopped;
+    } else if (append) {
+      data.items = mergeRows(previous, fetched);
+      data.stopped = mergeRows(previousStopped, fetchedStopped);
+    } else {
+      /* 仅保留失败来源的旧项；本次读取成功的来源以服务端返回做权威替换。 */
+      const retainedItems = previous.filter(item => activeSourceKeys.has(item._sourceKey) && !succeededKeys.has(item._sourceKey));
+      const retainedStopped = previousStopped.filter(item => activeSourceKeys.has(item._sourceKey) && !succeededKeys.has(item._sourceKey));
+      data.items = mergeRows(retainedItems, fetched);
+      data.stopped = mergeRows(retainedStopped, fetchedStopped);
+    }
+    data.items.sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""));
     /* 同一条建议不能同时出现在「生效中」与「已停止注入」两处：
-       · 这次读到的行若已恢复可读，就从 stopped 里摘掉——refresh 只增不减会让它重复渲染；
-       · 这次被判为失效 / 不可读的行，也不再以旧行留在生效列表里，免得状态说得过时。 */
+       · 这次读到的行若已恢复可读，就从 stopped 里摘掉；
+       · 这次被判为失效 / 不可读的行，也不再以旧行留在生效列表里。 */
     const activeKeys = new Set(data.items.map(itemKey));
     data.stopped = data.stopped.filter(item => !activeKeys.has(itemKey(item)));
     const stoppedKeysNow = new Set(data.stopped.map(itemKey));
@@ -325,9 +414,11 @@ window.CompanionSelfReviewPage = (() => {
        空列表只有读成功之后才能说成「暂无复盘记录」。 */
     if (targets.length) data.phase = succeeded ? "ready" : "failed";
     if (failures.length) note(succeeded
-      ? `部分记录归属暂不可读（${failures.length}/${targets.length}）；已显示其余记录。`
+      ? `部分记录归属暂不可读（${failedLabels.join("、")}，${failures.length}/${targets.length}）；已显示其余记录并保留失败归属旧项。`
       : `复盘记录暂时无法读取：${failures[0]}`, true);
     data.loading = false;
+    data.refreshing = false;
+    if (manual && !failures.length) data.refreshedAt = formatClock();
     render();
   }
   function operationKey(action, itemId) {
@@ -337,7 +428,7 @@ window.CompanionSelfReviewPage = (() => {
      之后的 refresh 只重读已经读过的页，不再整表重来。 */
   function applyDecision(item, action) {
     if (!item) return;
-    if (action === "reject") {
+    if (action === "reject" || action === "withdraw") {
       data.items = data.items.filter(row => itemKey(row) !== itemKey(item));
       return;
     }
@@ -362,7 +453,7 @@ window.CompanionSelfReviewPage = (() => {
       if (!live(ticket)) return;
       applyDecision(item, action);
       await load({mode:"refresh", force:true});
-      if (live(ticket)) note(action === "accept" ? "已采纳，短期指导已生效。" : item.kind === "no_change" ? "结论已收起。" : "已驳回。");
+      if (live(ticket)) note(action === "accept" ? "已采纳，短期指导已生效。" : action === "withdraw" ? "已撤回，随后续请求停止注入。" : item.kind === "no_change" ? "结论已收起。" : "已驳回。");
     } catch (failure) {
       if (live(ticket)) note(reason(failure.code), true);
     } finally {
@@ -370,7 +461,7 @@ window.CompanionSelfReviewPage = (() => {
     }
   }
   function onClick(event) {
-    if (event.target.closest("[data-review-refresh]")) { load({mode:"refresh", force:true}); return; }
+    if (event.target.closest("[data-review-refresh]")) { load({mode:"refresh", manual:true}); return; }
     if (event.target.closest("[data-review-more]")) { load({mode:"append"}); return; }
     const action = event.target.closest("[data-review-action]");
     if (!action) return;
@@ -381,22 +472,38 @@ window.CompanionSelfReviewPage = (() => {
     else if (action.dataset.reviewAction === "cancel") { data.confirming = ""; render(); }
     else if (action.dataset.reviewAction === "confirm") decide(sourceKey, itemId, "accept");
     else if (action.dataset.reviewAction === "reject") decide(sourceKey, itemId, "reject");
+    else if (action.dataset.reviewAction === "withdraw") decide(sourceKey, itemId, "withdraw");
+  }
+  async function onToggle(event) {
+    const control = event.target.closest?.("[data-review-enabled]");
+    if (!control || !data || data.writing) return;
+    const source = data.sources[0];
+    if (!source) return;
+    const enabled = control.checked;
+    data.writing = true;
+    data.enabled = enabled;
+    note("");
+    render();
+    try {
+      await api(source, "POST", "/self-review/settings/command", {enabled});
+      if (data) note(enabled ? "已启用自我复盘。" : "已停用自我复盘：新建议与已有指导注入都已停止。");
+    } catch (failure) {
+      if (data) { data.enabled = !enabled; note(reason(failure.code), true); }
+    } finally {
+      if (data) { data.writing = false; render(); }
+    }
   }
   async function mount(host, options = {}) {
     unmount();
     root = host; data = fresh();
-    const seen = new Set();
-    for (const [index, item] of (Array.isArray(options.sources) ? options.sources : []).entries()) {
-      try {
-        const path = rel(item?.api);
-        const key = typeof item.key === "string" && item.key ? item.key : path;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        data.sources.push({path, key, label:typeof item.label === "string" && item.label ? item.label : `角色 ${index + 1}`, next:"", pages:0});
-      } catch { /* an invalid manifest entry cannot become a request route */ }
-    }
+    getSourcesFn = typeof options.getSources === "function" ? options.getSources
+      : typeof options.sources?.getSources === "function" ? options.sources.getSources : null;
+    const initial = Array.isArray(options.sources) ? options.sources
+      : getSourcesFn ? (() => { try { const list = getSourcesFn(); return Array.isArray(list) ? list : []; } catch (_) { return []; } })() : [];
+    data.sources = normalizeSources(initial);
     const ticket = ++generation;
     root.addEventListener("click", onClick);
+    root.addEventListener("change", onToggle);
     render();
     try {
       bridge = await ready(ticket);
@@ -413,7 +520,9 @@ window.CompanionSelfReviewPage = (() => {
     generation++;
     loadGeneration++;
     if (root) root.removeEventListener("click", onClick);
-    root = null; bridge = null; data = null;
+    if (root) root.removeEventListener("change", onToggle);
+    root = null; bridge = null; data = null; getSourcesFn = null;
   }
   return {mount, unmount, get state() { return {data}; }};
 })();
+

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
 import json
+import math
 
 from companion_v2.agenda.models import AgendaError, AgendaTarget
 from companion_v2.agenda.service import AgendaService
@@ -123,6 +124,21 @@ class ContactSchedule:
         self.screen_events = ScreenContactEvents(contacts)
         self.relationship_events = RelationshipContactEvents(contacts, messages)
         self._diagnostics_cleaned_at = None
+        self._connection_available = None
+
+    def bind_connection_gate(self, available):
+        """Pause outbound planning for unavailable accounts without retiring a window."""
+        self._connection_available = available
+
+    def _account_available(self, context):
+        return self._connection_available is None or self._connection_available(context)
+
+    def _row_available(self, row, now):
+        context = TaskContext.restore(json.loads(row["context_json"]))
+        if self._account_available(context):
+            return True
+        self._note_window(context, row, now, "connection", "skipped", "host_account_offline")
+        return False
 
     @staticmethod
     def _diagnostic_key(kind, value=""):
@@ -373,6 +389,41 @@ class ContactSchedule:
         native = latest_scope(self.runtime, context.scope)
         return native if native is not None and (legacy is None or native["observed_at"] >= legacy["created_at"]) else legacy
 
+    @staticmethod
+    def _validate_reality_location(marker):
+        if (type(marker) is not dict
+                or set(marker) != {"captured_at", "source_id", "place_fingerprint"}
+                or type(marker.get("captured_at")) not in (int, float)
+                or isinstance(marker.get("captured_at"), bool)
+                or not math.isfinite(marker["captured_at"])
+                or not isinstance(marker.get("source_id"), str)
+                or not marker["source_id"].startswith("reality-location-")
+                or not isinstance(marker.get("place_fingerprint"), str)
+                or not marker["place_fingerprint"]):
+            raise TaskError("contact_reality_location_invalid", "mobile location origin marker is invalid")
+
+    def reality_location_origin(self, context, at, *, captured_at, source_id, place_fingerprint):
+        """Bind a production mobile location event to the latest completed private conversation."""
+        if context.scope.kind.value != "private":
+            raise TaskError("reality_location_not_authorized", "mobile location contact requires a private window")
+        latest = self.latest_conversation(context)
+        if latest is None:
+            raise TaskError("contact_conversation_changed",
+                            "mobile location contact requires a completed private conversation")
+        keys = latest.keys() if hasattr(latest, "keys") else ()
+        batch_id = latest["batch_id"] if "batch_id" in keys else latest.get("turn_id")
+        if not isinstance(batch_id, str) or not batch_id:
+            raise TaskError("contact_conversation_changed",
+                            "the latest private conversation has no stable identity")
+        origin, batch, event = self._origin(context, batch_id, at)
+        marker = {
+            "captured_at": captured_at,
+            "source_id": source_id,
+            "place_fingerprint": place_fingerprint,
+        }
+        self._validate_reality_location(marker)
+        return {**origin, "reality_location_event": marker}, batch, event
+
     def validate_origin(self, context, origin, at):
         current, row, event = self._origin(context, origin["batch_id"], at)
         event_markers = {"activity_event", "growth_event", "journal_event", "calendar_event",
@@ -380,7 +431,7 @@ class ContactSchedule:
                          "meal_event", "weather_event", "weather_change_event", "official_alert_event",
                          "balance_event", "news_event", "screen_event", "greeting_event", "burst_event",
                          "relationship_event", "followup_event", "open_loop_event", "morning_event",
-                         "health_event"}
+                         "health_event", "reality_location_event"}
         rhythm_event_markers = event_markers - {"relationship_event"}
         if current.get("reanchored"):
             # The latest completed conversation took over. Keep the original
@@ -465,6 +516,8 @@ class ContactSchedule:
             self.wake_events.validate(context, origin["morning_event"], at, interaction=interaction)
         if "open_loop_event" in origin:
             self._validate_open_loop(context, origin["open_loop_event"], preferences, at)
+        if "reality_location_event" in origin:
+            self._validate_reality_location(origin["reality_location_event"])
         return current
 
     def _plan(self, row, at):
@@ -1225,8 +1278,6 @@ class ContactSchedule:
             if (self.runtime.read_one("SELECT 1 FROM execution_tasks WHERE task_id = ?", (task_id,))
                     or self.runtime.read_one("SELECT 1 FROM proactive_contacts WHERE task_id = ?", (task_id,))):
                 continue
-            if not agenda.repository.claim_open_loop_followup(memo.memo_id, at=at):
-                continue
             marker = {"memo_id": memo.memo_id, "memo_revision": memo.revision,
                       "opened_at": stamp(opened), "expires_at": stamp(expires)}
             record = json.dumps({"title": memo.title, "body": memo.body}, ensure_ascii=False,
@@ -1333,7 +1384,8 @@ class ContactSchedule:
         if not sleep.get("resting"):
             return None
         grace = rest_gate.awake_grace(rest_gate.document(self.runtime, context), now=at)
-        if grace.get("active") and grace.get("sleep") == sleep.get("sleep"):
+        grace_key = rest_gate.sleep_grace_key(sleep)
+        if grace.get("active") and grace_key is not None and grace.get("sleep") == grace_key:
             return None
         wake_at = sleep.get("wake_at")
         if isinstance(wake_at, datetime) and wake_at > at:
@@ -1475,6 +1527,8 @@ class ContactSchedule:
                 if datetime.fromisoformat(spec["deadline_at"]) <= at:
                     self._withhold(row, "judge_expired", "主动人格判定已过期，未判定的草稿不发送")
                     continue
+                if not self._account_available(context):
+                    continue
                 worker = asyncio.create_task(self.contacts.judge_runner.run(context, task_id),
                                              name="companion:contact-judge:" + task_id)
                 self._judges[task_id] = worker
@@ -1560,13 +1614,13 @@ class ContactSchedule:
         legacy_rows = self._legacy_rows(self._cursor)
         from companion_v2.conversation.native_turns import project, turns_available
         native_rows = self.runtime.read_all("""SELECT n.rowid AS sequence, n.* FROM conversation_native_turns n
-            WHERE n.rowid > ? AND json_extract(n.context_json, '$.audience.scope.kind') = 'private'
+            WHERE n.rowid > ? AND n.scope_kind = 'private'
             AND n.generation_state = 'completed'
             AND NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
                 WHERE newer.context_key = n.context_key
                 AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
             ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
-        rows = (*legacy_rows, *(project(row) for row in native_rows))
+        rows = (*legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
         return now, rows, available, len(legacy_rows), len(native_rows)
 
     def _plan_one(self, row, now):
@@ -1590,6 +1644,9 @@ class ContactSchedule:
     def _activate_plan(self, row, plan, available, now):
         context, _, intents, _, origin = plan
         purpose = intents[0].purpose if intents else None
+        if not self._account_available(context):
+            self._note_window(context, row, now, "connection", "skipped", "host_account_offline", purpose=purpose)
+            return available
         circuit_until = self.contacts.platform_circuit.cooldown_until(context, at=now)
         if circuit_until is not None:
             self._note_window(context, row, now, "delivery_admission", "skipped", "platform_circuit_open",
@@ -1607,6 +1664,13 @@ class ContactSchedule:
             return available
         if row["origin_key"] in self._workers:
             return available
+        open_loop = origin.get("open_loop_event") if isinstance(origin, dict) else None
+        if isinstance(open_loop, dict) and open_loop.get("memo_id"):
+            agenda = AgendaService(self.runtime)
+            if not agenda.repository.claim_open_loop_followup(open_loop["memo_id"], at=now):
+                self._note_window(context, row, now, "open_loop", "skipped", "open_loop_already_claimed",
+                                  purpose=purpose)
+                return available
         worker = asyncio.create_task(self._run(plan), name="companion:automatic-contact:" + row["origin_key"])
         self._workers[row["origin_key"]] = worker
         self._note_window(context, row, now, "task_queue", "queued", "candidate_queued", purpose=purpose)
@@ -1625,10 +1689,14 @@ class ContactSchedule:
         if prepared is None:
             return
         now, rows, available, legacy_count, native_count = prepared
+        exhausted = True
         for row in rows:
             if self._closed or available <= 0:
+                exhausted = False
                 break
             self._row_cursor(row)
+            if not self._row_available(row, now):
+                continue
             try:
                 plan = self._plan_one(row, now)
             except TaskError as error:
@@ -1636,10 +1704,11 @@ class ContactSchedule:
                 continue
             if plan is not None:
                 available = self._activate_plan(row, plan, available, now)
-        if legacy_count < 16:
-            self._cursor = 0
-        if native_count < 16:
-            self._native_cursor = 0
+        if exhausted:
+            if legacy_count < 16:
+                self._cursor = 0
+            if native_count < 16:
+                self._native_cursor = 0
         self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
 
     async def advance_async(self):
@@ -1652,10 +1721,14 @@ class ContactSchedule:
             if prepared is None:
                 return
             now, rows, available, legacy_count, native_count = prepared
+            exhausted = True
             for row in rows:
                 if self._closed or available <= 0:
+                    exhausted = False
                     break
                 self._row_cursor(row)
+                if not self._row_available(row, now):
+                    continue
                 planning = asyncio.create_task(asyncio.to_thread(self._plan_one, row, now))
                 self._planning = planning
                 try:
@@ -1667,13 +1740,15 @@ class ContactSchedule:
                     if self._planning is planning and planning.done():
                         self._planning = None
                 if self._closed:
+                    exhausted = False
                     break
                 if plan is not None:
                     available = self._activate_plan(row, plan, available, now)
-            if legacy_count < 16:
-                self._cursor = 0
-            if native_count < 16:
-                self._native_cursor = 0
+            if exhausted:
+                if legacy_count < 16:
+                    self._cursor = 0
+                if native_count < 16:
+                    self._native_cursor = 0
             self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
         finally:
             self._advancing = False
@@ -1738,6 +1813,11 @@ class ContactSchedule:
             except Exception:
                 pass
         self._close_sources()
+        if hasattr(self.news_events, "aclose"):
+            await self.news_events.aclose()
+        exploration = getattr(self, "exploration", None)
+        if exploration is not None and hasattr(exploration, "aclose"):
+            await exploration.aclose()
         workers = tuple(self._workers.values()) + tuple(self._judges.values())
         if workers:
             await asyncio.wait(workers, timeout=0.25)

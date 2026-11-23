@@ -33,6 +33,12 @@ records.reality.management = {mihome:{auth:{logged_in:false}, login:{running:fal
     custom_reminders:[{id:"reminder-1", status:"scheduled", topic:"吃早餐", scheduled_text:"10-12 07:30"}],
     camera:{eligible:true, consented:false, enabled:false, proactive_mode:"off", proactive_max_daily:-1}}]};
 records.live.management = {connected:false, authenticated:false, hotkeys:[], error_code:null};
+records.game.management = {
+  server:{enabled:true, running:true, host:"127.0.0.1", port:6331, public_base_url:"", external_base_url:"", access_host:"", local_base_url:"http://127.0.0.1:6331"},
+  xiangqi_engine:{available:false, managed:false, configured:false, configured_path:"", configured_missing:false, path:"", nnue_path:"", version:"", install_root:"/data/pikafish", allow_download:true, running:false, error:"", guidance:"尚未安装 Pikafish 引擎；点击「下载 Pikafish 引擎」即可自动安装。"},
+  tunnel:{installed:true, source:"managed", path:"/data/cloudflared/cloudflared", download_dir:"/data/cloudflared", configured_path:"", configured_missing:false, running:false, ready:false, url:"", error:"", allow_download:true, guidance:"已检测到 cloudflared（托管目录），可按需提供临时公网访问。"},
+  native_games:[], rooms:[], actions:["cloudflared_check", "cloudflared_install", "tunnel_start", "tunnel_stop", "xiangqi_check", "xiangqi_install"],
+};
 let browser;
 before(async () => { browser = await chromium.launch({headless:true,
   ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})}); });
@@ -124,22 +130,28 @@ async function harness(name, viewport = {width:1360, height:900}, panelOptions =
   return page;
 }
 
-test("four packaged schemas expose every scalar setting and usable template lists", async () => {
+test("settings expose the visible fields of each packaged schema and keep mobile settings in their own view", async () => {
   for (const name of Object.keys(records)) {
     const page = await harness(name);
     try {
       const result = await page.evaluate(() => {
-        function leaves(schema, prefix = []) {
-          return Object.entries(schema).flatMap(([key, field]) => field.type === "object"
-            ? leaves(field.items || {}, [...prefix, key])
-            : field.type === "template_list" ? [] : [JSON.stringify([...prefix, key])]);
+        function leaves(schema, values, prefix = []) {
+          return Object.entries(schema).flatMap(([key, field]) => {
+            if (!window.CompanionNativeExtensionPanel.conditionMet(field.condition, values)) return [];
+            return field.type === "object"
+              ? leaves(field.items || {}, values?.[key], [...prefix, key])
+              : field.type === "template_list" ? [] : [JSON.stringify([...prefix, key])];
+          });
         }
-        return {expected:leaves(window.panel.record.schema), actual:window.panel.fields.map(item => JSON.stringify(item.path)),
+        const schema = {...window.panel.record.schema};
+        if (window.panel.name === "reality") delete schema.mobile;
+        return {expected:leaves(schema, window.panel.draft), actual:window.panel.fields.map(item => JSON.stringify(item.path)),
           kinds:[...new Set(window.panel.fields.map(item => item.field.type))],
           missing:window.panel.fields.filter(item => !document.getElementById(item.id)).map(item => item.path)};
       });
       assert.deepEqual(result.actual.sort(), result.expected.sort(), name + " config fields");
       assert.deepEqual(result.missing, []);
+      if (name === "reality") assert.equal(await page.locator('[data-go="manage"][data-manage="mobile"]').count(), 1);
       assert.equal(await page.getByRole("button", {name:"保存并应用", exact:true}).isDisabled(), true, name + " starts without an invented change");
       assert.ok(result.kinds.includes("bool"));
       if (name === "live") {

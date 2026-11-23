@@ -209,6 +209,7 @@ def configuration_fields():
 
 class StateConfigurationOwner(PhysicalSettingsOwner):
     owner_id = OWNER
+    writes_main_runtime = True
 
     def preview_set(self, target, fields, *, changes):
         result = super().preview_set(target, fields, changes=changes)
@@ -222,7 +223,7 @@ class StateConfigurationOwner(PhysicalSettingsOwner):
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.runtime.transaction(), self.store.transaction():
             names = {key.rsplit(".", 1)[-1] for key in (*changes, *reset)}
             if target.layer is ConfigLayer.ROLE and any(not role_preference(name) for name in names):
                 raise ConfigurationError("state_configuration_scope_not_supported",

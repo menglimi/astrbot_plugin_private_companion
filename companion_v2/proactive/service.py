@@ -12,9 +12,13 @@ import logging
 import re
 from zoneinfo import ZoneInfo
 
+from companion_v2.agenda.planning_config import configured_annual_calendars
 from companion_v2.capabilities.memory_push import (DEFAULT_MEMORY_PUSH, PUSH_PROACTIVE_MESSAGE, MemoryPushRecord,
     push_memory, push_memory_id)
 from companion_v2.configuration.models import ConfigurationError
+from companion_v2.conversation.foreground import (
+    BackgroundPromptTrigger, ModelDraft, PromptMaterial, PromptRequest, SealedForegroundContext,
+)
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.reply_preparation import observed_statements, trim_blank_edges
 from companion_v2.conversation.reply_settings import ReplySettings, voice_policy
@@ -283,6 +287,15 @@ class ProactiveContacts:
             summary["sleep_execution"] = {key: sleep[key] for key in (
                 "state", "awake_minutes", "sleep_pressure", "sleep_debt_minutes") if key in sleep}
         return summary or None
+
+    def _annual_calendars(self, context):
+        if self.role_state is None:
+            return ()
+        try:
+            values, _ = self.role_state.settings(context)
+            return configured_annual_calendars(values.get("planning_annual_calendars") or "")
+        except Exception:
+            return ()
 
     def _recent_life_summary(self, context, at):
         if self.life_context is None:
@@ -606,10 +619,13 @@ class ProactiveContacts:
 
     async def contact(self, context, opportunity, intents, *, role_instruction, selection_seed,
                       automatic_origin=None, administrator_test=False, diagnostic_source_backed=False,
-                      diagnostic_origin=None, diagnostic_image_intent=None):
+                      diagnostic_origin=None, diagnostic_image_intent=None, diagnostic_allow_linked_accounts=False):
         """Trusted producer API; no model may fabricate its cause, identity or persona."""
         if type(administrator_test) is not bool:
             raise ValueError("administrator_test must be an explicit boolean")
+        if (type(diagnostic_allow_linked_accounts) is not bool
+                or (diagnostic_allow_linked_accounts and not administrator_test)):
+            raise ValueError("linked diagnostic routing requires an explicit administrator test")
         if type(diagnostic_source_backed) is not bool:
             raise ValueError("diagnostic_source_backed must be an explicit boolean")
         if (diagnostic_image_intent is not None and
@@ -646,7 +662,8 @@ class ProactiveContacts:
                               + ([diagnostic_origin] if diagnostic_origin is not None else [])
                               + (["diagnostic-image", diagnostic_image_intent]
                                  if diagnostic_image_intent is not None else [])
-                              + (["administrator_test"] if administrator_test else []))
+                              + (["administrator_test"] if administrator_test else [])
+                              + (["diagnostic_allow_linked_accounts"] if diagnostic_allow_linked_accounts else []))
         try:
             self.require_running()
             if not administrator_test and self.platform_circuit.cooldown_until(
@@ -737,7 +754,8 @@ class ProactiveContacts:
                         selection.feasible_count, selection.weight_used, history, interaction, selected_origin,
                         administrator_test=administrator_test,
                         diagnostic_source_backed=diagnostic_source_backed, diagnostic_origin=diagnostic_origin,
-                        diagnostic_image_intent=diagnostic_image_intent)
+                        diagnostic_image_intent=diagnostic_image_intent,
+                        diagnostic_allow_linked_accounts=diagnostic_allow_linked_accounts)
                     presentation = ReplySettings(self.configuration).capture(context, at)["settings"]
                     segmentation_settings = {key: presentation[key]
                                              for key in _SEGMENTATION_SETTINGS_KEYS if key in presentation}
@@ -856,7 +874,9 @@ class ProactiveContacts:
         if request.owner != GROUP or request.context.scope.account_id is None:
             return
         rejected = receipt.status == "not_sent" and receipt.failure_code == "qq_eventchecker_1200"
-        self.platform_circuit.record(request.context, at=self.tasks.now(),
+        router = getattr(self.delivery, "private_account_router", None)
+        actual = router.actual_context(request.delivery_id) if router is not None else None
+        self.platform_circuit.record(actual or request.context, at=self.tasks.now(),
             failure_code=receipt.failure_code if rejected else None,
             reset_failures=(receipt.status in ("delivered", "accepted")
                             or receipt.status == "not_sent" and not rejected))
@@ -936,7 +956,7 @@ class ProactiveContacts:
             provider.reserve(plan.envelope)
             return True, None
         except TaskError as error:
-            if error.code not in ("host_model_limit_input", "host_model_limit_output"):
+            if error.code not in ("host_model_limit", "host_model_limit_input", "host_model_limit_output"):
                 raise
             detail = {"limit_code": error.code, "provider_id": provider.binding.provider,
                       "requested_output_tokens": plan.envelope.max_output_tokens,
@@ -983,13 +1003,15 @@ class ProactiveContacts:
             dialogue=dialogue, memory=memory,
             rhythm_snapshot=None if job.administrator_test else self.budget.rhythm_snapshot(job.context, preferences, at),
             role_state=None if job.administrator_test else role_state_for_prompt(
-                self._role_state_summary(job.context, at), job.intent.purpose))
+                self._role_state_summary(job.context, at), job.intent.purpose),
+            annual_calendars=self._annual_calendars(job.context))
         request = plan_request_for(base, job, records)
         fits, detail = self._contact_request_fits(run, request)
         if not fits:
             if detail["limit_code"] == "host_model_limit_output":
                 self._contact_profile_failure(run, detail)
-            base = request_for(job, records, preferences, (), last_reply=None, dialogue=(), memory=())
+            base = request_for(job, records, preferences, (), last_reply=None, dialogue=(), memory=(),
+                               annual_calendars=self._annual_calendars(job.context))
             request = plan_request_for(base, job, records)
             fits, detail = self._contact_request_fits(run, request)
             if not fits:
@@ -1108,17 +1130,23 @@ class ProactiveContacts:
                 reactions_available=reactions_available,
                 voice_available=voice_available, poke_available=poke_available,
                 memory=memory_materials, expression=expression_materials,
-                rhythm_snapshot=rhythm_snapshot, role_state=role_state, recent_life=recent_life)
-            extra_instruction = "\n".join(text for text in
-                (segmentation.instruction, presentation.instruction,
-                 news_presentation_instruction(segmentation) if job.intent.purpose == "news"
-                 or source_origin is not None and "news_event" in source_origin else "") if text)
-            if extra_instruction:
-                request = replace(request, instruction=request.instruction + "\n" + extra_instruction)
+                rhythm_snapshot=rhythm_snapshot, role_state=role_state, recent_life=recent_life,
+                annual_calendars=self._annual_calendars(job.context))
+            stable_extra = "\n".join(text for text in
+                (segmentation.instruction, presentation.instruction) if text)
+            variable_extra = (news_presentation_instruction(segmentation)
+                              if job.intent.purpose == "news"
+                              or source_origin is not None and "news_event" in source_origin else "")
+            if stable_extra:
+                request = replace(request, instruction=request.instruction + "\n" + stable_extra)
+            if variable_extra:
+                request = replace(request, user_instruction=(
+                    (request.user_instruction + "\n" + variable_extra).strip()))
             if job.plan is not None and job.plan["decision"] == "send":
                 request = write_request_for(request, job, records, preferences,
                     reactions_available=reactions_available, voice_available=voice_available,
-                    poke_available=poke_available, extra_instruction=extra_instruction)
+                    poke_available=poke_available, extra_instruction=stable_extra,
+                    variable_extra_instruction=variable_extra)
             fits, detail = self._contact_request_fits(run, request) if (
                 job.plan is None or job.plan["decision"] == "send") else (True, None)
             if not fits:
@@ -1133,12 +1161,16 @@ class ProactiveContacts:
                     voice_available=voice_available, poke_available=poke_available,
                     memory=(), expression=(), rhythm_snapshot=None,
                     role_state=None, recent_life=None)
-                if extra_instruction:
-                    compact = replace(compact, instruction=compact.instruction + "\n" + extra_instruction)
+                if stable_extra:
+                    compact = replace(compact, instruction=compact.instruction + "\n" + stable_extra)
+                if variable_extra:
+                    compact = replace(compact, user_instruction=(
+                        (compact.user_instruction + "\n" + variable_extra).strip()))
                 if job.plan is not None:
                     compact = write_request_for(compact, job, records, preferences,
                         reactions_available=reactions_available, voice_available=voice_available,
-                        poke_available=poke_available, extra_instruction=extra_instruction)
+                        poke_available=poke_available, extra_instruction=stable_extra,
+                        variable_extra_instruction=variable_extra)
                 fits, detail = self._contact_request_fits(run, compact)
                 if not fits:
                     self._contact_profile_failure(run, detail)
@@ -1190,14 +1222,11 @@ class ProactiveContacts:
             if confidence_skip:
                 body, reaction_intent = None, None
             run.validate()
-            if (body is not None and not job.administrator_test and job.expression_style is not None
-                    and job.expression_style.get("style_review_enabled", True) and self.expression_review is not None
-                    and expression_settings(self.runtime, job.context).style_review_enabled):
-                body = await self.expression_review.review(run, request, replace(completion.draft, text=body),
-                    protected_statements=(body,) if alert_material is not None else ())
-                # Review output is text only; protocol markers never become speech.
-                body = strip_voice_markup(strip_internal_expression_protocol(body))
-                run.validate()
+            review_eligible = (
+                body is not None and not job.administrator_test and job.expression_style is not None
+                and job.expression_style.get("style_review_enabled", True) and self.expression_review is not None
+                and expression_settings(self.runtime, job.context).style_review_enabled
+            )
             presentation_reason = None
             statements = ()
             if body is not None:
@@ -1228,6 +1257,7 @@ class ProactiveContacts:
                 except (TypeError, ValueError, KeyError) as error:
                     raise TaskError("contact_news_unavailable", "news attribution is incomplete") from error
             segments = ()
+            body_without_suffix = body
             if body is not None:
                 segments = segmentation.parts(body)
                 segments = tuple(trim_blank_edges(part)
@@ -1237,6 +1267,7 @@ class ProactiveContacts:
                     body, reaction_intent = None, None
                     presentation_reason = "presentation_empty"
                 else:
+                    body_without_suffix = "".join(segments)
                     if suffix:
                         segments = (*segments[:-1], segments[-1] + suffix)
                     body = "".join(segments)
@@ -1264,6 +1295,33 @@ class ProactiveContacts:
                     body, reaction_intent = None, None
                     segments = ()
                     presentation_reason = "persona_judge"
+            deferred_expression_review = None
+            if body is not None and review_eligible:
+                review_rules = [item.payload for item in request.context.materials
+                                if item.purpose == "expression_style_rule"]
+                if review_rules:
+                    protected = (body_without_suffix,) if alert_material is not None else statements
+                    if judge_task is not None:
+                        # Defer wording review until persona_judge approves this draft,
+                        # avoiding wasted LLM polish calls on rejected contacts.
+                        deferred_expression_review = {
+                            "rules": review_rules,
+                            "protected_statements": list(protected),
+                            "alert_suffix": suffix,
+                        }
+                    else:
+                        reviewed = await self.expression_review.review(
+                            run, request, replace(completion.draft, text=body_without_suffix),
+                            protected_statements=protected)
+                        reviewed = strip_voice_markup(strip_internal_expression_protocol(reviewed))
+                        run.validate()
+                        if reviewed != body_without_suffix:
+                            finalized = self._finalize_reviewed_body(
+                                reviewed, presentation=presentation, segmentation=segmentation,
+                                statements=protected if alert_material is not None else statements,
+                                suffix=suffix, scope_kind=job.context.scope.kind.value)
+                            if finalized is not None:
+                                body, segments = finalized
             skip_reason = None
             if body is None:
                 if dangling_reason:
@@ -1308,6 +1366,7 @@ class ProactiveContacts:
                 "purpose": job.intent.purpose, "preference_token": job.preference_token,
                 "sources": job.intent.thought.evidence.sources, "source_hashes": job.source_hashes,
                 "administrator_test": job.administrator_test,
+                "diagnostic_allow_linked_accounts": job.diagnostic_allow_linked_accounts,
                 "diagnostic_image": job.diagnostic_image_intent is not None,
                 "opened_at": job.intent.thought.opportunity.opened_at,
                 "expires_at": job.deadline_at or job.intent.thought.opportunity.expires_at,
@@ -1381,8 +1440,11 @@ class ProactiveContacts:
                         part_documents.append({
                             "text": "", "payload_hash": manifest_hash("", (reaction["manifest"],))})
                 document["parts"] = part_documents
-                if deferred_reaction_intent is not None:
-                    document["pending_reaction_intent"] = deferred_reaction_intent
+                if body is not None:
+                    if deferred_reaction_intent is not None:
+                        document["pending_reaction_intent"] = deferred_reaction_intent
+                    if deferred_expression_review is not None:
+                        document["pending_expression_review"] = deferred_expression_review
                 if reaction is not None:
                     document["reaction"] = reaction
                 if voice is not None:
@@ -1427,6 +1489,29 @@ class ProactiveContacts:
             if completion is not None:
                 self.gateway.ledger.discard(completion.call_id)
             raise
+
+    @staticmethod
+    def _finalize_reviewed_body(reviewed, *, presentation, segmentation, statements, suffix, scope_kind):
+        """Re-apply presentation, segmentation and safety guards to a wording-reviewed body."""
+        if not isinstance(reviewed, str) or not reviewed.strip():
+            return None
+        cleaned, leaked = presentation.framework_guard(reviewed)
+        if not leaked:
+            cleaned = presentation.replace_text(cleaned, statements=statements)
+        if not cleaned.strip():
+            return None
+        segments = segmentation.parts(cleaned)
+        segments = tuple(trim_blank_edges(part)
+                         for part in presentation.clean_parts(segments, statements=statements))
+        segments = tuple(part for part in segments if part.strip())
+        if not segments:
+            return None
+        if suffix and not segments[-1].endswith(suffix):
+            segments = (*segments[:-1], segments[-1] + suffix)
+        body = "".join(segments)
+        if presentation.forbidden_word_guard(body, scope_kind=scope_kind) is not None:
+            return None
+        return body, segments
 
     def _part_documents(self, row, data):
         reaction = data.get("reaction")
@@ -1671,7 +1756,8 @@ class ProactiveContacts:
                  "role_instruction": batch["role_instruction"], "observed_at": at,
                  # Same instant, same zone, same vocabulary as compose: the judge
                  # must not have to reconstruct local time from a UTC stamp.
-                 "local": local_time_fields(at, preferences.values["quiet_timezone"]),
+                 "local": local_time_fields(at, preferences.values["quiet_timezone"],
+                                             self._annual_calendars(context)),
                  "records": records, "thought": data.get("thought_summary"),
                  "cause_id": run.task.task_id, "history": history, "dialogue": dialogue, "last_reply": last_reply,
                  "role_state": role_state_for_prompt(
@@ -1686,6 +1772,41 @@ class ProactiveContacts:
             raise
         threshold = preferences.values["proactive_persona_judge_threshold"]
         allowed = decision == "send" and score >= threshold
+        reviewed_final = None
+        pending_review = data.get("pending_expression_review")
+        if (allowed and isinstance(pending_review, dict) and pending_review.get("rules")
+                and self.expression_review is not None
+                and expression_settings(self.runtime, context).style_review_enabled):
+            raw_body = row["body"] or ""
+            alert_suffix = str(pending_review.get("alert_suffix") or "")
+            body_for_review = (raw_body[:-len(alert_suffix)]
+                               if alert_suffix and raw_body.endswith(alert_suffix) else raw_body)
+            review_materials = tuple(
+                PromptMaterial("role.expression", "expression_style_rule", str(payload))
+                for payload in pending_review["rules"] if isinstance(payload, str) and payload
+            )
+            if review_materials and body_for_review.strip():
+                review_request = PromptRequest(
+                    BackgroundPromptTrigger(digest([run.task.task_id, "contact-review"]),
+                                            context.actor.principal, context.scope, self.tasks.now()),
+                    batch["role_instruction"],
+                    SealedForegroundContext(review_materials, (), ()),
+                    "",
+                    context.role_binding,
+                )
+                protected = tuple(item for item in (pending_review.get("protected_statements") or ())
+                                  if isinstance(item, str) and item)
+                reviewed = await self.expression_review.review(
+                    run, review_request, ModelDraft(body_for_review, ()),
+                    protected_statements=protected)
+                reviewed = strip_voice_markup(strip_internal_expression_protocol(reviewed))
+                if reviewed != body_for_review:
+                    presentation = text_policy(data.get("presentation_settings") or {})
+                    segmentation = _segmentation_policy(data.get("segmentation_settings"))
+                    reviewed_final = self._finalize_reviewed_body(
+                        reviewed, presentation=presentation, segmentation=segmentation,
+                        statements=protected, suffix=alert_suffix,
+                        scope_kind=context.scope.kind.value)
         pending_reaction_intent = data.get("pending_reaction_intent") if isinstance(data.get("pending_reaction_intent"), str) else None
         diagnostic_image = data.get("diagnostic_image") is True
         offered = None
@@ -1700,6 +1821,7 @@ class ProactiveContacts:
                             "no authorized reaction image matched the diagnostic intent")
         operation = OperationRef("save-" + run.task.task_id, JUDGE_KIND, context.scope,
                                  VersionRef(contact_id, 1), run.task.task_id)
+        final_body = row["body"] or ""
         with self.runtime.transaction() as connection:
             run.validate()
             current = connection.execute("""SELECT body, payload_hash, record_json FROM proactive_contacts
@@ -1709,6 +1831,7 @@ class ProactiveContacts:
                     or (document.get("judge") or {}).get("task_id") != run.task.task_id):
                 raise TaskError("contact_judge_unavailable", "draft already has a resolved judgement")
             document.pop("pending_reaction_intent", None)
+            document.pop("pending_expression_review", None)
             reaction = None
             if allowed and offered is not None and pending_reaction_intent:
                 try:
@@ -1725,11 +1848,24 @@ class ProactiveContacts:
             if allowed and diagnostic_image and pending_reaction_intent and reaction is None:
                 raise TaskError("proactive_diagnostic_image_unavailable",
                                 "the authorized image changed or could not be sealed for delivery")
+            body_text = current["body"] or ""
             payload_hash = current["payload_hash"]
+            if allowed and reviewed_final is not None:
+                body_text, reviewed_segments = reviewed_final
+                document["parts"] = [{"text": text, "payload_hash": manifest_hash(text, ())}
+                                     for text in reviewed_segments]
+                payload_hash = manifest_hash(body_text, ())
+                if isinstance(document.get("voice"), dict) and document.get("voice_language", "zh") == "zh":
+                    speech = re.sub(r"\s+", " ",
+                        strip_voice_markup(strip_internal_expression_protocol(body_text))).strip()
+                    if speech and len(speech) <= 2000:
+                        document["voice"] = {**document["voice"], "speech": speech}
+                    else:
+                        document.pop("voice", None)
+            final_body = body_text
             if reaction is not None:
-                body_text = current["body"] or ""
                 payload_hash = manifest_hash(body_text, (reaction["manifest"],))
-                parts = document.get("parts") or [{"text": body_text, "payload_hash": current["payload_hash"]}]
+                parts = document.get("parts") or [{"text": body_text, "payload_hash": payload_hash}]
                 part_documents = []
                 for index, part in enumerate(parts):
                     images = (reaction["manifest"],) if index == len(parts) - 1 else ()
@@ -1745,8 +1881,8 @@ class ProactiveContacts:
             run.begin_effect()
             require(self.operations.reserve(operation,
                 parameter_hash=digest([run.task.spec.request_ref, judge["signature"]]), observed_at=self.tasks.now()))
-            connection.execute("UPDATE proactive_contacts SET record_json = ?, payload_hash = ? WHERE contact_id = ?",
-                               (encode(document), payload_hash, contact_id))
+            connection.execute("UPDATE proactive_contacts SET body = ?, record_json = ?, payload_hash = ? WHERE contact_id = ?",
+                               (body_text, encode(document), payload_hash, contact_id))
             if not allowed and isinstance(origin, dict):
                 open_loop = origin.get("open_loop_event")
                 if isinstance(open_loop, dict) and isinstance(open_loop.get("memo_id"), str):
@@ -1764,7 +1900,7 @@ class ProactiveContacts:
             # 判定放行与直接发送是同一件事的两条互斥分支：草稿在此之前一直压着不发，
             # 现在它才真的排进投递，因此也在这里才写进记忆。反过来，把未获准的草稿
             # 提前推过去，会让牢插件记得一句角色从没说过的话。
-            await self._push_contact(context, contact_id, row["body"], data.get("purpose"))
+            await self._push_contact(context, contact_id, final_body, data.get("purpose"))
         return TaskResult("succeeded", effect="committed", result_ref=contact_id,
                           operation_id=operation.operation_id, receipt_ref=operation.operation_id)
 
@@ -1778,7 +1914,7 @@ class ProactiveContacts:
         scope = context.scope
         record = MemoryPushRecord(
             memory_id=push_memory_id(PUSH_PROACTIVE_MESSAGE, "proactive", contact_id),
-            content=f"Bot 主动联系对方时说：{body}",
+            content=f"我主动说过：{body}",
             kind=PUSH_PROACTIVE_MESSAGE,
             scope=_push_scope(scope.kind),
             # V2 的核心没有平台会话 id，只有 ScopeRef；用 V2 自己的稳定命名空间，
@@ -2011,6 +2147,10 @@ class ProactiveContacts:
                 delivery_state = "failed"
             else:
                 delivery_state = "cancelled"
+            router = getattr(self.delivery, "private_account_router", None)
+            report = getattr(router, "rejection_report", None)
+            route_rejections = [dict(item, delivery_id=row["delivery_id"])
+                for row in deliveries for item in (report(row["delivery_id"]) if report else [])]
             model_task_ids = [task_id]
             plan_task_id = data.get("plan_task_id")
             if isinstance(plan_task_id, str) and plan_task_id:
@@ -2078,6 +2218,7 @@ class ProactiveContacts:
                 "judge_reason": judge.get("failure") or judge.get("reason"),
                 "delivery_id": delivery["delivery_id"] if delivery else None,
                 "delivery": delivery_state,
+                "route_rejections": route_rejections,
                 "receipt_ref": delivery["receipt_ref"] if delivery else None,
                 "delivery_parts": [{"sequence": DeliveryRequest.restore(item["request_json"]).sequence,
                     "delivery_id": item["delivery_id"], "state": item["state"],

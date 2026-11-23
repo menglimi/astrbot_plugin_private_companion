@@ -33,8 +33,9 @@ DEFAULTS = {
     "max_actions_per_tick": 1,
     # How many of the role's own posts a comment reply may scan.
     "comment_recent_posts": 5,
-    # Daily ceiling for self-published posts. The wording of a post is a separate
-    # decision; this is only the safety cap.
+    # One switch governs the total, per-topic and life-publish daily ceilings.
+    "daily_limits_enabled": True,
+    # Daily ceiling for self-published posts when daily limits are enabled.
     "publish_max_daily": 1,
     # Topic classification is model guided.  The explicit confirmation gate
     # keeps an automatically drafted public post in a reviewable state.
@@ -44,10 +45,13 @@ DEFAULTS = {
     # V1 的「生活说说」：低频率、按概率把角色自己的生活发到空间。它不替代
     # 上面的 publish_enabled（总闸），也不绕过 policy 的间隔/每日上限/去重。
     "life_publish_enabled": False,
-    "life_publish_probability": 0.18,
-    "life_publish_min_interval_hours": 24,
+    "life_publish_probability": 0.5,
+    "life_publish_min_interval_hours": 6,
     "life_publish_max_daily": 1,
+    "life_publish_retry_minutes": 30,
     "life_publish_style_prompt": "",
+    # 主人的 QQ 号；scope="owner" 时读取他的空间。
+    "owner_uin": "",
 }
 for _topic in TOPIC_SPECS:
     _key = _topic.topic.value
@@ -66,6 +70,7 @@ LIMITS = {
     "publish_max_daily": (1, 10),
     "life_publish_min_interval_hours": (1, 168),
     "life_publish_max_daily": (1, 10),
+    "life_publish_retry_minutes": (5, 180),
 }
 for _topic in TOPIC_SPECS:
     _key = _topic.topic.value
@@ -74,12 +79,13 @@ for _topic in TOPIC_SPECS:
         f"{_key}_cooldown_minutes": (0, 1440),
     })
 BOOLEAN_FIELDS = ("enabled", "like_enabled", "comment_enabled", "publish_enabled",
-                  "topic_auto_enabled", "topic_require_confirmation", "life_publish_enabled") + tuple(
+                  "daily_limits_enabled", "topic_auto_enabled", "topic_require_confirmation",
+                  "life_publish_enabled") + tuple(
                       f"{item.topic.value}_enabled" for item in TOPIC_SPECS)
 INTEGER_FIELDS = tuple(LIMITS)
 PROBABILITY_FIELDS = ("life_publish_probability",) + tuple(
     f"{item.topic.value}_min_confidence" for item in TOPIC_SPECS)
-TEXT_FIELDS = ("topic_prompt_guidance", "life_publish_style_prompt") + tuple(
+TEXT_FIELDS = ("topic_prompt_guidance", "life_publish_style_prompt", "owner_uin") + tuple(
     f"{item.topic.value}_scenes" for item in TOPIC_SPECS)
 
 
@@ -101,6 +107,9 @@ def validate(values):
         raise ConfigurationError("qzone_configuration_invalid", "topic_prompt_guidance is too long")
     if type(values["life_publish_style_prompt"]) is not str or len(values["life_publish_style_prompt"]) > 512:
         raise ConfigurationError("qzone_configuration_invalid", "life_publish_style_prompt is too long")
+    owner_uin = values["owner_uin"]
+    if type(owner_uin) is not str or len(owner_uin) > 20 or (owner_uin and not owner_uin.isdigit()):
+        raise ConfigurationError("qzone_configuration_invalid", "owner_uin must be a QQ number or empty")
     for item in TOPIC_SPECS:
         name = f"{item.topic.value}_scenes"
         try:
@@ -161,7 +170,7 @@ class QzoneConfigurationOwner(RoleSharedSettingsOwner):
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.store.transaction():
             result = super().write(target, fields, changes=changes, reset=reset,
                                    expected_revision=expected_revision, observed_at=observed_at)
             validate({key.removeprefix(GROUP + "."): item.value

@@ -177,7 +177,7 @@ class PersonAuthorizationManagement:
                 and item["capability"] in REVOCABLE_CAPABILITIES and not explicit)
             item["effective_state"] = "active" if override else item["state"]
             item["identity_override"] = override
-        return {"subject_id": subject.subject_id, "items": items,
+        result = {"subject_id": subject.subject_id, "items": items,
                 "identity_tier": tier, "identity_revision": self.policy.revision,
                 # 管理员权限不是一条可单独签发的成员 grant，而是 CORE 身份的明确投影。
                 # Dashboard 可以直接呈现这项权限，实际生效仍只由 set_tier /
@@ -190,6 +190,8 @@ class PersonAuthorizationManagement:
                                      for item in items) for name in COMPANION_CAPABILITIES),
                 "counts": {state: sum(1 for item in items if item["state"] == state)
                            for state in ("active", "off", "revoked", "expired", "pending")}}
+        from companion_v2.relationships.account_link_identity import project_status
+        return project_status(self.runtime, subject, scope, at, result)
 
     @outcome
     def status(self, operator, subject_id, *, observed_at: datetime, route=None):
@@ -235,6 +237,10 @@ class PersonAuthorizationManagement:
         self._authorize(operator, observed_at)
         subject, scope = self._person(command["subject_id"], command.get("route"))
         capability, enabled = command["capability"], command["enabled"]
+        from companion_v2.relationships.account_link_identity import edit
+        shared = edit(self.runtime, operator, subject, scope, command, at=observed_at)
+        if shared is not None:
+            return {**shared, "status": self._status(subject, observed_at, scope=scope)}
         # The idempotency key names the *decision* being taken (this person, this
         # capability, this click), never the value it is set to: that is what makes
         # reusing one key for the opposite change a conflict instead of a second
@@ -318,6 +324,10 @@ class PersonAuthorizationManagement:
                 or type(command["expected_revision"]) is not int):
             raise TaskError("identity_command_invalid", "provide a tier, current policy revision and stable operation key")
         subject, scope = self._person(command["subject_id"], command["route"])
+        from companion_v2.relationships.account_link_identity import edit
+        shared = edit(self.runtime, operator, subject, scope, command, at=observed_at, identity_tier=True)
+        if shared is not None:
+            return {**shared, "status": self._status(subject, observed_at, scope=scope)}
         token = digest([self.runtime.installation_id, subject, command["operation_key"]])
         op_id = "person-identity:" + token
         operation = OperationRef(op_id, OPERATION_OWNER, scope, VersionRef(op_id, 1), op_id)

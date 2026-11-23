@@ -24,8 +24,11 @@ class WeatherReading:
     async def read(self, port, location, *, max_age, now, force=False):
         key = (port, location, max_age)
         if key != self.key:
+            old_pending = self.pending
             self.key, self.material, self.fetched_at, self.attempted_at = key, None, None, None
             self.failed, self.pending = False, None
+            if old_pending is not None and not old_pending.done():
+                old_pending.cancel()
         at = now()
         refresh_interval = timedelta(minutes=getattr(port, "refresh_minutes", 5))
         interval = MINIMUM_REFRESH_INTERVAL if force else refresh_interval
@@ -33,14 +36,19 @@ class WeatherReading:
                          and timedelta(0) <= at - self.attempted_at < MINIMUM_REFRESH_INTERVAL)
         if (not throttled and (self.attempted_at is None or at - self.attempted_at >= interval
                 or at < self.attempted_at)):
-            if self.pending is None:
-                self.pending = asyncio.create_task(self._fetch(port, location, max_age, now, key, force))
+            if self.pending is None or self.pending.done():
+                task = asyncio.create_task(self._fetch(port, location, max_age, now, key, force))
+                def _clear_pending(_done, expected=task):
+                    if self.pending is expected:
+                        self.pending = None
+                task.add_done_callback(_clear_pending)
+                self.pending = task
             pending = self.pending
             try:
-                await pending
-            finally:
-                if self.pending is pending:
-                    self.pending = None
+                await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                if not pending.cancelled() or key == self.key:
+                    raise
         at = now()
         if key != self.key or self.material is None:
             return {"state": "unavailable", "location": location.name}

@@ -4,7 +4,9 @@ import json
 from types import SimpleNamespace as NS
 import unittest
 
-from astrbot_host.core_reply_context import build_core_reply_prompt
+from astrbot_host.core_reply_context import _linked_inspiration_material, build_core_reply_prompt
+from companion_v2.conversation.foreground import ContextContribution, ContributionState
+from companion_v2.execution.models import digest, encode
 from tests.contact_schedule_support import ContactScheduleFixture
 from tests.test_role_tool_loop import answered
 
@@ -14,6 +16,24 @@ class CoreReplySentHistoryTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         return build_core_reply_prompt(app, context or self.contact_context(),
             NS(text="好啊", event_id="accept-invitation", received_at=received_at or self.clock.now()),
             at=self.clock.now())
+
+    def test_inspiration_links_only_the_matching_confirmed_round(self):
+        material = ContextContribution("inspirations", "proactive.inspirations", "shared_news_provenance",
+            ContributionState.READY, encode({"items": [
+                {"contact_id": "contact-a", "text": "好啊", "confirmed_parts": 1},
+                {"contact_id": "contact-b", "text": "好啊", "confirmed_parts": 1},
+            ]}))
+        first_round = "delivery:" + digest(["proactive.contact", "contact-a"])
+        projected = _linked_inspiration_material(material, {
+            first_round: [{"ref": "sent_1", "text": "好啊", "part": {"sequence": 1}}],
+        })
+        first, second = json.loads(projected.payload)["items"]
+        self.assertEqual(first["sent_ref"], "sent_1")
+        self.assertNotIn("text", first)
+        self.assertNotIn("contact_id", first)
+        self.assertEqual(second["text"], "好啊")
+        self.assertNotIn("sent_ref", second)
+        self.assertNotIn("contact_id", second)
 
     async def test_native_reply_reads_only_confirmed_current_window_contacts_and_rechecks_source(self):
         app = await self.enabled()
@@ -44,7 +64,13 @@ class CoreReplySentHistoryTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertIn("要不要一起下一局五子棋？", prompt.context_instruction)
         self.assertIn("最近仍未结束的话头或具体邀请", prompt.context_instruction)
         self.assertIn("游戏、一起活动或通话工具", prompt.context_instruction)
+        self.assertIn("主动消息不是对某条更早用户消息的回复", prompt.context_instruction)
+        self.assertIn("不要把上一条尚未被逐字回应的用户消息补答进来", prompt.context_instruction)
         self.assertNotIn("五子棋", prompt.stable_instruction)
+        sent = next(section for section in prompt.context_blocks
+                    if section.get("title") == "本窗口已发送的主动消息与提醒")
+        self.assertEqual(sent["materials"][0]["content"]["ref"], "sent_1")
+        self.assertNotIn("_history_round", json.dumps(sent, ensure_ascii=False))
         self.assertNotIn("sent_messages", self.prompt(app, received_at=before_delivery).sections)
         other = self.other_window_context("unrelated-private-window")
         self.assertNotIn("五子棋", self.prompt(app, context=other).context_instruction)

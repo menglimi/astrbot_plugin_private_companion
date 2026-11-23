@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+from threading import RLock
 from types import MappingProxyType
 
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationSnapshot
@@ -12,7 +13,7 @@ from companion_v2.conversation.foreground import PromptRequest
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.execution.runner import TaskRun
 
-from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile
+from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile, provider_supports_task
 from .refusal import parse_refusal_terms
 from .replacement_rules import checked_rules, match_route, output_capabilities, validate_targets
 
@@ -54,9 +55,12 @@ class ResolvedModelPlan:
 
 class ModelRouter:
     def __init__(self, configuration: ConfigurationService, profiles: tuple[ModelTaskProfile, ...],
-                 providers: tuple[LocalProvider, ...], *, default_provider_resolver=None):
+                 providers: tuple[LocalProvider, ...], *, default_provider_resolver=None,
+                 provider_lookup=None):
         self.configuration = configuration
         self.default_provider_resolver = default_provider_resolver
+        self.provider_lookup = provider_lookup
+        self._provider_lock = RLock()
         self.profiles = MappingProxyType({p.kind: p for p in profiles})
         self.providers = MappingProxyType({p.binding.provider: p for p in providers})
         if not profiles or len(self.profiles) != len(profiles) or len(self.providers) != len(providers):
@@ -71,29 +75,170 @@ class ModelRouter:
             validate_targets(checked_rules(profile.replacement_rules), self.providers,
                              capabilities=profile.capabilities)
 
+    def provider_for(self, provider_id):
+        """Adopt a newly loaded provider through the trusted host adapter."""
+        if type(provider_id) is not str or not provider_id:
+            return None
+        provider = self.providers.get(provider_id)
+        if provider is not None or self.provider_lookup is None:
+            return provider
+        with self._provider_lock:
+            provider = self.providers.get(provider_id)
+            if provider is None:
+                provider = self.provider_lookup(provider_id)
+                if provider is not None:
+                    if not isinstance(provider, LocalProvider) or provider.binding.provider != provider_id:
+                        raise TaskError("model_provider_unavailable", "host returned a mismatched model adapter")
+                    self.providers = MappingProxyType({**self.providers, provider_id: provider})
+            return provider
+
+    @staticmethod
+    def _serves(profile, provider):
+        return provider_supports_task(profile.kind, profile.capabilities, provider)
+
+    def _resolves(self, provider_id, profile):
+        """A saved route only counts when this runtime can still dispatch it."""
+        provider = self.provider_for(provider_id) if provider_id else None
+        if provider is None:
+            return False
+        # A provider that exists but cannot serve the task fails every dispatch
+        # just as surely as a removed one; both are stale leftovers.
+        return self._serves(profile, provider)
+
+    def _stale(self, field, profile, *, blank_is_stale=True):
+        """True when a saved id no longer resolves and may be recovered.
+
+        Only the installation layer is recovered. It has no editor in the model
+        page, so a provider id that an older catalog or a legacy migration left
+        there can never be fixed by the operator and must not keep the task
+        unroutable. Role and window values both have an editor: when one stops
+        resolving, dispatch keeps failing loudly so the operator notices instead
+        of silently running a different model. An old blank provider on the
+        installation layer is the same legacy leftover. A blank fallback is not:
+        it means "no fallback", which stays a valid choice one layer down.
+        """
+        if field.source is None or field.source.layer is not ConfigLayer.INSTALLATION:
+            return False
+        if not field.value:
+            return blank_is_stale
+        return not self._resolves(field.value, profile)
+
     def provider_default(self, context, profile, snapshot=None):
         """Read the host's current conversation route before sealing a model plan."""
         if self.default_provider_resolver is None:
             return None
+        primary_stale = False
+        primary_from_host = True
         if snapshot is not None:
             primary = snapshot.fields[profile.group + ".provider"]
             fallback = snapshot.fields[profile.group + ".fallback"]
-            if primary.source is not None and (fallback.source is not None or profile.default_fallback):
+            primary_stale = self._stale(primary, profile)
+            if not primary_stale and primary.source is not None:
+                if not primary.value or not self._resolves(primary.value, profile):
+                    # A value saved on an editable layer keeps its failure:
+                    # dispatch reports model_provider_unavailable instead of
+                    # silently borrowing another route. An explicit blank uses
+                    # the same path.
+                    return None
+                # The primary is settled; the host route could only be needed to
+                # recover a fallback, which a declared default or an explicit
+                # value already covers.
+                primary_from_host = False
+                fallback_stale = self._stale(fallback, profile, blank_is_stale=False)
+                if profile.default_fallback or (fallback.source is not None and not fallback_stale):
+                    return None
+        try:
+            provider_id = self.default_provider_resolver(context, profile)
+        except TaskError:
+            # A host that cannot answer only matters when the primary needs it.
+            # A stale installation primary recovers to the task default, and a
+            # settled primary leaves the host route to the fallback alone.
+            if primary_stale or not primary_from_host:
                 return None
-        provider_id = self.default_provider_resolver(context, profile)
-        if provider_id is not None and provider_id not in self.providers:
-            raise TaskError("model_provider_unavailable", "the current host conversation model has no local adapter")
+            raise
+        if provider_id is not None:
+            host_provider = self.provider_for(provider_id)
+            if host_provider is None:
+                if primary_stale or not primary_from_host:
+                    return None
+                raise TaskError("model_provider_unavailable",
+                                "the current host conversation model has no local adapter")
+            if not self._serves(profile, host_provider) and (primary_stale or not primary_from_host):
+                # The host route cannot serve this task, but the task default can:
+                # recovering onto an unroutable host provider would only move the
+                # failure. When the host is all we have, leave the error to
+                # dispatch so it names the capability instead of the adapter.
+                return None
         return provider_id
 
-    @staticmethod
-    def apply_provider_default(profile, snapshot, provider_id):
-        if provider_id is None:
-            return snapshot
+    def apply_provider_default(self, profile, snapshot, provider_id):
         fields = dict(snapshot.fields)
-        for suffix in ("provider", "fallback"):
-            key = profile.group + "." + suffix
-            if fields[key].source is None and (suffix == "provider" or not profile.default_fallback):
-                fields[key] = replace(fields[key], value=provider_id)
+        primary_key = profile.group + ".provider"
+        fallback_key = profile.group + ".fallback"
+        changed = False
+
+        def recovered(field, value):
+            # The replacement comes from the runtime, not from the row that held
+            # the dead id, so that revision must not travel with it.
+            return replace(field, value=value or "", source=None, explicit=False,
+                           source_revision=0)
+
+        def fallback_default():
+            # What an unset fallback resolves to: the profile's own default
+            # first, then the host route, then the task default.
+            return profile.default_fallback or provider_id or profile.default_provider
+
+        provider_field = fields[primary_key]
+        fallback_cleared = False
+        if self._stale(provider_field, profile):
+            # A stale id is replaced by the host route when one applies and by
+            # the task profile's own default otherwise. Either way it stops
+            # counting as an explicit layer value, so the page reports the route
+            # that will actually run instead of naming a dead id.
+            fields[primary_key] = recovered(
+                provider_field, provider_id if provider_id is not None else profile.default_provider)
+            changed = True
+            fallback_field = fields[fallback_key]
+            if fallback_field.value and fallback_field.value == fields[primary_key].value:
+                # Recovery moved the primary onto the saved fallback. Keeping it
+                # would fail dispatch as a duplicate, but an explicit duplicate
+                # is never silently repaired when the primary was not recovered,
+                # so this rewrite only happens here. Prefer the profile's own
+                # fallback default when it differs from the primary.
+                value = fallback_default()
+                fields[fallback_key] = recovered(
+                    fallback_field, "" if value == fields[primary_key].value else value)
+                fallback_cleared = True
+                changed = True
+        elif provider_field.source is None and provider_id is not None:
+            fields[primary_key] = recovered(provider_field, provider_id)
+            changed = True
+
+        if not fallback_cleared:
+            fallback_field = fields[fallback_key]
+            if self._stale(fallback_field, profile, blank_is_stale=False):
+                # A stale fallback is cleaned even when the profile declares a
+                # default fallback: otherwise the dead id stays in the route
+                # chain and every dispatch refuses it.
+                value = fallback_default()
+                if value == fields[primary_key].value:
+                    # Recovering the fallback onto the primary would advertise a
+                    # second route that dispatch drops as a duplicate.
+                    value = ""
+                fields[fallback_key] = recovered(fallback_field, value)
+                changed = True
+            elif fallback_field.source is None and provider_id is not None:
+                # An unset fallback normally takes the host route. When the
+                # primary already is that route, clear it instead of leaving the
+                # registry default in place: that default would add a second,
+                # never-configured route (and be mislabelled as host-sourced).
+                value = profile.default_fallback or (
+                    "" if provider_id == fields[primary_key].value else provider_id)
+                if fallback_field.value != value:
+                    fields[fallback_key] = recovered(fallback_field, value)
+                    changed = True
+        if not changed:
+            return snapshot
         # This projection only supplies routing values. Adoption must retain
         # the original saved snapshot; the host selection belongs in the audit.
         return replace(snapshot, fields=fields)
@@ -121,8 +266,14 @@ class ModelRouter:
 
     def _validate_route_targets(self, profile, values, *, max_output_tokens=None):
         try:
-            validate_targets(checked_rules(values["replacement_rules"]), self.providers,
-                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens)
+            rules = checked_rules(values["replacement_rules"])
+            for rule in rules:
+                self.provider_for(rule.provider_id)
+            validate_targets(rules, self.providers,
+                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens,
+                             task_kind=profile.kind)
+        except TaskError:
+            raise
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
 
@@ -139,7 +290,7 @@ class ModelRouter:
         primary = match.provider_id if match else values["provider"]
         provider_ids = (primary,) + ((values["fallback"],)
             if values["fallback"] and values["fallback"] != primary else ())
-        selected = tuple(self.providers.get(provider_id) for provider_id in provider_ids)
+        selected = tuple(self.provider_for(provider_id) for provider_id in provider_ids)
         if any(provider is None for provider in selected):
             raise TaskError("model_provider_unavailable", "configured provider has no local adapter")
         return match, selected, in_scope
@@ -153,14 +304,15 @@ class ModelRouter:
                               context.role_binding.role, context.scope)
         snapshot = require(self.configuration.read(context.actor, target=target,
             group_id=profile.group, observed_at=at))
-        snapshot = self.apply_provider_default(profile, snapshot, self.provider_default(context, profile, snapshot))
+        snapshot = self.apply_provider_default(
+            profile, snapshot, self.provider_default(context, profile, snapshot))
         values = {name.rsplit(".", 1)[1]: item.value for name, item in snapshot.fields.items()}
         self._validate_route_targets(profile, values)
         match, providers, _ = self._route_selection(profile, values, context, request, at)
         ceiling, basis = self._output_ceiling(profile, snapshot, values, self.providers)
         if basis == "explicit":
             self._validate_route_targets(profile, values, max_output_tokens=ceiling)
-        if any(not set(profile.capabilities).issubset(provider.capabilities)
+        if any(not self._serves(profile, provider)
                or ceiling > provider.maximum_output_tokens for provider in providers):
             raise TaskError("model_capability_mismatch", "selected provider cannot fulfill this task profile")
         primary = providers[0]
@@ -181,7 +333,11 @@ class ModelRouter:
         snapshot = require(self.configuration.read(context.actor, target=target,
                            group_id=profile.group, observed_at=run.supervisor.now()))
         provider_default = self.provider_default(context, profile, snapshot) if provider_id is None else None
-        routed_snapshot = self.apply_provider_default(profile, snapshot, provider_default)
+        # An explicit override bypasses the saved route entirely, so the saved
+        # fields must not be recovered here: that would rewrite the audit and the
+        # output ceiling with a route this call never dispatches to.
+        routed_snapshot = (self.apply_provider_default(profile, snapshot, provider_default)
+                           if provider_id is None else snapshot)
         values = {name.rsplit(".", 1)[1]: item.value for name, item in routed_snapshot.fields.items()}
         # The saved value, before ``values`` is overwritten with the ceiling this
         # route adopted: a refusal has to name both sides of the comparison, and
@@ -199,7 +355,7 @@ class ModelRouter:
                 if basis == "explicit":
                     self._validate_route_targets(profile, values, max_output_tokens=ceiling)
             else:
-                if provider_id not in self.providers:
+                if self.provider_for(provider_id) is None:
                     raise TaskError("model_provider_unavailable", "the selected review provider has no local adapter")
                 match, selected, in_scope = None, (self.providers[provider_id],), False
                 ceiling, basis = self._output_ceiling(profile, routed_snapshot, values, self.providers)
@@ -213,7 +369,7 @@ class ModelRouter:
             raise TaskError("model_route_invalid", str(error)) from error
         values["max_output_tokens"] = ceiling
         for provider in selected:
-            if not set(profile.capabilities).issubset(provider.capabilities):
+            if not self._serves(profile, provider):
                 raise TaskError("model_capability_mismatch", "provider lacks required model task capabilities")
             if request.native_video_input and "video" not in provider.capabilities:
                 raise TaskError("model_capability_mismatch", "original video bytes require a native video provider")
@@ -240,7 +396,7 @@ class ModelRouter:
             "profile": {"kind": profile.kind, "version": profile.version, "lane": profile.lane.value},
             "configuration_token": snapshot.resolution_token,
             "fields": {key: {"source": item.source.document() if item.source else
-                             "host_conversation" if provider_default is not None and
+                             "host_conversation" if provider_default is not None and item.value and
                              (key == profile.group + ".provider" or
                               key == profile.group + ".fallback" and not profile.default_fallback)
                              else "registry_default",

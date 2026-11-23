@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import json
 import random
 from logging import getLogger
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from companion_v2.conversation.foreground import BackgroundPromptTrigger, PromptMaterial, PromptRequest, SealedForegroundContext
 from companion_v2.conversation.messages import event_from_document
@@ -43,7 +44,10 @@ PREFLIGHT_RETRY_SECONDS = 30
 # throttle only keeps the wake loop from re-reading configuration on every tick.
 PATROL_CHECK_SECONDS = 60
 INTERVENTION_DIALOGUE_WINDOW = timedelta(minutes=3)
+IDLE_FINGERPRINT_PREFIX = "role.state.idle-fingerprint.v1:"
+IDLE_REFRESH_MAX_MINUTES = 240
 PROMPT = """本轮是角色状态的后台维护，只生成 role_state 数据，不给聊天对象写回复。原人格决定身体设定与生活习惯；maintenance_minutes 是观察间隔，不是状态必须变差的周期。
+maintenance_basis.today 是当前时区的日期投影，包含年度日历里的节假日、调休上班和节气。判断角色今天是否上班、休息或过节时以它为准，不要用 weekday 自行猜测；today 缺失时才退回普通星期判断。
 健康、能够照顾自己的普通生活是常态。疾病应有具体情境和连续过程，不为更新而随机生病，也不把一次不适反复当成新发病。previous_simulation 和 simulation_history 都是此前模型的模拟，重复保存不构成新的病情证据；结合原始时间判断同一次不适如何平稳、缓解或结束，不把“昨天”“整夜”每天滚动续写。
 若异常只剩长期重复的旧描述、缺乏近期独立材料支持，可以逐步回到惯常体验或保留未知，不必等待不存在的进食或服药执行系统才允许感受好转。已知仍在持续的具体症状则保持合理连续性，不无故抹去。
 recent_dialogue 是带时间、说话者的完整互动。分清用户与角色，用户的经历不移到角色身上；用户以“我”陈述的身体、睡眠、饥饿或情绪只属于用户，不把任一方的状态移到另一方。角色在互动中接受食物、照顾、药物或表达舒服些，可以自然影响饥饿、健康、心情与精力的模拟感受，注意先后顺序和已经反映过的影响，不机械叠加奖励，也不要求用户特定措辞。仅提供药物不等于已服用，更不等于立即痊愈；角色表达药效或缓解是可参考的主观体验，不是医疗诊断或真实服药回执。
@@ -60,6 +64,50 @@ STATE_INTERVENTION_INSTRUCTION = (
     "准确归属每句话的主体和对象。把握较高的主观状态可以适度、短时变化并自然回落；信息含糊时不臆造具体事实，也不把用户的状况移给角色。"
     "睡眠、休息和现实活动仍须对应执行回执，不能把计划或对话当成已经完成的行动。遵守隐私和状态真实性边界，不修改权限、人格、他人状态或日程。"
 )
+
+
+def _local_day_bucket(at, timezone_name):
+    """Coarse local day + period bucket so daytime/nighttime shifts still refresh."""
+    try:
+        local = at.astimezone(ZoneInfo(str(timezone_name or "UTC")))
+    except (ZoneInfoNotFoundError, KeyError, ValueError, TypeError):
+        local = at
+    hour = local.hour
+    if hour < 6:
+        period = "late_night"
+    elif hour < 11:
+        period = "morning"
+    elif hour < 14:
+        period = "noon"
+    elif hour < 18:
+        period = "afternoon"
+    elif hour < 22:
+        period = "evening"
+    else:
+        period = "night"
+    return local.date().isoformat(), period
+
+
+def _calendar_transition_crossed(calendar, *, since, now):
+    """True when any calendar occurrence started or ended between ``since`` and ``now``."""
+    if not isinstance(calendar, dict):
+        return False
+    for item in calendar.get("items", ()):
+        if not isinstance(item, dict):
+            continue
+        for field in ("start", "end", "start_at", "end_at"):
+            raw = item.get(field)
+            if not isinstance(raw, str) or not raw:
+                continue
+            try:
+                moment = datetime.fromisoformat(raw)
+            except ValueError:
+                continue
+            if moment.tzinfo is None and now.tzinfo is not None:
+                moment = moment.replace(tzinfo=now.tzinfo)
+            if since < moment <= now:
+                return True
+    return False
 
 
 def _interest_level(received, characters, at):
@@ -388,7 +436,7 @@ class StateMaintenance:
         events = []
         for row in input_rows_for_context(self.runtime, context, start=since, limit=limit):
             try:
-                event = inbound_event(row)
+                event = inbound_event(row, runtime=self.runtime)
                 if since is not None and stamp(event.received_at) <= since:
                     continue
                 validate_observation(self.runtime, row, context, event.source)
@@ -514,11 +562,151 @@ class StateMaintenance:
                 "characters": characters, "reference": hint["reference"], "allowed": hint["allowed"],
                 "baseline": baseline, "materials": tuple(materials), "sources": tuple(sources)}
 
-    def _calendar(self, context, at):
+    def _calendar(self, context, at, *, start=None):
         try:
-            return self.app.calendar.occurrences(context, start=at, end=at + timedelta(hours=24))
+            window_start = at if start is None else min(start, at)
+            return self.app.calendar.occurrences(context, start=window_start, end=at + timedelta(hours=24))
         except TaskError:
             return {"state": "unavailable"}
+
+    def _today(self, settings, at, context=None):
+        """The same date projection the chat and planner use, including makeup days."""
+        from companion_v2.agenda.planning_config import configured_annual_calendars
+        from companion_v2.conversation.date_context import project_local_date
+        from companion_v2.conversation.perception_settings import read_perception_values
+
+        try:
+            calendars = configured_annual_calendars(settings.get("planning_annual_calendars") or "")
+            perception = read_perception_values(self.app, context, at)
+            solar_term_port = getattr(getattr(self.app, "messages", None), "solar_term_port", None)
+            return project_local_date(
+                at,
+                settings.get("planning_timezone") or "Asia/Shanghai",
+                calendars,
+                holiday_enabled=perception["holiday_enabled"],
+                holiday_country=perception["holiday_country"],
+                automatic_solar_terms_enabled=perception["automatic_solar_terms_enabled"],
+                solar_term_port=solar_term_port,
+            )
+        except Exception:
+            return None
+
+    def _idle_fingerprint_key(self, context):
+        return IDLE_FINGERPRINT_PREFIX + role_schedule_key(context)
+
+    def _idle_timezone(self, settings):
+        return (settings.get("planning_timezone")
+                or settings.get("daily_state_patrol_timezone")
+                or getattr(getattr(self.app, "messages", None), "timezone_name", None)
+                or "UTC")
+
+    def _idle_fingerprint(self, context, settings, token, now, *, calendar=None, activities=None,
+                          sleep_execution=None, cycle_timeline=None, growth_refs=None):
+        if calendar is None:
+            calendar = self._calendar(context, now)
+        if activities is None:
+            activities = self.service.activity_context(context)
+        if sleep_execution is None:
+            try:
+                sleep_execution = self.service.body_clock.read(context, now=now)
+            except TaskError:
+                sleep_execution = None
+        if cycle_timeline is None and settings.get("cycle_enabled"):
+            try:
+                cycle_timeline, _ = self.service.cycles.preview(context, settings, now)
+            except TaskError:
+                cycle_timeline = None
+        if growth_refs is None:
+            _, growth_refs, _ = self._skills(context, now)
+        calendar_nodes = [
+            (item.get("id") or item.get("occurrence_id"), item.get("title"),
+             item.get("start") or item.get("start_at"), item.get("end") or item.get("end_at"),
+             item.get("state"))
+            for item in (calendar.get("items", ()) if isinstance(calendar, dict) else ())
+            if isinstance(item, dict)
+        ]
+        activity_nodes = [
+            (item.get("id"), item.get("revision"), item.get("state"))
+            for item in (activities.get("items", ()) if isinstance(activities, dict) else ())
+            if isinstance(item, dict)
+        ]
+        sleep_node = (
+            (sleep_execution.get("state"), sleep_execution.get("started_at"),
+             sleep_execution.get("ended_at"), sleep_execution.get("planned_wake_at"))
+            if isinstance(sleep_execution, dict) else None
+        )
+        cycle_node = (
+            (cycle_timeline.get("applicability"), cycle_timeline.get("phase"),
+             cycle_timeline.get("day"))
+            if isinstance(cycle_timeline, dict) else None
+        )
+        return digest({
+            "settings_token": token,
+            "local_day_bucket": _local_day_bucket(now, self._idle_timezone(settings)),
+            "calendar": calendar_nodes,
+            "activities": activity_nodes,
+            "sleep": sleep_node,
+            "cycle": cycle_node,
+            "growth": growth_refs,
+        })
+
+    def _save_idle_fingerprint(self, connection, context, *, revision, settled_at, fingerprint):
+        connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (self._idle_fingerprint_key(context),
+             encode({"revision": revision, "settled_at": stamp(settled_at), "fingerprint": fingerprint})))
+
+    def _idle_skip_reason(self, context, settings, token, now):
+        """Return ``idle_no_change`` when no dialogue, schedule, condition or body signal moved."""
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                    (self._idle_fingerprint_key(context),))
+        if row is None:
+            return None
+        try:
+            saved = json.loads(row["value"])
+            settled_at = datetime.fromisoformat(saved["settled_at"])
+        except (TypeError, ValueError, KeyError):
+            return None
+        if settled_at.tzinfo is None and now.tzinfo is not None:
+            settled_at = settled_at.replace(tzinfo=now.tzinfo)
+        elapsed_minutes = (now - settled_at).total_seconds() / 60.0
+        if elapsed_minutes < 0 or elapsed_minutes >= IDLE_REFRESH_MAX_MINUTES:
+            return None
+        record = self.service.records.get(context, "current")
+        if record is None or record.get("revision") != saved.get("revision"):
+            return None
+        for condition in record.get("values", {}).get("conditions", ()):
+            expires = condition.get("expires_at") if isinstance(condition, dict) else None
+            if not isinstance(expires, str) or not expires:
+                continue
+            try:
+                expires_at = datetime.fromisoformat(expires)
+            except ValueError:
+                return None
+            if expires_at.tzinfo is None and now.tzinfo is not None:
+                expires_at = expires_at.replace(tzinfo=now.tzinfo)
+            if expires_at <= now:
+                return None
+        owner = role_owner(context)
+        candidates = [context]
+        for binding in tuple(self.bindings.values()):
+            candidate = binding[0]
+            if candidate.key != context.key and role_owner(candidate) == owner and self._can_anchor_schedule(candidate):
+                candidates.append(candidate)
+        since = record.get("updated_at")
+        for candidate in candidates:
+            if self._events(candidate, since=since):
+                return None
+            start = maintenance_context.dialogue_start(self, candidate, now)
+            if maintenance_context.recent_dialogue(self, candidate, now, start=start, end=stamp(now)):
+                return None
+        calendar = self._calendar(context, now, start=settled_at)
+        if _calendar_transition_crossed(calendar, since=settled_at, now=now):
+            return None
+        current_fp = self._idle_fingerprint(context, settings, token, now, calendar=calendar)
+        if current_fp != saved.get("fingerprint"):
+            return None
+        return "idle_no_change"
 
     def prepare(self, context, instruction, request_id, *, intervention=False, expected_input_epoch=None):
         self.app.require_running()
@@ -570,6 +758,7 @@ class StateMaintenance:
             "previous": previous,
             "settings": settings, "token": token, "sources": sources, "materials": materials,
             "calendar": calendar, "activities": activities, "cycle_timeline": cycle_timeline,
+            "today": self._today(settings, now, context),
             "mood_round": mood_round, "sleep_execution": self.service.body_clock.read(context, now=now),
             "sleep_profile": self.service.body_clock.profile(context, now=now),
             "simulation_history": maintenance_context.simulation_history(self.service, context, now),
@@ -699,7 +888,8 @@ class StateMaintenance:
         context = job["context"]
         mood_round = job["mood_round"]
         materials = (PromptMaterial("role.state", "maintenance_basis", encode({
-            "at": job["at"], "previous_simulation": job["previous"], "settings": job["settings"],
+            "at": job["at"], "today": job.get("today"),
+            "previous_simulation": job["previous"], "settings": job["settings"],
             "cycle_timeline": job["cycle_timeline"], "calendar_plans": job["calendar"],
             "mood_settlement": {"reference": mood_round["reference"], "baseline": mood_round["baseline"],
                 "interest_level": mood_round["interest"], "messages_since_last_round": mood_round["messages"],
@@ -738,7 +928,7 @@ class StateMaintenance:
             logger.debug("[CompanionV2][开发者追踪] 状态维护正文解析 task=%s data=%r",
                          run.task.task_id, data)
             mood_error = None
-            with self.runtime.transaction():
+            with self.runtime.transaction() as connection:
                 run.validate()
                 if self.foreground_busy(context):
                     raise TaskError("state_foreground_active", "defer state changes while an original reply is using them")
@@ -751,6 +941,16 @@ class StateMaintenance:
                     preserve_mood_dynamics=mood_error is not None)
                 if not job.get("intervention"):
                     maintenance_context.settle_dialogue(self, context, job["at"])
+                idle_fp = self._idle_fingerprint(
+                    context, job["settings"], job["token"], job["at"],
+                    calendar=job["calendar"], activities=job["activities"],
+                    sleep_execution=job["sleep_execution"],
+                    cycle_timeline=job["cycle_timeline"], growth_refs=job["growth_refs"])
+                committed_revision = receipt.get("revision") if isinstance(receipt, dict) else None
+                if type(committed_revision) is not int:
+                    committed_revision = job["revision"] + 1
+                self._save_idle_fingerprint(connection, context, revision=committed_revision,
+                                            settled_at=job["at"], fingerprint=idle_fp)
                 self.committed.add(run.task.task_id)
                 run.record_operation(receipt["operation_id"])
             if mood_error is not None:
@@ -780,14 +980,25 @@ class StateMaintenance:
         for key, worker in tuple(self.workers.items()):
             if worker.done():
                 del self.workers[key]
+                schedule_key = self.worker_schedules.pop(key, None)
                 if not worker.cancelled():
                     error = worker.exception()
-                    self.results[key] = {"state": "failed", "code": getattr(error, "code", "state_worker_failed")} if error else worker.result()
-                    schedule_key = self.worker_schedules.pop(key, None)
+                    result = ({"state": "failed", "code": getattr(error, "code", "state_worker_failed"),
+                               "retryable": True} if error else worker.result())
+                    failed = error is not None or (isinstance(result, dict) and result.get("state") == "failed")
+                    if failed and isinstance(result, dict):
+                        result = {**result, "retryable": True}
+                    self.results[key] = result
                     if schedule_key is not None:
                         with self.runtime.transaction() as connection:
-                            connection.execute("UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
-                                (encode(self.results[key]), schedule_key))
+                            if failed:
+                                retry_at = stamp(self.tasks.now() + timedelta(minutes=5))
+                                connection.execute(
+                                    "UPDATE role_state_schedules SET result_json = ?, next_at = ? WHERE context_key = ?",
+                                    (encode(self.results[key]), retry_at, schedule_key))
+                            else:
+                                connection.execute("UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
+                                    (encode(self.results[key]), schedule_key))
         if self.workers:
             return
         # Seek past visited records, including retired/unavailable/disabled ones.
@@ -841,6 +1052,19 @@ class StateMaintenance:
                     continue
                 context, instruction, guard = self._conversation_anchor((context, instruction, guard), now)
                 self._clear_preflight(context)
+                idle_reason = self._idle_skip_reason(context, settings, token, now)
+                if idle_reason is not None:
+                    skipped = {"state": "skipped", "reason": idle_reason, "checked_at": stamp(now)}
+                    with self.runtime.transaction() as connection:
+                        connection.execute("""UPDATE role_state_schedules
+                            SET next_at = ?, result_json = ?
+                            WHERE context_key = ? AND next_at = ? AND revision = ? AND enabled = 1""",
+                            (stamp(now + timedelta(minutes=settings["maintenance_minutes"])),
+                             encode(skipped), row["context_key"], row["next_at"], row["revision"]))
+                    self.results[context.key] = skipped
+                    logger.debug("[CompanionV2] 状态维护无变化跳过模型调用 schedule=%s reason=%s",
+                                 row["context_key"][:12], idle_reason)
+                    continue
                 stage = "budget"
                 deferred = self.gateway.ledger.background_deferral(context, KIND, at=now)
                 if deferred:

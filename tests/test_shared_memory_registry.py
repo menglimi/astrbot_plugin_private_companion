@@ -82,6 +82,52 @@ class SharedMemoryRegistryTests(unittest.TestCase):
         self.assertTrue(fresh.host_active())
         self.assertIs(memory_provider_registry(context), fresh)
 
+    def test_a_stopped_host_does_not_replace_the_live_registry(self):
+        context = Context()
+        live = shared_memory_provider_registry(context, owner=object())
+        token = live.register("current", plugin=owner(), read=lambda request: None)
+
+        stopped = shared_memory_provider_registry(context, host_active=lambda: False, owner=object())
+
+        self.assertIsNot(stopped, live)
+        self.assertIs(memory_provider_registry(context), live)
+        self.assertEqual([item["provider_id"] for item in live.snapshot()], ["current"])
+        self.assertTrue(live.unregister(token))
+
+    def test_non_claiming_different_active_owner_does_not_replace_live_registry(self):
+        context = Context()
+        owner_b = object()
+        live = shared_memory_provider_registry(context, owner=owner_b, claim=True)
+        token = live.register("current", plugin=owner(), read=lambda request: None)
+
+        # Same owner with claim=False still reuses the live registry.
+        reused = shared_memory_provider_registry(context, owner=owner_b, claim=False)
+        self.assertIs(reused, live)
+
+        # A still-active older owner lazily initializing with claim=False must not displace owner_b.
+        owner_a = object()
+        stale = shared_memory_provider_registry(context, host_active=lambda: True, owner=owner_a, claim=False)
+        self.assertIsNot(stale, live)
+        self.assertIs(stale.owner, owner_a)
+        self.assertIs(memory_provider_registry(context), live)
+        self.assertEqual([item["provider_id"] for item in live.snapshot()], ["current"])
+        with self.assertRaises(ValueError):
+            stale.register("rogue", plugin=owner(), read=lambda request: None)
+        self.assertFalse(stale.unregister(token))
+        stale.close()
+        self.assertIs(memory_provider_registry(context), live)
+        self.assertFalse(live.closed)
+        self.assertTrue(live.unregister(token))
+
+    def test_non_claiming_active_owner_installs_when_no_live_registry_exists(self):
+        context = Context()
+        active_owner = object()
+        installed = shared_memory_provider_registry(context, owner=active_owner, claim=False)
+        self.assertIs(memory_provider_registry(context), installed)
+        token = installed.register("solo", plugin=owner(), read=lambda request: None)
+        self.assertTrue(token)
+        self.assertTrue(installed.unregister(token))
+
 
 if __name__ == "__main__":
     unittest.main()

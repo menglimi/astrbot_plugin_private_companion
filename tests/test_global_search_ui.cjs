@@ -14,7 +14,7 @@ test('page title and navigation labels preserve UTF-8 text and complete attribut
   assert.match(html, /id="railBrand" aria-label="陪伴小屋，回到小屋">/);
   assert.match(html, /id="searchButton" aria-label="搜索功能与内容" title="搜索 · Ctrl \/ ⌘ K">/);
   assert.match(html, /data-open-navigation[^>]+title="全部功能"[^>]*><i[^>]*><\/i><span>全部功能<\/span>/);
-  assert.match(html, /id="globalSearch"[^>]*placeholder="搜索设置名称、用途或字段键…" aria-label="搜索功能与设置"/);
+  assert.match(html, /id="globalSearch"[^>]*placeholder="搜索设置名称、别名、拼音或字段键…" aria-label="搜索功能与设置"/);
   assert.match(html, /id="confirmationSave"[^>]*>保存并切换<\/button>/);
   assert.doesNotMatch(html, /[\uE000-\uF8FF\uFFFD]|鎼滅储|鍏ㄩ儴|闄即/);
 });

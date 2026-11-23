@@ -67,6 +67,8 @@ class TaskSupervisor:
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.generation: int | None = None
         self.worker_lifecycle = None
+        self.execution_guard = None
+        self._execution_leases = {}
         # A dashboard preview may rebuild an already persisted prompt after a
         # process restart. It may recheck scope/source authority, but it must
         # never acquire or renew an execution lease. Context-local state keeps
@@ -100,6 +102,26 @@ class TaskSupervisor:
         if not all(callable(getattr(lifecycle, method, None)) for method in ("capture", "stopped_proof")):
             raise ValueError("worker lifecycle requires ownership and termination evidence")
         self.worker_lifecycle = lifecycle
+
+    def bind_execution_guard(self, guard):
+        """Bind host execution availability without restricting stored-data reads."""
+        if self.generation is not None or self.execution_guard is not None:
+            raise ValueError("execution guard must be bound once before startup")
+        if not all(callable(getattr(guard, name, None)) for name in ("capture", "assert_current")):
+            raise ValueError("execution guard requires capture and assert_current")
+        self.execution_guard = guard
+
+    def _check_execution(self, spec, definition, *, submitting=False):
+        if self.execution_guard is None:
+            return
+        if spec.task_id not in self._execution_leases:
+            lease = self.execution_guard.capture(spec, definition, submitting=submitting)
+            if lease is not None:
+                self._execution_leases[spec.task_id] = lease
+        else:
+            lease = self._execution_leases[spec.task_id]
+        if lease is not None:
+            self.execution_guard.assert_current(spec, lease)
 
     def _now(self):
         return normalize_utc(self.now(), field="supervisor clock")
@@ -250,6 +272,7 @@ class TaskSupervisor:
         require(self.policy.scope_access(spec.context.actor, scope=spec.context.scope,
                                         action=entry.definition.action, observed_at=now, allow_private_owner=True))
         if inputs:
+            self._check_execution(spec, entry.definition)
             self._validate_inputs(entry, spec, now)
         return entry, data, spec
 
@@ -299,6 +322,11 @@ class TaskSupervisor:
                 raise TaskError("task_revision_conflict", "task changed before this transition")
             connection.execute("INSERT INTO execution_events VALUES (?, ?, ?, ?, ?)",
                                (row["task_id"], row["revision"] + 1, state, reason, stamp(now)))
+            if state in TERMINAL:
+                self._execution_leases.pop(row["task_id"], None)
+                finished = getattr(self.execution_guard, "finished", None)
+                if finished is not None:
+                    finished(TaskSpec.restore(data["spec"]), self.registrations[row["kind"]].definition, state)
             return self._row(row["task_id"])
 
     @outcome
@@ -335,6 +363,7 @@ class TaskSupervisor:
             if total >= self.limits.retained_tasks or queued >= self.limits.queued_per_lane:
                 raise TaskError("task_queue_full", "bounded task storage or this lane's queue is full")
             self._validate_inputs(entry, spec, now)
+            self._check_execution(spec, definition, submitting=True)
             data = {"spec": asdict(spec), "definition_hash": digest(definition), "definition": asdict(definition),
                     "scope_key": spec.context.scope.key, "effect": "none", "reason": "queued",
                     "operation_id": None, "result_ref": None}
@@ -554,11 +583,12 @@ class TaskSupervisor:
         if data["operation_id"] is not None and result.operation_id not in (None, data["operation_id"]):
             raise TaskError("task_operation_conflict", "result belongs to a different owner operation")
         data.update(effect=result.effect, result_ref=result.result_ref, receipt_ref=result.receipt_ref,
-                    operation_id=result.operation_id or data["operation_id"])
+                    operation_id=result.operation_id or data["operation_id"],
+                    retry_disposition=result.retry_disposition)
         state, reason = result.status, "owner_result"
         if data.get("cancellation_requested") and result.effect in ("none", "not_committed"):
             state, reason = "cancelled", "stopped_without_commit"
-        elif result.retryable and result.effect in ("none", "not_committed"):
+        elif result.disposition_allows_retry and result.effect in ("none", "not_committed"):
             next_run = now + timedelta(seconds=entry.definition.backoff_seconds)
             if next_run >= datetime.fromisoformat(row["deadline_at"]):
                 state, reason = "expired", "retry_would_exceed_deadline"

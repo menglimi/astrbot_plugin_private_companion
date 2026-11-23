@@ -253,6 +253,51 @@ class NativePerceptionAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["code"], "material_pool_unavailable")
         log_error.assert_called_once()
 
+    async def test_material_pool_schedules_role_news_warmup_on_running_event_loop(self):
+        import asyncio
+        from companion_v2.proactive.external_materials import parse_news_response
+
+        (await self.controller.initialize_profile()).unwrap()
+        events = self.controller.session.application.contact_schedule.news_events
+
+        class WarmupPort:
+            fingerprint = "warmup-news-v1"
+            source_label = "warmup.example"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def fetch(self):
+                self.calls += 1
+                return parse_news_response({"items": [{
+                    "id": "warmup-1",
+                    "title": "巡视预热资讯",
+                    "summary": "后台任务在事件循环中成功预热。",
+                    "url": "https://warmup.example/1",
+                    "published_at": support.NOW.isoformat(),
+                    "category": "趣事",
+                }]})
+
+        port = WarmupPort()
+        loop = asyncio.get_running_loop()
+        with (patch.object(events, "_source", return_value=port),
+              patch.object(events, "_source_enabled", return_value=True),
+              patch("astrbot_host.native_perception_api.logger.exception") as log_error):
+            first = await self.call(route=PREFIX + "/materials")
+            self.assertEqual(first["status"], "ok", first)
+            log_error.assert_not_called()
+            workers = tuple(events._maintenance_workers.values())
+            self.assertEqual(len(workers), 1)
+            self.assertIsInstance(workers[0], asyncio.Task)
+            self.assertIs(workers[0].get_loop(), loop)
+            await asyncio.gather(*workers)
+
+            second = await self.call(route=PREFIX + "/materials")
+
+        self.assertEqual(port.calls, 1)
+        self.assertEqual(second["status"], "ok", second)
+        self.assertEqual([item["title"] for item in second["data"]["items"]], ["巡视预热资讯"])
+
     async def test_runtime_snapshot_uses_enabled_weather_and_returns_explicit_empty_states(self):
         class WeatherPort:
             def __init__(self):
@@ -314,6 +359,20 @@ class NativePerceptionAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime["data"]["weather"]["temperature_c"], 22.0)
         self.assertEqual(runtime["data"]["calendar"]["status"], "available")
         self.assertEqual(weather.locations[0].name, "测试区域")
+
+        # Role weather must not read private contact, device or conversation snapshots.
+        with patch.object(NativePerceptionWebAPI, "_status", side_effect=AssertionError("window read")):
+            role_weather = await self.call(route=path, query=b"scope=role")
+        self.assertEqual(role_weather["status"], "ok", role_weather)
+        self.assertEqual(set(role_weather["data"]), {"weather", "calendar", "observed_at"})
+        self.assertEqual(role_weather["data"]["weather"]["temperature_c"], 22.0)
+        self.assertEqual(role_weather["data"]["weather"]["humidity_pct"], 45.0)
+        self.assertEqual(role_weather["data"]["calendar"]["status"], "available")
+        for query in (b"scope=other", b"scope=role&scope=window", b"scope=role&target_id=other"):
+            invalid = await self.call(route=path, query=query)
+            self.assertEqual(invalid["data"]["code"], "perception_request_invalid")
+        denied = await self.call(route=path, query=b"scope=role", username=None)
+        self.assertEqual(denied["data"]["code"], "dashboard_identity_required")
 
         owner = RoleProfileConfigurationOwner(app.runtime)
         target = role_profile_target_for(context)

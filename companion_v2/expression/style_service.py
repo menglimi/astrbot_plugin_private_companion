@@ -49,6 +49,7 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 import json
 from logging import getLogger
+import threading
 from time import perf_counter
 
 from companion_v2.execution.models import encode_prompt
@@ -66,13 +67,27 @@ from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 
 from . import learning
+from . import private_scope as _private_scope
 from . import rule_details
 from . import rule_support
 from .configuration import (application_subject_allowed_for_context, read_settings,
                             source_subject_allowed_for_context)
+from .sample_review import PREFIX as SAMPLE_REVIEW_PREFIX
 from .style_evidence import (INPUT_SAMPLE_SOURCE, MAX_WINDOW_HOURS, sample_document,
                              sample_handles, sample_snapshot)
 from .window_scope import active_rule_count, row_usable
+
+_DEFAULT_ROLE_PRIVATE_CONTEXTS = _private_scope.role_private_contexts
+_CACHEABLE_EMPTY_PREPARE_STATES = frozenset({
+    "insufficient_samples",
+    "waiting_for_new_messages",
+    "waiting_for_sample_review",
+    "learning_disabled",
+    "source_not_selected",
+})
+MAX_EMPTY_PREPARE_WATERMARKS = 512
+PRIVATE_DISCOVERY_CACHE_SECONDS = 300
+MAX_PRIVATE_DISCOVERY_CACHE_ENTRIES = 32
 
 logger = getLogger(__name__)
 
@@ -109,15 +124,14 @@ LEARN_BUDGET_SECONDS = 180
 LEARN_MARGIN_SECONDS = 30
 LEARN_PROVIDER_TIMEOUT_SECONDS = LEARN_BUDGET_SECONDS - LEARN_MARGIN_SECONDS
 
-# A window reads the newest rules for deduplication, but a window that
-# accumulated hundreds of them cannot always encode all of them inside the
-# model's declared input estimate: one production window held 128 rules and the
-# newest 80 alone were 1.42× the default 131072-byte ceiling once JSON-escaped by
-# the adapter's wire. The rules are the cheapest material to lose, so a run trims
-# them rather than failing. The floor keeps enough priors to deduplicate at all;
-# below it a batch would propose rules the window already adopted.
-RULE_READ_LIMIT = 80
+# A window reads compact deduplication priors prioritizing adopted/pending rules.
+# Keeping the read window tight (30) and trimming each rule to its compact form
+# keeps typical learning batches far below provider input ceilings while still
+# protecting adopted and pending priors from duplicate proposals.
+RULE_READ_LIMIT = 30
 MIN_EXISTING_RULES = 8
+EXISTING_PROPOSAL_SUMMARY_CHARS = 120
+EXISTING_EXPRESSION_FIELD_CHARS = 80
 
 # Not every rule is equally useful to a batch that can only afford part of the
 # window: an adopted or pending rule is a prior a new candidate must not
@@ -135,6 +149,33 @@ def reference_rule_priority(rule):
     """
     state = rule.get("state") if isinstance(rule, Mapping) else None
     return RULE_STATE_PRIORITY.get(state, LOWEST_RULE_PRIORITY)
+
+
+def _compact_expression_form(form):
+    """Keep only short deduplication anchors from a stored expression form."""
+    if not isinstance(form, Mapping):
+        return None
+    compact = {}
+    for key in ("situation", "form", "usage", "kind"):
+        value = form.get(key)
+        if isinstance(value, str) and value.strip():
+            compact[key] = " ".join(value.split())[:EXISTING_EXPRESSION_FIELD_CHARS]
+    return compact or None
+
+
+def _compact_existing_rule(runtime, row):
+    """Compact deduplication prior: signal_id, dimension, state, short proposal, compact form."""
+    proposal = " ".join(str(row["proposal"] or "").split())[:EXISTING_PROPOSAL_SUMMARY_CHARS]
+    entry = {
+        "signal_id": row["signal_id"],
+        "dimension": row["dimension"],
+        "proposal": proposal,
+        "state": row["state"],
+    }
+    expression = _compact_expression_form(rule_details.form_for(runtime, row))
+    if expression is not None:
+        entry["expression"] = expression
+    return entry
 
 
 def expression_learning_profile(provider, *, max_output_tokens=2048):
@@ -351,7 +392,7 @@ def note_diagnosis(job, error):
 # short cache makes one resolution serve a whole pass while a newly rotated window
 # still joins its family within this many seconds. The cache holds only window keys
 # and their digests, never conversation text, and stays bounded.
-FAMILY_CACHE_SECONDS = 60
+FAMILY_CACHE_SECONDS = 300
 MAX_FAMILY_CACHE_ENTRIES = 256
 
 # One discovery pass serves every window that is due, not only the first one it
@@ -434,6 +475,13 @@ class ExpressionStyleService:
     # The look cursor belongs to the service, not to one pass, so the bound in
     # ``advance`` still hands the next pass the windows this one did not reach.
     _scan_look = 0
+    _advancing = False
+    _advance_future = None
+    _state_lock = None
+    _pending_launch = None
+    _live_bindings = None
+    _empty_prepare_watermarks = None
+    _private_discovery_cache = None
 
     def __init__(self, runtime, *, window_hours=720):
         self.runtime = runtime
@@ -441,6 +489,13 @@ class ExpressionStyleService:
         self.window_hours = window_hours
         self.pending, self.committed, self.workers, self.results = {}, set(), {}, {}
         self._family_cache = {}
+        self._empty_prepare_watermarks = {}
+        self._private_discovery_cache = {}
+        self._advancing = False
+        self._advance_future = None
+        self._state_lock = threading.RLock()
+        self._pending_launch = None
+        self._live_bindings = None
         self.next_checks = {}
         self._held_notes = set()
         self._scan_look = 0
@@ -450,6 +505,22 @@ class ExpressionStyleService:
         self.registrations = (TaskRegistration(TaskDefinition(KIND, OWNER, "role.expression.read",
             Lane.BACKGROUND, side_effect=SideEffect.LOCAL, binding=ProviderBinding(OWNER, "local", "1", "style-1"),
             timeout_seconds=LEARN_BUDGET_SECONDS, max_attempts=1, concurrency=1), self.validate),)
+
+    def _lock(self):
+        lock = self.__dict__.get("_state_lock")
+        if lock is None:
+            lock = threading.RLock()
+            self._state_lock = lock
+        return lock
+
+    def _set_result(self, work_key, value):
+        with self._lock():
+            self.results[work_key] = value
+            return value
+
+    def _get_result(self, work_key, default=None):
+        with self._lock():
+            return self.results.get(work_key, default)
 
     def attach(self, app):
         self.app, self.tasks, self.gateway = app, app.tasks, app.gateway
@@ -473,6 +544,17 @@ class ExpressionStyleService:
         return context.key if context.scope.kind is ScopeKind.PRIVATE else (
             "group-expression:" + digest([self.samples.role_owner(context), context.scope]))
 
+    @staticmethod
+    def _family_cache_key(context):
+        scope = getattr(context, "scope", None)
+        role = getattr(getattr(context, "role_binding", None), "role", None)
+        if scope is not None and role is not None:
+            return (
+                scope.installation_id, scope.platform, scope.bot_id,
+                scope.account_id, scope.native_scope_id, scope.kind, role.subject_id,
+            )
+        return context.key
+
     def _family_keys(self, context):
         """Scope digests whose expression rules share this window's budget.
 
@@ -485,13 +567,18 @@ class ExpressionStyleService:
         window's family for every gate it passes.
         """
         now = self.tasks.now()
-        cached = self._family_cache.get(context.key)
-        if cached is not None and now - cached[0] < timedelta(seconds=FAMILY_CACHE_SECONDS):
+        cache_key = self._family_cache_key(context)
+        scope_digest = digest(context.scope) if getattr(context, "scope", None) is not None else None
+        with self._lock():
+            cached = self._family_cache.get(cache_key)
+        if (cached is not None and now - cached[0] < timedelta(seconds=FAMILY_CACHE_SECONDS)
+                and (scope_digest is None or scope_digest in cached[1])):
             return cached[1]
         keys = scope_family_keys(self.runtime, context)
-        if len(self._family_cache) >= MAX_FAMILY_CACHE_ENTRIES:
-            self._family_cache.clear()
-        self._family_cache[context.key] = (now, keys)
+        with self._lock():
+            if len(self._family_cache) >= MAX_FAMILY_CACHE_ENTRIES:
+                self._family_cache.clear()
+            self._family_cache[cache_key] = (now, keys)
         return keys
 
     def _active_signal_count(self, context, family_keys=None):
@@ -977,6 +1064,8 @@ class ExpressionStyleService:
         still holds this window, that binding is the current authority for it and
         must be scanned instead of the older copy.
         """
+        if self._live_bindings is not None:
+            return self._live_bindings.get(context.key)
         bound = self.app.state_maintenance.bindings.get(context.key)
         return None if bound is None else (bound[0], bound[1])
 
@@ -986,28 +1075,28 @@ class ExpressionStyleService:
         policy = self._policy(context, at)
         if (context.scope.kind is ScopeKind.PRIVATE and not policy.private_learning_enabled
                 or context.scope.kind is ScopeKind.GROUP and not policy.group_learning_enabled):
-            self.results[self._work_key(context)] = {"state": "learning_disabled"}
+            self._set_result(self._work_key(context), {"state": "learning_disabled"})
             return None
         if (context.scope.kind is ScopeKind.PRIVATE
                 and not source_subject_allowed_for_context(self.runtime, context)):
-            self.results[self._work_key(context)] = {"state": "source_not_selected"}
+            self._set_result(self._work_key(context), {"state": "source_not_selected"})
             return None
         family_keys = self._family_keys(context)
         if self._active_signal_count(context, family_keys=family_keys) >= policy.active_signal_limit:
-            self.results[self._work_key(context)] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
+            self._set_result(self._work_key(context), {"state": "capacity_reached", "limit": policy.active_signal_limit})
             return None
         progress = self._progress(context)
         latest_sequence = progress["input_sequence"]
         if context.scope.kind is ScopeKind.GROUP:
             if self._global_group_batches(self._day(at), at=at) >= policy.group_daily_batch_limit:
-                self.results[self._work_key(context)] = {"state": "daily_budget_reached"}
+                self._set_result(self._work_key(context), {"state": "daily_budget_reached"})
                 return None
             count, latest_sequence = self.samples.new_inputs(context, at,
                 after_sequence=progress["input_sequence"], window_hours=policy.window_hours,
                 member_ids=policy.selected_members)
             if count < policy.group_new_messages:
-                self.results[self._work_key(context)] = {"state": "waiting_for_new_messages", "new_messages": count,
-                                            "required": policy.group_new_messages}
+                self._set_result(self._work_key(context), {"state": "waiting_for_new_messages", "new_messages": count,
+                                            "required": policy.group_new_messages})
                 return None
         samples = self.samples.collect(context, at, window_hours=min(policy.window_hours, MAX_WINDOW_HOURS),
                                        sample_limit=policy.sample_limit, sample_chars=policy.sample_chars,
@@ -1016,26 +1105,22 @@ class ExpressionStyleService:
                                        review_enabled=policy.sample_review_enabled)
         minimum = policy.group_min_samples if context.scope.kind is ScopeKind.GROUP else policy.min_samples
         if len(samples.samples) < minimum:
-            self.results[self._work_key(context)] = {"state": "waiting_for_sample_review" if policy.sample_review_enabled else "insufficient_samples",
-                                        "available": len(samples.samples), "required": minimum}
+            self._set_result(self._work_key(context), {"state": "waiting_for_sample_review" if policy.sample_review_enabled else "insufficient_samples",
+                                        "available": len(samples.samples), "required": minimum})
             return None
         owner_key = digest(self.samples.role_owner(context))
         placeholders = ",".join("?" for _ in family_keys)
         existing_rows = [row for row in self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
                 s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
-                s.scope_key, r.sample_json
+                s.scope_key, s.created_at, r.sample_json
             FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
             WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
-            ORDER BY s.created_at DESC, s.signal_id LIMIT ?""",
+            ORDER BY CASE s.state WHEN 'adopted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                     s.created_at DESC, s.signal_id LIMIT ?""",
             (owner_key, *family_keys, RULE_READ_LIMIT))
             if row_usable(context, row, samples=self.samples, at=at)]
-        existing_rules = tuple({"signal_id": row["signal_id"],
-                                "dimension": row["dimension"], "observation": row["observation"][:800],
-                                "proposal": row["proposal"][:1200],
-                                "expression": rule_details.form_for(self.runtime, row),
-                                "applicability": learning.normalize_applicability(
-                                    json.loads(row["applicability_json"])), "state": row["state"]}
-                               for row in existing_rows)
+        existing_rows.sort(key=lambda row: (row["created_at"], row["signal_id"]), reverse=True)
+        existing_rules = tuple(_compact_existing_rule(self.runtime, row) for row in existing_rows)
         return {"context": context, "instruction": instruction, "at": at, "policy": policy,
                 "samples": samples, "material_hash": samples.material_hash,
                 "catalogue": self.samples.catalogue(samples), "sample_context_key": context.key,
@@ -1088,7 +1173,7 @@ class ExpressionStyleService:
         else:
             job = prepared
         if job is None:
-            return self.results.get(self._work_key(context), {"state": "insufficient_samples"})
+            return self._get_result(self._work_key(context), {"state": "insufficient_samples"})
         work_key = self._work_key(context)
         request_key = digest([work_key, job["material_hash"], job["policy"].learning_mode])
         at = self.tasks.now()
@@ -1110,25 +1195,24 @@ class ExpressionStyleService:
                 # leaving an unhandled task exception with no result at all.
                 logger.warning("[CompanionV2] 表达学习租约记录无法读取，跳过本轮 material=%s request=%s code=%s reason=%s",
                                str(job.get("material_hash") or "")[:12], request_key[:12], error.code, error)
-                self.results[work_key] = {"state": "blocked", "code": error.code}
-                return self.results[work_key]
+                return self._set_result(work_key, {"state": "blocked", "code": error.code})
             if skipped is not None:
-                self.results[work_key] = skipped
+                self._set_result(work_key, skipped)
                 if skipped.get("state") == "retry_exhausted" or skipped.get("retry") == "no":
                     # No attempt of this signature is left, so the window goes back
                     # to its own rescan interval: the stop must not become a poll
                     # every few seconds. A different sample set is still reported
                     # by the next scan.
-                    self.next_checks[context.key] = at + timedelta(
-                        minutes=self._scan_interval_minutes(job["policy"], context))
+                    with self._lock():
+                        self.next_checks[context.key] = at + timedelta(
+                            minutes=self._scan_interval_minutes(job["policy"], context))
                 return skipped
             reservation = require(self.operations.reserve(OperationRef(identifier, OWNER, context.scope,
                 VersionRef(identifier, 1), identifier),
                 parameter_hash=digest([work_key, request_key, epoch]), observed_at=at))
             if reservation.replayed:
                 self._note_skipped(identifier, job, reservation.value, epoch=epoch, at=at)
-                self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
-                return self.results[work_key]
+                return self._set_result(work_key, {"state": "already_attempted", "task_id": identifier})
             # A truncation retry reuses the material batch this window already
             # reserved: the first attempt advanced the group checkpoint and spent
             # one daily batch for exactly these samples. Reserving again would
@@ -1202,10 +1286,12 @@ class ExpressionStyleService:
                     # at all: the batch goes back to the window's own rescan
                     # interval so a new sample set — the only thing that can end
                     # the refusal besides an operator edit — is picked up then.
-                    self.next_checks[context.key] = since + timedelta(
-                        minutes=self._scan_interval_minutes(job["policy"], context))
+                    with self._lock():
+                        self.next_checks[context.key] = since + timedelta(
+                            minutes=self._scan_interval_minutes(job["policy"], context))
                 else:
-                    self.next_checks[context.key] = since + timedelta(seconds=retry_wait_seconds(epoch))
+                    with self._lock():
+                        self.next_checks[context.key] = since + timedelta(seconds=retry_wait_seconds(epoch))
             self.committed.discard(identifier)
         if degraded is not None:
             # A cut-off round is a known outcome: the gateway refused the body and
@@ -1221,8 +1307,7 @@ class ExpressionStyleService:
             self._write_lease(request_key, epoch + 1, self.tasks.now())
             return await self.run(context, instruction, prepared=job)
         self._record_outcome(context, report, self.tasks.now())
-        self.results[work_key] = report
-        return report
+        return self._set_result(work_key, report)
 
     def _request(self, job, rules, limit):
         """The sealed request for one batch of reference rules.
@@ -1590,8 +1675,7 @@ class ExpressionStyleService:
 
     def _cursor(self, context):
         key = self._cursor_key(context)
-        with self.runtime.transaction() as connection:
-            row = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (key,)).fetchone()
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (key,))
         if row is None:
             return key, None
         value = json.loads(row["value"])
@@ -1847,14 +1931,18 @@ class ExpressionStyleService:
 
     def _group_candidates(self, at, limit=8):
         """Reconstruct the latest admitted context per exact group role binding."""
-        rows = self.runtime.read_all("""SELECT b.context_json, MAX(b.rowid) AS newest
-            FROM conversation_batches b
-            WHERE json_extract(b.context_json, '$.audience.scope.kind') = ?
-            GROUP BY json_extract(b.context_json, '$.role_binding')
-            ORDER BY newest DESC LIMIT ?""", (ScopeKind.GROUP.value, limit))
+        rows = self.runtime.read_all("""SELECT b.context_json FROM conversation_batches b
+            WHERE b.rowid IN (
+                SELECT MAX(b2.rowid)
+                FROM conversation_batches b2
+                WHERE json_extract(b2.context_json, '$.audience.scope.kind') = 'group'
+                GROUP BY json_extract(b2.context_json, '$.role_binding')
+                ORDER BY MAX(b2.rowid) DESC LIMIT ?
+            )
+            ORDER BY b.rowid DESC""", (limit,))
         candidates = []
-        from companion_v2.conversation.native_turns import context_rows
-        native = context_rows(self.runtime, kind=ScopeKind.GROUP.value)
+        from companion_v2.conversation.native_turns import latest_role_contexts
+        native = latest_role_contexts(self.runtime, kind=ScopeKind.GROUP.value, limit=limit)
         seen = set()
         for row in (*native, *rows):
             try:
@@ -1868,6 +1956,165 @@ class ExpressionStyleService:
                 if len(candidates) >= limit:
                     break
         return tuple(candidates)
+
+    def _private_discovery_token(self):
+        """O(1) revision watermark covering private-scope discovery tables and policies."""
+        read_one = getattr(self.runtime, "read_one", None)
+        if not callable(read_one):
+            return None
+        try:
+            from companion_v2.storage.runtime import table_exists
+            has_obs = table_exists(self.runtime, "conversation_native_observations")
+            obs_expr = (
+                "(SELECT COALESCE(MAX(rowid), 0) FROM conversation_native_observations)"
+                if has_obs else "0"
+            )
+            main_row = read_one(
+                f"""SELECT
+                        (SELECT COALESCE(MAX(rowid), 0) FROM conversation_batches),
+                        {obs_expr},
+                        (SELECT COALESCE(revision, 0) FROM identity_policy_metadata WHERE singleton = 1),
+                        (SELECT COALESCE(revision, 0) FROM object_policy_metadata WHERE singleton = 1)""",
+                (),
+            )
+            cfg_store = getattr(self.runtime, "configuration_store", self.runtime)
+            cfg_row = cfg_store.read_one(
+                "SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM configuration_targets",
+                (),
+            )
+        except Exception:
+            return None
+        return (
+            tuple(main_row) if main_row is not None else None,
+            tuple(cfg_row) if cfg_row is not None else None,
+        )
+
+    def _discover_private_candidates(self, context, at, pass_cache):
+        """Resolve authorized private candidates, caching unchanged roles across idle passes."""
+        from .private_scope import role_private_contexts
+
+        if role_private_contexts is not _DEFAULT_ROLE_PRIVATE_CONTEXTS:
+            return role_private_contexts(self.runtime, self.tasks.identity,
+                                         self.samples.messages, context, at)
+        role_binding = getattr(context, "role_binding", None)
+        role_subject = getattr(getattr(role_binding, "role", None), "subject_id", None)
+        if role_subject is None:
+            return role_private_contexts(self.runtime, self.tasks.identity,
+                                         self.samples.messages, context, at)
+        role_key = (context.scope.installation_id, context.scope.bot_id, role_subject)
+        if role_key in pass_cache:
+            return pass_cache[role_key]
+        token = self._private_discovery_token()
+        if token is not None:
+            with self._lock():
+                cache = self._private_discovery_cache
+                cached = cache.get(role_key) if cache is not None else None
+            if (cached is not None and cached[0] == token
+                    and at - cached[1] < timedelta(seconds=PRIVATE_DISCOVERY_CACHE_SECONDS)):
+                pass_cache[role_key] = cached[2]
+                return cached[2]
+        candidates = role_private_contexts(self.runtime, self.tasks.identity,
+                                           self.samples.messages, context, at)
+        pass_cache[role_key] = candidates
+        if token is not None:
+            with self._lock():
+                cache = self._private_discovery_cache
+                if cache is None:
+                    cache = {}
+                    self._private_discovery_cache = cache
+                if len(cache) >= MAX_PRIVATE_DISCOVERY_CACHE_ENTRIES:
+                    cache.clear()
+                cache[role_key] = (token, at, candidates)
+        return candidates
+
+    def _is_default_prepare(self):
+        return ("prepare" not in self.__dict__
+                and type(self).prepare is ExpressionStyleService.prepare)
+
+    def _empty_prepare_watermark(self, context, policy, at):
+        """O(1) input/policy/review watermark to skip re-preparing unchanged empty windows."""
+        if not self._is_default_prepare():
+            return None
+        read_one = getattr(self.runtime, "read_one", None)
+        if not callable(read_one) or getattr(context, "role_binding", None) is None:
+            return None
+        try:
+            from companion_v2.storage.runtime import table_exists
+            has_obs = table_exists(self.runtime, "conversation_native_observations")
+            if context.scope.kind is ScopeKind.PRIVATE:
+                obs_row = read_one(
+                    """SELECT observation_id, observed_at FROM conversation_native_observations
+                       WHERE context_key = ? AND kind = 'input' AND delivery_state = 'input_observed'
+                       ORDER BY observed_at DESC, observation_id ASC LIMIT 1""",
+                    (context.key,),
+                ) if has_obs else None
+                batch_row = read_one(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM conversation_batches WHERE origin_key = ?",
+                    (context.key,),
+                )
+                input_marker = (
+                    (obs_row["observation_id"], obs_row["observed_at"]) if obs_row is not None else None,
+                    batch_row[0] if batch_row is not None else 0,
+                )
+            elif context.scope.kind is ScopeKind.GROUP:
+                obs_row = read_one(
+                    """SELECT observation_id, observed_at FROM conversation_native_observations
+                       WHERE role_binding_key = ?
+                         AND kind = 'input' AND delivery_state = 'input_observed'
+                       ORDER BY observed_at DESC, observation_id ASC LIMIT 1""",
+                    (encode(context.role_binding),),
+                ) if has_obs else None
+                input_marker = (
+                    (obs_row["observation_id"], obs_row["observed_at"]) if obs_row is not None else None,
+                )
+            else:
+                return None
+            max_inputs = read_one("SELECT COALESCE(MAX(rowid), 0) FROM conversation_inputs", ())
+            max_runs = read_one("SELECT COALESCE(MAX(rowid), 0) FROM expression_style_runs", ())
+            # Always include review_marker regardless of sample_review_enabled:
+            # rejected samples are excluded from eligible() even when sample review is off.
+            owner = self.samples.role_owner(context)
+            prefix = SAMPLE_REVIEW_PREFIX + digest([owner, context.scope]) + ":"
+            prefix_end = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+            review_row = read_one(
+                """SELECT COUNT(*),
+                          COALESCE(SUM(CASE WHEN json_valid(value)
+                                            THEN json_extract(value, '$.revision') ELSE 0 END), 0),
+                          COALESCE(MAX(CASE WHEN json_valid(value)
+                                            THEN json_extract(value, '$.decided_at') ELSE '' END), '')
+                   FROM runtime_metadata
+                   WHERE key >= ? AND key < ?""",
+                (prefix, prefix_end),
+            )
+            review_marker = tuple(review_row) if review_row is not None else (0, 0, "")
+            cfg_store = getattr(self.runtime, "configuration_store", self.runtime)
+            cfg_row = cfg_store.read_one(
+                "SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM configuration_targets",
+                (),
+            )
+            policy_sig = (
+                getattr(policy, "private_learning_enabled", True),
+                getattr(policy, "group_learning_enabled", True),
+                getattr(policy, "window_hours", None),
+                getattr(policy, "sample_limit", None),
+                getattr(policy, "min_samples", None),
+                getattr(policy, "group_min_samples", None),
+                getattr(policy, "sample_chars", None),
+                getattr(policy, "sample_review_enabled", False),
+                getattr(policy, "group_new_messages", None),
+                getattr(policy, "group_member_mode", None),
+                getattr(policy, "group_member_ids", None),
+            )
+        except Exception:
+            return None
+        return (
+            input_marker,
+            max_inputs[0] if max_inputs is not None else 0,
+            max_runs[0] if max_runs is not None else 0,
+            review_marker,
+            cfg_row[0] if cfg_row is not None else "",
+            policy_sig,
+        )
 
     def _service_budget(self):
         """How many workers one discovery pass may start.
@@ -1910,27 +2157,53 @@ class ExpressionStyleService:
         """
         work_key = self._work_key(context) if work_key is None else work_key
         budget = self._scan_budget
-        if self.next_checks.get(context.key, at) > at:
-            return False
-        if work_key in self.workers and not self.workers[work_key].done():
+        with self._lock():
+            if self.next_checks.get(context.key, at) > at:
+                return False
+            worker = self.workers.get(work_key)
+        if worker is not None and not worker.done():
             return False
         policy = self._policy(context, at)
-        if self._active_signal_count(context) >= policy.active_signal_limit:
-            self.results[work_key] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
-            return False
         scan_minutes = self._scan_interval_minutes(policy, context)
+        # Check the O(1) cursor gate before counting active rules (which resolves
+        # scope families and validates stored rule evidence).
         if not self.due(context, at, scan_minutes=scan_minutes):
             return False
+        if self._active_signal_count(context) >= policy.active_signal_limit:
+            self._set_result(work_key, {"state": "capacity_reached", "limit": policy.active_signal_limit})
+            return False
+        watermark = self._empty_prepare_watermark(context, policy, at)
+        if watermark is not None:
+            with self._lock():
+                watermarks = self._empty_prepare_watermarks
+                cached_watermark = watermarks.get(context.key) if watermarks is not None else None
+            if cached_watermark == watermark:
+                return False
         # Every window below this line is prepared, and a prepare is the pass'
         # only synchronous read: the look is spent here, before the read, so the
         # pass' bound counts the work it actually does rather than the workers it
         # happened to start.
         if budget is not None:
             budget.note_look()
-        self._scan_look += 1
+        with self._lock():
+            self._scan_look += 1
         job = self.prepare(context, instruction, at)
         if job is None:
+            if (watermark is not None
+                    and (self._get_result(work_key) or {}).get("state") in _CACHEABLE_EMPTY_PREPARE_STATES):
+                with self._lock():
+                    watermarks = self._empty_prepare_watermarks
+                    if watermarks is None:
+                        watermarks = {}
+                        self._empty_prepare_watermarks = watermarks
+                    if len(watermarks) >= MAX_EMPTY_PREPARE_WATERMARKS:
+                        watermarks.clear()
+                    watermarks[context.key] = watermark
             return False
+        with self._lock():
+            watermarks = self._empty_prepare_watermarks
+            if watermarks is not None:
+                watermarks.pop(context.key, None)
         identifier, receipt, epoch = self._held_batch(context, job, work_key, at)
         if identifier is not None:
             # Nothing may spend a model call on these samples yet, so a worker
@@ -1940,15 +2213,22 @@ class ExpressionStyleService:
             # whose lease has just run out is looked at again promptly instead of
             # waiting out a whole scan interval.
             learned = receipt.state is OperationState.COMPLETED
-            self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
-            self.next_checks[context.key] = at + (timedelta(minutes=scan_minutes) if learned
-                                                 else timedelta(seconds=60))
+            with self._lock():
+                self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
+                self.next_checks[context.key] = at + (timedelta(minutes=scan_minutes) if learned
+                                                     else timedelta(seconds=60))
             self._note_held_once(context.key, identifier, job, receipt, epoch=epoch, at=at)
             return False
-        self.next_checks[context.key] = at + timedelta(seconds=60)
-        self.workers[work_key] = asyncio.create_task(
-            self.run(context, instruction), name="companion:expression-learn")
-        self.workers[work_key].add_done_callback(lambda done: self.app.notify())
+        with self._lock():
+            self.next_checks[context.key] = at + timedelta(seconds=60)
+        if self._pending_launch is not None:
+            self._pending_launch.append((work_key, context, instruction))
+        else:
+            worker = asyncio.create_task(
+                self.run(context, instruction), name="companion:expression-learn")
+            with self._lock():
+                self.workers[work_key] = worker
+            worker.add_done_callback(lambda done: self.app.notify())
         if budget is not None:
             budget.note_served()
         return True
@@ -1986,11 +2266,12 @@ class ExpressionStyleService:
     def _note_held_once(self, window_key, identifier, job, receipt, *, epoch, at):
         """Say a batch is held once per window and receipt, not once per pass."""
         key = (window_key, identifier)
-        if key in self._held_notes:
-            return
-        if len(self._held_notes) >= MAX_HELD_NOTES:
-            self._held_notes.clear()
-        self._held_notes.add(key)
+        with self._lock():
+            if key in self._held_notes:
+                return
+            if len(self._held_notes) >= MAX_HELD_NOTES:
+                self._held_notes.clear()
+            self._held_notes.add(key)
         self._note_skipped(identifier, job, receipt, epoch=epoch, at=at)
 
     def _in_turn(self, candidates):
@@ -2006,30 +2287,35 @@ class ExpressionStyleService:
         candidates = tuple(candidates)
         if len(candidates) < 2:
             return candidates
-        start = self._scan_look % len(candidates)
+        with self._lock():
+            start = self._scan_look % len(candidates)
         return candidates[start:] + candidates[:start]
 
     def start(self, context, instruction):
         if self.closed or KIND not in self.gateway.router.profiles:
             raise TaskError("model_task_unregistered", "expression learning model is unavailable")
-        worker = self.workers.get(self._work_key(context))
+        work_key = self._work_key(context)
+        with self._lock():
+            worker = self.workers.get(work_key)
         if worker is not None and not worker.done():
             return {"state": "running"}
         at = self.tasks.now()
         job = self.prepare(context, instruction, at)
         if job is None:
-            return self.results.get(self._work_key(context), {"state": "insufficient_samples"})
+            return self._get_result(work_key, {"state": "insufficient_samples"})
         # The operator asked for this batch explicitly, so a refusal recorded for
         # it must not outlive the edit they probably just made: the automatic scan
         # honours the record, an explicit "learn now" is the way out of it.
-        request_key = digest([self._work_key(context), job["material_hash"], job["policy"].learning_mode])
+        request_key = digest([work_key, job["material_hash"], job["policy"].learning_mode])
         if self._stopped_code(request_key) is not None:
             logger.info("[CompanionV2] 表达学习按手动请求清除确定性失败记录 material=%s mode=%s request=%s",
                         str(job.get("material_hash") or "")[:12], job["policy"].learning_mode, request_key[:12])
             self._clear_stop(request_key)
-        self.workers[self._work_key(context)] = asyncio.create_task(self.run(context, instruction),
-                                                       name="companion:expression-learn")
-        self.workers[self._work_key(context)].add_done_callback(lambda done: self.app.notify())
+        worker = asyncio.create_task(self.run(context, instruction),
+                                     name="companion:expression-learn")
+        with self._lock():
+            self.workers[work_key] = worker
+        worker.add_done_callback(lambda done: self.app.notify())
         self.app.notify()
         return {"state": "queued"}
 
@@ -2051,7 +2337,7 @@ class ExpressionStyleService:
         """
         at = self.tasks.now()
         work_key = self._work_key(context)
-        state = dict(self.results.get(work_key) or {})
+        state = dict(self._get_result(work_key) or {})
         remembered = None
         if not state:
             try:
@@ -2073,7 +2359,8 @@ class ExpressionStyleService:
             # A missing cursor is damage too; the outcome record carries its own
             # time, so the banner can still date the run it describes.
             closed_at = datetime.fromisoformat(remembered["at"])
-        worker = self.workers.get(work_key)
+        with self._lock():
+            worker = self.workers.get(work_key)
         running = worker is not None and not worker.done()
         scan_minutes = self._scan_interval_minutes(policy, context)
         try:
@@ -2119,7 +2406,7 @@ class ExpressionStyleService:
             # The material page renders its learning line from this same status.
             # After a restart it has to read the recorded outcome too, or it would
             # say "not learned yet" while the overview still reports the failure.
-            "last_result": self.results.get(work_key) or remembered,
+            "last_result": self._get_result(work_key) or remembered,
             "running": running,
             "learning_mode": policy.learning_mode,
             "minimum_samples": policy.group_min_samples if group else policy.min_samples,
@@ -2131,17 +2418,19 @@ class ExpressionStyleService:
                 application_subject_allowed_for_context(self.runtime, context)),
         }
 
-    def advance(self):
-        if self.closed:
-            return
-        for key, worker in tuple(self.workers.items()):
+    def _reap_workers(self):
+        with self._lock():
+            items = tuple(self.workers.items())
+        for key, worker in items:
             if worker.done():
-                del self.workers[key]
+                with self._lock():
+                    if self.workers.get(key) is worker:
+                        del self.workers[key]
                 if not worker.cancelled():
                     error = worker.exception()
                     if error:
-                        self.results[key] = {"state": "failed",
-                                             "code": getattr(error, "code", "expression_learn_failed")}
+                        self._set_result(key, {"state": "failed",
+                                               "code": getattr(error, "code", "expression_learn_failed")})
                         # A worker that raised before its model round (a binding,
                         # sample or admission error) never reaches the owner's own
                         # "not committed" line; without this one it disappears into
@@ -2150,19 +2439,13 @@ class ExpressionStyleService:
                         # No window key or text here.
                         logger.warning("[CompanionV2] 表达学习工作线程失败 stage=assemble code=%s retry=next_scan",
                                        getattr(error, "code", "expression_learn_failed"))
-        if self.workers or KIND not in self.gateway.router.profiles:
-            return
-        at = self.tasks.now()
-        # Discovery reads all authorized source windows, before the per-window
-        # scan gate. Delivery receipts must not repeat that work for every part.
-        if self._next_discovery_at is not None and at < self._next_discovery_at:
-            return
-        self._next_discovery_at = at + timedelta(seconds=60)
-        bindings = tuple(self.app.state_maintenance.bindings.values())
+
+    def _discover_and_scan_sync(self, bindings, at, *, defer_launch=False):
         group_contexts = self._group_candidates(at)
         if not bindings and not group_contexts:
-            self.next_checks.clear()
-            return
+            with self._lock():
+                self.next_checks.clear()
+            return ()
         # A pass serves every window that is due, up to the number of workers the
         # task layer runs at once, and looks at a bounded number of windows in all.
         # Stopping at the first window it served is what made one already-learned
@@ -2171,11 +2454,82 @@ class ExpressionStyleService:
         # finished waiting. A held window is a look, not a service, so it cannot
         # take that one worker either.
         budget = _ScanBudget(self._service_budget())
+        pending_launch = [] if defer_launch else None
+        live_bindings = {entry[0].key: (entry[0], entry[1]) for entry in bindings} if defer_launch else None
         self._scan_budget = budget
+        self._pending_launch = pending_launch
+        self._live_bindings = live_bindings
         try:
             self._scan_pass(budget, bindings, group_contexts)
         finally:
             self._scan_budget = None
+            self._pending_launch = None
+            self._live_bindings = None
+        return tuple(pending_launch) if pending_launch is not None else ()
+
+    def advance(self):
+        if self.closed or self._advancing:
+            return
+        self._reap_workers()
+        with self._lock():
+            has_workers = bool(self.workers)
+        if has_workers or KIND not in self.gateway.router.profiles:
+            return
+        at = self.tasks.now()
+        # Discovery reads all authorized source windows, before the per-window
+        # scan gate. Delivery receipts must not repeat that work for every part.
+        if self._next_discovery_at is not None and at < self._next_discovery_at:
+            return
+        self._next_discovery_at = at + timedelta(seconds=60)
+        bindings = tuple(self.app.state_maintenance.bindings.values())
+        self._discover_and_scan_sync(bindings, at, defer_launch=False)
+
+    async def advance_async(self):
+        """Offload SQLite discovery and preparation off the event loop; keep task creation on it."""
+        if self.closed or self._advancing:
+            return
+        self._reap_workers()
+        with self._lock():
+            has_workers = bool(self.workers)
+        if has_workers or KIND not in self.gateway.router.profiles:
+            return
+        at = self.tasks.now()
+        if self._next_discovery_at is not None and at < self._next_discovery_at:
+            return
+        self._next_discovery_at = at + timedelta(seconds=60)
+        bindings = tuple(self.app.state_maintenance.bindings.values())
+        self._advancing = True
+        future = asyncio.ensure_future(asyncio.to_thread(
+            self._discover_and_scan_sync, bindings, at, defer_launch=True
+        ))
+        self._advance_future = future
+
+        def _clear_advance(done_future):
+            if self._advance_future is done_future:
+                self._advance_future = None
+            self._advancing = False
+            if not done_future.cancelled():
+                done_future.exception()
+
+        future.add_done_callback(_clear_advance)
+        to_launch = await asyncio.shield(future)
+        if future.done():
+            if self._advance_future is future:
+                self._advance_future = None
+            self._advancing = False
+        if self.closed or not to_launch:
+            return
+        for work_key, context, instruction in to_launch:
+            with self._lock():
+                existing = self.workers.get(work_key)
+            if existing is not None and not existing.done():
+                continue
+            worker = asyncio.create_task(
+                self.run(context, instruction), name="companion:expression-learn"
+            )
+            with self._lock():
+                self.workers[work_key] = worker
+            worker.add_done_callback(lambda done: self.app.notify())
 
     def _scan_pass(self, budget, bindings, group_contexts):
         """One discovery pass' window walk, bounded by `budget`.
@@ -2184,18 +2538,19 @@ class ExpressionStyleService:
         budget is set on the service for exactly the walk that spends it.
         """
         scanned_private = set()
+        role_discovery_cache = {}
         for _ in range(min(16, len(bindings))):
             if budget.spent:
                 break
-            context, instruction, _ = bindings[self.cursor % len(bindings)]
-            self.cursor += 1
+            with self._lock():
+                index = self.cursor % len(bindings)
+                self.cursor += 1
+            context, instruction, _ = bindings[index]
             at = self.tasks.now()
             if context.scope.kind is not ScopeKind.PRIVATE:
                 continue
             try:
-                from .private_scope import role_private_contexts
-                candidates = role_private_contexts(self.runtime, self.tasks.identity,
-                    self.samples.messages, context, at)
+                candidates = self._discover_private_candidates(context, at, role_discovery_cache)
                 # The live binding is authoritative. Private-scope discovery can
                 # legitimately return nothing (identity bindings were rebuilt or
                 # the stored observation is gone); skipping the bound window would
@@ -2204,7 +2559,7 @@ class ExpressionStyleService:
                 if not candidates:
                     candidates = (context,)
             except TaskError as error:
-                self.results[self._work_key(context)] = {"state": "blocked", "code": error.code}
+                self._set_result(self._work_key(context), {"state": "blocked", "code": error.code})
                 continue
             for candidate in self._in_turn(candidates):
                 # The cap belongs here, not only on the bindings and the group
@@ -2217,6 +2572,9 @@ class ExpressionStyleService:
                 if candidate.key in scanned_private:
                     continue
                 scanned_private.add(candidate.key)
+                with self._lock():
+                    if self.next_checks.get(candidate.key, at) > at:
+                        continue
                 # Restored candidates keep the policy revision they were
                 # stored with. Prefer the live binding for the same window so
                 # this scan never compares an older snapshot of a window the
@@ -2234,7 +2592,7 @@ class ExpressionStyleService:
                 except TaskError as error:
                     # The failure belongs to the window whose read failed, not to
                     # the binding that happened to seed this discovery pass.
-                    self.results[self._work_key(candidate)] = {"state": "blocked", "code": error.code}
+                    self._set_result(self._work_key(candidate), {"state": "blocked", "code": error.code})
         # Group learning is opt-in per group and runs after the private queue.
         for candidate in self._in_turn(group_contexts):
             if budget.spent:
@@ -2248,22 +2606,29 @@ class ExpressionStyleService:
             try:
                 live = self._live_window(candidate)
                 context = live[0] if live is not None else candidate
+                with self._lock():
+                    if self.next_checks.get(context.key, at) > at:
+                        continue
+                    worker = self.workers.get(work_key)
+                if worker is not None and not worker.done():
+                    continue
                 instruction = self._group_instruction(context, at)
                 if instruction is None:
                     continue
                 self._scan(context, instruction, at, work_key)
             except TaskError as error:
-                self.results[work_key] = {"state": "blocked", "code": error.code}
+                self._set_result(work_key, {"state": "blocked", "code": error.code})
 
     def _group_instruction(self, context, at):
         """A group run needs its own switch and the exact current role prompt."""
         policy = self._policy(context, at)
         if not policy.group_learning_enabled:
             return None
-        row = self.runtime.read_one("""SELECT b.role_instruction FROM conversation_batches b
-            WHERE b.origin_key = ? ORDER BY b.rowid DESC LIMIT 1""", (context.key,))
         from companion_v2.conversation.native_turns import latest
-        row = latest(self.runtime, context.key) or row
+        row = latest(self.runtime, context.key)
+        if row is None:
+            row = self.runtime.read_one("""SELECT b.role_instruction FROM conversation_batches b
+                WHERE b.origin_key = ? ORDER BY b.rowid DESC LIMIT 1""", (context.key,))
         if row is None or not row["role_instruction"].strip():
             return None
         current = self.tasks.identity.resolve_role(context.scope, observed_at=at)
@@ -2283,17 +2648,29 @@ class ExpressionStyleService:
         return instruction if type(instruction) is str and instruction.strip() else None
 
     def cancel_running(self):
-        for worker in self.workers.values():
+        with self._lock():
+            workers = tuple(self.workers.values())
+        for worker in workers:
             worker.cancel()
 
     @property
     def active_handles(self):
+        with self._lock():
+            items = tuple(self.workers.items())
         return self.runner.active_handles + tuple("expression-learn:" + key for key, worker in
-            self.workers.items() if not worker.done())
+            items if not worker.done())
 
     async def close(self):
         self.closed = True
         self.cancel_running()
+        advance_future = self._advance_future
+        if advance_future is not None and not advance_future.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(advance_future), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
         await self.runner.close()
-        if self.workers:
-            await asyncio.wait(tuple(self.workers.values()), timeout=0.25)
+        with self._lock():
+            workers = tuple(self.workers.values())
+        if workers:
+            await asyncio.wait(workers, timeout=0.25)

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 
 from companion_v2.execution.models import TaskContext, digest, stamp
@@ -138,10 +139,14 @@ def _signature(model, messages, toolset):
         hashes = [digest(message) for message in history]
         chars, byte_count = sum(len(text) for text in texts), sum(len(text.encode("utf-8", errors="replace")) for text in texts)
         estimate = sum(max(1, int(sum("一" <= character <= "鿿" for character in text) * 0.35 + len(text) * 0.25)) for text in texts if text)
-        signature = replace(signature, context_observed=True, context_hashes=tuple(hashes[:256]),
+        signature = replace(signature, context_observed=True, context_hashes=(),
             context_sequence_hash=digest(hashes), context_multiset_hash=digest(sorted(hashes)),
             context_material_count=len(hashes), context_chars=chars, context_bytes=byte_count,
             context_est_tokens=estimate, message_est_tokens=max(0, signature.message_est_tokens - estimate))
+    elif signature.context_hashes:
+        # Persist compact sequence/multiset digests and counts only; omit the
+        # per-material SHA-256 array (up to 256 hashes / ~17 KB per signature).
+        signature = replace(signature, context_hashes=())
     return signature.to_record()
 
 
@@ -191,15 +196,41 @@ def _at(state):
 
 
 def _snapshot(state):
-    if not callable(state.get("submit")):
+    submit = state.get("submit")
+    if not callable(submit):
         return
+    slot = None
+    lock = state.get("_flush_lock")
+    if lock is None:
+        lock = threading.Lock()
+        state["_flush_lock"] = lock
     try:
         record = state["record"]
         record["revision"] += 1
         record["observed_at"] = _at(state)
         frozen = copy.deepcopy(record)
-        state["submit"](lambda: record_observation(state["runtime"], state["context"], frozen))
+        with lock:
+            pending = state.get("_pending_flush")
+            if pending is not None and not pending["started"]:
+                pending["record"] = frozen
+                return
+            slot = {"record": frozen, "started": False}
+            state["_pending_flush"] = slot
+
+        def _persist():
+            with lock:
+                slot["started"] = True
+                payload = slot["record"]
+                if state.get("_pending_flush") is slot:
+                    state["_pending_flush"] = None
+            record_observation(state["runtime"], state["context"], payload)
+
+        submit(_persist)
     except Exception as error:
+        if slot is not None:
+            with lock:
+                if state.get("_pending_flush") is slot:
+                    state["_pending_flush"] = None
         logger.warning("[CompanionV2] 核心回复统计暂不可用 error_type=%s", type(error).__name__)
 
 
@@ -272,13 +303,12 @@ def prepare_core_reply_telemetry(event, req, *, application, submit=None, now=No
         record["request_hook_signature"] = None
     record["signature_scope"] = "provider_request_hook"
     state = {"record": record, "context": context, "runtime": application.runtime,
-             "submit": submit, "now": clock, "runner": None, "response_ids": set()}
+             "submit": submit, "now": clock, "runner": None, "response_ids": set(),
+             "_flush_lock": threading.Lock(), "_pending_flush": None}
     def preparation_observer(step):
         record["preparation_steps"].append(copy.deepcopy(step))
-        _snapshot(state)
     core["_preparation_observer"] = preparation_observer
     event.set_extra(CORE_REPLY_TELEMETRY_EXTRA, state)
-    _snapshot(state)
     return state
 
 
@@ -342,7 +372,6 @@ def observe_core_agent_begin(event, run_context):
         return
     state["record"]["agent_started_at"] = state["record"].get("agent_started_at") or _at(state)
     state["record"]["generation_state"] = "running"
-    _snapshot(state)
     if not callable(getattr(runner, "_iter_llm_responses", None)) or not callable(getattr(runner, "step", None)):
         return
     methods = {}
@@ -412,7 +441,6 @@ def observe_core_agent_begin(event, run_context):
                     request.update(state="unknown", finished_at=_at(state), latency_ms=_seconds_ms(time.monotonic() - started))
             except Exception:
                 pass
-            _snapshot(state)
 
     async def observed_resolve(*args, **kwargs):
         before = args[0] if args else kwargs.get("llm_resp")
@@ -443,8 +471,6 @@ def observe_core_agent_begin(event, run_context):
             finally:
                 _restore_runner(state)
             raise
-        finally:
-            _snapshot(state)
 
     async def observed_step(*args, **kwargs):
         failed = False
@@ -568,7 +594,6 @@ def observe_core_tool_finished(event, tool):
     item = next((item for item in state["record"]["tools"] if item["action"] == name and item["finished_at"] is None), None)
     if item is not None:
         item.update(state="returned", finished_at=_at(state))
-        _snapshot(state)
 
 
 @_passive
@@ -600,7 +625,6 @@ def observe_core_reply_delivery(event, stage="returned"):
         delivery["failed"] += 1
     if delivery["state"] not in ("unknown", "denied"):
         delivery["state"] = stage
-    _snapshot(state)
 
 
 @_passive

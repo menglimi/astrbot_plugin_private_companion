@@ -200,6 +200,7 @@ class MultiHostSettings:
             data["common"].pop("budget_soft")  # A disabled daily soft ceiling is not an identity pin.
         data["common"].pop("voice_reply_enabled")  # Delivery presentation can change without re-pinning identity.
         data["common"].pop("voice_reply_policy")
+        data["common"].pop("voice_singsing_enabled")
         # Routing is adopted at assembly/request boundaries, not an identity pin.
         for field in ("additional_providers", "fallback_provider_id", "replacement_rules", "fallback_on_refusal"):
             data["common"].pop(field)

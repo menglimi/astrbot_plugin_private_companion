@@ -147,7 +147,9 @@ class BackgroundHistory:
             raise TaskError("delivery_history_changed", "history requires its original confirmed delivery")
         request = DeliveryRequest.restore(row["request_json"])
         if self.verify_platform_message is not None:
-            self.verify_platform_message(request.context.scope, row["platform_ref"])
+            router = getattr(self.delivery, "private_account_router", None)
+            actual = router.actual_context(identifier) if router is not None else None
+            self.verify_platform_message((actual or request.context).scope, row["platform_ref"])
         owner = self.delivery.owners.get(request.owner)
         if (request.context.key != context.key or request.delivery_id != identifier
                 or request.payload_hash != row["payload_hash"] or owner is None or owner.history_read is None):

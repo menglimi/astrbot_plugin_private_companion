@@ -10,9 +10,8 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.context import Context
-from astrbot.core.tools.message_tools import SendMessageToUserTool
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
-from astrbot_host.core_reply_native_send import inject_core_reply_send_tool
+from astrbot_host.core_reply_native_send import SendMessageToUserTool, inject_core_reply_send_tool
 from companion_v2.execution.models import TaskError
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.foundation.outcome import Outcome
@@ -114,6 +113,7 @@ class CoreReplyNativeSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.sent, [])
         self.assertIs(wrapper.context.context, self.host)
         self.assertIs(self.shared_tools.get_tool(self.original.name), self.original)
+        self.assertIn("不要复述已送达", tool.description)
         media.assert_called_once()
 
     async def test_permission_revoked_before_actual_native_tool_send(self):
@@ -270,6 +270,74 @@ class CoreReplyNativeSendTests(unittest.IsolatedAsyncioTestCase):
                           for call in self.platform.send_by_session.await_args_list], [[Plain], [Record]])
         render.assert_awaited_once()
         self.assertEqual(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["send_returns"], 2)
+
+    async def test_voice_tool_final_duplicate_skips_segmentation_and_second_tts(self):
+        from astrbot.core.message.components import Plain
+        from astrbot.core.message.message_event_result import MessageEventResult, MessageChain, ResultContentType
+        from astrbot.core.provider.entities import LLMResponse
+        from astrbot_host.core_reply import activate_core_reply_delivery_guard
+        from astrbot_host.core_reply_segmentation import activate_core_reply_segmentation, prepare_core_reply_segmentation
+        from astrbot_host.core_reply_voice import observe_core_voice_response, prepare_core_reply_voice_message
+
+        event, wrapper, tool = self.prepare()
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        state["prepared"].update(channel="private", segmentation_settings={
+            "rule_mode": "paragraphs", "min_segment_chars": 1, "max_segments": 3,
+            "part_gap_mode": "fixed", "part_gap_ms": 0},
+            voice_reply_policy=VoiceReplyPolicy(generation_mode="model_tag", language="ja",
+                                                foreign_text_mode="translation", segment_mode="whole"))
+        prepare_core_reply_segmentation(event)
+        rendered = []
+
+        async def render(_, text, **__):
+            rendered.append(text)
+            return {"type": "record", "data": {"file": "base64://YQ=="}}
+
+        async def prepare(current, message, check, index, count):
+            return await prepare_core_reply_voice_message(event, current, message, renderer=render,
+                delivery=None, authorize=check, segment_index=index, segment_count=count)
+
+        state["prepare_send"] = prepare
+        source = "<pc_tts>一緒にいるよ。</pc_tts>我在这儿。\n\n晚上再聊。"
+        await tool.call(wrapper, messages=[{"type": "plain", "text": source}])
+        self.assertEqual(self.platform.send_by_session.await_count, 2)
+        self.assertEqual(rendered, ["一緒にいるよ。"])
+
+        response = LLMResponse(role="assistant", completion_text=source,
+                               result_chain=MessageChain(chain=[Plain(source)]))
+        observe_core_voice_response(event, response)
+        event.set_result(MessageEventResult().message(response.completion_text)
+                         .set_result_content_type(ResultContentType.LLM_RESULT))
+        activate_core_reply_delivery_guard(event)
+        activate_core_reply_segmentation(event)
+        await event.send(MessageChain(chain=[Plain(response.completion_text)]))
+
+        self.assertEqual(event.sent, [])
+        self.assertEqual(rendered, ["一緒にいるよ。"])
+        self.assertEqual(state["send_attempts"], 2)
+
+    async def test_different_final_body_keeps_a_segment_matching_the_tool(self):
+        from astrbot.core.message.components import Plain
+        from astrbot.core.message.message_event_result import MessageEventResult, MessageChain, ResultContentType
+        from astrbot_host.core_reply import activate_core_reply_delivery_guard
+        from astrbot_host.core_reply_segmentation import activate_core_reply_segmentation, prepare_core_reply_segmentation
+
+        event, wrapper, tool = self.prepare()
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        state["prepared"].update(channel="private", segmentation_settings={
+            "rule_mode": "paragraphs", "min_segment_chars": 1, "max_segments": 3,
+            "part_gap_mode": "fixed", "part_gap_ms": 0})
+        prepare_core_reply_segmentation(event)
+        await tool.call(wrapper, messages=[{"type": "plain", "text": "第一段。"}])
+        final = "第一段。\n\n第二段。"
+        event.set_result(MessageEventResult().message(final)
+                         .set_result_content_type(ResultContentType.LLM_RESULT))
+        activate_core_reply_delivery_guard(event)
+        activate_core_reply_segmentation(event)
+        await event.send(MessageChain(chain=[Plain(final)]))
+
+        self.assertEqual([part.text for chain in event.sent for part in chain if isinstance(part, Plain)],
+                         ["第一段。", "第二段。"])
 
     async def test_partially_sent_voice_tool_records_text_and_never_replays_the_prefix(self):
         event, wrapper, tool = self.prepare()

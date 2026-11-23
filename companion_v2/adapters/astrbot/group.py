@@ -24,6 +24,7 @@ from .native import (NativeAudioLocator, NativeConversationInput, NativePrivateB
 from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
 from .group_mentions import group_message_parts, group_message_text, current_mention_text
+from .voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_extra_transcript, trusted_stt_transcript
 from companion_v2.conversation.group_timing import SELF_MENTION
 from .files import file_locator, prepare_file_text, MAX_FILES
 
@@ -59,13 +60,31 @@ def _is_sticker_segment(part):
     return "表情" in str(data.get("summary") or "")
 
 
+def _has_self_mention_segment(segments, event, account_id):
+    """True when the authenticated raw envelope directly @-mentions this bot."""
+    if not isinstance(segments, list):
+        return False
+    for part in segments:
+        if not isinstance(part, Mapping) or part.get("type") != "at":
+            continue
+        data = part.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        try:
+            if current_mention_text(data.get("qq"), event, account_id) == SELF_MENTION:
+                return True
+        except (TaskError, ValueError, TypeError):
+            continue
+    return False
+
+
 def group_event_route(event):
     """Cross-check normalized fields against one supported authenticated event."""
     message, meta, session = event.message_obj, event.platform_meta, event.session
     if (getattr(message.type, "value", None) != "GroupMessage"
             or getattr(session.message_type, "value", None) != "GroupMessage"):
         raise TaskError("host_scene_unsupported", "group capture requires a native group event")
-    if not supported_platform_name(meta.name):
+    if meta.name == "telegram" or not supported_platform_name(meta.name):
         raise TaskError("host_route_mismatch", "the native group platform is unsupported")
     sender, login, group = event_peer_id(event), event_account_id(event), event_group_id(event)
     event_id = native_id(message.message_id)
@@ -122,7 +141,7 @@ class NativeGroupBridge(NativePrivateBridge):
                 and self._connection(client, account.self_id) is connection)
 
     @staticmethod
-    def _text_only_parts(event, route, *, require_text=False):
+    def _text_only_parts(event, route, *, require_text=False, include_parsed_forwards=True):
         """Read the authenticated text skeleton without requiring attachments.
 
         AstrBot may hand the plugin a message whose quote/image/forward lookup
@@ -144,15 +163,24 @@ class NativeGroupBridge(NativePrivateBridge):
             getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
             for part in getattr(event.message_obj, "message", ())
         }
+        stt_text = trusted_stt_transcript(event)
         # AstrBot can replace a voice/video with a Plain component after a
         # failed host lookup.  The raw envelope must still match a native
         # component before its placeholder is accepted; otherwise an
         # untrusted text rewrite could masquerade as the original media.
+        # Upstream astrbot_plugin_hear_voice（兼容 `_gemini_stt_*` /
+        # `astrbot_stt_transcripts`）exports trusted transcript extras; allow
+        # transcribed group records in text-only capture when that trusted
+        # extra is explicitly present.
         native_for_raw = {"image": "Image", "reply": "Reply", "forward": "Forward",
                           "record": "Record", "video": "Video", "file": "File"}
         if any(kind not in {"text", "at", "face", "mface", *native_for_raw} for kind in raw_kinds):
             raise TaskError("host_group_media_unsupported", "group component type is unavailable")
-        if any(native_for_raw[kind] not in native_kinds for kind in raw_kinds if kind in native_for_raw):
+        if any(
+            native_for_raw[kind] not in native_kinds
+            and not (kind == "record" and not require_text and bool(stt_text))
+            for kind in raw_kinds if kind in native_for_raw
+        ):
             raise TaskError("host_group_media_unsupported", "group media differs from its original component")
         # A real OneBot envelope can carry an image/voice/video without any
         # plain text.  Keep that bounded placeholder so the group still has a
@@ -162,9 +190,26 @@ class NativeGroupBridge(NativePrivateBridge):
         media_only_allowed = (
             bool(raw_kinds) and raw_kinds.issubset(
                 {"image", "record", "video", "file", "reply", "forward"})) or (
-            segments is None and any(kind in {"Image", "Record", "Video", "File", "Reply", "Forward"}
+            segments is None and any(kind in {"Image", "Record", "Video", "File", "Reply", "Forward", "Node", "Nodes"}
                                      for kind in native_kinds))
-        text, has_text = [], False
+        forward_summary = ""
+        extra_getter = getattr(event, "get_extra", None)
+        if callable(extra_getter):
+            try:
+                parsed_forwards = extra_getter("_astrbot_parsed_forwards")
+            except Exception:
+                parsed_forwards = None
+            if (isinstance(parsed_forwards, Mapping) and parsed_forwards.get("version") == 1
+                    and isinstance(parsed_forwards.get("cards"), list) and parsed_forwards["cards"]):
+                if include_parsed_forwards:
+                    raw_summary = str(parsed_forwards.get("combined_text") or "").strip()
+                    if len(raw_summary) > 2400:
+                        raw_summary = raw_summary[:2394].rstrip() + "…（已截断）"
+                    forward_summary = raw_summary
+                else:
+                    forward_summary = "[合并转发消息]"
+        forward_summary_used = False
+        text, has_text, stt_used = [], False, False
         for part in parts:
             if isinstance(part, Mapping):
                 kind, data = part.get("type"), part.get("data")
@@ -172,6 +217,11 @@ class NativeGroupBridge(NativePrivateBridge):
                     raise TaskError("host_group_media_unsupported", "group component data is unavailable")
                 if kind == "text" and isinstance(data.get("text"), str):
                     value = data["text"]
+                    if stt_text and value.strip() == "[语音消息]" and not stt_used:
+                        value = VOICE_TRANSCRIPT_PREFIX + stt_text
+                        stt_used = True
+                    elif stt_text and stt_text in value:
+                        stt_used = True
                     text.append(value)
                     has_text |= bool(value.strip())
                 elif kind == "at":
@@ -193,9 +243,21 @@ class NativeGroupBridge(NativePrivateBridge):
                 elif kind == "reply":
                     text.append("\n[引用消息不可用]\n")
                 elif kind == "forward":
-                    text.append("\n[合并转发不可用]\n")
+                    if forward_summary:
+                        if not forward_summary_used:
+                            text.append("\n" + forward_summary + "\n")
+                            forward_summary_used = True
+                        has_text = True
+                    else:
+                        text.append("\n[合并转发不可用]\n")
                 elif kind == "record":
-                    text.append("\n[语音不可用]\n")
+                    if stt_text:
+                        if not stt_used:
+                            text.append(f"[语音消息：{stt_text}]")
+                            stt_used = True
+                        has_text = True
+                    else:
+                        text.append("\n[语音不可用]\n")
                 elif kind == "video":
                     text.append("\n[视频不可用]\n")
                 elif kind == "file":
@@ -211,6 +273,11 @@ class NativeGroupBridge(NativePrivateBridge):
             kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
             if kind == "Plain" and isinstance(getattr(part, "text", None), str):
                 value = part.text
+                if stt_text and value.strip() == "[语音消息]" and not stt_used:
+                    value = VOICE_TRANSCRIPT_PREFIX + stt_text
+                    stt_used = True
+                elif stt_text and stt_text in value:
+                    stt_used = True
                 text.append(value)
                 has_text |= bool(value.strip())
             elif kind == "At":
@@ -223,21 +290,37 @@ class NativeGroupBridge(NativePrivateBridge):
             elif kind in ("Face", "Mface"):
                 text.append("[表情]")
                 has_text = True
-            elif kind in ("Image", "Reply", "Forward", "Record", "Video", "File"):
+            elif kind in ("Image", "Reply", "Forward", "Node", "Nodes", "Record", "Video", "File"):
+                if kind == "Record" and stt_text:
+                    if not stt_used:
+                        text.append(f"[语音消息：{stt_text}]")
+                        stt_used = True
+                    has_text = True
+                    continue
+                if kind in ("Forward", "Node", "Nodes") and forward_summary:
+                    if not forward_summary_used:
+                        text.append("\n" + forward_summary + "\n")
+                        forward_summary_used = True
+                    has_text = True
+                    continue
                 has_text |= kind == "Reply" and not require_text
                 text.append({"Image": "\n[图片不可用]\n", "Reply": "\n[引用消息不可用]\n",
-                             "Forward": "\n[合并转发不可用]\n", "Record": "\n[语音不可用]\n",
+                             "Forward": "\n[合并转发不可用]\n", "Node": "\n[合并转发不可用]\n",
+                             "Nodes": "\n[合并转发不可用]\n", "Record": "\n[语音不可用]\n",
                              "Video": "\n[视频不可用]\n",
                              "File": "\n[文件附件，正文尚未读取]\n"}[kind])
             else:
                 text.append("\n[消息组件不可用]\n")
         value = "".join(text)
+        if not has_text and _has_self_mention_segment(segments, event, route.account_id):
+            value = SELF_MENTION if not value.strip() else f"{SELF_MENTION} {value.strip()}"
+            has_text = True
         if ((not has_text and (require_text or not media_only_allowed))
                 or not value.strip() or len(value) > 65536):
             raise TaskError("host_text_invalid", "group input must be bounded nonempty text")
         return value
 
-    async def capture_text_only(self, event):
+    async def capture_text_only(self, event, *, include_parsed_forwards=True):
         """Capture a group turn when optional native media is unavailable."""
         try:
             if not isinstance(event, self.event_type):
@@ -251,13 +334,15 @@ class NativeGroupBridge(NativePrivateBridge):
             raw = getattr(event.message_obj, "raw_message", None)
             original_parts = raw.get("message") if isinstance(raw, Mapping) else None
             self._validate_quote_components(original_parts, parts)
-            text = self._text_only_parts(event, route)
+            text = self._text_only_parts(event, route, include_parsed_forwards=include_parsed_forwards)
             message_text = group_message_text(event, route.account_id)
+            lease = self.connections.acquire(account)
             at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
                 self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             cid, role, instruction = await self._role(account, route.session_id)
+            self.connections.assert_current(lease)
             scope = ScopeRef(self.installation_id, route.platform_id, ScopeKind.GROUP, route.group_id,
                              account.bot_id, route.account_id, cid, route.session_id)
             if event_client is not self.client(scope) or not self.account_connected(account, event_client):
@@ -338,11 +423,12 @@ class NativeGroupBridge(NativePrivateBridge):
     async def verify_role(self, scope, binding, instruction=None):
         self.client(scope)
         account = self.accounts[(scope.platform, scope.account_id)]
+        lease = self.connections.acquire(account)
         if (not self._session_matches_group(account, scope.session_id, scope.native_scope_id)
                 or binding.scope != scope):
             raise TaskError("host_route_changed", "original group session is inconsistent")
         cid, role, prompt = await self._role(account, scope.session_id)
-        self.client(scope)
+        self.connections.assert_current(lease)
         if cid != scope.conversation_id or role != binding.role or (instruction is not None and prompt != instruction):
             raise TaskError("host_persona_changed", "group conversation/persona differs from the original turn")
         return prompt
@@ -440,6 +526,13 @@ class NativeGroupBridge(NativePrivateBridge):
                     raise TaskError("host_group_media_unsupported", "original group forward identifier is unavailable") from None
                 if original_forwards != tuple((item.position, item.resource) for item in forward_locators):
                     raise TaskError("host_group_media_unsupported", "host-preprocessed forwards need their original native component")
+                stt_prefix_count = sum(
+                    1 for item in getattr(event.message_obj, "message", ())
+                    if getattr(getattr(item, "type", None), "value", getattr(item, "type", None)) == "Plain"
+                    and isinstance(getattr(item, "text", None), str)
+                    and item.text.startswith(VOICE_TRANSCRIPT_PREFIX)
+                )
+                has_stt_extra = bool(trusted_stt_extra_transcript(event))
                 for kind, locators in (("record", audio_locators), ("video", video_locators)):
                     originals = []
                     for position, part in enumerate(original_parts):
@@ -450,8 +543,22 @@ class NativeGroupBridge(NativePrivateBridge):
                         if not (type(value) is str and value.startswith("base64://")):
                             value = data.get("url") or value
                         originals.append((position, value))
-                    if tuple(originals) != tuple((item.position, item.locator) for item in locators):
-                        raise TaskError("host_group_media_unsupported", "group media differs from its original component")
+                    locator_pairs = tuple((item.position, item.locator) for item in locators)
+                    if tuple(originals) != locator_pairs:
+                        # Upstream astrbot_plugin_hear_voice（兼容 `_gemini_stt_*`）may insert
+                        # Leading Plain("[语音转写] ...") into event.message_obj.message without
+                        # touching raw_message, shifting subsequent Record/Video positions by
+                        # the number of inserted prefixes.
+                        if not (
+                            has_stt_extra
+                            and stt_prefix_count > 0
+                            and tuple(val for _, val in originals) == tuple(item.locator for item in locators)
+                            and all(
+                                orig_pos <= item.position <= orig_pos + stt_prefix_count
+                                for (orig_pos, _), item in zip(originals, locators)
+                            )
+                        ):
+                            raise TaskError("host_group_media_unsupported", "group media differs from its original component")
             elif onebot and (audio_locators or video_locators):
                 raise TaskError("host_group_media_unsupported", "group media requires original OneBot components")
             if (len(image_locators) > MAX_INPUT_IMAGES or len(quote_locators) > 1
@@ -459,6 +566,8 @@ class NativeGroupBridge(NativePrivateBridge):
                     or len(video_locators) > MAX_VIDEOS):
                 raise TaskError("host_group_media_limit", "group attachments exceed the input budget")
             text = "".join(text_parts)
+            if not text.strip() and _has_self_mention_segment(original_parts, event, route.account_id):
+                text = SELF_MENTION
             if not text.strip() or len(text) > 65536:
                 raise TaskError("host_text_invalid", "group input must be bounded nonempty text")
             try:
@@ -466,6 +575,7 @@ class NativeGroupBridge(NativePrivateBridge):
                                  if allow_text_fallback else None)
             except TaskError:
                 fallback_text = None
+            lease = self.connections.acquire(account)
             at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
                 self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
@@ -473,6 +583,7 @@ class NativeGroupBridge(NativePrivateBridge):
             # All mutable native fields above are frozen before host I/O. Identity
             # enrollment happens only in the later atomic, authorized admission.
             cid, role, instruction = await self._role(account, route.session_id)
+            self.connections.assert_current(lease)
             scope = ScopeRef(self.installation_id, route.platform_id, ScopeKind.GROUP, route.group_id,
                              account.bot_id, route.account_id, cid, route.session_id)
             if event_client is not self.client(scope) or not self.account_connected(account, event_client):
@@ -519,8 +630,7 @@ class NativeGroupBridge(NativePrivateBridge):
                                 (f.position, f.resource_hash) != (l.position, digest(l.resource))
                                 for f, l in zip(forwards, frozen_forwards)) or not fits_forwards(forwards)):
                         raise TaskError("host_forward_invalid", "group forward loader changed the captured manifest")
-                if not fits_forwards((*forwards, *(f for quote in quotes for f in getattr(quote, "forwards", ())))):
-                    raise TaskError("host_forward_limit", "direct and quoted group forwards share one input budget")
+                self._check_shared_forwards(forwards, quotes, intake, "direct and quoted group forwards share one input budget")
                 all_images = tuple(i.descriptor for i in images) + tuple(
                     i.descriptor for quote in quotes for i in event_images(quote)) + tuple(
                     i.descriptor for forward in forwards for node in forward.nodes for i in node.images)
@@ -567,6 +677,7 @@ class NativeGroupBridge(NativePrivateBridge):
             if frozen_images or frozen_quotes or frozen_forwards or frozen_audios or frozen_videos or frozen_files:
                 if await self._role(account, route.session_id) != (cid, role, instruction):
                     raise TaskError("host_persona_changed", "group role changed while preparing attachments")
+                self.connections.assert_current(lease)
                 if (event_client is not self.client(scope)
                         or not self._connection_current(account, event_client, connection)):
                     raise TaskError("host_client_mismatch", "original group account connection changed")
@@ -579,6 +690,7 @@ class NativeGroupBridge(NativePrivateBridge):
                 try:
                     if await self._role(account, route.session_id) != (cid, role, instruction):
                         raise TaskError("host_persona_changed", "group role changed while preparing attachments")
+                    self.connections.assert_current(lease)
                     if (event_client is not self.client(scope)
                             or not self._connection_current(account, event_client, connection)):
                         raise TaskError("host_client_mismatch", "original group account connection changed")

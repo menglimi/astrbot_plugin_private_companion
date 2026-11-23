@@ -14,8 +14,9 @@ class FixedDate extends Date {
   static now() { return fixedNow.getTime(); }
 }
 
-function harness({balanceSource=null,runtimeWeatherState="available",mihomeEnabled=true,balanceEnabled=true,automaticAllowed=true,balanceConfigured=false,balanceResponse=null,otherInjections=[{label:"参考资料",detail:"本轮加入 1 项"}],recallEnabled=true,recallEntries=[{local_time:"17:42",withdrawn_at:"2026-10-01T09:42:00Z",author:"user-1",text:"周末去公园走走"}],imageTask=true,imageProviderId="image-live",imagePreferred=null,huaweiBound=false,huaweiLatest=null,materialPool={state:"ready",checked_at:"2026-10-01T09:50:00Z",count:2,items:[{title:"AI 早报一",detail:"摘要一",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:50:00Z"},{title:"AI 早报二",detail:"摘要二",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:48:00Z"}]},contactDates=[{calendar:"gregorian",month:10,day:3,label:"相识纪念日"}],contactLookaheadDays=3}={}) {
+function harness({windowKind="private",balanceSource=null,runtimeWeatherState="available",mihomeEnabled=true,balanceEnabled=true,automaticAllowed=true,balanceConfigured=false,balanceResponse=null,otherInjections=[{label:"参考资料",detail:"本轮加入 1 项"}],recallEnabled=true,recallEntries=[{local_time:"17:42",withdrawn_at:"2026-10-01T09:42:00Z",author:"user-1",text:"周末去公园走走"}],imageTask=true,imageProviderId="image-live",imagePreferred=null,huaweiBound=false,huaweiLatest=null,materialPool={state:"ready",checked_at:"2026-10-01T09:50:00Z",count:2,items:[{title:"AI 早报一",detail:"摘要一",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:50:00Z"},{title:"AI 早报二",detail:"摘要二",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:48:00Z"}]},contactDates=[{calendar:"gregorian",month:10,day:3,label:"相识纪念日"}],contactLookaheadDays=3}={}) {
   let listener = null, intervalCallback = null, cleared = false, requested = [], bridgeRequests = [];
+  const runtimeQueries = [];
   const failedRequests = new Set(), tabActivations = [], focused = [];
   const currentBalance = balanceResponse || (balanceConfigured
     ? {configured:true,available:true,provider:"newapi",provider_label:"NewAPI",currency_label:"额度",
@@ -72,16 +73,22 @@ function harness({balanceSource=null,runtimeWeatherState="available",mihomeEnabl
     other_injections:otherInjections,
     camera:{state:"available",status:"success",answer_available:true,purpose:"看看我现在在做什么",
       captured_at:"2026-10-01T09:57:00Z",observation:{summary:"桌面上有打开的笔记本电脑。",confidence:0.9}}};
-  const product = {scopeKey:() => "role-1", role:() => ({model_api:"/astrbot_plugin_private_companion/model",
+  const product = {scopeKey:() => "role-1", role:() => ({role_id:"role-1",model_api:"/astrbot_plugin_private_companion/model",
       perception_native_api:"/astrbot_plugin_private_companion/perception-native", reply_api:"reply"}),
     provider:id => id === "screen" ? {integration_state:"connected",runtime_ready:true,reason:"屏幕扩展运行正常"}
       : {integration_state:"missing",reason:"未安装"},
     statusLabel:value => value, data:{state:{state:{values:{},settings:{}}}},
-    stateValues:() => null, selection:() => ({role_id:"role-1"}), relative:value => value, unwrap:value => value,
-    request:async(_method,route) => {
+    stateValues:() => null, selection:()=>({target_id:windowKind==="none"?null:"target-1",bot_id:"bot-1",role_id:"role-1"}),
+    roleSelection:()=>({target_id:"representative-target",bot_id:"bot-1",role_id:"role-1"}),
+    target:()=>windowKind==="none"?null:({target_id:"target-1",bot_id:windowKind==="other_bot"?"bot-2":"bot-1",scope_kind:windowKind==="group"?"group":"private"}),
+    windowRole:()=>product.role(), relative:value => value, unwrap:value => value,
+    request:async(_method,route,query) => {
       requested.push(route);
       if (failedRequests.has(route)) throw new Error("读取超时");
-      if (route.endsWith("/runtime")) return runtime;
+      if (route.endsWith("/runtime")) {
+        runtimeQueries.push(query);
+        return query?.scope === "role" ? {observed_at:runtime.observed_at,weather:runtime.weather,calendar:runtime.calendar} : runtime;
+      }
       if (route.endsWith("/balance")) return currentBalance;
       if (route.endsWith("/voice")) return {languages:[{k:"zh-CN",n:"中文",bind:"tts-main"}],
         providers:[{id:"tts-main",label:"TTS 主路由",model:"tts-live"}],catalog_state:"ready",voice_enabled:true};
@@ -94,8 +101,8 @@ function harness({balanceSource=null,runtimeWeatherState="available",mihomeEnabl
       if (route.endsWith("/materials")) return materialPool;
       return status;
     },
-    bridgeNow:() => ({apiGet:async route => {
-      bridgeRequests.push(["GET", route]);
+    bridgeNow:() => ({apiGet:async (route, query) => {
+      bridgeRequests.push(route==="semantic"?["GET",route,query]:["GET", route]);
       if (failedRequests.has(route)) throw new Error("读取超时");
       if (route === "semantic") return {settings:{analysis_provider:"vision-analysis"}};
       if (route === "extensions") return {extensions:{reality:{settings:{enabled:true,mihome:{enabled:true}},management:{mihome:{
@@ -129,13 +136,66 @@ function harness({balanceSource=null,runtimeWeatherState="available",mihomeEnabl
   vm.runInNewContext(source, {window, Date:FixedDate, Intl, JSON, Number, String, Array, Object, RegExp,
     AbortController, setInterval(callback) { intervalCallback=callback; intervals.set(++intervalId,callback); return intervalId; },
     clearInterval(id) { intervals.delete(id); cleared=true; }, setTimeout, clearTimeout});
-  return {page:window.CompanionPerceptionOverviewPage, root, runtime, snapshot, intervals,parentNodes,tabActivations,focused,
+  return {page:window.CompanionPerceptionOverviewPage, product, runtimeQueries, root, runtime, snapshot, intervals,parentNodes,tabActivations,focused,
     balanceWorkspace:parentNodes["#perceptionBalanceSourceWorkspace"],
     failRequest(route) {failedRequests.add(route);}, recoverRequests() {failedRequests.clear();},
     emit(next) { snapshot=next; listener?.(next); }, get requested(){return requested;},
     get bridgeRequests(){return bridgeRequests;},
     get intervalCallback(){return intervalCallback;}, get cleared(){return cleared;}};
 }
+
+for(const windowKind of ["none","group","other_bot"])test(`overview does not read private window records for ${windowKind}`,async()=>{
+  const h=harness({windowKind});h.page.mount(h.root);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.requested.some(route=>route.endsWith("/recalls")),false);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.runtimeQueries)),[{scope:"role"}]);
+  assert.match(h.page.preview("env-weather"),/晴 · 22°C/);
+  assert.match(h.page.preview("env-calendar"),/农历八月二十/);
+  assert.match(h.page.preview("device-screen"),/请选择私聊窗口/);
+  assert.ok(h.requested.some(route=>route.endsWith("/materials")),"the role material pool remains available");
+  assert.match(h.root.innerHTML,/未选择私聊窗口/);
+  assert.match(h.parentNodes["#perceptionRecallWorkspace"].innerHTML,/请先选择当前角色的私聊窗口/);
+  assert.doesNotMatch(h.root.innerHTML,/周末去公园走走|用户正在查看代码编辑器|上海市·徐汇区|相识纪念日/);
+  const semantic=h.bridgeRequests.find(([,route])=>route==="semantic");
+  assert.deepEqual(JSON.parse(JSON.stringify(semantic[2])),{target_id:"representative-target",role_id:"role-1",kind:"reaction"});
+  h.page.unmount();
+});
+
+test("role weather failure clears old weather without reporting window records as failed", async () => {
+  const h=harness({windowKind:"none"});h.page.mount(h.root);
+  await new Promise(resolve=>setImmediate(resolve));
+  h.failRequest("/astrbot_plugin_private_companion/perception-native/runtime");
+  await h.page.refresh();
+  assert.doesNotMatch(h.page.preview("env-weather"),/晴 · 22°C|大风蓝色预警/);
+  assert.match(h.root.innerHTML,/读取失败/);
+  assert.match(h.page.preview("device-screen"),/请选择私聊窗口/);
+  assert.doesNotMatch(h.page.preview("device-screen"),/读取失败/);
+  h.recoverRequests();await h.page.refresh();
+  assert.match(h.page.preview("env-weather"),/晴 · 22°C/);
+  h.page.unmount();
+});
+
+test("late weather responses cannot overwrite the newly selected role", async () => {
+  const h=harness({windowKind:"none"});const request=h.product.request;
+  let release;
+  h.product.request=(method,route,query)=>route.endsWith("/runtime")
+    ? new Promise(resolve=>{release=resolve;}) : request(method,route,query);
+  h.page.mount(h.root);
+  await new Promise(resolve=>setImmediate(resolve));
+  h.page.unmount();
+  const role=h.product.role();
+  h.product.role=()=>({...role,role_id:"role-2",perception_native_api:"/astrbot_plugin_private_companion/role-2/perception-native"});
+  h.product.scopeKey=()=>"role-2";
+  h.product.request=request;
+  h.runtime.weather={...h.runtime.weather,condition:"雨",temperature_c:15};
+  h.page.mount(h.root);
+  await new Promise(resolve=>setImmediate(resolve));
+  release({weather:{state:"available",condition:"旧角色天气",temperature_c:99}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(h.page.preview("env-weather"),/雨 · 15°C/);
+  assert.doesNotMatch(h.root.innerHTML,/旧角色天气/);
+  h.page.unmount();
+});
 
 test("overview shows the requested context, live routes, authorized devices and only in-window dates", async () => {
   const page = harness();
@@ -152,7 +212,6 @@ test("overview shows the requested context, live routes, authorized devices and 
     "huawei-health/status",
     "reply/recalls",
   ]);
-  require("fs").writeFileSync("dash-debug.html", page.root.innerHTML);
   assert.match(page.root.innerHTML, /用户配置区域/);
   assert.match(page.root.innerHTML, /晴 · 22°C/);
   assert.match(page.root.innerHTML, /大风蓝色预警/);

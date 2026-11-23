@@ -65,19 +65,66 @@ class QuietHandler(SimpleHTTPRequestHandler):
 @unittest.skipUnless(importlib.util.find_spec("playwright"), "optional Playwright dependency is not installed")
 class PersonaDesignerBrowserTests(unittest.TestCase):
     @classmethod
+    def _cleanup_resources(cls):
+        browser = getattr(cls, "browser", None)
+        cls.browser = None
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        playwright = getattr(cls, "playwright", None)
+        cls.playwright = None
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+        server = getattr(cls, "server", None)
+        cls.server = None
+        if server is not None:
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
+        server_thread = getattr(cls, "server_thread", None)
+        cls.server_thread = None
+        if server_thread is not None:
+            try:
+                server_thread.join(timeout=2)
+            except Exception:
+                pass
+
+    @classmethod
     def setUpClass(cls):
         from playwright.sync_api import sync_playwright
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(PAGE_ROOT)))
-        cls.server_thread = Thread(target=cls.server.serve_forever, daemon=True)
-        cls.server_thread.start()
-        cls.url = f"http://127.0.0.1:{cls.server.server_port}/test-designer"
-        cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        cls.server = None
+        cls.server_thread = None
+        cls.playwright = None
+        cls.browser = None
+        try:
+            cls.playwright = sync_playwright().start()
+            executable = getattr(cls.playwright.chromium, "executable_path", "")
+            if not executable or not Path(executable).is_file():
+                raise unittest.SkipTest("Playwright Chromium browser is not installed")
+            cls.browser = cls.playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+            cls.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(PAGE_ROOT)))
+            cls.server_thread = Thread(target=cls.server.serve_forever, daemon=True)
+            cls.server_thread.start()
+            cls.url = f"http://127.0.0.1:{cls.server.server_port}/test-designer"
+        except Exception as error:
+            cls._cleanup_resources()
+            if isinstance(error, unittest.SkipTest):
+                raise
+            message = str(error)
+            if "Executable doesn't exist" in message or "playwright install" in message:
+                raise unittest.SkipTest("Playwright Chromium browser is not installed") from error
+            raise
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close(); cls.playwright.stop()
-        cls.server.shutdown(); cls.server.server_close(); cls.server_thread.join()
+        cls._cleanup_resources()
 
     def setUp(self):
         self.saved = {}

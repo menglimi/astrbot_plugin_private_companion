@@ -100,7 +100,8 @@ def _mapping_controller(*, profile_root: Path, data_root: Path, settings) -> typ
     that reach out to it are stubbed. Everything from the mapping decision down to
     ``StorageRuntime.open`` — including the startup gate — is the real code.
     """
-    async def probe(candidate_settings, *, include_conversations=False, allow_unavailable_model=False):
+    async def probe(candidate_settings, *, include_conversations=False,
+                    allow_unavailable_model=False, allow_unavailable_accounts=False):
         return {}, None
 
     def resolve(candidate):
@@ -289,7 +290,8 @@ class MultiControllerStartupGateTests(unittest.TestCase):
             context=None, native_types=None, authority=None, last_restore=None,
             restore_state=None, restore_blocked=False,
             profile_root=self.profile_root, data_root=self.data_root, config={},
-            now=lambda: None, _configured_platform_name=lambda platform_id: "")
+            now=lambda: None, _configured_platform_name=lambda platform_id: "",
+            _configured_private_session=lambda *args: None, _parked_binding=lambda: None)
         self.controller._settings = lambda: self.settings
 
     def _create(self):

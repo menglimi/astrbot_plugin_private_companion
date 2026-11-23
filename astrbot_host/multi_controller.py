@@ -1,12 +1,14 @@
 """Shared-installation lifecycle and explicit native multi-target admission."""
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
 import sqlite3
+import time
 import traceback
 from uuid import uuid4
 
@@ -15,6 +17,7 @@ from companion_v2.adapters.astrbot.native import (
     native_client_connected, persona_instruction, platform_client_matches, supported_platform_name,
     event_session_id, event_native_client,
 )
+from companion_v2.adapters.astrbot.connections import NativeAccountConnections
 from companion_v2.adapters.astrbot.group import group_event_route
 from companion_v2.adapters.astrbot.provider import provider_fingerprint
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
@@ -51,6 +54,7 @@ from .shared_host_migration import recover_repeated_single_target
 
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 
 class AstrBotMultiController:
@@ -73,6 +77,9 @@ class AstrBotMultiController:
         self.restore_blocked = False
         self.native_extensions = None
         self._accepting = self._terminated = False
+        self._stopped_by_user = False
+        self._account_connections = None
+        self._connection_accounts = ()
         # Lifecycle work may wait on AstrBot; keep that wait out of the lock
         # shared by Dashboard data APIs.
         self._control_lock = asyncio.Lock()
@@ -191,18 +198,155 @@ class AstrBotMultiController:
         self.settings.require_ready()
         return self.settings
 
+    def _connections_for(self, settings=None):
+        settings = settings or self.settings or self._settings()
+        accounts = tuple(settings.accounts)
+        if settings is not self.settings:
+            return NativeAccountConnections(self.context, accounts, now=self.now)
+        if self._account_connections is None or accounts != self._connection_accounts:
+            self._account_connections = NativeAccountConnections(self.context, accounts, now=self.now)
+            self._connection_accounts = accounts
+        return self._account_connections
+
     def startup_readiness(self):
-        """Return a retryable readiness code until every configured Bot is online."""
-        for account in self._settings().accounts:
-            platform = self.context.get_platform_inst(account.platform_id)
-            if platform is None:
-                return "host_platform_unavailable"
-            meta = platform.meta()
-            if not supported_platform_name(meta.name) or meta.id != account.platform_id:
-                return "host_platform_changed"
-            if not native_client_connected(platform, account.self_id):
-                return "host_account_unavailable"
+        """Validate shared configuration; unavailable accounts wait independently."""
+        self._settings()
+        self._connections_for().refresh()
         return None
+
+    def should_wait_for_initial_platform(self) -> bool:
+        """Whether initial boot should briefly wait for platform adapters before assembling a session."""
+        if self._terminated or self._stopped_by_user or self.session is not None:
+            return False
+        settings = self.settings
+        if settings is None or not getattr(settings, "enabled", False):
+            return False
+        accounts = getattr(settings, "accounts", ())
+        if not accounts:
+            return False
+        lookup = getattr(self.context, "get_platform_inst", None)
+        if not callable(lookup):
+            return False
+        for account in accounts:
+            try:
+                if lookup(account.platform_id) is not None:
+                    return False
+            except Exception:
+                continue
+        return not self._qzone_transport_ready()
+
+    def all_configured_platforms_loaded(self) -> bool:
+        """Whether every configured account's platform adapter is currently instantiated."""
+        settings = self.settings
+        accounts = getattr(settings, "accounts", ()) if settings is not None else ()
+        if not accounts:
+            return True
+        lookup = getattr(self.context, "get_platform_inst", None)
+        if not callable(lookup):
+            return True
+        for account in accounts:
+            try:
+                if lookup(account.platform_id) is None:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _can_hot_refresh_running_session(self, session) -> bool:
+        """Whether a running session can latch newly online accounts without teardown."""
+        if (session is None or not self._accepting
+                or session.application.state != "running"):
+            return False
+        if self._session_missing_ready_qzone(session):
+            return False
+        snapshots = getattr(session, "native_bridge_pairs", ())
+        if len(snapshots) != 2:
+            return False
+        for platforms in snapshots:
+            if not isinstance(platforms, Mapping):
+                return False
+            for platform_id, (platform, client) in platforms.items():
+                try:
+                    current = self.context.get_platform_inst(platform_id)
+                    if current is not platform or current.get_client() is not client:
+                        return False
+                except Exception:
+                    return False
+        return True
+
+    async def recover_accounts(self):
+        session = self.session
+        if (not self._terminated and not self._stopped_by_user and self._accepting
+                and session is not None and session.application.state == "running"):
+            await session.account_recovery.refresh()
+
+    def _sync_session_native_bridges(self, session):
+        connections = getattr(getattr(session, "bridge", None), "connections", None)
+        if callable(getattr(connections, "refresh", None)):
+            connections.refresh()
+        else:
+            self._connections_for().refresh()
+        sync = getattr(session, "sync_native_bridge_pairs", None)
+        if callable(sync):
+            sync()
+
+    def _qzone_transport_ready(self):
+        """Whether a QQ Zone transport can now be built from loaded adapters or cookie."""
+        try:
+            return build_qzone_transport(
+                self.context, data_root=getattr(self, "data_root", None)
+            ) is not None
+        except Exception:
+            return False
+
+    def _session_missing_ready_qzone(self, session):
+        """Whether a session was assembled without QQ Zone even though a transport is ready."""
+        return (getattr(getattr(session, "application", None), "qzone", _UNSET) is None
+                and self._qzone_transport_ready())
+
+    def _has_unlatched_online_platform(self, snapshots):
+        """Whether a configured account is online while no native bridge pair is latched yet."""
+        if any(snapshots):
+            return False
+        settings = self.settings
+        accounts = getattr(settings, "accounts", ()) if settings is not None else ()
+        if not accounts:
+            return False
+        for account in accounts:
+            try:
+                current = self.context.get_platform_inst(account.platform_id)
+                if current is None:
+                    continue
+                client = current.get_client()
+                if client is not None and native_client_connected(current, account.self_id, client):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def native_bridges_current(self):
+        """Whether bound native bridges and optional QQ Zone transport match loaded clients."""
+        session = self.session
+        if session is None or session.application.state != "running":
+            return False
+        snapshots = getattr(session, "native_bridge_pairs", ())
+        if len(snapshots) != 2:
+            return False
+        for platforms in snapshots:
+            if not isinstance(platforms, Mapping):
+                return False
+            for platform_id, (platform, client) in platforms.items():
+                try:
+                    current = self.context.get_platform_inst(platform_id)
+                    if current is not platform or current.get_client() is not client:
+                        return False
+                except Exception:
+                    return False
+        if self._session_missing_ready_qzone(session):
+            return False
+        if self._has_unlatched_online_platform(snapshots):
+            return False
+        return True
 
     @property
     def profile_root(self):
@@ -303,6 +447,16 @@ class AstrBotMultiController:
                     binding.persona_id, candidates[0].persona_id)
         return match
 
+    async def proactive_diagnostic_targets(self):
+        """Every configured private route that currently resolves to a core user.
+
+        The setup page needs the whole list so an administrator with several core
+        windows can pick and save one diagnostic recipient.  The singular resolver
+        below stays the strict "exactly one" view used by the legacy setup flow.
+        """
+        await self._open_async()
+        return await asyncio.to_thread(self._core_proactive_candidates)
+
     async def proactive_diagnostic_target(self):
         """Resolve a unique configured private route owned by a current core user.
 
@@ -313,7 +467,8 @@ class AstrBotMultiController:
         await self._open_async()
         return await asyncio.to_thread(self._resolve_proactive_diagnostic_target)
 
-    def _resolve_proactive_diagnostic_target(self):
+    def _core_proactive_candidates(self):
+        """Configured exact private targets whose subject is a current core user."""
         settings = self._settings()
         if self.runtime is None or self.authority is None:
             raise TaskError("setup_binding_confirmation_required",
@@ -338,6 +493,10 @@ class AstrBotMultiController:
                 continue
             if actor.subject == subject:
                 candidates.append(target)
+        return candidates
+
+    def _resolve_proactive_diagnostic_target(self):
+        candidates = self._core_proactive_candidates()
 
         if len(candidates) != 1:
             code = "setup_core_window_ambiguous" if candidates else "setup_binding_confirmation_required"
@@ -601,7 +760,7 @@ class AstrBotMultiController:
         return Outcome.failed(code, reason)
 
     async def _probe(self, settings=None, *, include_conversations=True, include_window_personas=True,
-                     allow_unavailable_model=False):
+                     allow_unavailable_model=False, allow_unavailable_accounts=True):
         settings = settings or self._settings()
         personas = []
         for mapping in settings.personas:
@@ -614,27 +773,30 @@ class AstrBotMultiController:
         bridge = NativePrivateBridge(self.context, version=self.native_types.version, event_type=self.native_types.event,
             installation_id=settings.installation_id, host_id=HOST_ID, identities=None,
             accounts=settings.accounts, personas=tuple(personas), now=self.now,
+            connection_manager=self._connections_for(settings),
             session_persona_override_lookup=self.native_types.session_persona_override_lookup,
             persona_snapshot_lookup=self.native_types.persona_snapshot_lookup,
             persona_selection_lookup=self.native_types.persona_selection_lookup,
             private_session_lookup=self.session_topology.private_session_id)
         conversations = {}
+        available = set()
         for account in settings.accounts:
-            platform = self.context.get_platform_inst(account.platform_id)
-            if platform is None:
-                raise TaskError("host_platform_unavailable",
-                    f"配置的平台实例 {account.platform_id} 不在当前 AstrBot 中；请先在宿主平台设置里恢复它。")
-            client = bridge.platforms.get(account.platform_id, (None, None))[1]
-            current_client = platform.get_client()
-            if current_client is not client or not bridge.account_connected(account, client):
-                logger.warning("[CompanionV2] 账号校验未通过 platform=%r account=%r "
-                               "client_present=%s client_current=%s",
+            try:
+                bridge.connections.acquire(account)
+            except TaskError as error:
+                if allow_unavailable_accounts:
+                    continue
+                platform = self.context.get_platform_inst(account.platform_id)
+                logger.warning("[CompanionV2] 账号校验未通过 platform=%r account=%r client_present=%s code=%s",
                                account.platform_id, account.self_id,
-                               client is not None, current_client is client)
+                               platform is not None and platform.get_client() is not None, error.code)
                 raise TaskError("host_account_unavailable",
                     f"配置的 Bot 账号 {account.platform_id}:{account.self_id} 当前未连接 AstrBot；"
-                    "请确认这个账号已登录，再重试初始化。")
+                    "请确认这个账号已登录，再重试初始化。") from error
+            available.add((account.platform_id, account.self_id))
         for target in (settings.all_targets if include_conversations else ()):
+            if (target.platform_id, target.account_id) not in available:
+                continue
             account = bridge.accounts[(target.platform_id, target.account_id)]
             peer = target.participant_id if hasattr(target, "participant_id") else target.group_id
             if peer == "*":
@@ -673,6 +835,8 @@ class AstrBotMultiController:
                 and any(target.participant_id == "*" for target in settings.targets)):
             inventory = [row for row in persona_inventory if row.get("scope_kind") == "private"]
             for window in inventory:
+                if (window.get("platform_id"), window.get("account_id")) not in available:
+                    continue
                 if window.get("native") is not True or window.get("scope_kind") != "private":
                     continue
                 target = settings.private_target(window.get("platform_id"), window.get("account_id"),
@@ -787,7 +951,16 @@ class AstrBotMultiController:
 
     def _configured_platform_name(self, platform_id):
         platform = self.context.get_platform_inst(platform_id)
-        return str(platform.meta().name) if platform is not None else ""
+        if platform is not None:
+            return str(platform.meta().name)
+        # AstrBot loads plugins before platforms. Until a Telegram channel is loaded its name
+        # comes from AstrBot's own configuration, so its people are never taken for QQ numbers.
+        try:
+            return "telegram" if any(
+                row.get("id") == platform_id and row.get("type") == "telegram" and row.get("enable") is True
+                for row in self.context.get_config().get("platform", ())) else ""
+        except (AttributeError, TypeError):
+            return ""
 
     async def _open_async(self):
         if self.runtime is None:
@@ -816,8 +989,11 @@ class AstrBotMultiController:
                 task_context=context, topic="general",
                 deepseek_provider_resolver=search_provider_resolver,
                 source_priority=search_settings.source_priority())
+        connections = self._connections_for()
+        connections.refresh()
         self.session = MultiHostSession(self.runtime, self.context, settings=self.settings, personas=personas,
             authority=self.authority, native_types=self.native_types, provider_fingerprint=manifest["provider_fingerprint"],
+            connection_manager=connections,
             runtime_instance_id="astrbot-multi-" + uuid4().hex, native_tool_port=self.native_extensions, now=self.now,
             persona_window_snapshot_lookup=self.session_topology.persona_selection_snapshot,
             persona_window_snapshot_update=self.session_topology.update_persona_selection_snapshot,
@@ -869,8 +1045,10 @@ class AstrBotMultiController:
         from .laya_client import LayaDecisionClient
 
         def laya_for_context(context):
+            scope = getattr(getattr(context, "audience", None), "scope", None) or getattr(context, "scope", None)
             return LayaDecisionService(LayaSettingsStore(self.data_root),
-                runtime=self.session.application.runtime, origin_key=context.key, client_factory=LayaDecisionClient)
+                runtime=self.session.application.runtime, origin_key=context.key,
+                scope=scope, client_factory=LayaDecisionClient)
 
         self.session.application.attach_laya_decision(laya_for_context)
 
@@ -890,7 +1068,7 @@ class AstrBotMultiController:
             except Exception as error:
                 return self._failure(error, operation="probe")
 
-    async def initialize_profile(self):
+    async def initialize_profile(self, *, automatic=False):
         async with self._lifecycle_lock:
             try:
                 self.refresh_settings()
@@ -900,7 +1078,7 @@ class AstrBotMultiController:
                     raise TaskError("setup_binding_missing",
                         "还没有可加载的 Bot 账号与人格：请先在「账号与会话」绑定窗口并保存角色映射，"
                         "再回来初始化。")
-                manifest, conversations = await self._probe()
+                manifest, conversations = await self._probe(include_conversations=not automatic)
                 previous_session = self.session
                 restore_running = bool(previous_session is not None
                     and previous_session.application.state == "running")
@@ -954,6 +1132,8 @@ class AstrBotMultiController:
             parked = self._parked_binding()
             core_target = self._core_target(parked) if parked is not None else None
             core_target_id = core_target.target_id if core_target is not None else None
+            if core_target is not None and core_target.participant_id != "*":
+                self.authority.ensure_core_admin_tier(core_target)
             for conversation in conversations.values():
                 target = conversation["target"]
                 for role_id in conversation["role_ids"]:
@@ -1001,7 +1181,7 @@ class AstrBotMultiController:
                 if not callable(save):
                     raise TaskError("account_config_persistence_unavailable", "the host has no plugin configuration writer")
             manifest, _ = await self._probe(settings, include_conversations=False,
-                                            allow_unavailable_model=True)
+                                            allow_unavailable_model=True, allow_unavailable_accounts=False)
             model_issue = manifest.pop("_model_issue", None)
             async with self._control_lock:
                 if self._terminated:
@@ -1079,6 +1259,8 @@ class AstrBotMultiController:
                     await self.native_extensions.aclose()
                     self.native_extensions = None
                 self.session = self.last_session = None
+                self._account_connections = None
+                self._connection_accounts = ()
                 self.refresh_settings()
                 self._accepting = False
                 self.last_failure = None
@@ -1197,18 +1379,63 @@ class AstrBotMultiController:
         logger.info("[CompanionV2] 已按开始使用中确认的核心管理员窗口更新账号与角色绑定")
         return receipt
 
-    async def start(self):
+    async def start(self, *, automatic=False):
         async with self._lifecycle_lock:
             try:
+                if automatic and self._stopped_by_user:
+                    return Outcome.failed("host_manually_stopped", "the operator stopped this host")
+                self._stopped_by_user = False
                 if self.session is not None and self.session.application.state == "running":
-                    return Outcome.success({"state": "running", "replayed": True})
+                    if self._can_hot_refresh_running_session(self.session):
+                        self._sync_session_native_bridges(self.session)
+                    if self._accepting and self.native_bridges_current():
+                        # Refresh and latch any previously waiting account that has now
+                        # come online so subsequent client replacements are detected.
+                        self._sync_session_native_bridges(self.session)
+                        return Outcome.success({"state": "running", "replayed": True})
+                    previous_session = self.session
+                    self._accepting = False
+                    self.refresh_settings()
+                    self._settings()
+                    manifest, _ = await self._probe(include_conversations=False, include_window_personas=False)
+                    for platform_id, (platform, client) in previous_session.native_bridge_pairs[0].items():
+                        current = self.context.get_platform_inst(platform_id)
+                        if current is platform and current.get_client() is client:
+                            continue
+                        for account in self.settings.accounts:
+                            if account.platform_id != platform_id:
+                                continue
+                            try:
+                                self._connections_for().acquire(account)
+                            except TaskError as error:
+                                raise TaskError("host_account_unavailable",
+                                                "the original account has not reconnected yet") from error
+                    async with self._control_lock:
+                        if self.session is not previous_session or self._terminated:
+                            raise TaskError("host_session_changed", "the shared host changed during native reconnect")
+                        await self._open_async()
+                        try:
+                            await asyncio.to_thread(self.authority.require_manifest, manifest)
+                        except TaskError as error:
+                            if error.code == "host_binding_changed" and self._confirmed_core_window():
+                                await asyncio.to_thread(self._adopt_confirmed_mapping, manifest)
+                            else:
+                                raise
+                    report = await previous_session.close(grace_seconds=0.5)
+                    if report.state != "stopped":
+                        raise TaskError("host_must_stop", "the shared host did not finish stopping after native reconnect")
+                    async with self._control_lock:
+                        if self.session is not previous_session:
+                            raise TaskError("host_session_changed", "the shared host changed during native reconnect")
+                        self.last_session, self.session = previous_session, None
+                    logger.info("[CompanionV2] 平台连接已更新，重建私聊与群聊 Bridge")
                 self._idle()
                 # Model settings can be changed from another workspace while
                 # this host is stopped. Re-read them here so retrying Start
                 # uses the newly selected provider without re-saving mappings.
                 self.refresh_settings()
                 self._settings()
-                manifest, conversations = await self._probe()
+                manifest, conversations = await self._probe(include_conversations=False)
                 async with self._control_lock:
                     if self._terminated:
                         raise TaskError("host_terminated", "the shared host is stopping or terminated")
@@ -1225,8 +1452,11 @@ class AstrBotMultiController:
                             await asyncio.to_thread(self._adopt_confirmed_mapping, manifest)
                         else:
                             raise
-                    if self.session is None or self.session.application.state != "new":
+                    if (self.session is None or self.session.application.state != "new"
+                            or self._session_missing_ready_qzone(self.session)):
                         await self._assemble(manifest)
+                    else:
+                        self._sync_session_native_bridges(self.session)
                     session = self.session
                 return await self._start_initialized_session(session)
             except Exception as error:
@@ -1242,6 +1472,11 @@ class AstrBotMultiController:
             self._settings()
             if self.session is not session:
                 raise TaskError("host_session_changed", "the initialized host changed before it could resume")
+            readiness = self.startup_readiness()
+            if readiness is not None:
+                raise TaskError(readiness, "a configured native account disconnected during startup")
+            if not self.native_bridges_current():
+                raise TaskError("host_account_changed", "native platform/client changed during startup")
             self._accepting, self.last_failure = True, None
             targets = len(self.settings.all_targets)
         return Outcome.success({"state": "running", "targets": targets, "startup": result.unwrap()})
@@ -1648,6 +1883,7 @@ class AstrBotMultiController:
                 return self._failure(error)
 
     async def stop(self, *, grace_seconds=0.5):
+        self._stopped_by_user = True
         self._accepting = False
         async with self._lifecycle_lock:
             self._accepting = False
@@ -1678,6 +1914,8 @@ class AstrBotMultiController:
                 "failure_code": session.application.failure_code if session else None,
                 "failure_detail": session.application.failure_detail if session else None,
                 "targets": self.web_api.target_inventory(), "last_failure": self.last_failure,
+                "account_connections": (session.account_recovery.statuses() if session is not None else
+                    self._connections_for().refresh() if self.settings is not None and self.settings.accounts else []),
                 # Why the store was or was not opened. ``restore_state.blocking`` is
                 # the startup gate; the detail names the journal and never contains
                 # credentials or snapshot bytes.
@@ -1691,6 +1929,15 @@ class AstrBotMultiController:
     def unregister_routes(self):
         self.web_api.unregister()
 
+    TERMINATION_DRAIN_TIMEOUT_SECONDS = 30.0
+
+    async def _close_native_extensions(self):
+        async with self._control_lock:
+            extensions = self.native_extensions
+            self.native_extensions = None
+        if extensions is not None:
+            await extensions.aclose()
+
     async def terminate(self):
         self._terminated, self._accepting = True, False
         if self._termination_task is not None:
@@ -1703,6 +1950,10 @@ class AstrBotMultiController:
                 state = report.get("state") if isinstance(report, dict) else report.state
             else:
                 state = None
+            try:
+                await self._close_native_extensions()
+            except Exception as error:
+                logger.warning("[CompanionV2] 停机关闭原生扩展失败 error_type=%s", type(error).__name__)
             if state != "stopped" and self.session is not None:
                 logger.warning("[CompanionV2] 工作任务仍在退出，保留存储直到停止证明写入完成")
                 self._termination_task = asyncio.create_task(self._finish_termination(),
@@ -1710,27 +1961,61 @@ class AstrBotMultiController:
             else:
                 await self._release_runtime()
         finally:
+            try:
+                await self._close_native_extensions()
+            except Exception as error:
+                logger.warning("[CompanionV2] 停机兜底关闭原生扩展失败 error_type=%s", type(error).__name__)
+            setup_api = getattr(self, "_setup_api", None) or getattr(self.web_api, "setup", None)
+            if setup_api is not None and callable(getattr(setup_api, "aclose", None)):
+                try:
+                    await setup_api.aclose()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 停机取消设置测试任务失败 error_type=%s", type(error).__name__)
+            from .exchange_rate import close_exchange_rate_services
+            from .pricing_sources import close_pricing_catalog_services
+            try:
+                await close_exchange_rate_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 汇率服务停机清理失败 error_type=%s", type(error).__name__)
+            try:
+                await close_pricing_catalog_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 计价服务停机清理失败 error_type=%s", type(error).__name__)
             self.unregister_routes()
 
     async def _release_runtime(self):
         async with self._control_lock:
-            if self.runtime is not None:
-                self.runtime.close()
-                self.runtime = self.authority = None
-            if self.native_extensions is not None:
-                await self.native_extensions.aclose()
-                self.native_extensions = None
+            runtime = self.runtime
+            self.runtime = self.authority = None
+            extensions = self.native_extensions
+            self.native_extensions = None
+        try:
+            if runtime is not None:
+                runtime.close()
+        finally:
+            if extensions is not None:
+                await extensions.aclose()
 
     async def _finish_termination(self):
+        deadline = time.monotonic() + self.TERMINATION_DRAIN_TIMEOUT_SECONDS
         try:
-            while True:
+            while self.session is not None:
                 report = await self.session.close(grace_seconds=0)
                 if report.state == "stopped":
                     self.last_session, self.session = self.session, None
-                    await self._release_runtime()
                     logger.info("[CompanionV2] 延迟停机完成，工作任务停止证明已保存")
-                    return
+                    break
+                if time.monotonic() >= deadline:
+                    logger.warning("[CompanionV2] 延迟停机排空超时（%.1fs），强制释放存储与扩展资源",
+                                   self.TERMINATION_DRAIN_TIMEOUT_SECONDS)
+                    self.last_session, self.session = self.session, None
+                    break
                 await asyncio.sleep(0.25)
         except Exception as error:
             self._failure(error, operation="terminate_drain")
+        finally:
+            try:
+                await self._release_runtime()
+            except Exception as error:
+                self._failure(error, operation="terminate_release")
             self._termination_task = None

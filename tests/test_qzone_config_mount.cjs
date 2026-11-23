@@ -73,6 +73,19 @@ function createDom({omitStatic = []} = {}) {
       addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
       setAttribute() {}, removeAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
       appendChild() {}, removeChild() {}, insertBefore() {}, replaceChildren() {},
+      insertAdjacentHTML(position, value) {
+        assert.ok(["afterbegin", "beforeend"].includes(position));
+        const html = String(value);
+        element._html = position === "afterbegin" ? html + element._html : element._html + html;
+        for (const match of html.matchAll(/\bid="([^"]+)"/g)) {
+          const childId = match[1];
+          const fresh = makeElement(childId);
+          fresh._html = innerHtmlOf(html, childId) ?? "";
+          fresh._descendants = new Set([...fresh._html.matchAll(/\bid="([^"]+)"/g)].map(item => item[1]));
+          nodes.set(childId, fresh);
+          element._descendants.add(childId);
+        }
+      },
       querySelector: () => null, querySelectorAll: () => [], closest: () => null, contains: () => false,
       focus() {}, blur() {}, click() {}, remove() {}, scrollIntoView() {},
       replaceWith(next) {
@@ -133,6 +146,26 @@ function createDom({omitStatic = []} = {}) {
   };
   return {document};
 }
+
+test("插入范围提示保留已有编辑器节点，整体重画仍使旧节点失效", () => {
+  const {document} = createDom();
+  const host = document.getElementById("shellPanel");
+  host.innerHTML = '<div id="editor"><input id="draft"></div>';
+  const editor = document.getElementById("editor");
+  const draft = document.getElementById("draft");
+  draft.value = "未保存内容";
+  host.insertAdjacentHTML("afterbegin", '<section id="scope">会话</section>');
+  host.insertAdjacentHTML("beforeend", '<div id="footer">说明</div>');
+  assert.equal(document.getElementById("editor"), editor);
+  assert.equal(document.getElementById("draft"), draft);
+  assert.equal(draft.value, "未保存内容");
+  assert.equal(document.getElementById("scope").innerHTML, "会话");
+  assert.equal(document.getElementById("footer").innerHTML, "说明");
+  host.innerHTML = "";
+  assert.equal(editor.isConnected, false);
+  assert.equal(document.getElementById("scope"), null);
+  assert.equal(document.getElementById("footer"), null);
+});
 
 const ROLE = {
   role_id: "role-first", role_name: "小伴",
@@ -280,6 +313,17 @@ async function enterActionPage(page, {warm = false} = {}) {
     await page.settle();
   }
 }
+
+test("每日次数关闭时概览显示无限，旧设置仍显示原上限", () => {
+  const page = loadPage();
+  assert.match(page.run("qzoneLimitsMarkup({publish_max_daily:1})"), /每日最多说说 1 条/);
+  assert.match(page.run("qzoneLimitsMarkup({daily_limits_enabled:true,publish_max_daily:2})"), /每日最多说说 2 条/);
+  const unlimited = page.run("qzoneLimitsMarkup({daily_limits_enabled:false,publish_max_daily:1,action_min_interval_minutes:30})");
+  assert.match(unlimited, /每日说说次数 无限/);
+  assert.match(unlimited, /同类动作最短间隔 30 分钟/);
+  assert.doesNotMatch(unlimited, /每日最多说说/);
+  assert.match(page.run("qzoneLimitsMarkup({daily_limits_enabled:false})"), /每日说说次数 无限/);
+});
 
 test("已安装但尚未授权时显示授权入口，并阻止读取和发布动作", async () => {
   const page = loadPage();

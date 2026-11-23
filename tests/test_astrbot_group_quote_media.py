@@ -1,22 +1,27 @@
 """Group-pinned quote reads freeze all media and share the outer input budget."""
 
 from functools import partial
+import json
+from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock
 
 from astrbot_host.audio.loader import load_native_audio
 from astrbot_host.media import load_native_image
 from astrbot_host.video.loader import load_native_video
-from companion_v2.adapters.astrbot.group_quotes import read_group_quote
-from companion_v2.execution.models import TaskContext
-import json
+from companion_v2.adapters.astrbot.group_quotes import mention_text, read_group_quote
+from companion_v2.adapters.astrbot.quotes import NativeQuoteLocator
+from companion_v2.conversation.quotes.models import CapturedQuote
+from companion_v2.execution.models import TaskContext, TaskError
+from companion_v2.foundation.refs import ScopeKind
 from tests.animation_support import animation_bytes
 from tests.audio_support import audio_bytes
 from tests.forward_support import node_raw
 from tests.group_quote_media_support import GroupQuoteMediaFixture, Forward, Reply, FakeRecord, FakeVideo
 from tests.group_media_support import Plain, sdk_image
+from tests.native_adapter_support import FakeReverseApi
 from tests.staging_bootstrap_support import wait_for_batch
-from tests.test_conversation_images import image_bytes
+from tests.test_conversation_images import FakeImage, image_bytes
 from tests.video_support import video_bytes
 
 
@@ -163,3 +168,81 @@ class AstrBotGroupQuoteMediaTests(GroupQuoteMediaFixture, unittest.IsolatedAsync
                 result = await self.controller.receive_claimed(self.media_event([Reply(id="345"), *direct]))
                 self.assertEqual(result.failure.code, code)
         self.assertEqual(self.app.runtime.read_one("SELECT COUNT(*) FROM conversation_inputs", ())[0], 0)
+
+
+class GroupQuoteReadTests(unittest.IsolatedAsyncioTestCase):
+    def _client(self, record):
+        clients = {"100": object()}
+        api = FakeReverseApi(clients)
+        api.result = {"messages": [record]}
+        return api, NS(_api=NS(_wsr_api=api), _wsr_api_clients=clients)
+
+    async def test_read_group_quote_succeeds_and_normalizes_onebot_identifiers_and_mentions(self):
+        raw = {
+            "message_type": "group",
+            "sub_type": "normal",
+            "self_id": 100,
+            "group_id": 300,
+            "message_id": 345,
+            "sender": {"user_id": 201},
+            "user_id": "201",
+            "time": 1700000000,
+            "message": [
+                {"type": "text", "data": {"text": "请看 "}},
+                {"type": "at", "data": {"qq": 100}},
+                {"type": "at", "data": {"qq": "all"}},
+                {"type": "at", "data": {"qq": "202"}},
+                {"type": "image", "data": {"file": FakeImage(image_bytes()).file}},
+            ],
+        }
+        api, client = self._client(raw)
+        scope = NS(kind=ScopeKind.GROUP, account_id="100", native_scope_id="300")
+        quote = await read_group_quote(
+            NativeQuoteLocator(1, "345"),
+            client=client,
+            scope=scope,
+            reverse_api_type=FakeReverseApi,
+            image_loader=load_native_image,
+        )
+        self.assertIsInstance(quote, CapturedQuote)
+        self.assertEqual((quote.position, quote.message_id, quote.sender_id, quote.sent_at),
+                         (1, "345", "201", 1700000000))
+        self.assertIn("[提及机器人]", quote.text)
+        self.assertIn("[提及全体成员]", quote.text)
+        self.assertIn("[提及账号 202]", quote.text)
+        self.assertEqual(len(quote.images), 1)
+        self.assertEqual(api.calls, [("get_group_msg_history", dict(
+            self_id="100", group_id="300", message_seq="345", count=1,
+            reverse_order=False, parse_mult_msg=True))])
+
+    async def test_read_group_quote_rejects_non_numeric_onebot_sender_before_media_download(self):
+        loader = AsyncMock(side_effect=AssertionError("verify OneBot sender before downloading"))
+        scope = NS(kind=ScopeKind.GROUP, account_id="100", native_scope_id="300")
+        for bad_sender in (0, "0", "0201", "not-a-number"):
+            with self.subTest(bad_sender=bad_sender):
+                raw = {
+                    "message_type": "group",
+                    "sub_type": "normal",
+                    "self_id": 100,
+                    "group_id": 300,
+                    "message_id": 345,
+                    "sender": {"user_id": bad_sender},
+                    "message": [{"type": "image", "data": {"file": FakeImage(image_bytes()).file}}],
+                }
+                _, client = self._client(raw)
+                with self.assertRaises(TaskError) as caught:
+                    await read_group_quote(
+                        NativeQuoteLocator(0, "345"),
+                        client=client,
+                        scope=scope,
+                        reverse_api_type=FakeReverseApi,
+                        image_loader=loader,
+                    )
+                self.assertEqual(caught.exception.code, "host_quote_unavailable")
+        loader.assert_not_awaited()
+
+    def test_mention_text_keeps_non_numeric_native_ids_and_invalid_placeholder(self):
+        self.assertEqual(mention_text("OPENID_ABC", "100"), "[提及账号 OPENID_ABC]")
+        self.assertEqual(mention_text("OPENID_BOT", "100", bot_ids=("OPENID_BOT",)), "[提及机器人]")
+        self.assertEqual(mention_text("all", "100"), "[提及全体成员]")
+        self.assertEqual(mention_text("", "100"), "[提及不可用]")

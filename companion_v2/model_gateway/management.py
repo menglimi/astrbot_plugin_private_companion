@@ -1,8 +1,7 @@
 """Dashboard model task settings for one authorized private role context."""
 
 from dataclasses import asdict, replace
-from datetime import date
-from collections import deque
+from datetime import date, timedelta, timezone
 import json
 
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget, EffectiveValue
@@ -12,13 +11,41 @@ from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.role_work.life.management import RoleLifeManagement
 from .budget import effective_soft
-from .cache_diagnostics import checked_signature, event_severity, signature_changes, signature_snapshot
-from .core_observations import availability_summary, observations_for_role, request_rows
-from .models import MAX_MODEL_OUTPUT_TOKENS
+from .core_observations import (_parse_utc_timestamp, availability_summary,
+                                observations_with_scope_for_role, request_rows)
+from .models import MAX_MODEL_OUTPUT_TOKENS, provider_supports_task
+from .pricing import (
+    PricingSettingsStore,
+    effective_usd_cny_rate,
+    evaluate_call_cost_microusd,
+    lookup_pricing_schedule,
+    pricing_summary,
+    provider_needs_per_call_repricing,
+    resolve_effective_pricing,
+    resolve_pricing_rule,
+)
+from .pricing_catalog import PriceCatalogStore
 from .reply_efficiency import reply_efficiency_report
 from .refusal import canonical_refusal_terms
 from .replacement_rules import checked_rules, output_capabilities, validate_targets
 from .usage import MAIN_CHAIN_KIND, ModelUsageReport, usage_source
+from .maintenance_cache import (
+    CORE_USAGE_KEYS,
+    CacheDiagnosticAccumulator,
+    build_legacy_entry,
+    build_snapshot_entry,
+    clone_legacy_reports,
+    has_active_read_snapshot,
+    has_active_write_transaction,
+    merge_cache_diagnostics,
+    merge_usage_report,
+    pricing_fingerprint,
+    read_legacy_watermark,
+    read_shared_db_token,
+    runtime_maintenance_cache,
+    save_disk_core_history,
+)
+from .core_observations import available as _core_observations_available, role_key as _core_role_key
 
 
 FIELDS = ("provider", "fallback", "prompt", "max_output_tokens", "replacement_rules", "fallback_on_refusal",
@@ -38,6 +65,143 @@ PROMPT_LAYERS = (
     {"key": "terminal_prompt_guard", "label": "请求末尾约束", "editable": False,
      "description": "每轮请求最后追加的简短安全边界；不插入材料前缀，保留服务商可复用的稳定提示前缀。"},
 )
+
+
+def _resolve_provider_pricing_meta(router_providers, provider_metadata):
+    meta_map = provider_metadata if isinstance(provider_metadata, dict) else {}
+    provider_models = {item.binding.provider: item.model for item in router_providers}
+    provider_clusters = {}
+    provider_own_sources = {}
+    for pid_key, info in meta_map.items():
+        if type(pid_key) is not str or not isinstance(info, dict):
+            continue
+        if not provider_models.get(pid_key) and type(info.get("model")) is str and info["model"]:
+            provider_models[pid_key] = info["model"]
+        if type(info.get("cluster_id")) is str and info["cluster_id"]:
+            provider_clusters[pid_key] = info["cluster_id"]
+        if isinstance(info.get("own_source_ids"), (set, frozenset, list, tuple)):
+            provider_own_sources[pid_key] = frozenset(str(x) for x in info["own_source_ids"] if x)
+    return provider_models, provider_clusters, provider_own_sources
+
+
+def _make_pricing_resolver(
+    pricing_settings,
+    pricing_catalog,
+    provider_models,
+    provider_clusters,
+    provider_own_sources,
+):
+    usd_cny_rate = effective_usd_cny_rate(pricing_settings)
+    raw_base_pair_cache = {}
+    has_schedule_pair_cache = {}
+    static_eff_pair_cache = {}
+
+    def model_for(provider_id, call_model=""):
+        if type(call_model) is str and call_model.strip():
+            return call_model.strip()
+        return provider_models.get(provider_id, "")
+
+    def _raw_base_for_pair(pid, cmodel):
+        pair = (pid, cmodel)
+        if pair not in raw_base_pair_cache:
+            raw_base_pair_cache[pair] = resolve_pricing_rule(
+                pid,
+                cmodel,
+                pricing_settings,
+                catalog=pricing_catalog,
+                own_source_ids=provider_own_sources.get(pid, frozenset()),
+            )
+        return raw_base_pair_cache[pair]
+
+    def resolve_for_call(provider_id, cmodel, call_ts=None):
+        pid = provider_id if type(provider_id) is str else ""
+        pair = (pid, cmodel)
+        has_sched = has_schedule_pair_cache.get(pair)
+        if has_sched is None:
+            has_sched = lookup_pricing_schedule(pid, cmodel, pricing_settings) is not None
+            has_schedule_pair_cache[pair] = has_sched
+        if not has_sched or call_ts is None:
+            if pair not in static_eff_pair_cache:
+                static_eff_pair_cache[pair] = resolve_effective_pricing(
+                    pid,
+                    cmodel,
+                    pricing_settings,
+                    catalog=pricing_catalog,
+                    cluster_id=provider_clusters.get(pid),
+                    own_source_ids=provider_own_sources.get(pid, frozenset()),
+                    precomputed_base=_raw_base_for_pair(pid, cmodel),
+                )
+            return static_eff_pair_cache[pair]
+        return resolve_effective_pricing(
+            pid,
+            cmodel,
+            pricing_settings,
+            catalog=pricing_catalog,
+            cluster_id=provider_clusters.get(pid),
+            timestamp=call_ts,
+            own_source_ids=provider_own_sources.get(pid, frozenset()),
+            precomputed_base=_raw_base_for_pair(pid, cmodel),
+        )
+
+    def enrich_core_rows(rows):
+        seen_core_turns = set()
+        for row in rows:
+            pid = row["provider"] if type(row["provider"]) is str else ""
+            cmodel = model_for(pid)
+            call_ts = row.get("finished_at") or row.get("started_at") or row.get("created_at")
+            eff = resolve_for_call(pid, cmodel, call_ts)
+            measurable = (row["actual_tokens"] is not None
+                          or row["input_tokens"] is not None
+                          or row["output_tokens"] is not None)
+            row_calls = max(1, int(row.get("_rollup_calls") or 1))
+            if "_rollup_requests" in row:
+                row_requests = max(0, int(row["_rollup_requests"] or 0))
+            else:
+                turn_id = str(row.get("call_id") or "").rsplit(":", 1)[0]
+                turn_key = (turn_id, pid)
+                is_new_turn = turn_key not in seen_core_turns
+                if measurable:
+                    seen_core_turns.add(turn_key)
+                row_requests = 1 if is_new_turn else 0
+            est = (
+                evaluate_call_cost_microusd(
+                    eff,
+                    usd_cny_rate=usd_cny_rate,
+                    input_tokens=row["input_tokens"],
+                    cached_input_tokens=row["cached_input_tokens"],
+                    cache_creation_tokens=row["cache_creation_tokens"],
+                    output_tokens=row["output_tokens"],
+                    total_tokens=row["actual_tokens"],
+                    model=cmodel,
+                    calls=row_calls,
+                    requests=row_requests,
+                    strict_expr=False,
+                )
+                if (eff is not None and measurable)
+                else None
+            )
+            if est is not None:
+                cost_meta = {
+                    "cost_microusd": est, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
+                    "estimated_cost_calls": row_calls, "estimated_cost_microusd": est, "unpriced_token_calls": 0,
+                }
+                enriched_core_recent = {
+                    **row, "actual_cost": est, "estimated_cost_microusd": est,
+                    "cost_basis": "estimated_local", "cost_availability": "estimated_local",
+                }
+            else:
+                cost_meta = {
+                    "cost_microusd": 0, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
+                    "estimated_cost_calls": 0, "estimated_cost_microusd": 0,
+                    "unpriced_token_calls": row_calls if measurable else 0,
+                }
+                enriched_core_recent = {
+                    **row, "actual_cost": None, "cost_basis": "unconfigured",
+                    "cost_availability": "unavailable",
+                }
+            yield row, cost_meta, enriched_core_recent
+
+    return usd_cny_rate, model_for, resolve_for_call, enrich_core_rows
 
 
 def _target(context, layer):
@@ -68,243 +232,49 @@ def _unavailable_core_costs(value):
             _unavailable_core_costs(child)
 
 
+def _legacy_matched_calls_cte(placeholders):
+    return (
+        f"matched AS (SELECT call_id FROM model_call_accounts WHERE account_key IN ({placeholders}) "
+        "UNION SELECT c.call_id FROM execution_tasks t JOIN model_calls c ON c.task_id = t.task_id "
+        "WHERE t.kind = ? AND t.origin_key = ?)"
+    )
+
+
 def _legacy_cache_rows(runtime, role_accounts, batch_days, origin_key):
     account_keys = tuple(role_accounts[period] for period in batch_days)
     placeholders = ",".join("?" for _ in account_keys)
-    return runtime.read_all(f"""SELECT c.call_id, c.position, c.input_tokens,
+    matched_cte = _legacy_matched_calls_cte(placeholders)
+    return runtime.read_all(f"""WITH {matched_cte}
+        SELECT c.call_id, c.position, c.input_tokens,
             c.cached_input_tokens, c.finished_at, c.started_at, r.created_at, t.kind,
             t.origin_key, c.provider_json, s.signature_json,
             CASE WHEN json_valid(t.record_json)
                 THEN json_extract(t.record_json, '$.spec.context.audience.scope') ELSE NULL END AS audience_scope_json
-        FROM model_calls c JOIN model_call_cache_signatures s ON s.call_id = c.call_id
+        FROM matched m
+        JOIN model_calls c ON c.call_id = m.call_id
+        JOIN model_call_cache_signatures s ON s.call_id = c.call_id
         JOIN model_requests r ON r.task_id = c.task_id JOIN execution_tasks t ON t.task_id = c.task_id
-        WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
-                       WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
-               OR (t.kind = ? AND t.origin_key = ?))
         ORDER BY COALESCE(c.finished_at, c.started_at, r.created_at), c.position""",
         account_keys + (MAIN_CHAIN_KIND, origin_key))
 
 
-def _cache_diagnostic_summary(runtime, role_accounts, all_days, origin_key, *, core_rows=()):
-    def empty_day(day):
-        result = {"day": day, "signature_calls": 0, "compared_calls": 0, "baseline_calls": 0,
-                "changed_calls": 0, "high_severity_events": 0, "medium_severity_events": 0,
-                "low_severity_events": 0, "system_prompt_changes": 0, "system_order_drifts": 0,
-                "tool_definition_changes": 0, "tool_order_drifts": 0, "model_changes": 0,
-                "provider_changes": 0,
-                "context_resets": 0, "context_order_drifts": 0, "context_prefix_changes": 0,
-                "context_tail_trims": 0, "context_availability_changes": 0,
-                "cache_hit_comparable_changes": 0, "cache_hit_drop_after_change_calls": 0,
-                "cache_hit_delta_points_total": 0.0,
-                "context_stats_calls": 0, "context_text_stats_calls": 0,
-                "context_availability_calls": 0,
-                "request_stats_calls": 0, "context_estimate_calls": 0, "system_estimate_calls": 0,
-                "tool_estimate_calls": 0, "message_estimate_calls": 0, "request_estimate_calls": 0,
-                "context_est_tokens_total": 0, "system_est_tokens_total": 0,
-                "tool_est_tokens_total": 0, "message_est_tokens_total": 0, "request_est_tokens_total": 0,
-                "request_profile_calls": 0, "profile_context_est_tokens_total": 0,
-                "profile_message_est_tokens_total": 0, "profile_system_est_tokens_total": 0,
-                "profile_tool_est_tokens_total": 0, "profile_request_est_tokens_total": 0,
-                "context_materials_total": 0, "context_chars_total": 0,
-                "context_bytes_total": 0, "message_chars_total": 0, "message_bytes_total": 0,
-                "deferred_materials_total": 0, "unavailable_materials_total": 0,
-                "messages_total": 0, "system_messages_total": 0,
-                "system_chars_total": 0, "system_bytes_total": 0, "tools_total": 0,
-                "tool_bytes_total": 0, "images_total": 0, "audio_total": 0, "video_total": 0}
-        for dimension in ("route", "prefix", "system", "tools", "materials", "availability"):
-            result.update({f"{dimension}_compared_calls": 0, f"{dimension}_stable_calls": 0,
-                           f"{dimension}_cache_calls": 0,
-                           f"{dimension}_cache_input_tokens_total": 0,
-                           f"{dimension}_cached_input_tokens_total": 0})
-        return result
-
-    daily = {key: {} for key in ("all", "conversation", "plugin", "astrbot_core", "legacy_conversation")}
-    events = {key: deque(maxlen=80) for key in daily}
-    previous_by_scope = {}
-    change_fields = {
-        "provider_change": "provider_changes",
-        "model_change": "model_changes",
-        "system_prompt_change": "system_prompt_changes",
-        "system_order_drift": "system_order_drifts",
-        "tool_definition_change": "tool_definition_changes",
-        "tool_order_drift": "tool_order_drifts",
-        "context_reset": "context_resets",
-        "context_order_drift": "context_order_drifts",
-        "context_prefix_change": "context_prefix_changes",
-        "context_tail_trim": "context_tail_trims",
-        "context_availability_change": "context_availability_changes",
-    }
+def _legacy_cache_diagnostic_accumulator(runtime, role_accounts, all_days, origin_key):
+    accumulator = CacheDiagnosticAccumulator()
     ordered_days = sorted(all_days)
-    for offset in range(0, len(ordered_days) + 30, 30):
+    for offset in range(0, len(ordered_days), 30):
         batch_days = ordered_days[offset:offset + 30]
         if not batch_days:
-            rows = sorted(core_rows, key=lambda row: (row["finished_at"] or row["started_at"] or row["created_at"], row["position"]))
-        else:
-            rows = _legacy_cache_rows(runtime, role_accounts, batch_days, origin_key)
-        for row in rows:
-            signature = checked_signature(row["signature_json"])
-            if signature is None:
-                continue
-            at = row["finished_at"] or row["started_at"] or row["created_at"]
-            day = at[:10] if type(at) is str else ""
-            if day not in all_days:
-                continue
-            source = usage_source(row["kind"])
-            path = "astrbot_core" if row["kind"] != MAIN_CHAIN_KIND and source == "conversation" else "legacy_conversation" if source == "conversation" else "plugin"
-            keys = tuple(dict.fromkeys(("all", source, path)))
-            counts = [daily[key].setdefault(day, empty_day(day)) for key in keys]
-            for item in counts:
-                item["signature_calls"] += 1
-                if signature.context_observed:
-                    item["context_stats_calls"] += 1
-                    item["context_materials_total"] += signature.context_material_count
-                    item["context_bytes_total"] += signature.context_bytes
-                    if signature.request_stats_observed:
-                        item["context_text_stats_calls"] += 1
-                        item["context_chars_total"] += signature.context_chars
-                    if signature.estimates_observed and signature.request_estimate_observed:
-                        item["context_estimate_calls"] += 1
-                        item["context_est_tokens_total"] += signature.context_est_tokens
-                if signature.context_availability_observed:
-                    item["context_availability_calls"] += 1
-                    item["deferred_materials_total"] += signature.deferred_material_count
-                    item["unavailable_materials_total"] += signature.unavailable_material_count
-                if signature.request_stats_observed:
-                    item["request_stats_calls"] += 1
-                    item["messages_total"] += signature.message_count
-                    item["system_messages_total"] += signature.system_message_count
-                    item["system_chars_total"] += signature.system_chars
-                    item["system_bytes_total"] += signature.system_bytes
-                    item["tools_total"] += signature.tool_count
-                    item["tool_bytes_total"] += signature.tool_bytes
-                    item["images_total"] += signature.image_count
-                    item["audio_total"] += signature.audio_count
-                    item["video_total"] += signature.video_count
-                    if signature.estimates_observed and signature.request_estimate_observed:
-                        item["system_estimate_calls"] += 1
-                        item["tool_estimate_calls"] += 1
-                        item["system_est_tokens_total"] += signature.system_est_tokens
-                        item["tool_est_tokens_total"] += signature.tool_est_tokens
-                if signature.message_estimates_observed:
-                    item["message_estimate_calls"] += 1
-                    item["message_est_tokens_total"] += signature.message_est_tokens
-                    item["message_chars_total"] += signature.message_chars
-                    item["message_bytes_total"] += signature.message_bytes
-                if signature.request_estimate_observed:
-                    item["request_estimate_calls"] += 1
-                    item["request_est_tokens_total"] += signature.request_est_tokens
-                if (signature.context_observed and signature.estimates_observed
-                        and signature.message_estimates_observed and signature.request_estimate_observed):
-                    item["request_profile_calls"] += 1
-                    item["profile_context_est_tokens_total"] += signature.context_est_tokens
-                    item["profile_message_est_tokens_total"] += signature.message_est_tokens
-                    item["profile_system_est_tokens_total"] += signature.system_est_tokens
-                    item["profile_tool_est_tokens_total"] += signature.tool_est_tokens
-                    item["profile_request_est_tokens_total"] += signature.request_est_tokens
-            try:
-                provider_record = json.loads(row["provider_json"])
-            except (TypeError, ValueError):
-                provider_record = None
-            provider_id = provider_record.get("provider", "") if isinstance(provider_record, dict) else ""
-            if type(provider_id) is not str:
-                provider_id = ""
-            try:
-                raw_scope = row["audience_scope_json"]
-                scope = json.loads(raw_scope) if type(raw_scope) is str else raw_scope
-            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
-                scope = None
-            scope_fields = ("installation_id", "platform", "kind", "native_scope_id", "bot_id",
-                            "account_id", "conversation_id", "session_id")
-            scope = ({name: scope[name] for name in scope_fields}
-                     if type(scope) is dict and all(type(scope.get(name)) is str and scope[name]
-                                                    for name in scope_fields)
-                     else None)
-            scope_fingerprint = digest(scope) if scope is not None else None
-            try:
-                call_id = row["call_id"]
-            except (KeyError, IndexError, TypeError):
-                call_id = digest([row["origin_key"], row["kind"], at, row["position"]])
-            partition = (digest(row["origin_key"]), row["kind"], scope_fingerprint,
-                         None if scope_fingerprint else call_id)
-            previous_entry = previous_by_scope.get(partition)
-            previous = previous_entry[0] if previous_entry else None
-            input_tokens, cached_tokens = row["input_tokens"], row["cached_input_tokens"]
-            hit_rate = (round(cached_tokens * 100 / input_tokens, 1)
-                        if input_tokens and cached_tokens is not None else None)
-            previous_provider = previous_entry[2] if previous_entry else None
-            same_cache_route = (previous_entry is not None and previous_provider == provider_id
-                                and previous.model_hash == signature.model_hash)
-            previous_hit_rate = previous_entry[1] if same_cache_route else None
-            previous_by_scope[partition] = (signature, hit_rate, provider_id)
-            if previous is None:
-                for item in counts:
-                    item["baseline_calls"] += 1
-                continue
-            for item in counts:
-                item["compared_calls"] += 1
-            stable_dimensions = {
-                "route": (previous_provider == provider_id and previous.model_hash == signature.model_hash
-                    if previous_provider and provider_id else None),
-                "system": previous.system_hash == signature.system_hash,
-                "tools": previous.tools_hash == signature.tools_hash,
-                "materials": (previous.context_sequence_hash == signature.context_sequence_hash
-                    if previous.context_observed and signature.context_observed else None),
-                "availability": (previous.context_availability_hash == signature.context_availability_hash
-                    if previous.context_availability_observed and signature.context_availability_observed else None),
-            }
-            stable_dimensions["prefix"] = (all(value is True for value in stable_dimensions.values())
-                                            if all(value is not None for value in stable_dimensions.values())
-                                            else None)
-            comparable_route = stable_dimensions["route"] is True
-            for dimension, stable in stable_dimensions.items():
-                if stable is None:
-                    continue
-                for item in counts:
-                    item[f"{dimension}_compared_calls"] += 1
-                    if stable:
-                        item[f"{dimension}_stable_calls"] += 1
-                        if (comparable_route and type(input_tokens) is int and input_tokens > 0
-                                and type(cached_tokens) is int):
-                            item[f"{dimension}_cache_calls"] += 1
-                            item[f"{dimension}_cache_input_tokens_total"] += input_tokens
-                            item[f"{dimension}_cached_input_tokens_total"] += cached_tokens
-            changes = list(signature_changes(signature, previous))
-            if previous_provider != provider_id:
-                changes.insert(0, "provider_change")
-            changes = tuple(changes)
-            if not changes:
-                continue
-            severity = event_severity(changes)
-            for item in counts:
-                item["changed_calls"] += 1
-                item[f"{severity}_severity_events"] += 1
-                for change in changes:
-                    item[change_fields[change]] += 1
-                if hit_rate is not None and previous_hit_rate is not None:
-                    delta = round(hit_rate - previous_hit_rate, 1)
-                    item["cache_hit_comparable_changes"] += 1
-                    item["cache_hit_delta_points_total"] += delta
-                    if delta < 0:
-                        item["cache_hit_drop_after_change_calls"] += 1
-            session_ref = digest(["cache-diagnostics-session", scope_fingerprint])[:8] \
-                if scope_fingerprint else None
-            event = {"day": day, "at": at, "kind": row["kind"], "provider": provider_id,
-                     "execution_path": "astrbot_core" if path == "astrbot_core" else "legacy_v2_conversation" if path == "legacy_conversation" else "v2_background",
-                     "measurement_basis": row.get("signature_scope", "ledger_provider_payload") if isinstance(row, dict) else "ledger_provider_payload",
-                     "previous_provider": previous_provider,
-                     "session_ref": session_ref, "severity": severity,
-                     "changes": list(changes), "input_tokens": input_tokens, "cache_hit_rate": hit_rate,
-                     "previous_cache_hit_rate": previous_hit_rate,
-                     "cache_hit_delta": (round(hit_rate - previous_hit_rate, 1)
-                                         if hit_rate is not None and previous_hit_rate is not None else None),
-                     "before": signature_snapshot(previous), "after": signature_snapshot(signature)}
-            for key in keys:
-                events[key].append(event)
+            continue
+        for row in _legacy_cache_rows(runtime, role_accounts, batch_days, origin_key):
+            accumulator.add_row(row, allowed_days=all_days)
+    return accumulator
 
-    return {key: {"daily": [days[day] for day in sorted(days)], "recent_events": list(reversed(events[key])),
-                  "event_sample_limit": 80, "scope": "current_role",
-                  "signature_storage": "hashes_sizes_estimates_no_prompt_text"}
-            for key, days in daily.items()}
+
+def _cache_diagnostic_summary(runtime, role_accounts, all_days, origin_key, *, core_rows=()):
+    accumulator = _legacy_cache_diagnostic_accumulator(runtime, role_accounts, all_days, origin_key)
+    for row in sorted(core_rows, key=lambda item: (item["finished_at"] or item["started_at"] or item["created_at"], item["position"])):
+        accumulator.add_row(row, allowed_days=all_days)
+    return accumulator.project()
 
 
 class ModelManagement:
@@ -331,6 +301,29 @@ class ModelManagement:
             raise TaskError("model_task_unavailable", "select a registered model task")
         return self.app.router.profiles[kind]
 
+    def _route_after_save(self, profile, saved, inherited_saved, changes, reset):
+        """The provider and fallback dispatch would use for the saved config."""
+        group = profile.group
+        fields = dict(saved.fields)
+        for name, value in changes.items():
+            key = group + "." + name
+            if key in fields:
+                fields[key] = replace(fields[key], value=value,
+                                      source=saved.target, explicit=True)
+        for name in reset:
+            key = group + "." + name
+            parent = inherited_saved.fields[key]
+            fields[key] = replace(fields[key], value=parent.value,
+                                  source=parent.source, explicit=False)
+        snapshot = replace(saved, fields=fields)
+        try:
+            default = self.app.router.provider_default(self.context, profile, snapshot)
+            routed = self.app.router.apply_provider_default(profile, snapshot, default)
+        except TaskError:
+            routed = snapshot
+        return (routed.fields[group + ".provider"].value,
+                routed.fields[group + ".fallback"].value)
+
     def _snapshots(self, operator, profile, layer=ConfigLayer.ROLE):
         now = self.app.now()
         parent = ConfigLayer.INSTALLATION if layer is ConfigLayer.ROLE else ConfigLayer.ROLE
@@ -338,9 +331,28 @@ class ModelManagement:
                                                       group_id=profile.group, observed_at=now))
         inherited = require(self.app.configuration.read(operator, target=_target(self.context, parent),
                                                         group_id=profile.group, observed_at=now))
-        provider_default = self.app.router.provider_default(self.context, profile, current)
-        return (self.app.router.apply_provider_default(profile, current, provider_default),
-                self.app.router.apply_provider_default(profile, inherited, provider_default), provider_default)
+        # Kept untouched so the editor can tell which stored values recovery
+        # stopped using; the routed copies below are for display and dispatch.
+        saved = current
+        inherited_saved = inherited
+        # Both views degrade to the saved values when the host cannot answer:
+        # the page still opens and shows what is stored, while dispatch keeps
+        # raising the same failure instead of silently running another model.
+        try:
+            provider_default = self.app.router.provider_default(self.context, profile, current)
+            current = self.app.router.apply_provider_default(profile, current, provider_default)
+        except TaskError:
+            provider_default = None
+        try:
+            # The parent view answers a different question: what runs when this
+            # layer's override is removed. Its own route decides that, not the
+            # current layer's, which may be suppressed here but absent there.
+            inherited_default = self.app.router.provider_default(self.context, profile, inherited)
+            inherited = self.app.router.apply_provider_default(
+                profile, inherited, inherited_default)
+        except TaskError:
+            inherited_default = None
+        return current, inherited, provider_default, inherited_default, saved, inherited_saved
 
     def _section_snapshots(self, operator, section, layer=ConfigLayer.ROLE):
         definitions = self.app.configuration.registry.group(section.config_group)
@@ -407,7 +419,8 @@ class ModelManagement:
                    default=MAX_MODEL_OUTPUT_TOKENS)
 
     def _project(self, operator, profile, layer=ConfigLayer.ROLE):
-        current, inherited, provider_default = self._snapshots(operator, profile, layer)
+        current, inherited, provider_default, inherited_default, saved, inherited_saved = (
+            self._snapshots(operator, profile, layer))
         fields = {name: _field(current.fields[profile.group + "." + name],
                                inherited.fields[profile.group + "." + name]) for name in FIELDS}
         # A registry default may exceed a provider's declared capability; routing
@@ -419,14 +432,60 @@ class ModelManagement:
             limit["value"] = min(limit["value"], ceiling)
         if limit["inherited_source"] == "default":
             limit["inherited_value"] = min(limit["inherited_value"], ceiling)
-        if provider_default is not None:
-            for name in ("provider", "fallback"):
-                if name == "fallback" and profile.default_fallback:
-                    continue
-                if fields[name]["source"] == "default":
-                    fields[name]["source"] = "host_conversation"
-                if fields[name]["inherited_source"] == "default":
-                    fields[name]["inherited_source"] = "host_conversation"
+        # Each view names the host route only when its own layer would use it.
+        # The parent view may resolve the host model while the current layer's
+        # explicit route suppresses it, so the two are labelled separately.
+        for name in ("provider", "fallback"):
+            if name == "fallback" and profile.default_fallback:
+                continue
+            # A cleared field keeps "default": recovery may empty a fallback that
+            # collided with the primary, and an empty fallback is not a route.
+            if provider_default is not None and fields[name]["value"] and fields[name]["source"] == "default":
+                fields[name]["source"] = "host_conversation"
+            if (inherited_default is not None and fields[name]["inherited_value"]
+                    and fields[name]["inherited_source"] == "default"):
+                fields[name]["inherited_source"] = "host_conversation"
+        # Recovery can stop using a value *this layer* stores (a fallback that
+        # collided with the recovered primary). Only an explicit row qualifies:
+        # a value inherited from the installation layer is recovered in place and
+        # still follows the parent, so marking it would make the editor treat the
+        # recovered host route as a local choice and write it back on save.
+        # The parent view applies recovery for the parent's own route. When this
+        # layer resets its fallback, the save inherits the parent's stored row
+        # instead, so the editor needs that value to match what will run.
+        parent_fallback = inherited_saved.fields[profile.group + ".fallback"]
+        # Only a real row is a stored value; without one the field carries the
+        # registry default, while dispatch resolves the host route instead.
+        stored_provider = (self.app.router.providers.get(parent_fallback.value)
+                           if parent_fallback.source is not None and parent_fallback.value
+                           else None)
+        fields["fallback"]["parent_stored"] = (
+            parent_fallback.value if parent_fallback.source is not None else "")
+        fields["fallback"]["parent_stored_usable"] = bool(
+            stored_provider is not None
+            and set(profile.capabilities).issubset(stored_provider.capabilities))
+        for name in ("fallback",):
+            raw = saved.fields[profile.group + "." + name]
+            routed = current.fields[profile.group + "." + name]
+            # Only an emptied field is "switched off": recovery may instead
+            # substitute a different, usable fallback (the profile's declared
+            # default), which is still in force and must not read as disabled.
+            if raw.explicit and routed.source is None and not routed.value and raw.value:
+                fields[name]["cleared"] = True
+            # A substituted value hides the stored row just as well: name it so
+            # the operator can see what is saved and remove it.
+            if raw.explicit and routed.source is None and routed.value and raw.value != routed.value:
+                fields[name]["replaced"] = True
+                fields[name]["stored_value"] = raw.value
+            # An emptied field has no route, whoever saved the row. The editor
+            # needs that even when the row is inherited: otherwise its fallback
+            # chain falls through to the primary and reports a fallback that
+            # dispatch will never try.
+            if routed.source is None and not routed.value and raw.value:
+                fields[name]["emptied"] = True
+                fields[name]["stored_value"] = raw.value
+                fields[name]["recovered_value"] = (
+                    profile.default_fallback or provider_default or profile.default_provider)
         application = require(self.app.configuration.application_status(operator,
             target=_target(self.context, layer), group_id=profile.group, observed_at=self.app.now()))
         sections = self._prompt_sections(operator, profile, layer)
@@ -571,157 +630,738 @@ class ModelManagement:
                     "providers": [{"id": provider.binding.provider, "capabilities": list(provider.capabilities),
                                    "max_output_tokens": provider.maximum_output_tokens,
                                    "supports_model_override": provider.supports_model_override,
+                                   "supports_video_relay": provider.supports_video_relay,
                                    "model": provider.model}
                                    for provider in self.app.router.providers.values()],
                     "host_state": self.app.state}
 
     @outcome
-    def maintenance(self, operator):
+    def maintenance(self, operator, *, provider_metadata=None, pricing_revision=None):
         """Read role-scoped model usage and diagnostics without exposing prompt material."""
-        with self.app.runtime.read_snapshot():
+        runtime = self.app.runtime
+        active_write = has_active_write_transaction(runtime)
+        shared_token_before = None if active_write else read_shared_db_token(runtime)
+        promote_ctx = None
+        disk_save_ctx = None
+        pre_cache = None
+        preloaded_hist = None
+        pre_pricing_file_key = None
+        pre_pricing_settings = None
+        pre_pricing_catalog = None
+        pre_pricing_key = None
+        if not active_write and shared_token_before is not None:
+            pre_cache = runtime_maintenance_cache(runtime)
+            pre_gen = shared_token_before.generation
+            if pre_cache is not None:
+                pre_cache.sync_generation(runtime, pre_gen)
+            if pre_cache is not None and _core_observations_available(runtime):
+                pre_now = self.app.now()
+                pre_eff_now = pre_now.replace(tzinfo=timezone.utc) if pre_now.tzinfo is None else pre_now
+                pre_eff_start = (pre_eff_now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+                pre_today = pre_now.date().isoformat()
+                pre_tz = int((pre_eff_now.utcoffset() or timedelta(0)).total_seconds())
+                pre_role_key = _core_role_key(self.context)
+                pre_pricing_file_key = pricing_fingerprint(runtime, pricing_revision)
+                pre_pricing_settings = PricingSettingsStore(runtime.data_root).read_safe()
+                pre_pricing = pricing_summary(pre_pricing_settings, now=pre_now)
+                pre_models, pre_clusters, pre_own_sources = _resolve_provider_pricing_meta(
+                    self.app.router.providers.values(), provider_metadata
+                )
+                pre_pricing_key = (
+                    pre_pricing_file_key, pre_pricing["revision"], tuple(sorted(pre_models.items())),
+                    tuple(sorted(pre_clusters.items())), tuple(sorted(pre_own_sources.items())),
+                )
+                pre_cache_ver = (pre_pricing_key, pre_gen)
+                if pre_cache.needs_core_history_prewarm(
+                    role_key_value=pre_role_key,
+                    history_cutoff=pre_today,
+                    tz_offset_seconds=pre_tz,
+                    cache_version=pre_cache_ver,
+                    raw_cache_version=pre_gen,
+                ):
+                    self._authorize(operator)
+                    pre_pricing_catalog = PriceCatalogStore(runtime.data_root).read_safe(copy=False)
+                    _, _, _, pre_enrich_core_rows = _make_pricing_resolver(
+                        pre_pricing_settings,
+                        pre_pricing_catalog,
+                        pre_models,
+                        pre_clusters,
+                        pre_own_sources,
+                    )
+                    preloaded_hist = pre_cache.prewarm_core_history(
+                        runtime,
+                        role_key_value=pre_role_key,
+                        history_cutoff=pre_today,
+                        tz_offset_seconds=pre_tz,
+                        pricing_key=pre_pricing_key,
+                        enrich_core_rows=pre_enrich_core_rows,
+                        eff_start=pre_eff_start,
+                        eff_now=pre_eff_now,
+                        core_available=True,
+                        expected_generation=pre_gen,
+                    )
+                    shared_token_before = read_shared_db_token(runtime)
+                    if shared_token_before is None or shared_token_before.generation != pre_gen:
+                        if shared_token_before is not None:
+                            pre_cache.sync_generation(runtime, shared_token_before.generation)
+                        preloaded_hist = None
+                    elif preloaded_hist is not None and pricing_fingerprint(runtime, pricing_revision) != pre_pricing_file_key:
+                        preloaded_hist = None
+        with runtime.read_snapshot():
             self._authorize(operator)
             now = self.app.now()
+            eff_now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+            eff_start = (eff_now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+            today = now.date().isoformat()
+            tz_offset_seconds = int((eff_now.utcoffset() or timedelta(0)).total_seconds())
+            policy = self.app.gateway.ledger.policy
+            soft_fallback = self.app.gateway.ledger.soft
+            providers = [{"id": item.binding.provider, "model": item.model}
+                         for item in self.app.router.providers.values()]
+            runtime_state_key = (
+                policy.enabled,
+                policy.role.tokens,
+                getattr(policy.role, "cost_microusd", None),
+                soft_fallback,
+                tuple((item["id"], item["model"]) for item in providers),
+            )
+            role_key_value = _core_role_key(self.context)
+            core_available = _core_observations_available(runtime)
+            file_key = pricing_fingerprint(runtime, pricing_revision)
+            if pre_pricing_settings is not None and file_key == pre_pricing_file_key:
+                pricing_settings = pre_pricing_settings
+            else:
+                pricing_settings = PricingSettingsStore(runtime.data_root).read_safe()
+                preloaded_hist = None
+                pre_pricing_catalog = None
+            pricing = pricing_summary(pricing_settings, now=now)
+            provider_models, provider_clusters, provider_own_sources = _resolve_provider_pricing_meta(
+                self.app.router.providers.values(), provider_metadata
+            )
+
+            pricing_key = (
+                file_key, pricing["revision"], tuple(sorted(provider_models.items())),
+                tuple(sorted(provider_clusters.items())), tuple(sorted(provider_own_sources.items())),
+            )
+            cache = None
+            disk_clear_epoch = None
+            snapshot_token = read_shared_db_token(runtime) if shared_token_before is not None else None
+            if snapshot_token is not None and shared_token_before is not None and snapshot_token.generation != shared_token_before.generation:
+                if pre_cache is not None:
+                    pre_cache.sync_generation(runtime, snapshot_token.generation)
+                preloaded_hist = None
+            elif (snapshot_token is not None and shared_token_before is not None
+                    and snapshot_token.generation == shared_token_before.generation
+                    and pricing_fingerprint(runtime, pricing_revision) == file_key):
+                cache = runtime_maintenance_cache(runtime)
+                if cache is not None:
+                    disk_clear_epoch = cache.clear_epoch()
+            precomputed = {}
+            if cache is not None:
+                cache_version = (pricing_key, shared_token_before.generation)
+                scope_key = (role_key_value, self.context.key, today, tz_offset_seconds, cache_version)
+                cached_payload, precomputed = cache.lookup_snapshot(
+                    runtime,
+                    self.context,
+                    scope_key=scope_key,
+                    runtime_state_key=runtime_state_key,
+                    now=now,
+                    eff_now=eff_now,
+                    role_key_value=role_key_value,
+                    context_key=self.context.key,
+                    history_cutoff=today,
+                    core_available=core_available,
+                    soft_fallback=soft_fallback,
+                    shared_token_before=shared_token_before,
+                )
+                if cached_payload is not None:
+                    cached_payload["pricing"] = pricing
+                    return cached_payload
+
             runtime_diagnostics = self._runtime_diagnostics()
             scope = self.context.scope
             role_address = [scope.installation_id, scope.bot_id, asdict(self.context.role_binding.role)]
-            today = now.date().isoformat()
-            candidate_days = self.app.runtime.read_all("""SELECT DISTINCT
-                    substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day
-                FROM model_calls c JOIN model_requests r ON r.task_id = c.task_id
-                ORDER BY day""", ())
-            all_days = {today}
-            core_observations = observations_for_role(self.app.runtime, self.context, end=now.isoformat())
-            core_rows = request_rows(core_observations)
-            all_days.update(row["day"] for row in core_rows)
-            for item in candidate_days:
-                value = item["day"]
-                try:
-                    parsed = date.fromisoformat(value)
-                except (TypeError, ValueError):
-                    continue
-                if parsed.isoformat() == value:
-                    all_days.add(value)
-            role_accounts = {period: digest(["role", role_address, period]) for period in all_days}
-            reports = {key: ModelUsageReport() for key in ("all", "conversation", "plugin", "astrbot_core", "legacy_conversation")}
-            def report_keys(kind):
-                source = usage_source(kind)
-                return ("all", "conversation", "legacy_conversation") if source == "conversation" else ("all", "plugin")
-            ordered_days = sorted(all_days)
-            batch_size = 300
-            for offset in range(0, len(ordered_days), batch_size):
-                batch_days = ordered_days[offset:offset + batch_size]
-                account_keys = tuple(role_accounts[period] for period in batch_days)
-                placeholders = ",".join("?" for _ in account_keys)
-                grouped_rows = self.app.runtime.read_all(f"""SELECT
-                        substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
-                        CASE WHEN json_valid(c.provider_json)
-                            THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END AS provider,
-                        t.kind AS kind,
-                        COUNT(*) AS calls,
-                        SUM(COALESCE(c.actual_tokens, 0)) AS tokens,
-                        SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd,
-                        SUM(CASE WHEN c.actual_tokens IS NULL THEN 1 ELSE 0 END) AS unconfirmed_calls,
-                        SUM(CASE WHEN f.call_id IS NULL THEN 0 ELSE 1 END) AS failures,
-                        SUM(CASE WHEN c.state = 'unknown' THEN 1 ELSE 0 END) AS unknown_calls,
-                        SUM(CASE WHEN c.state IN ('reserved', 'dispatched') THEN 1 ELSE 0 END) AS active_calls,
-                        SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN 1 ELSE 0 END)
-                            AS cache_reported_calls,
-                        SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN c.input_tokens ELSE 0 END)
-                            AS cache_input_tokens,
-                        SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN c.cached_input_tokens ELSE 0 END)
-                            AS cached_input_tokens,
-                        SUM(COALESCE(c.cache_creation_tokens, 0)) AS cache_creation_tokens,
-                        SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN
-                            MAX(0, c.input_tokens - c.cached_input_tokens - COALESCE(c.cache_creation_tokens, 0))
-                            ELSE 0 END) AS cache_other_input_tokens,
-                        SUM(CASE WHEN c.cached_input_tokens IS NOT NULL OR c.cache_creation_tokens IS NOT NULL THEN 1 ELSE 0 END)
-                            AS cache_telemetry_calls,
-                        SUM(CASE WHEN c.input_tokens >= 1000 AND c.cached_input_tokens IS NOT NULL
-                            AND c.cached_input_tokens * 5 < c.input_tokens
-                            THEN 1 ELSE 0 END) AS cache_low_calls,
-                        SUM(COALESCE(c.input_tokens, 0)) AS input_tokens,
-                        SUM(COALESCE(c.output_tokens, 0)) AS output_tokens,
-                        SUM(COALESCE(c.latency_ms, 0)) AS latency_total_ms,
-                        SUM(CASE WHEN c.latency_ms IS NULL THEN 0 ELSE 1 END) AS latency_samples
-                    FROM model_calls c
-                    JOIN model_requests r ON r.task_id = c.task_id
-                    JOIN execution_tasks t ON t.task_id = c.task_id
-                    LEFT JOIN model_call_failures f ON f.call_id = c.call_id
-                    WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
-                                   WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
-                           OR (t.kind = ? AND t.origin_key = ?))
-                     GROUP BY day, provider, kind""", account_keys + (MAIN_CHAIN_KIND, self.context.key))
+            role_address_key = digest(role_address)
+            pricing_catalog = (
+                pre_pricing_catalog
+                if pre_pricing_catalog is not None
+                else PriceCatalogStore(runtime.data_root).read_safe(copy=False)
+            )
+            if cache is not None and pricing_fingerprint(runtime, pricing_revision) != file_key:
+                cache = None
+            usd_cny_rate, model_for, resolve_for_call, enrich_core_rows = _make_pricing_resolver(
+                pricing_settings,
+                pricing_catalog,
+                provider_models,
+                provider_clusters,
+                provider_own_sources,
+            )
 
-                for row in grouped_rows:
-                    for key in report_keys(row["kind"]):
-                        reports[key].add_group(row)
-                hour_rows = self.app.runtime.read_all(f"""SELECT
-                        substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
-                        substr(COALESCE(c.finished_at, c.started_at, r.created_at), 12, 2) AS hour,
-                        t.kind AS kind,
-                        COUNT(*) AS calls, SUM(COALESCE(c.actual_tokens, 0)) AS tokens,
-                        SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd
-                    FROM model_calls c
-                    JOIN model_requests r ON r.task_id = c.task_id
-                    JOIN execution_tasks t ON t.task_id = c.task_id
-                    WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
-                                   WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
-                           OR (t.kind = ? AND t.origin_key = ?))
-                    GROUP BY day, hour, kind ORDER BY day, hour""",
-                    account_keys + (MAIN_CHAIN_KIND, self.context.key))
-                for row in hour_rows:
-                    for key in report_keys(row["kind"]):
-                        reports[key].add_hour(row)
-                recent_rows = self.app.runtime.read_all(f"""WITH samples AS (
-                    SELECT c.state, c.position, c.actual_tokens, c.reserved_tokens,
-                        c.receipt_ref,
-                        c.actual_cost, c.input_tokens, c.cached_input_tokens, c.cache_creation_tokens, c.output_tokens,
-                        c.latency_ms, c.finished_at, c.started_at, r.created_at, t.kind, c.provider_json,
-                        f.code AS failure_code, d.summary_json AS response_summary_json,
-                        ROW_NUMBER() OVER (PARTITION BY CASE WHEN t.kind = 'conversation.reply'
-                            THEN 'conversation' ELSE 'plugin' END
-                            ORDER BY COALESCE(c.finished_at, c.started_at, r.created_at) DESC, c.position DESC)
-                            AS source_position
-                    FROM model_calls c
-                    JOIN model_requests r ON r.task_id = c.task_id
-                    JOIN execution_tasks t ON t.task_id = c.task_id
-                    LEFT JOIN model_call_failures f ON f.call_id = c.call_id
-                    LEFT JOIN model_call_diagnostics d ON d.call_id = c.call_id
-                    WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
-                                   WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
-                           OR (t.kind = ? AND t.origin_key = ?)))
-                     SELECT * FROM samples WHERE source_position <= 80""",
-                    account_keys + (MAIN_CHAIN_KIND, self.context.key))
-                for row in recent_rows:
-                    for key in report_keys(row["kind"]):
-                        reports[key].add_recent(row)
-            for row in core_rows:
-                for key in ("all", "conversation", "astrbot_core"):
-                    reports[key].add_group({**row, **row["aggregate"]})
-                    reports[key].add_hour(row)
-                    reports[key].add_recent(row)
-            cache_reports = _cache_diagnostic_summary(self.app.runtime, role_accounts, all_days, self.context.key,
-                                                     core_rows=core_rows)
+            base_rule_cache = {}
+            complex_cache = {}
+
+            def base_rule_for(provider_id):
+                pid = provider_id if type(provider_id) is str else ""
+                if pid not in base_rule_cache:
+                    base_rule_cache[pid] = resolve_for_call(pid, model_for(pid), None)
+                return base_rule_cache[pid]
+
+            def is_complex_provider(provider_id):
+                pid = provider_id if type(provider_id) is str else ""
+                if pid not in complex_cache:
+                    complex_cache[pid] = provider_needs_per_call_repricing(
+                        pid,
+                        model_for(pid),
+                        pricing_settings,
+                        catalog=pricing_catalog,
+                        cluster_id=provider_clusters.get(pid),
+                        own_source_ids=provider_own_sources.get(pid, frozenset()),
+                    )
+                return complex_cache[pid]
+
+            def enrich_aggregate(row, per_call_override=None):
+                data = {key: row[key] for key in row.keys()}
+                rec_calls = int(data.get("recorded_cost_calls") or 0)
+                rec_cost = int(data.get("recorded_cost_microusd") or 0)
+                unpriced = int(data.get("unpriced_calls") or 0)
+                est_calls = 0
+                est_cost = 0
+                remaining_unpriced = 0
+                if unpriced > 0:
+                    if per_call_override is not None:
+                        est_calls, est_cost, remaining_unpriced = per_call_override
+                    else:
+                        pid = data.get("provider") if type(data.get("provider")) is str else ""
+                        eff = base_rule_for(pid)
+                        if eff is not None:
+                            if eff.mode == "per_turn":
+                                computed = evaluate_call_cost_microusd(
+                                    eff, usd_cny_rate=usd_cny_rate, calls=unpriced,
+                                )
+                                if computed is not None:
+                                    est_cost = computed
+                                    est_calls = unpriced
+                                else:
+                                    remaining_unpriced = unpriced
+                            elif eff.mode == "per_request":
+                                req_count = int(data.get("unpriced_requests") or 0)
+                                computed = evaluate_call_cost_microusd(
+                                    eff, usd_cny_rate=usd_cny_rate, requests=req_count,
+                                )
+                                if computed is not None:
+                                    est_cost = computed
+                                    est_calls = unpriced
+                                else:
+                                    remaining_unpriced = unpriced
+                            else:
+                                u_in = int(data.get("unpriced_input_tokens") or 0)
+                                u_cached = int(data.get("unpriced_cached_input_tokens") or 0)
+                                u_create = int(data.get("unpriced_cache_creation_tokens") or 0)
+                                u_out = int(data.get("unpriced_output_tokens") or 0)
+                                u_flat = int(data.get("unpriced_flat_tokens") or 0)
+                                split_cost = (
+                                    evaluate_call_cost_microusd(
+                                        eff,
+                                        usd_cny_rate=usd_cny_rate,
+                                        input_tokens=u_in,
+                                        cached_input_tokens=u_cached,
+                                        cache_creation_tokens=u_create,
+                                        output_tokens=u_out,
+                                    ) or 0
+                                ) if (u_in or u_out) else 0
+                                flat_cost = (
+                                    evaluate_call_cost_microusd(
+                                        eff,
+                                        usd_cny_rate=usd_cny_rate,
+                                        total_tokens=u_flat,
+                                    ) or 0
+                                ) if u_flat else 0
+                                est_cost = split_cost + flat_cost
+                                est_calls = unpriced
+                        else:
+                            remaining_unpriced = unpriced
+                data["recorded_cost_calls"] = rec_calls
+                data["recorded_cost_microusd"] = rec_cost
+                data["estimated_cost_calls"] = est_calls
+                data["estimated_cost_microusd"] = est_cost
+                data["unpriced_token_calls"] = remaining_unpriced
+                data["cost_microusd"] = rec_cost + est_cost
+                return data
+
+            def enrich_recent_call(row):
+                data = {key: row[key] for key in row.keys()}
+                try:
+                    provider_record = json.loads(data["provider_json"])
+                except (TypeError, ValueError):
+                    provider_record = None
+                provider_id = provider_record.get("provider", "") if isinstance(provider_record, dict) else ""
+                call_model = provider_record.get("model", "") if isinstance(provider_record, dict) else ""
+                if type(provider_id) is not str:
+                    provider_id = ""
+                if type(call_model) is not str:
+                    call_model = ""
+                actual_cost = data.get("actual_cost")
+                if actual_cost is not None and actual_cost > 0:
+                    data["cost_basis"] = "recorded"
+                    data["cost_availability"] = "recorded"
+                    return data
+                if data.get("actual_tokens") is not None:
+                    call_ts = data.get("finished_at") or data.get("started_at") or data.get("created_at")
+                    cmodel = model_for(provider_id, call_model)
+                    eff = resolve_for_call(provider_id, cmodel, call_ts)
+                    if eff is not None:
+                        est = evaluate_call_cost_microusd(
+                            eff,
+                            usd_cny_rate=usd_cny_rate,
+                            input_tokens=data.get("input_tokens"),
+                            cached_input_tokens=data.get("cached_input_tokens"),
+                            cache_creation_tokens=data.get("cache_creation_tokens"),
+                            output_tokens=data.get("output_tokens"),
+                            total_tokens=data.get("actual_tokens"),
+                            model=cmodel,
+                            calls=1,
+                            requests=1,
+                            strict_expr=False,
+                        )
+                        if est is not None:
+                            data["actual_cost"] = est
+                            data["estimated_cost_microusd"] = est
+                            data["cost_basis"] = "estimated_local"
+                            data["cost_availability"] = "estimated_local"
+                            return data
+                data["actual_cost"] = None
+                data["cost_basis"] = "unconfigured"
+                data["cost_availability"] = "unconfigured"
+                return data
+
+            if cache is not None:
+                core_state = cache.load_partitioned_core(
+                    runtime,
+                    self.context,
+                    role_key_value=role_key_value,
+                    history_cutoff=today,
+                    tz_offset_seconds=tz_offset_seconds,
+                    cache_version=cache_version,
+                    raw_cache_version=shared_token_before.generation,
+                    enrich_core_rows=enrich_core_rows,
+                    eff_start=eff_start,
+                    eff_now=eff_now,
+                    core_available=core_available,
+                    hist_watermark=precomputed.get("hist_watermark"),
+                    can_cache=precomputed.get("can_cache", True),
+                    shared_token_before=shared_token_before,
+                    preloaded_hist=preloaded_hist if pre_pricing_key == pricing_key else None,
+                )
+                if core_state.disk_hist_entry is not None and not active_write:
+                    disk_save_ctx = (
+                        role_key_value,
+                        today,
+                        tz_offset_seconds,
+                        pricing_key,
+                        eff_start,
+                        core_state.disk_hist_entry,
+                        shared_token_before.generation,
+                        disk_clear_epoch,
+                    )
+            else:
+                core_state = None
+
+            legacy_entry = None
+            legacy_watermark = None
+            if cache is not None and core_state is not None:
+                legacy_key = (role_address_key, self.context.key, cache_version)
+                legacy_token = precomputed.get("db_write_token") or shared_token_before
+                legacy_entry = cache.lookup_legacy_fast(
+                    legacy_key,
+                    db_write_token=legacy_token,
+                    core_days=core_state.core_days,
+                    today=today,
+                )
+                if legacy_entry is not None:
+                    legacy_watermark = legacy_entry.legacy_watermark
+                    precomputed["legacy_watermark"] = legacy_watermark
+                else:
+                    legacy_watermark = precomputed.get("legacy_watermark")
+                    if legacy_watermark is None:
+                        legacy_watermark = read_legacy_watermark(runtime)
+                        precomputed["legacy_watermark"] = legacy_watermark
+                    legacy_entry = cache.lookup_legacy(
+                        legacy_key,
+                        legacy_watermark=legacy_watermark,
+                        core_days=core_state.core_days,
+                        today=today,
+                        db_write_token=legacy_token,
+                    )
+
+            if legacy_entry is not None and core_state is not None:
+                all_days = set(legacy_entry.all_days)
+                role_accounts = {period: digest(["role", role_address, period]) for period in all_days}
+                reports = clone_legacy_reports(legacy_entry)
+                legacy_cache_diag = legacy_entry.cache_diag
+                core_observations = None
+                core_rows = None
+            else:
+                candidate_days = runtime.read_all("""SELECT DISTINCT
+                        substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day
+                    FROM model_calls c JOIN model_requests r ON r.task_id = c.task_id
+                    ORDER BY day""", ())
+                valid_candidate_days = set()
+                for item in candidate_days:
+                    value = item["day"]
+                    try:
+                        parsed = date.fromisoformat(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if parsed.isoformat() == value:
+                        valid_candidate_days.add(value)
+                all_days = {today} | valid_candidate_days
+                if core_state is not None:
+                    all_days.update(core_state.core_days)
+                    core_observations = None
+                    core_rows = None
+                else:
+                    obs_with_scope = observations_with_scope_for_role(runtime, self.context, end=now.isoformat())
+                    core_observations = [obs for obs, _scope_kind, _row_dt in obs_with_scope]
+                    core_rows = request_rows(core_observations, include_signature_json=False)
+                    all_days.update(row["day"] for row in core_rows)
+                role_accounts = {period: digest(["role", role_address, period]) for period in all_days}
+                reports = {key: ModelUsageReport() for key in ("all", "conversation", "plugin", "astrbot_core", "legacy_conversation")}
+
+                def report_keys(kind):
+                    source = usage_source(kind)
+                    return ("all", "conversation", "legacy_conversation") if source == "conversation" else ("all", "plugin")
+
+                ordered_days = sorted(all_days)
+                batch_size = 300
+                for offset in range(0, len(ordered_days), batch_size):
+                    batch_days = ordered_days[offset:offset + batch_size]
+                    account_keys = tuple(role_accounts[period] for period in batch_days)
+                    placeholders = ",".join("?" for _ in account_keys)
+                    matched_cte = _legacy_matched_calls_cte(placeholders)
+                    grouped_rows = runtime.read_all(f"""WITH {matched_cte}
+                        SELECT
+                            substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
+                            CASE WHEN json_valid(c.provider_json)
+                                THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END AS provider,
+                            t.kind AS kind,
+                            COUNT(*) AS calls,
+                            SUM(COALESCE(c.actual_tokens, 0)) AS tokens,
+                            SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd,
+                            SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN c.actual_cost ELSE 0 END)
+                                AS recorded_cost_microusd,
+                            SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN 1 ELSE 0 END)
+                                AS recorded_cost_calls,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL THEN 1 ELSE 0 END)
+                                AS unpriced_calls,
+                            COUNT(DISTINCT CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN c.task_id END) AS unpriced_requests,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.cached_input_tokens, 0) ELSE 0 END) AS unpriced_cached_input_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.cache_creation_tokens, 0) ELSE 0 END) AS unpriced_cache_creation_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                AND c.input_tokens IS NULL AND c.output_tokens IS NULL THEN c.actual_tokens ELSE 0 END)
+                                AS unpriced_flat_tokens,
+                            SUM(CASE WHEN c.actual_tokens IS NULL THEN 1 ELSE 0 END) AS unconfirmed_calls,
+                            SUM(CASE WHEN f.call_id IS NULL THEN 0 ELSE 1 END) AS failures,
+                            SUM(CASE WHEN c.state = 'unknown' THEN 1 ELSE 0 END) AS unknown_calls,
+                            SUM(CASE WHEN c.state IN ('reserved', 'dispatched') THEN 1 ELSE 0 END) AS active_calls,
+                            SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN 1 ELSE 0 END)
+                                AS cache_reported_calls,
+                            SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN c.input_tokens ELSE 0 END)
+                                AS cache_input_tokens,
+                            SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN c.cached_input_tokens ELSE 0 END)
+                                AS cached_input_tokens,
+                            SUM(COALESCE(c.cache_creation_tokens, 0)) AS cache_creation_tokens,
+                            SUM(CASE WHEN c.input_tokens IS NOT NULL AND c.cached_input_tokens IS NOT NULL THEN
+                                MAX(0, c.input_tokens - c.cached_input_tokens - COALESCE(c.cache_creation_tokens, 0))
+                                ELSE 0 END) AS cache_other_input_tokens,
+                            SUM(CASE WHEN c.cached_input_tokens IS NOT NULL OR c.cache_creation_tokens IS NOT NULL THEN 1 ELSE 0 END)
+                                AS cache_telemetry_calls,
+                            SUM(CASE WHEN c.input_tokens >= 1000 AND c.cached_input_tokens IS NOT NULL
+                                AND c.cached_input_tokens * 5 < c.input_tokens
+                                THEN 1 ELSE 0 END) AS cache_low_calls,
+                            SUM(COALESCE(c.input_tokens, 0)) AS input_tokens,
+                            SUM(COALESCE(c.output_tokens, 0)) AS output_tokens,
+                            SUM(COALESCE(c.latency_ms, 0)) AS latency_total_ms,
+                            SUM(CASE WHEN c.latency_ms IS NULL THEN 0 ELSE 1 END) AS latency_samples
+                        FROM matched m
+                        JOIN model_calls c ON c.call_id = m.call_id
+                        JOIN model_requests r ON r.task_id = c.task_id
+                        JOIN execution_tasks t ON t.task_id = c.task_id
+                        LEFT JOIN model_call_failures f ON f.call_id = c.call_id
+                        GROUP BY day, provider, kind""", account_keys + (MAIN_CHAIN_KIND, self.context.key))
+
+                    # Switch to per-call timestamp-aware repricing ONLY for providers with
+                    # per_tier, tiered_expr, or active pricing_schedules!
+                    complex_providers = sorted({
+                        str(row["provider"] or "")
+                        for row in grouped_rows
+                        if int(row["unpriced_calls"] or 0) > 0 and is_complex_provider(row["provider"])
+                    })
+                    per_call_group = {}
+                    per_call_hour = {}
+                    if complex_providers:
+                        cp_placeholders = ",".join("?" for _ in complex_providers)
+                        complex_rows = runtime.read_all(f"""SELECT
+                                substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
+                                substr(COALESCE(c.finished_at, c.started_at, r.created_at), 12, 2) AS hour,
+                                COALESCE(c.finished_at, c.started_at, r.created_at) AS at_ts,
+                                CASE WHEN json_valid(c.provider_json)
+                                    THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END AS provider,
+                                CASE WHEN json_valid(c.provider_json)
+                                    THEN COALESCE(json_extract(c.provider_json, '$.model'), '') ELSE '' END AS call_model,
+                                t.kind AS kind,
+                                c.task_id AS task_id,
+                                c.actual_tokens, c.input_tokens, c.cached_input_tokens,
+                                c.cache_creation_tokens, c.output_tokens
+                            FROM model_calls c
+                            JOIN model_requests r ON r.task_id = c.task_id
+                            JOIN execution_tasks t ON t.task_id = c.task_id
+                            WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
+                                           WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
+                                   OR (t.kind = ? AND t.origin_key = ?))
+                              AND (c.actual_cost IS NULL OR c.actual_cost = 0)
+                              AND c.actual_tokens IS NOT NULL
+                              AND (CASE WHEN json_valid(c.provider_json)
+                                   THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END)
+                                  IN ({cp_placeholders})""",
+                            account_keys + (MAIN_CHAIN_KIND, self.context.key) + tuple(complex_providers))
+                        seen_group_tasks = set()
+                        seen_hour_tasks = set()
+                        for crow in complex_rows:
+                            pid = str(crow["provider"] or "")
+                            cmodel = model_for(pid, crow["call_model"])
+                            eff = resolve_for_call(pid, cmodel, crow["at_ts"])
+                            gkey = (crow["day"], pid, crow["kind"])
+                            hkey = (crow["day"], crow["hour"], pid, crow["kind"])
+                            g_task_key = (gkey, crow["task_id"])
+                            h_task_key = (hkey, crow["task_id"])
+                            g_reqs = 0 if g_task_key in seen_group_tasks else 1
+                            h_reqs = 0 if h_task_key in seen_hour_tasks else 1
+                            seen_group_tasks.add(g_task_key)
+                            seen_hour_tasks.add(h_task_key)
+                            g_cost = evaluate_call_cost_microusd(
+                                eff,
+                                usd_cny_rate=usd_cny_rate,
+                                input_tokens=crow["input_tokens"],
+                                cached_input_tokens=crow["cached_input_tokens"],
+                                cache_creation_tokens=crow["cache_creation_tokens"],
+                                output_tokens=crow["output_tokens"],
+                                total_tokens=crow["actual_tokens"],
+                                model=cmodel,
+                                calls=1,
+                                requests=g_reqs,
+                                strict_expr=False,
+                            )
+                            h_cost = (
+                                g_cost
+                                if g_reqs == h_reqs
+                                else evaluate_call_cost_microusd(
+                                    eff,
+                                    usd_cny_rate=usd_cny_rate,
+                                    input_tokens=crow["input_tokens"],
+                                    cached_input_tokens=crow["cached_input_tokens"],
+                                    cache_creation_tokens=crow["cache_creation_tokens"],
+                                    output_tokens=crow["output_tokens"],
+                                    total_tokens=crow["actual_tokens"],
+                                    model=cmodel,
+                                    calls=1,
+                                    requests=h_reqs,
+                                    strict_expr=False,
+                                )
+                            )
+                            ge, gc, gu = per_call_group.get(gkey, (0, 0, 0))
+                            if g_cost is not None:
+                                per_call_group[gkey] = (ge + 1, gc + g_cost, gu)
+                            else:
+                                per_call_group[gkey] = (ge, gc, gu + 1)
+                            he, hc, hu = per_call_hour.get(hkey, (0, 0, 0))
+                            if h_cost is not None:
+                                per_call_hour[hkey] = (he + 1, hc + h_cost, hu)
+                            else:
+                                per_call_hour[hkey] = (he, hc, hu + 1)
+
+                    for row in grouped_rows:
+                        gkey = (row["day"], row["provider"], row["kind"])
+                        override = per_call_group.get(gkey) if is_complex_provider(row["provider"]) else None
+                        enriched = enrich_aggregate(row, per_call_override=override)
+                        for key in report_keys(row["kind"]):
+                            reports[key].add_group(enriched)
+                    hour_rows = runtime.read_all(f"""WITH {matched_cte}
+                        SELECT
+                            substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
+                            substr(COALESCE(c.finished_at, c.started_at, r.created_at), 12, 2) AS hour,
+                            CASE WHEN json_valid(c.provider_json)
+                                THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END AS provider,
+                            t.kind AS kind,
+                            COUNT(*) AS calls, SUM(COALESCE(c.actual_tokens, 0)) AS tokens,
+                            SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd,
+                            SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN c.actual_cost ELSE 0 END)
+                                AS recorded_cost_microusd,
+                            SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN 1 ELSE 0 END)
+                                AS recorded_cost_calls,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL THEN 1 ELSE 0 END)
+                                AS unpriced_calls,
+                            COUNT(DISTINCT CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN c.task_id END) AS unpriced_requests,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.cached_input_tokens, 0) ELSE 0 END) AS unpriced_cached_input_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.cache_creation_tokens, 0) ELSE 0 END) AS unpriced_cache_creation_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                THEN COALESCE(c.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
+                            SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                                AND c.input_tokens IS NULL AND c.output_tokens IS NULL THEN c.actual_tokens ELSE 0 END)
+                                AS unpriced_flat_tokens
+                        FROM matched m
+                        JOIN model_calls c ON c.call_id = m.call_id
+                        JOIN model_requests r ON r.task_id = c.task_id
+                        JOIN execution_tasks t ON t.task_id = c.task_id
+                        GROUP BY day, hour, provider, kind ORDER BY day, hour""",
+                        account_keys + (MAIN_CHAIN_KIND, self.context.key))
+                    for row in hour_rows:
+                        hkey = (row["day"], row["hour"], row["provider"], row["kind"])
+                        override = per_call_hour.get(hkey) if is_complex_provider(row["provider"]) else None
+                        enriched_hour = enrich_aggregate(row, per_call_override=override)
+                        for key in report_keys(row["kind"]):
+                            reports[key].add_hour(enriched_hour)
+                    recent_rows = runtime.read_all(f"""WITH {matched_cte}, samples AS (
+                        SELECT c.state, c.position, c.actual_tokens, c.reserved_tokens,
+                            c.receipt_ref,
+                            c.actual_cost, c.input_tokens, c.cached_input_tokens, c.cache_creation_tokens, c.output_tokens,
+                            c.latency_ms, c.finished_at, c.started_at, r.created_at, t.kind, c.provider_json,
+                            f.code AS failure_code, d.summary_json AS response_summary_json,
+                            ROW_NUMBER() OVER (PARTITION BY CASE WHEN t.kind = 'conversation.reply'
+                                THEN 'conversation' ELSE 'plugin' END
+                                ORDER BY COALESCE(c.finished_at, c.started_at, r.created_at) DESC, c.position DESC)
+                                AS source_position
+                        FROM matched m
+                        JOIN model_calls c ON c.call_id = m.call_id
+                        JOIN model_requests r ON r.task_id = c.task_id
+                        JOIN execution_tasks t ON t.task_id = c.task_id
+                        LEFT JOIN model_call_failures f ON f.call_id = c.call_id
+                        LEFT JOIN model_call_diagnostics d ON d.call_id = c.call_id)
+                         SELECT * FROM samples WHERE source_position <= 80""",
+                        account_keys + (MAIN_CHAIN_KIND, self.context.key))
+                    for row in recent_rows:
+                        enriched_recent = enrich_recent_call(row)
+                        for key in report_keys(row["kind"]):
+                            reports[key].add_recent(enriched_recent)
+                legacy_cache_diag = _legacy_cache_diagnostic_accumulator(
+                    runtime, role_accounts, all_days, self.context.key
+                )
+                if (
+                    cache is not None
+                    and legacy_watermark is not None
+                    and precomputed.get("can_cache", True)
+                    and not has_active_write_transaction(runtime)
+                    and (
+                        shared_token_before is None
+                        or read_shared_db_token(runtime) == shared_token_before
+                        or has_active_read_snapshot(runtime)
+                    )
+                ):
+                    stable_legacy_token = (
+                        shared_token_before
+                        if (shared_token_before is not None and read_shared_db_token(runtime) == shared_token_before)
+                        else None
+                    )
+                    cache.store_legacy(
+                        legacy_key,
+                        build_legacy_entry(
+                            legacy_watermark=legacy_watermark,
+                            all_days=frozenset(all_days),
+                            candidate_days=frozenset(valid_candidate_days),
+                            reports=reports,
+                            cache_diag=legacy_cache_diag,
+                            db_write_token=stable_legacy_token,
+                        ),
+                    )
+
+            if core_state is not None:
+                for key in CORE_USAGE_KEYS:
+                    merge_usage_report(reports[key], core_state.usage_report)
+                if not legacy_cache_diag.saw_core_kind:
+                    cache_reports = merge_cache_diagnostics(legacy_cache_diag, core_state.cache_diag)
+                else:
+                    fallback_rows = core_state.raw_core_rows
+                    if fallback_rows is None:
+                        fallback_obs = [
+                            obs for obs, _scope_kind, _row_dt in
+                            observations_with_scope_for_role(runtime, self.context, end=now.isoformat())
+                        ]
+                        fallback_rows = request_rows(fallback_obs, include_signature_json=False)
+                    cache_reports = _cache_diagnostic_summary(
+                        runtime, role_accounts, all_days, self.context.key, core_rows=fallback_rows
+                    )
+                core_coverage = core_state.availability
+                has_core_observations = core_state.has_observations
+                core_7d = core_state.private_7d
+            else:
+                for row, cost_meta, recent in enrich_core_rows(core_rows):
+                    for key in CORE_USAGE_KEYS:
+                        reports[key].add_group({**row, **row["aggregate"], **cost_meta})
+                        reports[key].add_hour({**row, **cost_meta})
+                        reports[key].add_recent(recent)
+                cache_reports = _cache_diagnostic_summary(
+                    runtime, role_accounts, all_days, self.context.key, core_rows=core_rows
+                )
+                core_coverage = availability_summary(core_observations)
+                has_core_observations = bool(core_observations)
+                core_7d = [
+                    obs for obs, scope_kind, row_dt in obs_with_scope
+                    if scope_kind == "private"
+                    and (parsed_dt := (row_dt if row_dt is not None else _parse_utc_timestamp(obs.get("received_at")))) is not None
+                    and eff_start <= parsed_dt <= eff_now
+                ]
+
             usage_reports = {key: {**report.project(now), "cache_diagnostics": cache_reports[key]}
                              for key, report in reports.items()}
+            core_meta = reports["astrbot_core"]._cost_totals()
+            core_priced = core_meta["recorded_cost_calls"] + core_meta["estimated_cost_calls"]
+            core_unpriced = core_meta["unpriced_token_calls"]
+            core_cost_avail = ("unavailable" if core_priced == 0
+                               else "partial_estimated" if core_unpriced > 0
+                               else "estimated_local")
             usage_reports["astrbot_core"].update(execution_path="astrbot_core",
-                coverage=availability_summary(core_observations),
+                coverage=core_coverage,
                 measurement_basis={"usage": "observed_provider_responses_with_explicit_fallback_scope",
-                                   "cache": "reported_fields_only", "cost": "unavailable",
+                                   "cache": "reported_fields_only", "cost": core_cost_avail,
                                    "signature": "runner_pre_provider_or_provider_request_hook"})
-            _unavailable_core_costs(usage_reports["astrbot_core"])
-            usage_reports["astrbot_core"]["cost_availability"] = "unavailable"
-            for key in ("all", "conversation"):
-                usage_reports[key]["cost_availability"] = "partial" if core_observations else "local_priced_subtotal"
-                usage_reports[key]["core_cost_availability"] = "unavailable"
+            if core_cost_avail == "unavailable":
+                _unavailable_core_costs(usage_reports["astrbot_core"])
+            usage_reports["astrbot_core"]["cost_availability"] = core_cost_avail
+            for key in ("all", "conversation", "plugin", "legacy_conversation"):
+                meta = reports[key]._cost_totals()
+                priced = meta["recorded_cost_calls"] + meta["estimated_cost_calls"]
+                unpriced = meta["unpriced_token_calls"]
+                if key in ("all", "conversation") and has_core_observations and core_cost_avail == "unavailable":
+                    avail = "partial"
+                elif priced == 0:
+                    avail = "unconfigured"
+                elif unpriced > 0:
+                    avail = "partial_estimated" if meta["estimated_cost_calls"] > 0 else "partial"
+                elif meta["estimated_cost_calls"] > 0:
+                    avail = "estimated_local"
+                else:
+                    avail = "local_priced_subtotal"
+                usage_reports[key]["cost_availability"] = avail
+                if key in ("all", "conversation"):
+                    usage_reports[key]["core_cost_availability"] = core_cost_avail
             usage_reports["legacy_conversation"]["execution_path"] = "legacy_v2_conversation"
             usage_reports["plugin"]["execution_path"] = "v2_background"
-            today_account = role_accounts[now.date().isoformat()]
-            budget_row = self.app.runtime.read_one(
+            today_account = role_accounts[today]
+            budget_row = runtime.read_one(
                 "SELECT token_limit, held_tokens, spent_tokens FROM model_budget_accounts WHERE account_key = ?",
                 (today_account,))
             plugin_usage = self.app.gateway.ledger.plugin_account_usage(today_account)
-            policy = self.app.gateway.ledger.policy
             budget = {"hard_limit_enabled": policy.enabled,
                       "limit_tokens": budget_row["token_limit"] if budget_row else policy.role.tokens,
                       "spent_tokens": plugin_usage["spent_tokens"],
@@ -738,16 +1378,68 @@ class ModelManagement:
                           reclaim=self.app.gateway.ledger.reclaim_audit(),
                           remaining_tokens=(max(0, budget["limit_tokens"] - budget["spent_tokens"] - budget["held_tokens"])
                                             if policy.enabled else None))
-            soft = effective_soft(self.app.runtime, self.context, self.app.gateway.ledger.soft)
+            soft = effective_soft(runtime, self.context, soft_fallback)
             budget.update({"soft_limit_enabled": bool(soft and soft.enabled),
                            "soft_limit_tokens": soft.tokens if soft else 0})
-            providers = [{"id": item.binding.provider, "model": item.model}
-                         for item in self.app.router.providers.values()]
-            return {"generated_at": now.isoformat(), **usage_reports["all"],
-                    "usage_sources": {key: usage_reports[key] for key in ("conversation", "plugin", "astrbot_core", "legacy_conversation")},
-                    "reply_efficiency": reply_efficiency_report(self.app.runtime, self.context, now),
-                    "budget": budget, "providers": providers, "window_days": 30,
-                    "ledger_scope": "current_role", "runtime": runtime_diagnostics}
+            payload = {"generated_at": now.isoformat(), **usage_reports["all"],
+                       "usage_sources": {key: usage_reports[key] for key in ("conversation", "plugin", "astrbot_core", "legacy_conversation")},
+                       "reply_efficiency": reply_efficiency_report(runtime, self.context, now, core_observations=core_7d),
+                       "budget": budget, "providers": providers, "window_days": 30,
+                       "pricing": pricing, "ledger_scope": "current_role", "runtime": runtime_diagnostics}
+            if cache is not None and pricing_fingerprint(runtime, pricing_revision) == file_key:
+                snapshot_entry = build_snapshot_entry(
+                    runtime,
+                    self.context,
+                    precomputed=precomputed,
+                    runtime_state_key=runtime_state_key,
+                    role_key_value=role_key_value,
+                    context_key=self.context.key,
+                    history_cutoff=today,
+                    core_available=core_available,
+                    soft_fallback=soft_fallback,
+                    eff_now=eff_now,
+                    has_future_obs=core_state.has_future_obs if core_state is not None else False,
+                    payload=payload,
+                )
+                if snapshot_entry is not None:
+                    cache.store_snapshot(scope_key, snapshot_entry)
+                    if snapshot_entry.db_write_token is None and not active_write:
+                        promote_ctx = (
+                            scope_key,
+                            snapshot_entry,
+                            role_key_value,
+                            self.context.key,
+                            today,
+                            core_available,
+                            soft_fallback,
+                            eff_now,
+                        )
+        if disk_save_ctx is not None and not has_active_write_transaction(runtime):
+            save_disk_core_history(
+                runtime,
+                role_key_value=disk_save_ctx[0],
+                history_cutoff=disk_save_ctx[1],
+                tz_offset_seconds=disk_save_ctx[2],
+                pricing_key=disk_save_ctx[3],
+                eff_start=disk_save_ctx[4],
+                entry=disk_save_ctx[5],
+                expected_generation=disk_save_ctx[6],
+                expected_clear_epoch=disk_save_ctx[7],
+            )
+        if promote_ctx is not None and not has_active_write_transaction(runtime):
+            cache.promote_snapshot_token(
+                runtime,
+                self.context,
+                scope_key=promote_ctx[0],
+                entry=promote_ctx[1],
+                role_key_value=promote_ctx[2],
+                context_key=promote_ctx[3],
+                history_cutoff=promote_ctx[4],
+                core_available=promote_ctx[5],
+                soft_fallback=promote_ctx[6],
+                eff_now=promote_ctx[7],
+            )
+        return payload
 
     @outcome
     def check_storage(self, operator):
@@ -760,7 +1452,9 @@ class ModelManagement:
                     "integrity": integrity[:8], "foreign_key_issues": len(foreign_keys),
                     "foreign_key_sample": [list(row) for row in foreign_keys[:5]]}
 
-    def _changes(self, profile, data, current, inherited):
+    def _changes(self, profile, data, current, inherited, saved=None, inherited_saved=None):
+        saved = saved if saved is not None else current
+        inherited_saved = inherited_saved if inherited_saved is not None else inherited
         changes, reset = data["changes"], data["reset"]
         if (type(changes) is not dict or type(reset) is not list or not changes and not reset
                 or any(type(name) is not str or name not in FIELDS for name in changes)
@@ -783,6 +1477,8 @@ class ModelManagement:
                 profile.group + "." + name for name in reset)
         values = {name: current.fields[profile.group + "." + name].value for name in FIELDS}
         for name in reset:
+            # Validation uses _route_after_save; this value only feeds the type
+            # check below, so it stays the parent's projection.
             values[name] = inherited.fields[profile.group + "." + name].value
         values.update(changes)
         try:
@@ -799,7 +1495,6 @@ class ModelManagement:
                 or type(values["timeout_seconds"]) is not int or not 1 <= values["timeout_seconds"] <= 600
                 or values["replacement_scope"] not in ("all", "plugin", "conversation")):
             raise TaskError("model_configuration_invalid", "check task prompt and output token limit")
-        selected = [values["provider"]] + ([values["fallback"]] if values["fallback"] else [])
         # Routing treats a value saved on *any* configuration layer as the user's
         # contract (``source is not None``); ``explicit`` only marks the layer being
         # edited. Use the same basis here, including the value a reset inherits, so
@@ -811,15 +1506,36 @@ class ModelManagement:
             limit_explicit = inherited.fields[profile.group + ".max_output_tokens"].source is not None
         else:
             limit_explicit = limit_field.source is not None
+        # Compare the route this save actually produces. Recovery, the profile's
+        # declared fallback, host routes and stale layers all feed into it, so
+        # simulate it instead of approximating those rules here.
+        routed_provider, routed_fallback = self._route_after_save(
+            profile, saved, inherited_saved, changes, reset)
         fallback_explicit = ("fallback" in changes or
-                             ("fallback" not in reset and current.fields[profile.group + ".fallback"].explicit))
-        if fallback_explicit and len(set(selected)) != len(selected):
+                             ("fallback" not in reset
+                              and saved.fields[profile.group + ".fallback"].explicit))
+        # A provider reset writes no row of its own, so its inherited value is a
+        # route, not this save's content. That is only safe while the reset also
+        # removes any collision dispatch would see: at the window layer the
+        # inherited primary is exactly what dispatch reads, so it stays checked.
+        checking_provider = ("provider" not in reset or "fallback" in changes
+                             or current.target.layer is ConfigLayer.WINDOW
+                             # A reset only drops this layer's row. When the row
+                             # it inherits is a real value, dispatch will use it,
+                             # so a collision with the saved fallback is real.
+                             or current.fields[profile.group + ".provider"].source is not None)
+        if (checking_provider and fallback_explicit and routed_fallback
+                and routed_fallback == routed_provider):
             raise TaskError("model_fallback_duplicate", "fallback must differ from the primary provider")
+        # Check the route this save leaves behind, including a recovered row that
+        # becomes live again: its capabilities and ceiling were never checked by
+        # the projection, which had replaced or emptied it.
+        selected = [routed_provider] + ([routed_fallback] if routed_fallback else [])
         for provider_id in selected:
-            provider = self.app.router.providers.get(provider_id)
+            provider = self.app.router.provider_for(provider_id)
             if provider is None:
                 raise TaskError("model_provider_unavailable", "the provider has no registered V2 adapter")
-            if not set(profile.capabilities).issubset(provider.capabilities):
+            if not provider_supports_task(profile.kind, profile.capabilities, provider):
                 raise TaskError("model_capability_mismatch", "the provider lacks task capabilities")
             if limit_explicit and values["max_output_tokens"] > provider.maximum_output_tokens:
                 # Only a provider ceiling can refuse a task limit, so the message names
@@ -831,9 +1547,14 @@ class ModelManagement:
                                 f"max_output_tokens is limited to {provider.maximum_output_tokens}"
                                 " by provider " + provider_id)
         try:
-            validate_targets(checked_rules(values["replacement_rules"]), self.app.router.providers,
-                             capabilities=profile.capabilities,
-                             max_output_tokens=values["max_output_tokens"] if limit_explicit else None)
+            rules = checked_rules(values["replacement_rules"])
+            for rule in rules:
+                self.app.router.provider_for(rule.provider_id)
+            validate_targets(rules, self.app.router.providers, capabilities=profile.capabilities,
+                             max_output_tokens=values["max_output_tokens"] if limit_explicit else None,
+                             task_kind=profile.kind)
+        except TaskError:
+            raise
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
         return {profile.group + "." + name: value for name, value in changes.items()}, tuple(
@@ -857,8 +1578,10 @@ class ModelManagement:
             profile = self._profile(kind)
             if "section" in data:
                 return self._configure_section(operator, profile, data, selected_layer)
-            current, inherited, _ = self._snapshots(operator, profile, selected_layer)
-            changes, reset = self._changes(profile, data, current, inherited)
+            current, inherited, _, _, saved, inherited_saved = self._snapshots(
+                operator, profile, selected_layer)
+            changes, reset = self._changes(profile, data, current, inherited, saved,
+                                           inherited_saved)
             target = _target(self.context, selected_layer)
             op_id = "model-settings:" + digest([operator.subject, target.key, kind, key])
             receipt = require(self.app.configuration.patch(operator,

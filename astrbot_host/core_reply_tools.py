@@ -16,9 +16,16 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from companion_v2.agenda.models import AgendaTarget, MemoCursor
-from companion_v2.capabilities.privacy import is_core
 from companion_v2.conversation.agenda_tools import AgendaRoleSession
 from companion_v2.conversation.interaction_tools import POKE_ACTION, POKE_SPEC
+from companion_v2.conversation.media.generated import IMAGE_ACTIONS
+from companion_v2.conversation.relay_tools import RELAY_ACTIONS
+from companion_v2.conversation.reply_settings import (
+    LEAN_PRIVATE_TOOL_GROUPS,
+    PRIVATE_TOOL_GROUPS,
+    PRIVATE_TOOL_PROFILES,
+    private_tool_groups_set,
+)
 from companion_v2.conversation.tool_loop import READ_ACTIONS
 from companion_v2.conversation.native_tool_media import native_image_data
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
@@ -41,17 +48,84 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-11-06.1"
+TOOL_MANIFEST_VERSION = "2026-11-22.1"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
 LEAN_GROUP_ACTIONS = frozenset(LEAN_GROUP_TOOL_ORDER)
+LEAN_PRESERVED_HOST_TOOLS = frozenset({"astr_kb_search"})
 STANDARD_GROUP_ACTIONS = LEAN_GROUP_ACTIONS | frozenset((
     "group.behavior.learn", "group.behavior.feedback", "slang.learn", "turn.evidence",
     POKE_ACTION))
 LEAN_GROUP_INSTRUCTION = ("【群聊精简工具】本轮工具集固定且很小。决定接话时直接写出回复，不要先调用 "
     "group.participation.choose；只有决定旁听或等待时才调用 choose(mode=skip)。"
     "不要因为缺少某个工具就声称无法回应，先用自然语言把当前能说的说完。")
+KB_TOOL_INSTRUCTION = (
+    "需要查设定、文档、作品剧情、百科等知识库资料时，调用 astr_kb_search 并传入简短关键词；"
+    "回忆与当前对话者的私人往事、偏好或群内历史发言时，使用记忆相关工具，不要混用。"
+)
+PRIVATE_EVIDENCE_GROUPS = frozenset(("memory", "calendar", "records"))
+
+
+def private_tool_group(owner: str, action: str) -> str:
+    """Map one private-chat Companion tool to its functional group."""
+    if owner == "evidence":
+        return "evidence"
+    if owner == "agenda":
+        return "agenda"
+    if owner == "calendar":
+        return "calendar"
+    if owner == "memory":
+        return "memory"
+    if owner in ("source", "growth", "relationships", "timeline", "acquaintance"):
+        return "records"
+    if owner in ("interaction", "semantic", "weather", "news"):
+        return "interaction"
+    if owner == "diagnostics":
+        return "diagnostics"
+    if action in RELAY_ACTIONS:
+        return "relay"
+    if action in IMAGE_ACTIONS:
+        return "media"
+    return "extensions"
+
+
+def private_tool_manifest(offered, profile: str, groups=PRIVATE_TOOL_GROUPS):
+    """Return the fixed private-chat Companion tool manifest for one profile.
+
+    ``full`` preserves the complete catalogue.  ``lean`` keeps core companion
+    groups (agenda, calendar, memory, interaction).  ``custom`` keeps only the
+    configured functional groups.  ``none`` removes all Companion tools while
+    leaving host/persona-card tools intact.  The output is sorted canonically by
+    native tool name so ``tools_hash`` stays invariant across turns.
+    """
+    if profile not in PRIVATE_TOOL_PROFILES or profile == "full":
+        return tuple(offered)
+    if profile == "none":
+        return ()
+    if profile == "lean":
+        enabled = LEAN_PRIVATE_TOOL_GROUPS
+    else:
+        try:
+            enabled = private_tool_groups_set(groups)
+        except Exception:
+            enabled = PRIVATE_TOOL_GROUPS
+    include_evidence = bool(enabled & PRIVATE_EVIDENCE_GROUPS)
+    filtered, seen = [], set()
+    for item in offered:
+        action = item.spec.action
+        if action in seen:
+            continue
+        group = private_tool_group(item.owner, action)
+        if group == "evidence":
+            if not include_evidence:
+                continue
+        elif group not in enabled:
+            continue
+        seen.add(action)
+        filtered.append(item)
+    filtered.sort(key=lambda item: native_tool_name(item.spec.action))
+    return tuple(filtered)
 
 
 def group_tool_manifest(offered, profile, *, allow_camera=False):
@@ -59,9 +133,9 @@ def group_tool_manifest(offered, profile, *, allow_camera=False):
 
     ``full`` keeps the ordinary catalogue.  ``lean`` and ``standard`` filter to
     the same ordered allowlist on every turn, so the provider's cached tool
-    prefix does not change when a message happens to carry an image or mention.
-    ``allow_camera`` is the explicit core-admin exception; it is computed from
-    the authenticated actor, never from message text.
+    prefix does not change when a message happens to carry an image, mention,
+    or a different group speaker.  ``allow_camera`` reflects window/role
+    camera availability; execution-time admission enforces core-admin access.
     """
     if profile not in ("lean", "standard"):
         return tuple(offered)
@@ -89,6 +163,40 @@ access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_
 对方明确点名要你戳一戳/拍一拍某个人时，调用 interaction.poke，target 用对方给出的昵称、群名片或 QQ；只戳被点名的人，不猜同名，同一轮对同一人只戳一次。不要用文字假装已经戳过；结果未知时如实说明，不重复调用。"""
 EVIDENCE_SPEC = ToolSpec("turn.evidence", "读取本轮已认证发言的证据句柄，供记忆、日历、成长和关系提案使用。",
                         encode({"type": "object", "properties": {}, "additionalProperties": False}))
+
+PHONE_TASK_INSTRUCTION = (
+    "调用 phone.task.start 时，目标要保留用户交办的全部细节，包括数量、规格、配送方式、红包和优惠条件、明确要求填写的备注和停止条件。"
+    "用户交办手机操作或调整当前订单时，先调用此工具，再根据回执回复。"
+    "结账暂停后的「继续」「改一对一配送」「记得用红包」都是当前订单的接续请求，设置 resume_checkout=true，"
+    "保留原订单和最新要求。结账设置改动后需要新的订单截图，付款应按新回执单独回复「确认支付」。"
+    "单独要求唤醒手机、解锁或查看当前页面时，登记普通手机任务，shopping 和 resume_checkout 都设为 false。"
+    "若工具返回 phone_checkout_unavailable，说明当前私聊没有可接续订单，按回执准确回应。"
+    "收到「点击极速支付」等说法时，按现有结账和确认状态处理；需要新回执时先接续订单，只有后台回执能确认是否实际支付。"
+    "state=queued 表示任务已登记，可以回复已接到任务，等后台回执。"
+    "工具未调用、失败或仍排队时，如实说明当前状态。商品、规格、红包、配送和付款状态以手机任务回执为准。"
+)
+PHONE_TASK_SPEC = ToolSpec(
+    "phone.task.start",
+    "登记当前私聊交办的手机任务，由后台逐步执行。登记回执为 queued。"
+    "点餐、购买等任务须设置 shopping=true，付款前会在原私聊发送订单明细和截图。"
+    "继续已停在结账环节的订单或调整配送、红包时，设置 resume_checkout=true。",
+    encode({"type": "object", "properties": {
+        "goal": {"type": "string", "minLength": 1, "maxLength": 500,
+                 "description": "写成可验证的目标，保留用户指定的应用、商家、商品、数量、规格、配送方式、红包和优惠条件、备注和停止条件。重复交办同一件事时，将本轮新增要求合并到之前的目标。"},
+        "delay_minutes": {"type": "integer", "minimum": 0, "maximum": 1440,
+                          "description": "多少分钟后开始第一步；0 表示下一个空闲回合。"},
+        "max_steps": {"type": "integer", "minimum": 1, "maximum": 20,
+                      "description": "最多允许几步操作，默认按手机配置（最多 20 步）。"},
+        "shopping": {"type": "boolean", "description": "用户交办点餐、购物或其他涉及付款的任务时设为 true。"},
+        "resume_checkout": {"type": "boolean", "description": "调整或接续已登记的当前订单时设为 true，goal 写明原订单和本次调整。单独唤醒手机时设为 false。"},
+    }, "required": ["goal"], "additionalProperties": False}))
+
+
+_GROUP_ADMIN_DENIAL_REASONS = {
+    "screen_scope_denied": "桌面截屏在群聊中只允许核心管理员使用，本次操作已拒绝。",
+    "reality_camera_private_required": "摄像头观察在群聊中只允许核心管理员使用，本次操作已拒绝。",
+    "reality_admin_only": "该现实能力在群聊中只允许核心管理员使用，本次操作已拒绝。",
+}
 
 
 def native_tool_name(action: str) -> str:
@@ -213,6 +321,13 @@ class CoreReplyToolSession:
         self.turn_id = "core-reply:" + digest([self.context.key, _field(self.prepared, "event_id")])
         profile = _field(self.prepared, "group_tool_profile", "full")
         self.group_tool_profile = profile if profile in ("lean", "standard", "full") else "full"
+        private_profile = _field(self.prepared, "private_tool_profile", "full")
+        self.private_tool_profile = private_profile if private_profile in PRIVATE_TOOL_PROFILES else "full"
+        raw_private_groups = _field(self.prepared, "private_tool_groups", PRIVATE_TOOL_GROUPS)
+        try:
+            self.private_tool_groups = private_tool_groups_set(raw_private_groups)
+        except Exception:
+            self.private_tool_groups = PRIVATE_TOOL_GROUPS
         self.native_response = self.native_run_context = None
         self.native_calls = []
         from .core_reply_media import frozen_image_locators
@@ -250,6 +365,9 @@ class CoreReplyToolSession:
                     if (spec.action.startswith(("memo.", "reminder.")) or spec.action == "operation.lookup") and policy.feature_access(context.actor, scope=context.scope,
                             action=spec.action, observed_at=app.tasks.now()).is_success:
                         offered.append(_OfferedTool(spec, "agenda"))
+            phone = getattr(app, "phone_actions", None)
+            if phone is not None and phone.available(context):
+                offered.append(_OfferedTool(PHONE_TASK_SPEC, "phone"))
             memory = getattr(tools, "memory", None)
             if memory is not None and not tools._memory_is_external():
                 offered.extend(_OfferedTool(spec, "memory") for spec in memory.catalog_for(context))
@@ -308,29 +426,84 @@ class CoreReplyToolSession:
                 and getattr(getattr(getattr(self, "event", None), "platform_meta", None), "name", "") != "wechat_native"):
             offered.append(_OfferedTool(POKE_SPEC, "interaction"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
-            allow_camera = is_core(self.application.runtime, self.context.actor.subject)
+            # Expose camera strictly by window/role configuration (already
+            # filtered by external.catalog_for), never by current speaker, so
+            # alternating admin/member turns keep an invariant tools_hash.
+            # Execution-time admission strictly enforces core-admin permission.
+            allow_camera = any(item.spec.action == "reality.camera.observe" for item in offered)
             return group_tool_manifest(offered, self.group_tool_profile, allow_camera=allow_camera)
+        if self.context.scope.kind is ScopeKind.PRIVATE:
+            offered = self._prune_disabled_private_relay(offered)
+            if self.private_tool_profile != "full":
+                return private_tool_manifest(offered, self.private_tool_profile, self.private_tool_groups)
         return tuple(offered)
+
+    def _prune_disabled_private_relay(self, offered):
+        """Omit relay tools in private chat when window relay is fully disabled."""
+        relay_settings = getattr(self.application, "relay_settings", None)
+        if relay_settings is None or not any(item.spec.action in RELAY_ACTIONS for item in offered):
+            return offered
+        try:
+            settings = relay_settings.read(self.context, self.application.tasks.now())
+        except Exception:
+            return offered
+        if (isinstance(settings, Mapping)
+                and settings.get("enabled") is False
+                and settings.get("member_relay_enabled") is False):
+            return [item for item in offered if item.spec.action not in RELAY_ACTIONS]
+        return offered
 
     def choose_participation(self, wrapper, arguments):
         from companion_v2.conversation.native_participation import AUTONOMOUS_REASONS, native_participation_turn
         from companion_v2.conversation.reply_settings import GROUP
         call_id = native_call_id(wrapper, "group.participation.choose", arguments)
+        admission = _field(self.prepared, "group_admission", {}) or {}
+        group_trigger = _field(self.prepared, "group_trigger")
+        addressed = self._addressed_group_turn(admission, group_trigger)
         decision = self.state.get("group_participation")
         if decision is not None:
-            if decision["mode"] != arguments["mode"]:
-                raise TaskError("group_participation_fixed", "the original native group choice is already fixed")
-            return {"state": "succeeded", "effect": "none", "payload": dict(decision), "replayed": True}
+            # Issue #836: the latched decision may predate the authenticated
+            # trigger facts (or belong to a batch without the mention).  When
+            # the current facts show an explicit mention/wakeup the cache was
+            # decided without that signal, so discard it and re-decide.
+            if decision["mode"] == "skip" and addressed:
+                self.state.pop("group_participation", None)
+            else:
+                if decision["mode"] != arguments["mode"]:
+                    raise TaskError("group_participation_fixed", "the original native group choice is already fixed")
+                return {"state": "succeeded", "effect": "none", "payload": dict(decision), "replayed": True}
         if arguments["mode"] == "skip":
             if self.state.get("_business_tools_started") or self.state.get("send_attempts", 0):
                 raise TaskError("group_participation_started", "a group turn cannot revoke an operation that already began")
             if not self._skip_is_alone(wrapper):
                 raise TaskError("group_participation_skip_alone", "listening may accompany learning notes, but no business operation")
-        admission = _field(self.prepared, "group_admission", {}) or {}
-        group_trigger = _field(self.prepared, "group_trigger")
-        mentioned = group_trigger["mentioned"] if group_trigger is not None else admission.get("mentioned")
+            # Issue #836: a merged batch may contain an explicit @ or a host
+            # wakeup even when the surrounding conversation is between other
+            # members.  A skip decided on the whole batch would silently drop
+            # that mention.  Refuse the skip unless the reason itself is an
+            # independent conclusion about the mention (e.g. "@我但明说不用理我").
+            if addressed:
+                reason = arguments.get("reason", "")
+                opted_out = (isinstance(reason, str)
+                             and re.search(r"不用|别理|无需回复|不要打扰|不要理|不用理|不理|无需打扰|忙着|稍后|暂时不回复|不要回应", reason))
+                force_reply = self._mention_force_reply_enabled()
+                if not opted_out or force_reply:
+                    # Issue #836: bounded rejection.  Allow the skip once the
+                    # model has already been forced to reconsider and still
+                    # chooses skip, so a stubborn re-judgement cannot loop the
+                    # whole turn.  _latch_group_skip never latches mention
+                    # batches, so a bypassed skip stays non-persistent.
+                    # The mention_force_reply_enabled switch is a hard rule:
+                    # it never uses the bounded bypass, so a mention batch
+                    # cannot be dropped by repeated skip attempts.
+                    rejections = self.state.get("_mention_skip_rejections", 0)
+                    if force_reply or rejections < 1:
+                        self.state["_mention_skip_rejections"] = rejections + 1
+                        raise TaskError("group_participation_mention_skip_rejected",
+                                        "the batch contains an explicit mention of the bot; decide on the mentioned message itself")
+                    logger.warning("Mention skip allowed after bounded reconsideration")
         act, signature = "", ""
-        if arguments["mode"] == "reply" and not mentioned and admission.get("reason") in AUTONOMOUS_REASONS:
+        if arguments["mode"] == "reply" and not addressed and admission.get("reason") in AUTONOMOUS_REASONS:
             try:
                 snapshot = self.application.reply_settings.snapshot(self.context.actor, self.context, self.application.tasks.now())
                 settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
@@ -359,11 +532,36 @@ class CoreReplyToolSession:
                       if _field(call, "name", _field(_field(call, "function"), "name")) not in annotation_names]
         return len(operations) == 1
 
+    def _mention_force_reply_enabled(self):
+        """Whether the window opted in to the mention force-reply hard rule.
+
+        Reads the registered ``conversation.group_participation`` window value.
+        Any read failure keeps the default (off) so the guard stays identical
+        to the pre-switch behaviour.
+        """
+        try:
+            from companion_v2.conversation.participation import group_participation_settings
+            settings = group_participation_settings(self.application.runtime, self.context)
+            return bool(settings["mention_force_reply_enabled"])
+        except Exception:  # noqa: BLE001 - configuration trouble must not change the guard
+            logger.warning("mention_force_reply_enabled read failed; defaulting to off")
+            return False
+
+    def _addressed_group_turn(self, admission, trigger):
+        facts = admission if trigger is None else trigger
+        return (self.context.scope.kind is ScopeKind.GROUP
+                and isinstance(facts, dict)
+                and bool(facts.get("mentioned") or facts.get("native_wakeup")
+                         or admission.get("reason") == "direct_word"))
+
     def _latch_group_skip(self, wrapper, action, arguments):
         reason = arguments.get("reason", "")
+        admission = _field(self.prepared, "group_admission", {}) or {}
+        group_trigger = _field(self.prepared, "group_trigger")
         if (action != "group.participation.choose" or arguments.get("mode") != "skip"
                 or not isinstance(reason, str)
                 or self.context.scope.kind is not ScopeKind.GROUP
+                or self._addressed_group_turn(admission, group_trigger)
                 or self.state.get("group_participation") is not None
                 or self.state.get("_business_tools_started") or self.state.get("send_attempts", 0)):
             return
@@ -506,6 +704,8 @@ class CoreReplyToolSession:
         if (self.event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is not self.state
                 or self.state.get("prepared") is not self.prepared):
             raise TaskError("core_tool_context_changed", "the original admitted tool context changed")
+        from .core_reply import assert_core_reply_connection
+        assert_core_reply_connection(self.event)
         self.application.require_running()
 
     async def authorize(self, wrapper):
@@ -544,9 +744,15 @@ class CoreReplyToolSession:
                 result = execute_core_behavior(self, action, arguments, native_call_id(wrapper, action, arguments))
             elif offered.owner == "evidence":
                 result = await self.evidence()
+            elif offered.owner == "phone":
+                result = self._phone_task(arguments)
             elif offered.owner == "interaction":
                 result = await self.poke(arguments)
             elif offered.owner == "external":
+                external = getattr(self.application.tools, "external", None)
+                provider = external.providers.get(action) if external is not None else None
+                if provider is not None:
+                    external.admit(provider.descriptor, self.context, self.application.tasks.now())
                 if action in ("image.edit", "image.mask_edit"):
                     # An explicit empty inbound selection means this edit only
                     # uses saved reference_ids. Capturing every current/quoted
@@ -630,10 +836,37 @@ class CoreReplyToolSession:
         except TaskError as error:
             if isinstance(result, dict) and result.get("effect") in ("committed", "unknown"):
                 return encode({key: value for key, value in {**result, "material_state": "unavailable", "code": error.code}.items()
-                               if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state", "code"}})
-            return encode({"state": "failed", "effect": "none", "code": error.code})
+                               if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state",
+                                          "code", "retry_disposition", "reason", "next_step"}})
+            payload = {
+                "state": "failed", "effect": "none", "code": error.code,
+                "retry_disposition": "input_invalid" if error.code == "invalid_tool_arguments" else "stop",
+            }
+            denial_reason = _GROUP_ADMIN_DENIAL_REASONS.get(error.code)
+            if denial_reason:
+                payload["reason"] = denial_reason
+            return encode(payload)
         except (ValueError, ValidationError):
-            return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments"})
+            return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",
+                           "retry_disposition": "input_invalid"})
+
+    def _phone_task(self, arguments):
+        """Register one due phone task; execution happens in the background loop."""
+        app, context = self.application, self.context
+        service = getattr(app, "phone_actions", None)
+        if service is None or not service.available(context):
+            raise TaskError("phone_disabled", "the phone channel is not enabled for this window")
+        goal = arguments.get("goal")
+        if not isinstance(goal, str) or not goal.strip():
+            raise TaskError("invalid_tool_arguments", "a phone task needs a goal")
+        resumed = arguments.get("resume_checkout") is True
+        document = service.create(context, goal,
+                                  delay_minutes=int(arguments.get("delay_minutes") or 0),
+                                  max_steps=arguments.get("max_steps"),
+                                  shopping=arguments.get("shopping") is True or resumed,
+                                  resume_checkout=resumed)
+        return {"state": "queued", "effect": "committed", "payload": document,
+                "reason": "手机任务已登记，等待后台执行。"}
 
     def _read(self, owner, action, arguments):
         app, context = self.application, self.context
@@ -718,23 +951,41 @@ def inject_core_reply_tools(event, req, *, application):
         session = CoreReplyToolSession(event, state, application)
         state["_tool_session"] = session
     from .core_reply_image_prompt import core_image_tools, inject_core_image_prompt
-    # Consent is scoped to the exact AstrBot conversation. A new conversation id
-    # (persona switch, restart, new private session) makes every retained image
-    # capability invisible until it is provisioned for this scope again, so do it
-    # here, on the real event context, before the catalogue is filtered.
-    from .image_access import ensure_image_access
-    ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
-    offered, image_values = core_image_tools(session, session.catalog())
+    private_chat = session.context.scope.kind is ScopeKind.PRIVATE
+    profile = session.private_tool_profile
+    custom_groups = session.private_tool_groups if profile == "custom" else frozenset()
+    if private_chat and (profile == "full" or "extensions" in custom_groups):
+        from .content_access import ensure_content_access
+        ensure_content_access(application.runtime, session.context, observed_at=application.tasks.now())
+        from .game_access import ensure_game_access
+        ensure_game_access(application.runtime, session.context, observed_at=application.tasks.now())
+    media_enabled = (
+        not private_chat or profile == "full" or "media" in custom_groups
+    )
+    if media_enabled:
+        # Consent is scoped to the exact AstrBot conversation. A new conversation id
+        # (persona switch, restart, new private session) makes every retained image
+        # capability invisible until it is provisioned for this scope again, so do it
+        # here, on the real event context, before the catalogue is filtered.
+        from .image_access import ensure_image_access
+        ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
+        offered, image_values = core_image_tools(session, session.catalog())
+    else:
+        offered, image_values = session.catalog(), None
     semantic = getattr(application.tools, "semantic", None)
-    if semantic is not None:
+    if semantic is not None and (
+            not private_chat or profile == "full" or any(item.owner == "semantic" for item in offered)):
         from .core_reply_reaction_delivery import inject_core_reaction_instruction
         inject_core_reaction_instruction(event, req, semantic, session.turn_id)
     existing = list(getattr(getattr(req, "func_tool", None), "tools", ()))
     existing = [tool for tool in existing if not isinstance(tool, CoreReplyFunctionTool)]
     if session.group_tool_profile == "lean" and session.context.scope.kind is ScopeKind.GROUP:
         # The lean manifest owns the group tool surface.  Host shell, file,
-        # python and search schemas are large and rarely needed for banter.
-        existing = []
+        # python and search schemas are large and rarely needed for banter,
+        # while read-only knowledge base search stays preserved on a stable
+        # window-level allowlist.
+        existing = [tool for tool in existing
+                    if getattr(tool, "name", "") in LEAN_PRESERVED_HOST_TOOLS]
     names = {tool.name for tool in existing}
     appended = [CoreReplyFunctionTool(session, item) for item in offered
                 if native_tool_name(item.spec.action) not in names]
@@ -749,6 +1000,8 @@ def inject_core_reply_tools(event, req, *, application):
         if (session.group_tool_profile == "lean" and session.context.scope.kind is ScopeKind.GROUP
                 and LEAN_GROUP_INSTRUCTION not in req.system_prompt):
             req.system_prompt = (req.system_prompt.rstrip() + "\n\n" + LEAN_GROUP_INSTRUCTION).lstrip()
+        if any(item.owner == "phone" for item in offered) and PHONE_TASK_INSTRUCTION not in req.system_prompt:
+            req.system_prompt += "\n\n" + PHONE_TASK_INSTRUCTION
         if any(item.owner == "authoring" for item in offered):
             from companion_v2.conversation.content.authoring_workflow import INSTRUCTION as AUTHORING_INSTRUCTION
             if AUTHORING_INSTRUCTION not in req.system_prompt:
@@ -759,6 +1012,11 @@ def inject_core_reply_tools(event, req, *, application):
                 req.system_prompt += "\n\n" + DIAGNOSTIC_INSTRUCTION
     elif getattr(req, "func_tool", None) is not None:
         req.func_tool = ToolSet(tools=sorted(existing, key=lambda tool: tool.name))
+    mounted_tools = getattr(getattr(req, "func_tool", None), "tools", ())
+    if (any(getattr(tool, "name", "") in LEAN_PRESERVED_HOST_TOOLS for tool in mounted_tools)
+            and KB_TOOL_INSTRUCTION not in (getattr(req, "system_prompt", "") or "")):
+        current = getattr(req, "system_prompt", "") or ""
+        req.system_prompt = (current.rstrip() + "\n\n" + KB_TOOL_INSTRUCTION).lstrip()
     inject_core_image_prompt(session, req, offered, image_values)
     return tuple(tool._action for tool in appended)
 

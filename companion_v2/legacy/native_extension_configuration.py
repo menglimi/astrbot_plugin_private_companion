@@ -31,26 +31,14 @@ REVIEW_ONLY_PLUGINS = {
 PORTABLE_FIELDS = {
     "game": frozenset((
         "native_v2.tictactoe_enabled", "native_v2.gomoku_enabled",
-        "native_v2.pig_dice_enabled", "native_v2.blackjack_enabled",
+        "native_v2.pig_dice_enabled", "native_v2.pig_dice_target_score",
+        "native_v2.blackjack_enabled",
         "native_v2.xiangqi_enabled", "native_v2.turtle_soup_enabled",
         "native_v2.turtle_soup_content_level", "native_v2.turtle_soup_max_hints",
         "native_v2.draw_guess_enabled", "native_v2.draw_guess_max_guesses",
         "native_v2.draw_guess_duration_seconds",
         "context.enable_private_qq_game_context",
         "context.recent_game_result_ttl_minutes",
-        "rooms.max_group_rooms", "rooms.max_private_rooms",
-        "rooms.empty_player_timeout_seconds", "rooms.idle_timeout_seconds",
-        "game.commentary_cooldown_seconds",
-        "multiplayer.turn_timeout_seconds",
-        "multiplayer.swap_request_cooldown_seconds",
-        "multiplayer.swap_request_expiry_seconds",
-        "gomoku.enabled", "xiangqi.enabled", "tictactoe.enabled",
-        "turtle_soup.enabled", "turtle_soup.max_hints",
-        "turtle_soup.content_level", "turtle_soup.max_players",
-        "pig_dice.enabled", "pig_dice.target_score",
-        "draw_guess.enabled", "draw_guess.duration_seconds",
-        "draw_guess.max_guesses", "blackjack.enabled",
-        "blackjack.max_players",
     )),
     "together": frozenset((
         "conversation.chat_provider_id",
@@ -145,6 +133,15 @@ LIVE_RENAMES = {
 }
 
 
+GAME_RENAMES = {
+    "pig_dice.target_score": "native_v2.pig_dice_target_score",
+    "turtle_soup.max_hints": "native_v2.turtle_soup_max_hints",
+    "turtle_soup.content_level": "native_v2.turtle_soup_content_level",
+    "draw_guess.max_guesses": "native_v2.draw_guess_max_guesses",
+    "draw_guess.duration_seconds": "native_v2.draw_guess_duration_seconds",
+}
+
+
 def preview_value(name, field, value):
     if (field.rsplit(".", 1)[-1].endswith("prompt")
             and isinstance(value, str)):
@@ -225,7 +222,7 @@ def convert_native_extension_configuration(name, source, defaults, schema):
         return NativeExtensionConfigurationMigration({}, (), ("旧拓展配置或目标 schema 不可用。",))
     changes = {}
     differences = []
-    renamed = LIVE_RENAMES if name == "live" else {}
+    renamed = LIVE_RENAMES if name == "live" else GAME_RENAMES if name == "game" else {}
     for source_path, value in _leaves(source):
         target_path = renamed.get(source_path, source_path)
         if name == "together" and source_path == "conversation.record_shared_experiences":

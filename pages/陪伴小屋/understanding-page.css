@@ -1,4 +1,4 @@
-.understanding-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text)}
+.understanding-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text);container:understanding-page / inline-size}
 .understanding-tabs{position:sticky;top:var(--sp-2);z-index:5;display:flex;align-items:center;gap:var(--sp-1);min-width:0;overflow-x:auto;padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface);scrollbar-width:thin}
 .understanding-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);flex:none;min-height:40px;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-2xs);background:transparent;color:var(--t-text-soft);font:inherit;white-space:nowrap;cursor:pointer}
 .understanding-tabs button svg{width:16px;height:16px}
@@ -8,8 +8,9 @@
 .understanding-tabs-scope{margin-left:auto;padding:var(--sp-1) var(--sp-2);border-radius:var(--r-2xs);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-tiny);white-space:nowrap}
 .understanding-panel{display:grid;gap:var(--sp-4);min-width:0}
 .understanding-panel[hidden]{display:none}
+/* 总览 / 图片 / 文件 / 网页均有 4 张指标卡，仅视频与合并转发为 3 张卡，按实际卡数排满整行，不再出现 3+1 孤儿卡。 */
 .understanding-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-3);min-width:0}
-.understanding-panel:not([data-understanding-panel=overview]) .understanding-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
 .understanding-stat{display:grid;align-content:start;gap:var(--sp-1);min-width:0;min-height:104px;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface)}
 .understanding-stat>span{overflow-wrap:anywhere;color:var(--t-text-faint);font-size:var(--fs-tiny)}
 .understanding-stat>strong{overflow-wrap:anywhere;color:var(--t-text-strong);font-size:var(--fs-lead);line-height:1.25;font-weight:700}
@@ -35,9 +36,22 @@
 .understanding-editor-workspace .wb-section-layout{display:block}
 .understanding-editor-workspace .wb-section-sidebar{display:none}
 .understanding-editor-workspace .wb-section-panel{padding:0}
+/* 网页理解独立使用 #webUnderstandingWorkspace，不显示共享媒体工作台（避免回退渲染出总览的 6 项许可开关）。 */
+.understanding-panel[data-understanding-panel=web] #contextImageWorkspace{display:none}
+/* 总览 · 角色级理解许可：6 项私聊/群聊开关按「图片 / 视频 / 文件」三行两列成对排列。 */
+.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-4)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field{align-items:center;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field-main{grid-template-columns:minmax(8em,1fr) auto;align-items:center;column-gap:var(--sp-3)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:end;justify-content:flex-end;width:auto;max-width:none}
 .understanding-forward-workspace,.understanding-panel>[data-understanding-editor-slot]{min-width:0}
 .understanding-forward-workspace .host-options-panel{border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface);box-shadow:none}
 .understanding-forward-workspace .host-options-heading p,.understanding-forward-workspace .host-options-copy small{color:var(--t-text-faint)}
-@media(max-width:900px){.understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
-@media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel:not([data-understanding-panel=overview]) .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stat{min-height:80px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions{padding:var(--sp-3)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:right}}
+@container understanding-page (max-width:720px){
+  .understanding-stats,.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container understanding-page (max-width:600px){
+  .understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:900px){.understanding-stats,.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
+@media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stat{min-height:80px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions{padding:var(--sp-3)}.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:right}}
 @media(prefers-reduced-motion:reduce){.understanding-tabs button,.understanding-shortcut{scroll-behavior:auto;transition:none}}

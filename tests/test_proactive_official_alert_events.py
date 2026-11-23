@@ -235,10 +235,10 @@ class OfficialAlertContactTests(ContactScheduleFixture, unittest.IsolatedAsyncio
 
         async def staged(envelope):
             if envelope.original.output_format == "proactive_plan":
-                self.assertIn("官方预警", envelope.original.instruction)
+                self.assertIn("官方预警", envelope.original.user_instruction)
                 return answered('{"decision":"send","decision_confidence":0.9,'
                                 '"angle":"提醒防范大风","facts":[],"avoid":[]}')
-            self.assertIn("coverage_quote", envelope.original.instruction)
+            self.assertIn("coverage_quote", envelope.original.user_instruction)
             return answered(json.dumps({"text": "请留意这条大风预警。", "coverage": "covered",
                 "coverage_quote": "全市发布大风预警"}, ensure_ascii=False))
 

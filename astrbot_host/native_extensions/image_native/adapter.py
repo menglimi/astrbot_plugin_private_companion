@@ -71,11 +71,11 @@ class NativeImageProvider:
             properties = {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}}
             required = ["prompt"]
             if operation == "edit":
-                properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图或 reference_ids 时省略此字段，不能填写路径。"}
+                properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不能填写路径。"}
                 properties["reference_ids"] = {"type": "array", "items": {"type": "string"},
-                    "description": "从当前角色的 V2 参考目录中选择素材 ID；群聊使用还需打开角色的群聊参考图开关。"}
+                    "description": "可选：从当前角色的 V2 参考目录中选择素材 ID；群聊使用还需打开角色的群聊参考图开关。"}
                 properties["reference_indices"] = {"type": "array", "items": {"type": "integer"},
-                    "description": "可选：按 0 起始编号精确选择本轮私聊或群聊附图；省略表示使用全部附图，填写 [] 表示只使用 reference_ids。"}
+                    "description": "可选：按 0 起始编号精确选择本轮私聊或群聊附图；省略时自动选中本轮附图/引用图，若本轮无图则自动选用当前会话最近生成的图片；仅使用 reference_ids 时才填写 []。"}
                 properties["reference_roles"] = {"type": "array",
                     "items": {"type": "string", "enum": list(EDIT_REFERENCE_ROLES)},
                     "description": "按 reference_indices 的选择顺序、再按 reference_ids 顺序指定用途；必须属于素材声明的角色用途。"}
@@ -87,7 +87,8 @@ class NativeImageProvider:
                 required.extend(("source_index", "mask_index"))
             tools.append({"action": "image." + operation, "capability": "image." + operation,
                           "source_owner": PROVIDER_ID,
-                          "description": ({"generate": "生成图片", "edit": "编辑已保存原图或当前私聊输入图片",
+                          "description": ({"generate": "根据文字描述从零生成全新图片（仅用于无底图的新图创作；修改本轮附图或刚生成的图片请改用 image.edit）",
+                                           "edit": "基于本轮附图、引用图、当前会话最近生成的图片、已保存产物或角色参考素材进行改图与编辑；改表情、换装、微调已有图片时优先使用，针对当前附图或刚生成的图片只需传 prompt 即可自动选图",
                                            "mask_edit": "使用明确底图与蒙版进行局部编辑，蒙版外像素由 V2 按原图保护"}[operation]
                                           ) + "并返回原操作与产物回执；采用和发送由 V2 负责。",
                           "parameters": {"type": "object", "properties": properties,
@@ -107,64 +108,83 @@ class NativeImageProvider:
 
     def _request(self, request: dict) -> dict:
         self._live()
-        value = json.loads(document(request))
-        required = {"schema", "invocation_id", "parent_task_id", "tool_call_id", "action", "origin_key",
-                    "context", "binding", "arguments", "arguments_hash", "deadline_at"}
-        if not isinstance(value, dict) or required - value.keys() or value["schema"] != SCHEMA:
-            raise NativeImageError("invalid_native_request")
-        for name in ("invocation_id", "origin_key", "arguments_hash", "parent_task_id", "tool_call_id", "deadline_at"):
-            require_text(value[name], name)
-        deadline_timestamp(value["deadline_at"])
-        binding = value["binding"]
-        if (not isinstance(binding, dict) or binding.get("provider") != PROVIDER_ID
-                or binding.get("version") != self.version or binding.get("generation") != self.owner.generation
-                or binding.get("capability") != value["action"]):
-            raise NativeImageError("native_provider_binding_mismatch")
-        if value["action"] not in {"image." + op for op in getattr(self.owner.backend, "operations", ("generate", "edit"))}:
-            raise NativeImageError("unsupported_image_operation")
-        if (not isinstance(value["context"], dict) or not value["context"]
-                or not isinstance(value["arguments"], dict)):
-            raise NativeImageError("invalid_native_context")
-        args = value["arguments"]
-        operation = value["action"].split(".", 1)[1]
-        allowed = {"prompt", "negative_prompt"}
-        if operation == "edit":
-            allowed.update(("artifact_id", "reference_ids", "reference_indices", "reference_roles"))
-        elif operation == "mask_edit":
-            allowed.update(("source_index", "mask_index", "reference_ids"))
-        if args.keys() - allowed or "prompt" not in args:
-            raise NativeImageError("invalid_image_arguments")
-        require_text(args["prompt"], "prompt")
-        if not isinstance(args.get("negative_prompt", ""), str):
-            raise NativeImageError("invalid_negative_prompt")
-        if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
-            require_text(args["artifact_id"], "artifact_id")
-            if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
-                raise NativeImageError("invalid_image_arguments")
-        if "reference_ids" in args:
-            references = args["reference_ids"]
-            if (type(references) is not list or len(references) > MAX_REFERENCE_IMAGES
-                    or any(type(item) is not str or not item or len(item) > 128 for item in references)
-                    or len(set(references)) != len(references)):
-                raise NativeImageError("invalid_reference_ids")
-        if operation == "edit" and "reference_roles" in args:
-            roles = args["reference_roles"]
-            if (type(roles) is not list or not 1 <= len(roles) <= MAX_REFERENCE_IMAGES
-                    or any(role not in EDIT_REFERENCE_ROLES for role in roles)):
-                raise NativeImageError("invalid_reference_roles")
-        if operation == "edit" and "reference_indices" in args:
-            indices = args["reference_indices"]
-            if (type(indices) is not list or len(indices) > MAX_REFERENCE_IMAGES
-                    or any(type(index) is not int or not 0 <= index < MAX_REFERENCE_IMAGES
-                           for index in indices)
-                    or len(set(indices)) != len(indices)):
-                raise NativeImageError("invalid_reference_indices")
-        if operation == "mask_edit":
-            if (any(type(args.get(name)) is not int or not 0 <= args[name] < MAX_REFERENCE_IMAGES
-                    for name in ("source_index", "mask_index"))
-                    or args["source_index"] == args["mask_index"]):
-                raise NativeImageError("invalid_mask_reference_indices")
-        return value
+        try:
+            value = json.loads(document(request))
+            required = {"schema", "invocation_id", "parent_task_id", "tool_call_id", "action", "origin_key",
+                        "context", "binding", "arguments", "arguments_hash", "deadline_at"}
+            if not isinstance(value, dict) or required - value.keys() or value["schema"] != SCHEMA:
+                raise NativeImageError("invalid_native_request", unconfirmed=False)
+            for name in ("invocation_id", "origin_key", "arguments_hash", "parent_task_id", "tool_call_id", "deadline_at"):
+                require_text(value[name], name)
+            deadline_timestamp(value["deadline_at"])
+            binding = value["binding"]
+            if (not isinstance(binding, dict) or binding.get("provider") != PROVIDER_ID
+                    or binding.get("version") != self.version or binding.get("generation") != self.owner.generation
+                    or binding.get("capability") != value["action"]):
+                raise NativeImageError("native_provider_binding_mismatch", unconfirmed=False)
+            if value["action"] not in {"image." + op for op in getattr(self.owner.backend, "operations", ("generate", "edit"))}:
+                raise NativeImageError("unsupported_image_operation", unconfirmed=False)
+            if (not isinstance(value["context"], dict) or not value["context"]
+                    or not isinstance(value["arguments"], dict)):
+                raise NativeImageError("invalid_native_context", unconfirmed=False)
+            args = value["arguments"]
+            operation = value["action"].split(".", 1)[1]
+            allowed = {"prompt", "negative_prompt"}
+            if operation == "edit":
+                allowed.update(("artifact_id", "reference_ids", "reference_indices", "reference_roles"))
+            elif operation == "mask_edit":
+                allowed.update(("source_index", "mask_index", "reference_ids"))
+            if args.keys() - allowed or "prompt" not in args:
+                raise NativeImageError("invalid_image_arguments", unconfirmed=False)
+            require_text(args["prompt"], "prompt")
+            if not isinstance(args.get("negative_prompt", ""), str):
+                raise NativeImageError("invalid_negative_prompt", unconfirmed=False)
+            if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
+                require_text(args["artifact_id"], "artifact_id")
+                if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
+                    raise NativeImageError("invalid_image_arguments", unconfirmed=False)
+            if "reference_ids" in args:
+                references = args["reference_ids"]
+                if (type(references) is not list or len(references) > MAX_REFERENCE_IMAGES
+                        or any(type(item) is not str or not item or len(item) > 128 for item in references)
+                        or len(set(references)) != len(references)):
+                    raise NativeImageError("invalid_reference_ids", unconfirmed=False)
+            if operation == "edit" and "reference_roles" in args:
+                roles = args["reference_roles"]
+                if (type(roles) is not list or not 1 <= len(roles) <= MAX_REFERENCE_IMAGES
+                        or any(role not in EDIT_REFERENCE_ROLES for role in roles)):
+                    raise NativeImageError("invalid_reference_roles", unconfirmed=False)
+            if operation == "edit" and "reference_indices" in args:
+                indices = args["reference_indices"]
+                if (type(indices) is not list or len(indices) > MAX_REFERENCE_IMAGES
+                        or any(type(index) is not int or not 0 <= index < MAX_REFERENCE_IMAGES
+                               for index in indices)
+                        or len(set(indices)) != len(indices)):
+                    raise NativeImageError("invalid_reference_indices", unconfirmed=False)
+            if operation == "mask_edit":
+                if (any(type(args.get(name)) is not int or not 0 <= args[name] < MAX_REFERENCE_IMAGES
+                        for name in ("source_index", "mask_index"))
+                        or args["source_index"] == args["mask_index"]):
+                    raise NativeImageError("invalid_mask_reference_indices", unconfirmed=False)
+            return value
+        except NativeImageError as exc:
+            if exc.unconfirmed:
+                raise NativeImageError(exc.code, diagnostics=exc.diagnostics, unconfirmed=False) from None
+            raise
+
+    def operation_error_code(self, request: dict, operation_id: str) -> str | None:
+        """Read the non-secret stored error code for one settled operation."""
+        if not isinstance(request, dict) or not isinstance(operation_id, str) or not operation_id:
+            return None
+        context = request.get("context")
+        if not isinstance(context, dict) or not context:
+            return None
+        try:
+            operation = self.owner.store.get(scope_key(context), operation_id)
+        except Exception:
+            return None
+        code = operation.get("error") if isinstance(operation, dict) else None
+        return code if isinstance(code, str) and code else None
 
     @staticmethod
     def _same_request(request: dict, operation: dict):
@@ -254,9 +274,12 @@ class NativeImageProvider:
         budget_seconds = self.task_timeout_seconds()
         await checked(before_dispatch)
         scope = scope_key(value["context"])
-        tickets = self._host_references(host_references)
+        try:
+            tickets = self._host_references(host_references)
+        except NativeImageError as exc:
+            raise NativeImageError(exc.code, unconfirmed=False) from None
         if tickets and not callable(fetch_reference):
-            raise NativeImageError("native_reference_reader_unavailable")
+            raise NativeImageError("native_reference_reader_unavailable", unconfirmed=False)
         refs = ()
         reference_offers = ()
         resolver = None
@@ -266,15 +289,18 @@ class NativeImageProvider:
         inbound = tuple(item for item in tickets if "roles" not in item)
         saved_by_id = {item["reference_id"]: item for item in tickets if "roles" in item}
         if any(identifier not in saved_by_id for identifier in requested_ids):
-            raise NativeImageError("native_reference_id_unavailable")
+            raise NativeImageError("native_reference_id_unavailable", unconfirmed=False)
         saved = tuple(saved_by_id[identifier] for identifier in requested_ids)
         if operation == "edit" and arguments.get("artifact_id", "") != "":
             artifact_id = arguments["artifact_id"]
-            metadata, _ = self.owner.store.artifact(scope, artifact_id)
-            original_operation = self.owner.store.get(scope, metadata["operation_id"])
+            try:
+                metadata, _ = self.owner.store.artifact(scope, artifact_id)
+                original_operation = self.owner.store.get(scope, metadata["operation_id"])
+            except NativeImageError as exc:
+                raise NativeImageError(exc.code, unconfirmed=False) from None
             if (original_operation["state"] != "succeeded"
                     or original_operation["generation"] != metadata["provider_generation"]):
-                raise NativeImageError("image_artifact_generation_mismatch")
+                raise NativeImageError("image_artifact_generation_mismatch", unconfirmed=False)
             original = await self.owner.read_artifact(scope, artifact_id, origin_key=value["origin_key"],
                                                      provider_generation=original_operation["generation"], authorize=before_dispatch)
             refs = (ReferenceImage(artifact_id, original.data, metadata["operation_id"], metadata["sha256"]),)
@@ -283,34 +309,37 @@ class NativeImageProvider:
                 try:
                     selected_tickets = select_edit_tickets(arguments, inbound, saved_by_id)
                 except ReferenceSelectionError as error:
-                    raise NativeImageError(error.code) from None
+                    raise NativeImageError(error.code, unconfirmed=False) from None
                 if not selected_tickets:
-                    raise NativeImageError("native_reference_missing")
+                    raise NativeImageError("missing_edit_source", unconfirmed=False)
                 selected = []
                 for item in selected_tickets:
                     try:
                         role = edit_role(arguments, selected_tickets, item)
                     except ReferenceSelectionError as error:
-                        raise NativeImageError(error.code) from None
+                        raise NativeImageError(error.code, unconfirmed=False) from None
                     selected.append((item, role))
                 selected = tuple(selected)
             elif operation == "mask_edit":
                 selected_tickets = (*inbound, *saved)
                 if max(arguments["source_index"], arguments["mask_index"]) >= len(selected_tickets):
-                    raise NativeImageError("invalid_mask_reference_indices")
+                    raise NativeImageError("invalid_mask_reference_indices", unconfirmed=False)
                 source = selected_tickets[arguments["source_index"]]
                 mask = selected_tickets[arguments["mask_index"]]
                 if (("roles" in source and "edit_source" not in source["roles"])
                         or ("roles" in mask and "edit_mask" not in mask["roles"])):
-                    raise NativeImageError("native_reference_role_unavailable")
+                    raise NativeImageError("native_reference_role_unavailable", unconfirmed=False)
                 selected = (((source, "edit_source"), (mask, "edit_mask"))
                             if source is not None and mask is not None and source is not mask else ())
             else:
                 selected = ()
             if selected and not callable(fetch_reference):
-                raise NativeImageError("native_reference_reader_unavailable")
-            reference_offers = tuple(ReferenceOffer(item["reference_id"], item["source_key"], item["content_hash"], role)
-                                     for item, role in selected)
+                raise NativeImageError("native_reference_reader_unavailable", unconfirmed=False)
+            try:
+                reference_offers = tuple(ReferenceOffer(item["reference_id"], item["source_key"], item["content_hash"], role)
+                                         for item, role in selected)
+            except NativeImageError as exc:
+                raise NativeImageError(exc.code, unconfirmed=False) from None
             if reference_offers:
                 ticket_by_id = {offer.reference_id: (item, role)
                                 for (item, role), offer in zip(selected, reference_offers)}
@@ -329,19 +358,22 @@ class NativeImageProvider:
             if (not isinstance(image_prompt, dict) or set(image_prompt) != {"positive", "negative"}
                     or not isinstance(image_prompt["positive"], str)
                     or not isinstance(image_prompt["negative"], str)):
-                raise NativeImageError("invalid_image_prompt_preferences")
+                raise NativeImageError("invalid_image_prompt_preferences", unconfirmed=False)
             envelope["image_prompt"] = image_prompt
         nai_prompt = value.get("nai_prompt")
         if nai_prompt is not None:
             if (not isinstance(nai_prompt, dict) or set(nai_prompt) != {"positive", "negative"}
                     or any(not isinstance(nai_prompt[key], str) for key in ("positive", "negative"))):
-                raise NativeImageError("invalid_image_prompt_preferences")
+                raise NativeImageError("invalid_image_prompt_preferences", unconfirmed=False)
             envelope["nai_prompt"] = nai_prompt
-        invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
-                                     operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
-                                     reference_ids=(tuple(ref.reference_id for ref in refs)
-                                                    or tuple(offer.reference_id for offer in reference_offers)),
-                                     envelope=envelope, model_call=model_call)
+        try:
+            invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
+                                         operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
+                                         reference_ids=(tuple(ref.reference_id for ref in refs)
+                                                        or tuple(offer.reference_id for offer in reference_offers)),
+                                         envelope=envelope, model_call=model_call)
+        except NativeImageError as exc:
+            raise NativeImageError(exc.code, unconfirmed=False) from None
         operation = await self.owner.execute(invocation, references=refs, reference_offers=reference_offers,
                                              resolve_references=resolver, before_dispatch=before_dispatch)
         if operation["state"] == "pending":

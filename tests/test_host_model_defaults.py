@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 import unittest
 
 from astrbot_host.model_settings import conversation_provider_resolver
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.configuration.service import ConfigurationService
 from companion_v2.execution.models import TaskError
@@ -63,6 +64,48 @@ class HostModelDefaultRoutingTests(ModelFixture, unittest.IsolatedAsyncioTestCas
         self.assertEqual(completion.draft.text, "private draft")
         self.assertEqual(self.gateway.observe(self.context, "task-1").unwrap()["plan"]
                          ["fields"]["model.fixture.read.fallback"]["source"], "host_conversation")
+
+    async def test_new_host_default_is_loaded_as_inherited_fallback(self):
+        self.patch_model(provider="primary")
+        self.selected = "added-after-start"
+        lookups = []
+
+        def lookup(provider_id):
+            lookups.append(provider_id)
+            return self.provider(provider_id) if provider_id == self.selected else None
+
+        self.router.provider_lookup = lookup
+        self.responses["primary"] = ProviderResponse("not_started", usage=Amount(0, 0),
+                                                     receipt_ref="not-started")
+        completion = await self.gateway.generate(self.model_run(), self.request())
+
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["primary", "added-after-start"])
+        self.assertEqual(lookups, ["added-after-start"])
+        self.assertIn("added-after-start", self.router.providers)
+
+    def test_a_window_save_that_duplicates_the_fallback_fails_dispatch(self):
+        # 证明保存路径拦截的是真实的派发失败：window 层是派发读取的层，
+        # 显式重复的备用会让每一次 resolve() 都以 model_fallback_duplicate 失败。
+        self.patch_model(provider="primary", fallback="primary")
+
+        with self.assertRaises(TaskError) as caught:
+            self.router.resolve(self.model_run(), self.request())
+
+        self.assertEqual(caught.exception.code, "model_fallback_duplicate")
+
+    def test_an_explicit_override_leaves_the_saved_route_untouched(self):
+        # 独立检查用 provider_id 覆盖时，不该顺手恢复保存的安装层路由：否则
+        # 审计来源和输出上限会被一条本次调用根本不使用的路线改写。
+        installation = ConfigTarget(self.context.scope.installation_id, ConfigLayer.INSTALLATION)
+        self.patch_model(target=installation, provider="not-registered")
+
+        plan = self.router.resolve(self.model_run(), self.request(), provider_id="fallback")
+
+        self.assertEqual([provider.binding.provider for provider in plan.providers], ["fallback"])
+        field = plan.audit["fields"]["model.fixture.read.provider"]
+        self.assertNotEqual(field["source"], "registry_default")
+        self.assertNotEqual(field["source"], "host_conversation")
 
     def test_saved_configuration_changes_still_reject_an_obsolete_plan(self):
         run = self.model_run()

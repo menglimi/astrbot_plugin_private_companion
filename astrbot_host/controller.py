@@ -527,6 +527,11 @@ class AstrBotStagingController:
             ensure_image_access(self.runtime, self.session.profile.target, observed_at=self.now())
         except Exception as error:
             logger.warning("[CompanionV2] 生图能力授权补齐失败 error_type=%s", type(error).__name__)
+        try:
+            from .content_access import ensure_content_access
+            ensure_content_access(self.runtime, self.session.profile.target, observed_at=self.now())
+        except Exception as error:
+            logger.warning("[CompanionV2] 创作能力授权补齐失败 error_type=%s", type(error).__name__)
         from .knowledge_sources import attach_official_knowledge, import_configured_sources_at_startup
         attach_official_knowledge(self.session.application, self.context)
         # 配置的世界书材料在启动时刷新一次；来源缺失或损坏只记日志，不拦启动，重复刷新按内容去重。
@@ -1222,6 +1227,10 @@ class AstrBotStagingController:
                     self.runtime.close()
                     self.runtime = None
         finally:
+            from .exchange_rate import close_exchange_rate_services
+            from .pricing_sources import close_pricing_catalog_services
+            await close_exchange_rate_services(self)
+            await close_pricing_catalog_services(self)
             if self.native_extensions is not None:
                 await self.native_extensions.aclose()
                 self.native_extensions = None

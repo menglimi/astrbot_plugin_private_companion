@@ -18,7 +18,7 @@ from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.outcome import Outcome
 
-from .management_identity import dashboard_operator
+from .management_identity import current_request_username, require_management_operator
 from .service_balance import (NEWAPI_DEFAULT_DIVISOR, configured_balance_port,
                               configured_balance_source, display_amount,
                               balance_observation_data, balance_failure_data)
@@ -27,7 +27,8 @@ from .service_balance_provider import balance_provider_choices
 
 
 PREFIX = "/astrbot_plugin_private_companion/host-options"
-VOICE_FIELDS = frozenset(("enabled", "probability", "private_probability", "group_probability"))
+VOICE_SWITCHES = ("enabled", "singsing_enabled")
+VOICE_FIELDS = frozenset((*VOICE_SWITCHES, "probability", "private_probability", "group_probability"))
 POKE_FIELDS = frozenset(("enabled", "trigger_probability", "replies", "back_probability", "back_times",
                          "model_reply_enabled", "model_reply_probability",
                          "context_reply_enabled", "context_delay_seconds"))
@@ -71,8 +72,8 @@ class HostOptionsWebAPI:
                 (PREFIX + "/weather", self.weather, ["POST"], "Save host weather source settings")]
 
     def _operator(self):
-        username = request.username
-        if (type(username) is not str or not username.strip() or username.startswith("api_key:")):
+        username = current_request_username(request)
+        if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if request.query:
             raise TaskError("host_options_request_invalid", "host settings do not accept query overrides")
@@ -81,7 +82,7 @@ class HostOptionsWebAPI:
             raise TaskError("staging_host_terminated", "plugin is stopped")
         if controller.runtime is None:
             raise TaskError("staging_not_initialized", "load the V2 profile first")
-        return dashboard_operator(controller.runtime, username, at=controller.now())
+        return require_management_operator(controller.runtime, username, at=controller.now())
 
     @staticmethod
     def _config_group(config, name):
@@ -99,9 +100,9 @@ class HostOptionsWebAPI:
         voice_values = {key: voice_config.get(key, default) for key, default in voice_defaults.items()}
         try:
             policy = VoiceReplyPolicy(**voice_values)
-            voice_enabled = voice_config.get("enabled", False)
-            if type(voice_enabled) is not bool:
-                raise ValueError("voice switch is invalid")
+            voice_switches = {key: voice_config.get(key, False) for key in VOICE_SWITCHES}
+            if any(type(value) is not bool for value in voice_switches.values()):
+                raise ValueError("voice switches must be boolean")
             poke_policy = PokePolicy.parse(config.get("poke"))
             runtime_config = self._config_group(config, "runtime")
             defaults = ForwardIntakePolicy()
@@ -114,7 +115,7 @@ class HostOptionsWebAPI:
         except (TaskError, TypeError, ValueError) as error:
             raise TaskError("host_options_invalid", "check the host voice, received-poke and forward settings") from error
 
-        voice = {"enabled": voice_enabled, "probability": policy.probability,
+        voice = {**voice_switches, "probability": policy.probability,
                  "private_probability": policy.private_probability,
                  "group_probability": policy.group_probability}
         poke = {"enabled": poke_policy.enabled, "trigger_probability": poke_policy.trigger_probability,
@@ -218,8 +219,8 @@ class HostOptionsWebAPI:
             if type(section) is not dict:
                 raise TaskError("host_options_invalid", "a host settings section has an invalid shape")
             section.update(changes)
-            if "enabled" in changes and type(changes["enabled"]) is not bool:
-                raise TaskError("host_options_invalid", "the voice switch must be boolean")
+            if any(key in changes and type(changes[key]) is not bool for key in VOICE_SWITCHES):
+                raise TaskError("host_options_invalid", "voice switches must be boolean")
             for key in ("probability", "private_probability", "group_probability"):
                 if key not in changes:
                     continue

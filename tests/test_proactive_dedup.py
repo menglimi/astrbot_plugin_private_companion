@@ -212,8 +212,9 @@ class ProactiveDedupTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCa
         await self.contact(app)
         request = self.contact_calls()[-1].original
         instruction = request.instruction
-        self.assertIn("短话题最少共享锚点 3 个", instruction)
-        self.assertIn("较长话题最低重叠比例 0.65", instruction)
+        self.assertIn("短话题最少共享锚点 3 个", request.user_instruction)
+        self.assertIn("较长话题最低重叠比例 0.65", request.user_instruction)
+        self.assertNotIn("短话题最少共享锚点 3 个", instruction)
         intent = json.loads(next(item.payload for item in request.context.materials
                                  if item.purpose == "contact_intent"))
         local_now = self.clock.now().astimezone(ZoneInfo(intent["timezone"]))

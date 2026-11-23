@@ -1,0 +1,240 @@
+/* 角色策略页（学习与反思 → 角色策略）。
+ *
+ * 专属政策卡片体系：
+ *   - 卡片抬头展示主标题、说明、作用范围柔和徽章与按需浮现的「全部恢复继承」；
+ *   - 字段升级为温润浅底子卡格（--t-surface-soft + 细腻描边 + --r-sm 圆角），
+ *     在容器宽 >=720px 下两列等高对齐，零断线、零左右失衡空白；
+ *   - 单字段「恢复继承」收敛在标题行右侧作为轻量文字按钮，仅已覆写时出现，
+ *     不再另起整行或制造幽灵占位空洞；
+ *   - 卡片内动作条保持静态流，杜绝双吸底条互相挤压或腰斩下方卡片内容；
+ *   - 存在未保存修改时，在视口底部正中轻浮现单一圆角保存胶囊（最大宽 560px），
+ *     天然避开右下角小屋画中画浮窗，并为页面底部预留 96px 安全滚距。 */
+
+.learning-hub:has(.learning-policy-workspaces){max-width:1480px;margin-inline:auto;width:100%}
+.learning-policy-workspaces{
+  display:flex;flex-direction:column;gap:var(--sp-4);min-width:0;
+  padding-bottom:96px;container:learning-policy / inline-size;
+}
+
+/* 政策主卡片：清晰边界、温润层次与舒展内边距 */
+.learning-policy-workspaces .config-editors{
+  min-width:0;padding:var(--sp-5);border:1px solid var(--t-line);
+  border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow);
+}
+.learning-policy-workspaces .wb-policy .wb-card-head{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;
+  margin:0 0 var(--sp-4);padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line);
+}
+.learning-policy-workspaces .wb-policy .wb-card-copy{flex:1 1 260px;min-width:0}
+.learning-policy-workspaces .wb-policy .wb-card-copy h3{
+  margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:700;line-height:1.3;
+}
+.learning-policy-workspaces .wb-policy .wb-card-copy p{
+  margin:var(--sp-1) 0 0;max-width:none;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6;
+}
+.learning-policy-workspaces .wb-policy .wb-card-meta{
+  display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap;min-width:0;
+}
+.learning-policy-workspaces .wb-policy-scope{
+  display:inline-flex;align-items:center;min-height:26px;padding:2px var(--sp-3);
+  border:1px solid color-mix(in srgb,var(--t-accent) 26%,var(--t-line));border-radius:var(--r-pill);
+  background:var(--t-accent-quiet);color:var(--t-accent-ink);
+  font-size:var(--fs-micro);font-weight:600;line-height:1.35;white-space:nowrap;
+}
+.learning-policy-workspaces .wb-policy-apply{
+  display:inline-flex;align-items:center;min-height:26px;padding:2px var(--sp-2);
+  border:1px solid var(--t-line);border-radius:var(--r-pill);
+  background:var(--t-surface-soft);color:var(--t-text-soft);
+  font-size:var(--fs-micro);line-height:1.35;white-space:nowrap;
+}
+.learning-policy-workspaces .wb-policy-inherit-all{
+  display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:2px var(--sp-2);
+  border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface);
+  color:var(--t-text-soft);font:inherit;font-size:var(--fs-micro);font-weight:550;cursor:pointer;
+  white-space:nowrap;transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease,color var(--dur-fast) ease;
+}
+.learning-policy-workspaces .wb-policy-inherit-all:hover:not(:disabled){
+  border-color:var(--t-accent);background:var(--t-accent-quiet);color:var(--t-accent-ink);
+}
+.learning-policy-workspaces .wb-policy-inherit-all:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.learning-policy-workspaces .wb-policy-inherit-all:disabled{opacity:.48;cursor:default}
+.learning-policy-workspaces .wb-policy-inherit-all svg{width:12px;height:12px;flex:none}
+
+/* 逻辑段落分隔与标题 */
+.learning-policy-workspaces .wb-group+.wb-group{
+  margin-top:var(--sp-5);padding-top:var(--sp-4);border-top:1px dashed var(--t-line-firm);
+}
+.learning-policy-workspaces .wb-group-head{
+  margin:0 0 var(--sp-3);color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650;
+}
+
+/* 默认单列，容器宽 >=720px 时排成等高对称两列子卡格（覆盖 1280px 与 1440px 桌面）。 */
+.learning-policy-workspaces .wb-fields{
+  max-width:none;display:grid;grid-template-columns:minmax(0,1fr);
+  align-items:stretch;gap:var(--sp-3);
+}
+@container learning-policy (min-width:720px){
+  .learning-policy-workspaces .wb-fields{
+    grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);
+  }
+}
+
+/* 温润子卡格：去掉裸底线与中央断口，每个字段各自成格、底缘对齐 */
+.learning-policy-workspaces .wb-policy .wb-field{
+  display:flex;flex-direction:column;grid-template-columns:none;align-items:stretch;gap:0;
+  min-width:0;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface-soft);
+  transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease;
+}
+.learning-policy-workspaces .wb-policy .wb-field.is-inherited{background:var(--t-surface-soft)}
+.learning-policy-workspaces .wb-policy .wb-field:hover{
+  border-color:var(--t-line-firm);
+  background:color-mix(in srgb,var(--t-surface-soft) 72%,var(--t-surface-raised));
+}
+.learning-policy-workspaces .wb-policy .wb-field::before{left:0;top:10px;bottom:10px;width:3px}
+.learning-policy-workspaces .wb-policy .wb-field.is-dirty{
+  border-color:color-mix(in srgb,var(--t-accent) 44%,var(--t-line));
+  background:color-mix(in srgb,var(--t-accent-quiet) 32%,var(--t-surface-soft));
+}
+.learning-policy-workspaces .wb-policy .wb-field.is-reset-pending{
+  border-color:color-mix(in srgb,var(--t-warn) 44%,var(--t-line));
+  background:color-mix(in srgb,var(--t-warn-quiet) 35%,var(--t-surface-soft));
+}
+.learning-policy-workspaces .wb-policy .wb-field:has(.wb-segmented),
+.learning-policy-workspaces .wb-policy .wb-field:has(.wb-word-editor){grid-column:1/-1}
+
+.learning-policy-workspaces .wb-policy .wb-field-main{
+  display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);flex:1 1 auto;min-width:0;
+}
+.learning-policy-workspaces .wb-policy .wb-field-head{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);width:100%;min-width:0;
+}
+.learning-policy-workspaces .wb-policy .wb-label{
+  display:inline-flex;align-items:center;justify-content:flex-start;gap:var(--sp-1);min-width:0;text-align:left;
+  color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;line-height:1.4;
+}
+.learning-policy-workspaces .wb-policy .wb-help{
+  margin:0;max-width:none;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.58;
+}
+.learning-policy-workspaces .wb-policy .wb-control{
+  display:flex;align-items:center;justify-content:flex-start;
+  width:100%;max-width:none;margin-top:auto;padding-top:var(--sp-1);min-width:0;
+}
+.learning-policy-workspaces .wb-policy .wb-control :is(select,input[type=text],input[type=number],textarea){
+  background:var(--t-surface-raised);border-color:var(--t-line-firm);
+}
+.learning-policy-workspaces .wb-policy .wb-control>.wb-number{width:100%;justify-content:flex-start}
+.learning-policy-workspaces .wb-policy .wb-control>.wb-switch{min-height:34px}
+.learning-policy-workspaces .wb-policy .wb-control>.wb-segmented{
+  background:var(--t-surface-raised);border-color:var(--t-line);
+}
+.learning-policy-workspaces .wb-policy .wb-word-editor{width:100%}
+.learning-policy-workspaces .wb-policy .wb-keywords{
+  background:var(--t-surface-raised);border-color:var(--t-line-firm);
+}
+
+/* 单字段轻量「恢复继承」文字按钮：内嵌于标题行右侧，零多余占位 */
+.learning-policy-workspaces .wb-policy .wb-policy-reset{
+  flex:none;display:inline-flex;align-items:center;gap:4px;margin-left:auto;
+  padding:2px var(--sp-2);border:1px solid transparent;border-radius:var(--r-pill);
+  background:transparent;color:var(--t-accent-ink);font:inherit;font-size:var(--fs-micro);
+  font-weight:550;line-height:1.4;opacity:.86;cursor:pointer;white-space:nowrap;
+  transition:opacity var(--dur-fast) ease,background var(--dur-fast) ease,border-color var(--dur-fast) ease;
+}
+.learning-policy-workspaces .wb-policy .wb-policy-reset:hover,
+.learning-policy-workspaces .wb-policy .wb-policy-reset:focus-visible{
+  opacity:1;border-color:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));background:var(--t-accent-quiet);
+}
+.learning-policy-workspaces .wb-policy .wb-policy-reset:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.learning-policy-workspaces .wb-policy .wb-policy-reset.is-pending{
+  opacity:1;border-color:color-mix(in srgb,var(--t-warn) 38%,var(--t-line));
+  background:var(--t-warn-quiet);color:var(--t-warn-ink);
+}
+.learning-policy-workspaces .wb-policy .wb-policy-reset svg{width:11px;height:11px;flex:none}
+
+/* 静态卡片底栏：彻底移除多套 position:sticky 与 200px 强制右缩进 */
+.learning-policy-workspaces .wb-actions{
+  position:static;bottom:auto;z-index:auto;
+  margin:var(--sp-4) 0 0;padding:var(--sp-3) 0 0;
+  border-top:1px solid var(--t-line);border-radius:0;
+  background:transparent;box-shadow:none;
+}
+#homeShell[data-away="true"] .learning-policy-workspaces .wb-actions{padding-right:0}
+.learning-policy-workspaces .wb-policy .wb-actions:not(.is-dirty) .wb-save{
+  border-color:var(--t-line-firm);background:var(--t-surface-soft);color:var(--t-text-soft);
+}
+.learning-policy-workspaces .wb-policy .wb-actions:not(.is-dirty) .wb-save:hover:not(:disabled){
+  border-color:var(--t-accent);background:var(--t-accent-quiet);color:var(--t-accent-ink);
+}
+
+/* 居中智能悬浮保存胶囊：仅存在未保存修改时出现，同步扣除左栏与右下角画中画安全区 */
+.learning-policy-dock{
+  --lp-dock-left:var(--sp-4);
+  --lp-dock-right:var(--sp-4);
+  position:fixed;
+  left:calc(var(--lp-dock-left) + (100vw - var(--lp-dock-left) - var(--lp-dock-right)) / 2);
+  bottom:20px;z-index:12;transform:translateX(-50%);
+  width:min(560px,calc(100vw - var(--lp-dock-left) - var(--lp-dock-right)));
+  max-width:560px;pointer-events:none;
+}
+.learning-policy-dock[hidden]{display:none}
+.learning-policy-dock-inner{
+  pointer-events:auto;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);
+  padding:var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4);
+  border:1px solid color-mix(in srgb,var(--t-accent) 36%,var(--t-line-firm));border-radius:var(--r-pill);
+  background:color-mix(in srgb,var(--t-surface-raised) 95%,var(--t-surface));
+  box-shadow:var(--t-shadow-lift);backdrop-filter:blur(10px);
+  animation:lp-dock-in var(--dur) cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes lp-dock-in{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.learning-policy-dock-copy{display:flex;align-items:center;gap:var(--sp-2);min-width:0;font-size:var(--fs-tiny)}
+.learning-policy-dock-dot{
+  flex:none;width:8px;height:8px;border-radius:50%;background:var(--t-accent-solid);
+  box-shadow:0 0 0 3px var(--t-accent-quiet);
+}
+.learning-policy-dock-copy strong{flex:none;color:var(--t-text-strong);font-weight:650;white-space:nowrap}
+.learning-policy-dock-copy span{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--t-text-soft);
+}
+.learning-policy-dock-actions{display:flex;align-items:center;gap:var(--sp-2);flex:none}
+.learning-policy-dock-actions .button{
+  border-radius:var(--r-pill);min-height:34px;padding:var(--sp-1) var(--sp-3);white-space:nowrap;
+}
+
+/* 桌面端：完整左栏（220px）与右下角画中画（176px + 外壳边距）安全区双向避让，全宽零碰撞 */
+@media(min-width:1121px){
+  #homeShell[data-away="true"] .learning-policy-dock{
+    --lp-dock-left:calc(var(--shell-rail, 220px) + var(--sp-4));
+    --lp-dock-right:calc(var(--shell-pip-w, 176px) + var(--shell-pad, 18px) + var(--sp-4));
+  }
+}
+/* 平板/中屏（761–1120px）：同步适配收起态 68px / 展开态 220px 左栏与右侧画中画 */
+@media(min-width:761px) and (max-width:1120px){
+  #homeShell[data-away="true"] .learning-policy-dock{
+    --lp-dock-left:calc(var(--shell-rail-collapsed, 68px) + var(--sp-4));
+    --lp-dock-right:calc(var(--shell-pip-w, 176px) + var(--shell-pad, 18px) + var(--sp-4));
+  }
+  #homeShell[data-away="true"][data-rail="expanded"] .learning-policy-dock{
+    --lp-dock-left:calc(var(--shell-rail, 220px) + var(--sp-4));
+  }
+}
+
+@media(max-width:860px){
+  .learning-policy-workspaces .config-editors{padding:var(--sp-3)}
+  .learning-policy-workspaces .wb-policy .wb-field{padding:var(--sp-3)}
+}
+@media(max-width:760px){
+  .learning-policy-workspaces .wb-policy .wb-card-body{padding:0}
+  .learning-policy-workspaces .wb-policy .wb-segmented{
+    width:100%;display:grid;grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);
+  }
+  .learning-policy-workspaces .wb-policy .wb-segmented-option span{width:100%;padding:0 var(--sp-2)}
+  .learning-policy-workspaces .wb-actions{margin-inline:0;padding-inline:0}
+  .learning-policy-dock{--lp-dock-left:12px;--lp-dock-right:12px;bottom:12px}
+  .learning-policy-dock-inner{flex-wrap:wrap;border-radius:var(--r-md);padding:var(--sp-3)}
+  .learning-policy-dock-actions{width:100%;justify-content:flex-end}
+}
+@media(prefers-reduced-motion:reduce){
+  .learning-policy-dock-inner{animation:none!important}
+}
+:root:is([data-motion="off"],[data-motion="low"]) .learning-policy-dock-inner{animation:none!important}

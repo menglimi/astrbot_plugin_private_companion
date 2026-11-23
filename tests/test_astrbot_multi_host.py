@@ -671,21 +671,23 @@ class MultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             recreated.require_manifest(rejected)
         self.assertEqual(error.exception.code, "host_binding_changed")
 
-    async def test_existing_profile_reports_retryable_error_until_platform_loads(self):
+    async def test_existing_profile_loads_while_platform_accounts_wait(self):
         (await self.controller.initialize_profile()).unwrap()
         await self.controller.terminate()
         platforms = self.native.platforms
         self.native.platforms = {}
 
         restored = self.make_controller()
-        unavailable = await restored.load_existing()
-        self.assertEqual(unavailable.failure.code, "host_platform_unavailable")
-        self.assertIsNone(restored.runtime)
-
-        self.native.platforms = platforms
         loaded = await restored.load_existing()
         self.assertTrue(loaded.is_success, loaded.failure)
         self.assertTrue(loaded.unwrap()["loaded"])
+        self.assertIsNotNone(restored.runtime)
+        self.assertTrue(all(row["state"] == "waiting" for row in restored.status()["account_connections"]))
+
+        self.native.platforms = platforms
+        started = await restored.start()
+        self.assertTrue(started.is_success, started.failure)
+        self.assertTrue(restored._accepting)
 
     async def test_missing_plugin_module_reports_import_failure_without_exception_values(self):
         with patch.object(self.controller, "_assemble", side_effect=ModuleNotFoundError("synthetic-private-value")):

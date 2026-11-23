@@ -45,6 +45,7 @@ class GameAccessWebAPI:
                 result = access.status(operator, at) if command is None else access.configure(operator, command, at)
                 if command is not None:
                     await registry.reconcile_service("game")
+                    result["status"] = access.status(operator, at)
                 result["runtime"] = registry.status("game")
                 return outcome_response(Outcome.success(result))
         except TaskError as error:

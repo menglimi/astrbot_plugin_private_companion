@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import inspect
 import json
+import re
 from typing import Awaitable, Callable
 
 from companion_v2.conversation.foreground import ModelDraft, PromptRequest
@@ -18,6 +19,12 @@ from .response_diagnostics import ResponseDiagnostics
 
 MAX_TOOL_CATALOG = 64
 MAX_MODEL_OUTPUT_TOKENS = 65_536
+_HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+_HEX_BYTES = b"0123456789abcdef"
+_STR_TYPE_SET = {str}
+_INT_TYPE_SET = {int}
+_LEN64_SET = {64}
+_EMPTY_AVAILABILITY_HASH = digest({"deferred": [], "unavailable": []})
 
 # A model call whose provider never returned a usage receipt would otherwise keep
 # its ceiling in ``held_tokens`` for the lifetime of the installation. The
@@ -51,16 +58,19 @@ def released_receipt(reason: str, receipt_ref: str | None = None) -> str:
 @dataclass(frozen=True)
 class Amount:
     tokens: int
-    cost_microusd: int
+    cost_microusd: int | None
     input_tokens: int | None = None
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
     output_tokens: int | None = None
 
     def __post_init__(self):
-        for value in (self.tokens, self.cost_microusd):
-            if type(value) is not int or not 0 <= value <= 10**12:
-                raise ValueError("usage must be bounded integer tokens and millionths of USD")
+        if type(self.tokens) is not int or not 0 <= self.tokens <= 10**12:
+            raise ValueError("usage must be bounded integer tokens and millionths of USD")
+        if self.cost_microusd is not None and (
+            type(self.cost_microusd) is not int or not 0 <= self.cost_microusd <= 10**12
+        ):
+            raise ValueError("usage must be bounded integer tokens and millionths of USD")
         for value in (self.input_tokens, self.cached_input_tokens, self.cache_creation_tokens, self.output_tokens):
             if value is not None and (type(value) is not int or not 0 <= value <= 10**12):
                 raise ValueError("usage detail must be a bounded nonnegative token count")
@@ -85,7 +95,7 @@ class BudgetPolicy:
     def __post_init__(self):
         if type(self.enabled) is not bool:
             raise ValueError("hard budget admission needs an explicit switch")
-        if not all(isinstance(value, Amount) for value in (
+        if not all(isinstance(value, Amount) and type(value.cost_microusd) is int for value in (
                 self.installation, self.bot, self.role, self.window, self.background)):
             raise ValueError("all daily budget ceilings must be explicit")
         if (self.background.tokens > self.installation.tokens
@@ -336,7 +346,7 @@ class CacheSignature:
         if not self.context_multiset_hash:
             object.__setattr__(self, "context_multiset_hash", digest(sorted(self.context_hashes)))
         if not self.context_availability_hash:
-            object.__setattr__(self, "context_availability_hash", digest({"deferred": [], "unavailable": []}))
+            object.__setattr__(self, "context_availability_hash", _EMPTY_AVAILABILITY_HASH)
         if self.context_material_count == -1:
             object.__setattr__(self, "context_material_count", len(self.context_hashes))
         if (type(self.system_parts) is not tuple or len(self.system_parts) > 32
@@ -353,9 +363,14 @@ class CacheSignature:
                   self.message_count, self.system_message_count, self.system_chars,
                   self.system_bytes, self.tool_count, self.tool_bytes, self.image_count,
                   self.audio_count, self.video_count)
-        if (any(type(value) is not str or len(value) != 64
-                or any(char not in "0123456789abcdef" for char in value) for value in hashes)
-                or any(type(value) is not int or not 0 <= value <= 2**31 - 1 for value in counts)
+        if (set(map(type, hashes)) != _STR_TYPE_SET
+                or set(map(len, hashes)) != _LEN64_SET):
+            raise ValueError("cache signature must contain bounded hashes and context metadata")
+        joined = "".join(hashes)
+        if (not joined.isascii()
+                or bool(joined.encode("ascii").translate(None, _HEX_BYTES))
+                or set(map(type, counts)) != _INT_TYPE_SET
+                or min(counts) < 0 or max(counts) > 2147483647
                 or type(self.context_observed) is not bool
                 or type(self.estimates_observed) is not bool
                 or type(self.message_estimates_observed) is not bool
@@ -481,6 +496,7 @@ class LocalProvider:
     # 允许空串而不是必填：本地测试适配器和部分第三方传输没有"模型"这个概念，
     # 让它们编一个名字出来，比让它们留空更糟。
     model: str = ""
+    supports_video_relay: bool = False
 
     def __post_init__(self):
         if type(self.default_streaming) is not bool:
@@ -505,6 +521,21 @@ class LocalProvider:
         object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if type(self.supports_model_override) is not bool:
             raise ValueError("model override support must be explicit")
+        if type(self.supports_video_relay) is not bool:
+            raise ValueError("video relay capability flag must be explicit")
+
+
+def provider_supports_task(task_kind: str, required_capabilities, provider: LocalProvider) -> bool:
+    """Whether ``provider`` satisfies ``required_capabilities`` (allowing OpenAI visual video relay for narration)."""
+    if set(required_capabilities).issubset(provider.capabilities):
+        return True
+    if (
+        str(task_kind) == "conversation.video_narration"
+        and getattr(provider, "supports_video_relay", False) is True
+        and "text" in provider.capabilities
+    ):
+        return True
+    return False
 
 
 @dataclass(frozen=True)

@@ -34,8 +34,13 @@ function harness(responses) {
   let nextTimerId = 1;
   let modelReads = 0;
   const bridge = {
-    apiGet: async route => {
-      requests.push(['GET', route]);
+    apiGet: async (rawRoute, query) => {
+      rawRoute = rawRoute || '';
+      let route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      if (query && Object.keys(query).length) route += '?' + new URLSearchParams(query).toString();
+      const fullRoute = route;
+      route = route.split('?')[0];
+      requests.push(['GET', fullRoute]);
       if (route.endsWith('/memory')) {
         const value = responses.memory;
         return typeof value === 'function' ? value(requests) : value || {rss_bytes: 64 * 1024 * 1024,
@@ -48,7 +53,7 @@ function harness(responses) {
       };
       if (route.endsWith('/voice')) return responses.voice || {providers: []};
       if (route.endsWith('/image')) return responses.image || {actions: []};
-      if (route.startsWith('/config?sections=system.prompts')) {
+      if (fullRoute.startsWith('/config?sections=system.prompts')) {
         const value = responses.systemPrompts;
         return typeof value === 'function' ? value(requests) : value;
       }
@@ -58,9 +63,11 @@ function harness(responses) {
           : responses.model;
         return typeof value === 'function' ? value(modelReads++) : value || {tasks: [], providers: []};
       }
-      throw new Error('unexpected GET ' + route);
+      throw new Error('unexpected GET ' + fullRoute);
     },
-    apiPost: async (route, body) => {
+    apiPost: async (rawRoute, body) => {
+      rawRoute = rawRoute || '';
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
       requests.push(['POST', route, body]);
       const value = responses.posts?.[route];
       const result = typeof value === 'function' ? value(body, requests) : value;
@@ -121,7 +128,7 @@ function harness(responses) {
   window.Blob = BlobMock;
   window.atob = value => Buffer.from(value, 'base64').toString('binary');
   vm.runInNewContext(source, {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
-    Array, Set, Promise});
+    Array, Set, Promise, URLSearchParams});
   return {
     page: window.CompanionMaintenancePage, requests, root, exports: csvExports, downloads, confirmations, audioPreviews, revokedAudioUrls,
     advanceTimers: elapsed => {
@@ -1692,8 +1699,8 @@ test('maintenance shows connected external token ledgers without mixing their bu
   assert.match(root.innerHTML, /50/);
   assert.match(root.innerHTML, /25/);
   assert.match(root.innerHTML, /V2 角色预算保持独立|不计入 V2 角色预算/);
-  assert.match(root.innerHTML, /V2 联动摘要/);
-  assert.match(root.innerHTML, /只读分类计数，不含记忆正文/);
+  assert.match(root.innerHTML, /本插件联动摘要/);
+  assert.match(root.innerHTML, /只读分类计数/);
   assert.match(root.innerHTML, /私聊内容/);
   assert.match(root.innerHTML, /<dt>合计<\/dt><dd>10<\/dd>/);
   const externalOverview = root.innerHTML.split('data-maint-view="overview"')[1].split('data-maint-view="prompts"')[0];
@@ -1912,7 +1919,9 @@ test('maintenance completes the V1 task prompt workspace on the V2 model contrac
   assert.match(root.innerHTML, /运行时提示组成/);
   assert.match(root.innerHTML, /业务任务指令/);
   assert.match(root.innerHTML, /本页可编辑/);
-  assert.match(root.innerHTML, /恢复角色级继承值/);
+  assert.match(root.innerHTML, /恢复上级继承值/);
+  assert.match(root.innerHTML, /shield-check"><\/i>角色默认/);
+  assert.doesNotMatch(root.innerHTML, /<small>当前窗口<\/small>/);
   assert.match(root.innerHTML, /回复规则：\{\{task_input\}\}/);
   assert.match(root.innerHTML, /内置版本/);
   assert.match(root.innerHTML, /v7/);
@@ -1971,7 +1980,7 @@ test('maintenance completes the V1 task prompt workspace on the V2 model contrac
   assert.equal(saved[1].kind, 'conversation.reply');
   assert.equal(Object.keys(saved[1].changes).length, 0);
   assert.deepEqual(Array.from(saved[1].reset), ['prompt']);
-  assert.match(root.innerHTML, /已恢复角色级继承值/);
+  assert.match(root.innerHTML, /已恢复上级继承值/);
 
   root.input('临时覆盖', '[data-prompt-draft]');
   root.input('   ', '[data-prompt-draft]');
@@ -2102,6 +2111,8 @@ test('system prompt workspace edits one rule, shows risk and restores the built-
     relationship: '默认相处资料说明',
     knowledge: '默认知识说明',
     memory: '默认记忆说明',
+    reply_style: '默认表达风格',
+    reply_time_style: '默认时间表达',
   };
   const section = {
     settings: {...defaults, voice_drama: '自定义 Drama 规则'},
@@ -2135,6 +2146,15 @@ test('system prompt workspace edits one rule, shows risk and restores the built-
   const reset = h.requests.filter(([method, route]) => method === 'POST' && route === '/config/configure').at(-1);
   assert.equal(Object.keys(reset[2].changes).length, 0);
   assert.equal(reset[2].reset[0], 'voice_drama');
+
+  h.root.click('[data-system-prompt]', {systemPrompt: 'reply_style'});
+  assert.match(h.root.innerHTML, /停用此段/);
+  h.root.click('[data-system-prompt-disable]');
+  h.root.click('[data-system-prompt-save]');
+  await flush();
+  const disabled = h.requests.filter(([method, route]) => method === 'POST' && route === '/config/configure').at(-1);
+  assert.equal(disabled[2].changes.reply_style, '');
+  assert.equal(disabled[2].reset.length, 0);
   h.page.unmount();
 });
 
@@ -2181,4 +2201,363 @@ test('the token total splits conversation, plugin and extension into one proport
   const bareTrack = bareSplit.split('class="maint-cache-zip"')[1].split('</div>')[0];
   assert.doesNotMatch(bareTrack, /data-part="extension"/, '未接入的拓展不画成 0 宽度段');
   bare.page.unmount();
+});
+
+function resilienceHarness(options = {}) {
+  const listeners = {};
+  const windowListeners = new Map();
+  const requests = [];
+  const timers = new Map();
+  let nextTimerId = 1;
+  let intervalCb = null;
+  let htmlWrites = 0;
+  let htmlValue = '';
+  let lucideCalls = 0;
+  let stringifyCalls = 0;
+  const updatedNode = {textContent: ''};
+  const bridge = options.bridge === null ? null : {
+    apiGet: async (rawRoute, query) => {
+      const route = (rawRoute || '').startsWith('/') ? rawRoute : '/' + (rawRoute || '');
+      const fullRoute = query && Object.keys(query).length ? route + '?' + new URLSearchParams(query).toString() : route;
+      requests.push(['GET', fullRoute]);
+      if (typeof options.onGet === 'function') return options.onGet(route, query, requests);
+      if (route.endsWith('/maintenance')) return options.maintenance;
+      if (route.endsWith('/balance')) return options.balance || {configured: false, available: false, state: 'not_configured'};
+      if (route.endsWith('/voice')) return options.voice || {providers: [{id: 'tts-1', loaded: true}]};
+      if (route.endsWith('/image')) return options.image || {actions: []};
+      return options.model || {tasks: [], providers: [{id: '<main>', capabilities: ['text']}]};
+    },
+    apiPost: async (rawRoute, body) => {
+      const route = (rawRoute || '').startsWith('/') ? rawRoute : '/' + (rawRoute || '');
+      requests.push(['POST', route, body]);
+      if (typeof options.onPost === 'function') return options.onPost(route, body, requests);
+      return {};
+    },
+  };
+  const product = {
+    role: () => ({model_api: '/astrbot_plugin_private_companion/model', config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
+    roleLabel: () => '和纱',
+    bridgeNow: () => bridge,
+    bridgeFor: async () => {
+      if (bridge) return bridge;
+      const err = new Error('bridge_unavailable');
+      err.code = 'bridge_unavailable';
+      throw err;
+    },
+    ...(options.product || {}),
+  };
+  const window = {
+    CompanionProduct: product,
+    lucide: {createIcons() { lucideCalls += 1; }},
+    setInterval: (cb, ms) => { assert.equal(ms, 45000); intervalCb = cb; return 99; },
+    clearInterval: () => { intervalCb = null; },
+    setTimeout: (cb, delay = 0) => {
+      const id = nextTimerId++;
+      timers.set(id, {cb, delay});
+      return id;
+    },
+    clearTimeout: id => timers.delete(id),
+    addEventListener(type, fn) {
+      if (!windowListeners.has(type)) windowListeners.set(type, new Set());
+      windowListeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      windowListeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(event) {
+      for (const fn of [...(windowListeners.get(event.type) || [])]) fn(event);
+    },
+  };
+  const root = {
+    get innerHTML() { return htmlValue; },
+    set innerHTML(v) { htmlWrites += 1; htmlValue = v; },
+    addEventListener(type, fn) { listeners[type] = fn; },
+    removeEventListener(type) { delete listeners[type]; },
+    querySelector: selector => selector === '.maint-updated' ? updatedNode : null,
+    querySelectorAll: () => [],
+    click(selector, dataset = {}) {
+      listeners.click?.({target: {closest: value => value === selector ? {dataset} : null}});
+    },
+  };
+  const trackedJson = {
+    ...JSON,
+    parse: (...args) => JSON.parse(...args),
+    stringify: (...args) => { stringifyCalls += 1; return JSON.stringify(...args); },
+  };
+  vm.runInNewContext(source, {
+    window,
+    document: {visibilityState: 'visible'},
+    URL, Blob, Intl, Date, Number, Object, String, Math, Array, Set, Promise, URLSearchParams,
+    JSON: trackedJson,
+  });
+  return {
+    page: window.CompanionMaintenancePage,
+    window,
+    root,
+    requests,
+    updatedNode,
+    get intervalCb() { return intervalCb; },
+    get htmlWrites() { return htmlWrites; },
+    get lucideCalls() { return lucideCalls; },
+    get stringifyCalls() { return stringifyCalls; },
+    advanceTimers(elapsed) {
+      for (const [id, timer] of [...timers]) {
+        if (timer.delay <= elapsed) { timers.delete(id); timer.cb(); }
+      }
+    },
+  };
+}
+
+test('group window resolves private role model_api instead of calling 404 group maintenance route', async () => {
+  const today = localDay();
+  const payload = {
+    generated_at: today + 'T10:00:00',
+    summary: daily(today, {calls: 5, tokens: 9500}),
+    totals: daily(today, {calls: 5, tokens: 9500}),
+    daily: [daily(today, {calls: 5, tokens: 9500})],
+    history: [daily(today, {calls: 5, tokens: 9500})],
+    providers: [{id: '<main>', model: 'claude'}],
+    recent: [],
+    budget: {},
+  };
+  const h = resilienceHarness({
+    product: {
+      scopeKey: () => 'inst-1:group-1:role-a',
+      target: () => ({target_id: 'group-1', scope_kind: 'group', roles: [{role_id: 'role-a', model_api: '/astrbot_plugin_private_companion/targets/group-1/roles/role-a/model'}]}),
+      roleTarget: () => ({target_id: 'priv-1', scope_kind: 'private', roles: [{role_id: 'role-a', model_api: '/astrbot_plugin_private_companion/targets/priv-1/roles/role-a/model'}]}),
+      role: () => ({role_id: 'role-a', model_api: '/astrbot_plugin_private_companion/targets/group-1/roles/role-a/model'}),
+    },
+    onGet: route => {
+      if (route.includes('/targets/group-1/')) {
+        const err = new Error('Request failed with status code 404');
+        err.status = 404;
+        throw err;
+      }
+      if (route === '/targets/priv-1/roles/role-a/model/maintenance') return payload;
+      if (route.endsWith('/balance')) return {configured: false, available: false, state: 'not_configured'};
+      if (route.endsWith('/voice')) return {providers: []};
+      if (route.endsWith('/image')) return {actions: []};
+      if (route === '/targets/priv-1/roles/role-a/model') return {tasks: [], providers: [{id: '<main>', capabilities: ['text']}]};
+      throw new Error('unexpected GET ' + route);
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+  assert.ok(h.requests.some(([m, r]) => m === 'GET' && r === '/targets/priv-1/roles/role-a/model/maintenance'));
+  assert.ok(!h.requests.some(([, r]) => r.includes('/targets/group-1/')), 'must never hit GroupModelWebAPI maintenance route');
+  assert.match(h.root.innerHTML, /9,500/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+  h.page.unmount();
+});
+
+test('group-only role without private model_api renders helpful non-error guidance with zero 404 requests', async () => {
+  const h = resilienceHarness({
+    product: {
+      scopeKey: () => 'inst-1:group-only:role-g',
+      target: () => ({target_id: 'group-only', scope_kind: 'group'}),
+      roleTarget: () => ({target_id: 'group-only', scope_kind: 'group', roles: [{role_id: 'role-g', model_api: '/astrbot_plugin_private_companion/targets/group-only/roles/role-g/model'}]}),
+      role: () => ({role_id: 'role-g', model_api: '/astrbot_plugin_private_companion/targets/group-only/roles/role-g/model'}),
+      roleLabel: () => '群聊助手',
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+  assert.equal(h.requests.length, 0, 'group-only role must not issue doomed 404 GET requests');
+  assert.match(h.root.innerHTML, /data-maint-guidance="group-only"/);
+  assert.match(h.root.innerHTML, /当前群聊角色暂未绑定私聊维护接口/);
+  assert.match(h.root.innerHTML, /群聊助手/);
+  assert.match(h.root.innerHTML, /账号与会话/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+  assert.doesNotMatch(h.root.innerHTML, /role="alert"/);
+  h.page.unmount();
+});
+
+test('non-destructive error handling preserves loaded snapshot on 45s poll and transient manual retry, and never poisons cache', async () => {
+  const today = localDay();
+  let mode = 'ok';
+  let calls = 4;
+  const makePayload = at => ({
+    generated_at: at,
+    summary: daily(today, {calls, tokens: 12345}),
+    totals: daily(today, {calls, tokens: 12345}),
+    daily: [daily(today, {calls, tokens: 12345})],
+    history: [daily(today, {calls, tokens: 12345})],
+    providers: [{id: '<main>', model: 'gpt'}],
+    recent: [],
+    budget: {spent_tokens: 400},
+  });
+  const h = resilienceHarness({
+    product: {
+      scopeKey: () => 'inst-1:priv-1:role-a',
+      role: () => ({role_id: 'role-a', model_api: '/astrbot_plugin_private_companion/model'}),
+    },
+    onGet: route => {
+      if (route.endsWith('/maintenance')) {
+        if (mode === 'ok') return makePayload(today + 'T10:00:00');
+        if (mode === 'transient_503') {
+          const err = new Error('Request failed with status code 503');
+          err.status = 503;
+          throw err;
+        }
+        if (mode === 'storage_busy') {
+          return {status: 'error', data: {code: 'model_storage_unavailable'}};
+        }
+        if (mode === 'fatal_terminated') {
+          return {status: 'error', data: {code: 'staging_host_terminated'}};
+        }
+      }
+      if (route.endsWith('/balance')) return {configured: false, available: false, state: 'not_configured'};
+      if (route.endsWith('/voice')) return {providers: [{id: 'v1', loaded: true}]};
+      if (route.endsWith('/image')) return {actions: []};
+      return {tasks: [], providers: [{id: '<main>', capabilities: ['text']}]};
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+  assert.match(h.root.innerHTML, /12,345/);
+  assert.match(h.root.innerHTML, /data-state="ok"><i><\/i>已连接/);
+
+  // 1) Transient 45s silent poll failure preserves loaded dashboard, lights up 同步异常 + inline retry banner.
+  mode = 'transient_503';
+  h.intervalCb();
+  await flush();
+  assert.match(h.root.innerHTML, /12,345/, 'existing token ledger must stay visible on transient poll failure');
+  assert.match(h.root.innerHTML, /data-state="warn"><i><\/i>同步异常/);
+  assert.match(h.root.innerHTML, /data-maint-sync-notice/);
+  assert.match(h.root.innerHTML, /保留上次同步快照/);
+  assert.match(h.root.innerHTML, /HTTP 503/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+
+  // 2) Transient manual refresh failure ALSO preserves loaded dashboard and shows specific storage reason.
+  mode = 'storage_busy';
+  h.root.click('[data-refresh]');
+  await flush();
+  assert.match(h.root.innerHTML, /12,345/, 'existing token ledger must stay visible on transient manual retry error');
+  assert.match(h.root.innerHTML, /data-state="warn"><i><\/i>同步异常/);
+  assert.match(h.root.innerHTML, /SQLite 正忙或读取异常/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+
+  // 3) Recovery clears error pill & inline banner cleanly.
+  mode = 'ok';
+  h.intervalCb();
+  await flush();
+  assert.match(h.root.innerHTML, /data-state="ok"><i><\/i>已连接/);
+  assert.doesNotMatch(h.root.innerHTML, /data-maint-sync-notice/);
+
+  // 4) Explicit session-fatal error clears loaded data into full-page offline screen,
+  //    AND unmounting afterwards MUST NOT overwrite maintenanceCache with data: null.
+  mode = 'fatal_terminated';
+  h.intervalCb();
+  await flush();
+  assert.match(h.root.innerHTML, /维护面板暂时离线/);
+  assert.match(h.root.innerHTML, /角色运行实例已停止或重载/);
+
+  h.page.unmount();
+  mode = 'ok';
+  h.page.mount(h.root);
+  // Immediately after synchronous mount (before async refresh resolves), the cached good snapshot is restored!
+  assert.match(h.root.innerHTML, /12,345/, 'unmount after fatal error must not poison maintenanceCache with data: null');
+  await flush();
+  h.page.unmount();
+});
+
+test('mount race guard waits for checking/null catalog and auto-loads once scope is ready', async () => {
+  const today = localDay();
+  let connState = 'checking';
+  let activeRole = null;
+  let dir = null;
+  const h = resilienceHarness({
+    product: {
+      scopeKey: () => activeRole ? 'inst-1:priv-1:role-a' : 'default',
+      connection: () => ({state: connState, detail: '正在读取角色与会话…'}),
+      directory: () => dir,
+      role: () => activeRole,
+      workspaceHint: () => activeRole ? '' : '正在读取账号与会话…',
+    },
+    maintenance: {
+      generated_at: today + 'T11:00:00',
+      summary: daily(today, {calls: 2, tokens: 3456}),
+      totals: daily(today, {calls: 2, tokens: 3456}),
+      daily: [daily(today, {calls: 2, tokens: 3456})],
+      history: [daily(today, {calls: 2, tokens: 3456})],
+      recent: [],
+      budget: {},
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+  assert.equal(h.requests.length, 0, 'must not call /maintenance while catalog is checking');
+  assert.match(h.root.innerHTML, /data-maint-waiting/);
+  assert.match(h.root.innerHTML, /正在连接角色与会话目录/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+
+  // Also test !product.role() when connection is absent (catalog === null).
+  connState = '';
+  h.page.mount(h.root);
+  await flush();
+  assert.equal(h.requests.length, 0, 'must not throw modelPath() when role() is null');
+  assert.match(h.root.innerHTML, /data-maint-waiting/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+
+  // Once catalog finishes and dispatches companion:scope-changed, maintenance auto-loads cleanly!
+  connState = 'connected';
+  dir = {installation_id: 'inst-1', targets: [{target_id: 'priv-1'}]};
+  activeRole = {role_id: 'role-a', model_api: '/astrbot_plugin_private_companion/model'};
+  h.window.dispatchEvent({type: 'companion:scope-changed'});
+  await flush();
+  assert.ok(h.requests.some(([m, r]) => m === 'GET' && r === '/model/maintenance'));
+  assert.match(h.root.innerHTML, /3,456/);
+  assert.doesNotMatch(h.root.innerHTML, /维护面板暂时离线/);
+  h.page.unmount();
+});
+
+test('routeError maps specific diagnostics and bridge.apiGet enforces bounded 30s bridge_timeout', async () => {
+  const cases = [
+    [{status: 'error', data: {code: 'dashboard_identity_required'}}, /请从已登录的 AstrBot 管理页面打开/],
+    [{status: 'error', data: {code: 'staging_host_terminated'}}, /角色运行实例已停止或重载/],
+    [{status: 'error', data: {code: 'model_storage_unavailable'}}, /SQLite 正忙或读取异常/],
+    [Object.assign(new Error('bridge_unavailable'), {code: 'bridge_unavailable'}), /页面桥尚未就绪/],
+    [Object.assign(new Error('Request failed with status code 404'), {status: 404}), /HTTP 404/],
+    [Object.assign(new Error('Request failed with status code 401'), {status: 401}), /HTTP 401/],
+    [Object.assign(new Error('Request failed with status code 403'), {status: 403}), /HTTP 403/],
+    [Object.assign(new Error('Request failed with status code 429'), {status: 429}), /HTTP 429/],
+    [Object.assign(new Error('Request failed with status code 502'), {status: 502}), /HTTP 502/],
+    [new TypeError('Failed to fetch'), /网络连接中断/],
+  ];
+  for (const [failure, expected] of cases) {
+    const h = resilienceHarness({
+      onGet: route => {
+        if (route.endsWith('/maintenance')) {
+          if (failure instanceof Error) throw failure;
+          return failure;
+        }
+        return {providers: [], actions: [], tasks: []};
+      },
+    });
+    h.page.mount(h.root);
+    await flush();
+    assert.match(h.root.innerHTML, /维护面板暂时离线/);
+    assert.match(h.root.innerHTML, expected, 'must display specific diagnostic reason instead of generic fallback');
+    assert.doesNotMatch(h.root.innerHTML, /检查失败，请重新读取状态后再试/);
+    h.page.unmount();
+  }
+
+  // Bounded 30000ms timeout on hanging bridge.apiGet throws structured bridge_timeout!
+  const hanging = resilienceHarness({
+    onGet: route => {
+      if (route.endsWith('/maintenance')) return new Promise(() => {});
+      return {providers: [], actions: [], tasks: []};
+    },
+  });
+  hanging.page.mount(hanging.root);
+  await flush();
+  assert.match(hanging.root.innerHTML, /正在读取角色账本与运行快照/);
+  hanging.advanceTimers(29999);
+  await flush();
+  assert.match(hanging.root.innerHTML, /正在读取角色账本与运行快照/, 'must not timeout before 30000ms');
+  hanging.advanceTimers(30000);
+  await flush();
+  assert.match(hanging.root.innerHTML, /维护面板暂时离线/);
+  assert.match(hanging.root.innerHTML, /读取超时（超过 30 秒）/);
+  hanging.page.unmount();
 });

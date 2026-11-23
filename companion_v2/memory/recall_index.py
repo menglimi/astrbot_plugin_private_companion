@@ -39,7 +39,7 @@ class RecallIndex:
     sync_items = 256
     candidate_items = 128
     vector_items = 256
-    projection_version = 2
+    projection_version = 3
 
     def __init__(self, query, objects):
         self.query, self.runtime, self.index, self.objects = query, query.runtime, query.index, objects
@@ -88,15 +88,68 @@ class RecallIndex:
         db.execute("INSERT INTO recall_lexical(rowid, tokens) VALUES (?, ?)",
                    (inserted.lastrowid, " ".join(terms(document["text"]))))
 
+    def _bootstrap_experiences(self, db, partition, context, namespace, state, remaining):
+        """Reconcile active experience views missing from the derived recall index.
+
+        Runs once per cold build after change-log replay catches up, bounded per
+        page so hot queries never scan ``memory_views``.
+        """
+        scan_limit = max(self.sync_items, 256)
+        view_rows = self.runtime.read_all(
+            """SELECT view_id, revision FROM memory_views
+            WHERE owner_key = ? AND kind = 'experience' AND state = 'active' AND view_id > ?
+            ORDER BY view_id LIMIT ?""",
+            (owner_key(context), state["experience_bootstrap"], scan_limit + 1),
+        )
+        existing = {
+            row[0]: row[1]
+            for row in db.execute(
+                "SELECT object_id, revision FROM recall_documents WHERE owner = ? AND producer = 'experience'",
+                (partition,),
+            )
+        }
+        changed = False
+        scanned = 0
+        exhausted = True
+        for view_row in view_rows[:scan_limit]:
+            view_id = view_row["view_id"]
+            if existing.get(view_id) == view_row["revision"]:
+                scanned += 1
+                continue
+            if not remaining:
+                exhausted = False
+                break
+            changed = self._remove(db, partition, "experience", view_id) or changed
+            used = 0
+            try:
+                for document, metadata in self.objects.project(context, namespace, "experience", view_id, offset=0):
+                    self._put(db, partition, "experience", view_id, document, metadata)
+                    changed = True
+                    used += 1
+            except TaskError as error:
+                if error.code != "memory_source_unavailable":
+                    raise
+                state["unavailable"] = True
+            remaining -= max(1, used)
+            scanned += 1
+        if exhausted and len(view_rows) <= scan_limit:
+            state["experience_bootstrap"] = None
+        elif scanned:
+            state["experience_bootstrap"] = view_rows[scanned - 1]["view_id"]
+        return changed
+
     def advance(self, context, namespace, kind):
         feeds = self.objects.feeds(context, kind)
+        has_experience_feed = any(feed_kind == "experience" for _, feed_kind in feeds)
         current = self._anchor(feeds)
         partition = digest([owner_key(context), namespace, kind, "incremental-recall.v1"])
         with closing(self.index._open()) as db, db:
             db.execute("BEGIN")
             row = db.execute("SELECT state_json FROM recall_sync WHERE partition = ?", (partition,)).fetchone()
             state = json.loads(row[0]) if row else None
-            if state and state.get("projection_version") == self.projection_version and state["after"] == current["sequence"] and state["anchor"] == current:
+            if (state and state.get("projection_version") == self.projection_version
+                    and state.get("experience_bootstrap") is None
+                    and state["after"] == current["sequence"] and state["anchor"] == current):
                 return self._snapshot(db, partition, state, current)
             db.rollback()
             db.execute("BEGIN IMMEDIATE")
@@ -109,7 +162,8 @@ class RecallIndex:
             if state is None:
                 changed = self._remove(db, partition)
                 state = {"generation": uuid4().hex, "after": 0, "pending": 0, "anchor": current,
-                         "unavailable": False, "projection_version": self.projection_version}
+                         "unavailable": False, "projection_version": self.projection_version,
+                         "experience_bootstrap": "" if has_experience_feed else None}
             db.execute("INSERT OR REPLACE INTO partition_owners VALUES (?, ?)", (partition, owner_key(context)))
             rows = self._changes(feeds, state["after"], current["sequence"])
             remaining = self.sync_items
@@ -141,6 +195,10 @@ class RecallIndex:
                     continue
                 state["pending"] += used
                 break
+            if state["after"] == current["sequence"] and state.get("experience_bootstrap") is not None:
+                changed = self._bootstrap_experiences(
+                    db, partition, context, namespace, state, remaining
+                ) or changed
             state["anchor"] = current
             db.execute("INSERT OR REPLACE INTO recall_sync VALUES (?, ?)", (partition, encode(state)))
             if changed:
@@ -151,7 +209,7 @@ class RecallIndex:
     def _snapshot(db, partition, state, current):
         epoch = db.execute("SELECT revision FROM recall_epoch WHERE singleton = 1").fetchone()[0]
         return {**state, "partition": partition, "epoch": epoch,
-                "ready": state["after"] == current["sequence"],
+                "ready": state["after"] == current["sequence"] and state.get("experience_bootstrap") is None,
                 "fingerprint": digest([state["generation"], current, epoch])}
 
     @staticmethod

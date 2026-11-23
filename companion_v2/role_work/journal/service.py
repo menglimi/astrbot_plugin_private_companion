@@ -6,11 +6,17 @@ never published as a factual SourceRecord or written to a relationship account.
 
 from datetime import datetime, timezone
 import json
+from threading import get_ident
 from zoneinfo import ZoneInfo
 
 from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, VersionRef, normalize_utc
 from companion_v2.role_work.ledger import PersistentRoleLifeLedger
+from companion_v2.sources.dependencies import (
+    active_validation_batch,
+    is_unguarded_checked,
+    validation_batch,
+)
 from companion_v2.sources.repositories import SourceRepository
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -36,11 +42,27 @@ class RoleJournalService:
             raise TaskError("journal_owner_mismatch", "journal owner belongs to another installation")
         return digest(owner)
 
-    def _row(self, key):
+    def _read_only_batch(self, at):
+        depth = int(getattr(self.runtime, "_write_depth", 0) or 0)
+        if depth > 0:
+            owner_tid = getattr(self.runtime, "_write_owner_thread_id", None)
+            if owner_tid is None or owner_tid == get_ident():
+                return None
+        return active_validation_batch(self.runtime, at)
+
+    def _row(self, key, *, batch=None):
         if not isinstance(key, JournalKey):
             raise ValueError("journal key must be explicit")
         self._owner(key.owner)
-        return self.runtime.read_one("SELECT * FROM role_journals WHERE entry_key = ?", (digest(key),))
+        entry_key = digest(key)
+        if batch is not None:
+            row_cache = batch.extras.get("role_journal.rows")
+            if row_cache is not None and entry_key in row_cache:
+                return row_cache[entry_key]
+        row = self.runtime.read_one("SELECT * FROM role_journals WHERE entry_key = ?", (entry_key,))
+        if batch is not None:
+            batch.extras.setdefault("role_journal.rows", {})[entry_key] = row
+        return row
 
     def head(self, key):
         row = self._row(key)
@@ -60,9 +82,24 @@ class RoleJournalService:
         return tuple(codec.head_from_row(row) for row in rows)
 
     def _validated(self, key, at, *, expected_revision=None, forbidden=None, scope=None, recipient=None):
+        batch = self._read_only_batch(at) if forbidden is None else None
+        validated_cache = (
+            batch.extras.setdefault("role_journal.validated", {})
+            if (batch is not None and scope is None and recipient is None)
+            else None
+        )
+        entry_cache = batch.extras.setdefault("role_journal.entries", {}) if batch is not None else None
+        if validated_cache is not None:
+            cached_root = validated_cache.get(key)
+            if cached_root is not None:
+                if expected_revision is not None and cached_root.reference.revision != expected_revision:
+                    raise TaskError("journal_dependency_changed", "journal input revision is no longer current")
+                return cached_root
         pending = [(key, expected_revision)]
         checked = {}
         checked_sources = set()
+        visited_entries = {}
+        all_unguarded = True
         result = None
         while pending:
             current, expected = pending.pop()
@@ -72,14 +109,31 @@ class RoleJournalService:
                 if expected is not None and checked[current] != expected:
                     raise TaskError("journal_dependency_changed", "journal input revision is no longer current")
                 continue
+            if validated_cache is not None and current in validated_cache:
+                cached_entry = validated_cache[current]
+                if expected is not None and cached_entry.reference.revision != expected:
+                    raise TaskError("journal_dependency_changed", "journal input revision is no longer current")
+                if result is None:
+                    result = cached_entry
+                checked[current] = cached_entry.reference.revision
+                continue
             if scope is not None and len(checked) >= 64:
                 raise TaskError("journal_dependency_limit", "foreground journal ancestry exceeds its read budget")
-            row = self._row(current)
+            row = self._row(current, batch=batch)
             if row is None or row["state"] != JournalState.ACTIVE.value:
                 raise TaskError("journal_unavailable", "journal date is absent or deleted")
             if expected is not None and row["revision"] != expected:
                 raise TaskError("journal_dependency_changed", "journal input revision is no longer current")
-            entry = codec.entry_from_row(row)
+            entry_key = row["entry_key"]
+            entry = None
+            if entry_cache is not None:
+                cached_parsed = entry_cache.get(entry_key)
+                if cached_parsed is not None and cached_parsed[0] == row["revision"]:
+                    entry = cached_parsed[1]
+            if entry is None:
+                entry = codec.entry_from_row(row)
+                if entry_cache is not None:
+                    entry_cache[entry_key] = (row["revision"], entry)
             if scope is not None:
                 if entry.draft.context.scope != scope or any(a.scope != scope for a in entry.activity_evidence):
                     raise TaskError("journal_context_mismatch", "journal ancestry belongs to another conversation")
@@ -89,6 +143,7 @@ class RoleJournalService:
             if result is None:
                 result = entry
             checked[current] = entry.reference.revision
+            visited_entries[current] = entry
             sources = list(entry.draft.sources)
             source_hashes = {}
             if scope is not None:
@@ -110,7 +165,18 @@ class RoleJournalService:
                         require(self.sources.validate_reference_for_audience(source, recipient=recipient, observed_at=at,
                             expected_content_hash=source_hashes.get(source)))
                     checked_sources.add(check_key)
+                    if validated_cache is not None and not is_unguarded_checked(self.runtime, source, at):
+                        all_unguarded = False
             pending.extend((ref.key, ref.revision) for ref in entry.draft.journals)
+        if (
+            validated_cache is not None
+            and all_unguarded
+            and batch is not None
+            and batch.active
+            and batch.extras.get("role_journal.validated") is validated_cache
+        ):
+            for validated_key, validated_entry in visited_entries.items():
+                validated_cache[validated_key] = validated_entry
         return result
 
     def recent_days(self, owner, *, through_date, limit=8):
@@ -124,13 +190,15 @@ class RoleJournalService:
         return tuple(codec.head_from_row(row) for row in rows)
 
     def get(self, key, *, observed_at=None):
-        with self.runtime.read_snapshot():
-            return self._validated(key, self._time(observed_at))
+        at = self._time(observed_at)
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            return self._validated(key, at)
 
     def get_for_audience(self, key, *, scope, recipient, observed_at=None):
         """Check the entire ancestry's scope and source audience; grants no action permission."""
-        with self.runtime.read_snapshot():
-            return self._validated(key, self._time(observed_at), scope=scope, recipient=recipient)
+        at = self._time(observed_at)
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            return self._validated(key, at, scope=scope, recipient=recipient)
 
     def context_days(self, owner, scope, *, observed_at, limit=32):
         """Recent same-scope metadata; every selected body still requires an authorized read."""
@@ -190,7 +258,7 @@ class RoleJournalService:
         revision(expected_revision, allow_zero=True)
         key, at = context.key, self._time(observed_at)
         owner_key, entry_key = self._owner(key.owner), digest(key)
-        with self.runtime.transaction() as connection:
+        with self.runtime.transaction() as connection, validation_batch(self.runtime, at):
             replay = self._reserve(context, operation_id, [context, codec.draft_parameters(draft), action, expected_revision], at)
             if replay is not None:
                 return replay
@@ -238,7 +306,7 @@ class RoleJournalService:
     def save_derivatives(self, material, *, expected_revision=0, operation_id, observed_at=None):
         revision(expected_revision, allow_zero=True)
         at, key = self._time(observed_at), material.parent.key
-        with self.runtime.transaction() as connection:
+        with self.runtime.transaction() as connection, validation_batch(self.runtime, at):
             row = self._row(key)
             if row is None:
                 raise TaskError("journal_unavailable", "derived material needs a committed journal")
@@ -263,10 +331,23 @@ class RoleJournalService:
                 (digest(key), material.parent.revision, saved.revision, encode(saved)))
             return self._finish(connection, JournalReceipt(operation_id, "derive", codec.head_from_row(row), saved.revision), at)
 
-    def derivatives(self, key, *, observed_at=None):
-        with self.runtime.read_snapshot():
-            entry = self._validated(key, self._time(observed_at))
-            row = self.runtime.read_one("SELECT * FROM role_journal_derivatives WHERE entry_key = ?", (digest(key),))
+    def derivatives(self, key, *, observed_at=None, _validated_entry=None):
+        at = self._time(observed_at)
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            entry = _validated_entry or self._validated(key, at)
+            entry_key = digest(key)
+            batch = self._read_only_batch(at)
+            row = None
+            hit = False
+            if batch is not None:
+                deriv_cache = batch.extras.get("role_journal.derivatives_rows")
+                if deriv_cache is not None and entry_key in deriv_cache:
+                    row = deriv_cache[entry_key]
+                    hit = True
+            if not hit:
+                row = self.runtime.read_one(
+                    "SELECT * FROM role_journal_derivatives WHERE entry_key = ?", (entry_key,)
+                )
             if row is None:
                 return None
             if row["entry_revision"] != entry.reference.revision:

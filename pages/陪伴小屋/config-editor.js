@@ -210,14 +210,14 @@ window.CompanionConfigEditors = (() => {
     {id: "switches", title: "状态与动作",
      help: "关闭总闸时下面所有项都不起作用：不再发任何空间请求，也不再为它花模型额度。",
      fields: ["enabled", "like_enabled", "comment_enabled", "publish_enabled",
-              "feed_recent_posts", "comment_recent_posts"]},
+              "feed_recent_posts", "comment_recent_posts", "owner_uin"]},
     {id: "throttle", title: "发布节流",
-     help: "总闸与「允许发说说」都打开后才生效。这几项限制的是频率与条数，不放宽任何一项能力开关。",
-     fields: ["action_min_interval_minutes", "max_actions_per_tick", "publish_max_daily"]},
+     help: "总闸与「允许在空间发说说」都打开后才生效。这几项限制的是频率与条数，不放宽任何一项能力开关。",
+     fields: ["action_min_interval_minutes", "max_actions_per_tick", "daily_limits_enabled", "publish_max_daily"]},
     {id: "life", title: "生活说说",
      help: "低频把角色自己的生活发到空间。检查到点时先记一次尝试，再写草稿、走和手动发说说完全相同的发布链路与审计；失败或结果未知都不会立刻重来。",
      fields: ["life_publish_enabled", "life_publish_probability", "life_publish_min_interval_hours",
-              "life_publish_max_daily", "life_publish_style_prompt"]},
+              "life_publish_max_daily", "life_publish_retry_minutes", "life_publish_style_prompt"]},
     {id: "topics", title: "主题判定",
      help: "一条说说在写出正文之前必须先定主题与场景：这里决定谁来定、要不要人工确认，以及给模型的补充指引。",
      fields: ["topic_auto_enabled", "topic_require_confirmation", "topic_prompt_guidance"]},
@@ -232,6 +232,10 @@ window.CompanionConfigEditors = (() => {
   /* 每个主题的 helps 里那串「可选值」是各主题自己的那一份，所以逐主题拼；
      共用一句示例会把「只能用该主题自己的场景」说成另一个主题的场景。 */
   function qzoneAudit(values) {
+    if (typeof values.owner_uin === "string") {
+      const ownerUin = values.owner_uin.trim();
+      if (ownerUin && !/^\d{1,20}$/.test(ownerUin)) return "qzone_owner_uin_invalid";
+    }
     for (const topic of QZONE_TOPIC_SECTIONS) {
       const name = `${topic.prefix}_scenes`;
       const value = values[name];
@@ -386,6 +390,7 @@ window.CompanionConfigEditors = (() => {
         edit_fixed_prompt:"改图 · 固定提示词", edit_negative_prompt:"改图 · 负面提示词",
         scene_presets_json:"场景预设（JSON）"},
       helps:{
+        allow_user_requests:"控制是否允许用户在对话中请求生图或改图（需与「非指令生图」非关闭同时生效）；关闭后只拦截对话中的用户请求，不影响主动生图。",
         group_enabled:"关闭后群聊不再向模型提供生图与改图工具；私聊请求和主动生成不受影响。",
         request_permission:"仅核心管理员：只有安装核心管理员可以请求生图或改图；所有人：当前会话中可正常回复的成员都可以请求。群聊请求还要开启「允许群聊生图」。",
       },
@@ -578,6 +583,7 @@ window.CompanionConfigEditors = (() => {
         acquaintance_enabled: "启用熟人卡",
         acquaintance_card_chars: "卡片最长字数",
         cross_window_awareness_enabled: "启用跨窗口在场",
+        cross_window_cross_group_enabled: "启用跨群在场汇总",
         cross_window_continuity_enabled: "重复提问自然承接",
         cross_window_continuity_minutes: "承接回看分钟",
         cross_window_private_group_hours: "群活动回看小时",
@@ -596,8 +602,10 @@ window.CompanionConfigEditors = (() => {
       }},
       segmentedChoices: ["private_group_context_mode"],
       helps: {
+        acquaintance_enabled: "熟人卡总开关；关闭后不再读取、记录或更新熟人卡，并一并停用跨窗口在场。",
         acquaintance_card_chars: "卡片过长会挤占上下文，建议只留关键内容。",
         cross_window_awareness_enabled: "关闭后不记录也不注入跨窗口在场；关闭熟人卡会一并关闭。",
+        cross_window_cross_group_enabled: "关闭后群聊不再汇总当前发言者在其他群的近期动态（避免与外接记忆插件在群聊双注入），仍保留私聊往来识别与私聊窗口的跨窗口在场。",
         cross_window_continuity_enabled: "对方刚在群里问过近似问题时，给角色一个自然接续提示；只使用对方本人和角色自己的内容。",
         cross_window_continuity_minutes: "只匹配这个时间内的近期群聊；建议保留 30 分钟。",
         cross_window_private_group_hours: "只回看当前私聊对象本人近期的群发言摘要。",
@@ -612,6 +620,7 @@ window.CompanionConfigEditors = (() => {
         private_group_context_chars: "摘要总字数上限；越长越占上下文，也越容易暴露私密细节。",
       },
       order: ["acquaintance_enabled", "acquaintance_card_chars", "cross_window_awareness_enabled",
+        "cross_window_cross_group_enabled",
         "cross_window_continuity_enabled", "cross_window_continuity_minutes",
         "cross_window_private_group_hours", "cross_window_max_items", "cross_window_attention_minutes",
         "cross_window_attention_wait_seconds", "cross_window_group_identity_enabled",
@@ -736,10 +745,10 @@ window.CompanionConfigEditors = (() => {
       },
       choices: {schedule_influence_strength: {0: "不影响", 1: "轻微参考", 2: "留出练习时间",
                                               3: "优先安排相关活动"}},
-      order: ["enabled", "custom_skills", "schedule_influence_strength"],
+      order: ["enabled", "schedule_influence_strength", "custom_skills"],
       sections: [
         {id: "shared", title: "角色技能领域",
-         fields: ["enabled", "custom_skills", "schedule_influence_strength"]},
+         fields: ["enabled", "schedule_influence_strength", "custom_skills"]},
       ],
     },
     role_profile: {
@@ -872,7 +881,7 @@ window.CompanionConfigEditors = (() => {
       scopeNote: "当前角色 · 所有会话共享",
       onStatus: updateRoleProfileSummary,
       sections: [
-        {id: "identity", title: "基础身份", help: "姓名、种族、生日、年龄感、职业、关键经历与补充。", fields: ["name", "gender", "birthday", "age", "species", "occupation", "key_lore", "identity", "character_extra", "avatar_data_url"]},
+        {id: "identity", title: "基础身份", help: "姓名、种族、生日、年龄感、职业、关键经历与补充。", fields: ["name", "gender", "birthday", "age", "occupation", "species", "key_lore", "identity", "character_extra", "avatar_data_url"]},
         {id: "appearance", title: "外貌与识别", help: "发型、瞳色、服饰和能稳定辨认角色的线索。", fields: ["appearance_points", "hair", "eyes", "clothing", "image_identity_hint", "appearance"]},
         {id: "personality", title: "性格与日常", help: "性格底色、日常习惯和角色做事的稳定倾向。", fields: ["personality", "daily_habits"]},
         {id: "voice", title: "口吻与反应", help: "用自称、情绪表达、典型反应和示例台词写出角色说话的感觉。", fields: ["voice_examples", "signature_phrases", "first_person", "speech_style", "emotional_style", "social_distance", "reaction_patterns"]},
@@ -925,12 +934,15 @@ window.CompanionConfigEditors = (() => {
       title: "世界知识与来源",
       note: "",
       labels: {
+        import_enabled: "自动导入本地世界书",
+        import_paths: "本地世界书路径",
         source_ids: "AstrBot 知识库与文档",
         entry_limit: "最多读取片段数",
         entry_char_limit: "单条片段字数上限",
         source_limit: "最多读取来源数",
         candidate_char_budget: "单轮候选字符预算",
         inject_enabled: "在对话中引用所选资料",
+        official_in_core: "核心回复也由 V2 检索官方知识库",
         inject_max_entries: "每轮最多引用条数",
         inject_max_chars: "每轮引用字符上限",
         member_recognition_enabled: "启用成员资料注入",
@@ -939,20 +951,26 @@ window.CompanionConfigEditors = (() => {
         member_clue_chars: "每轮成员资料字数",
       },
       helps: {
+        import_enabled: "默认关闭。启动或刷新时按安装层配置从相对路径自动导入世界书 JSON（相对 AstrBot 数据目录）；不影响下方勾选的 AstrBot 官方知识库。",
+        import_paths: "相对 AstrBot 数据目录的世界书 JSON 文件或目录路径，多项可用换行、逗号或分号分隔；仅在开启「自动导入本地世界书」时读取。",
+        inject_enabled: "在对话中检索并注入已选世界知识与官方知识库片段的总开关；关闭后不向回复上下文注入知识背景。",
+        official_in_core: "默认关闭：官方知识库交给 AstrBot 自己的检索。AstrBot 检索拿不到结果、或回复没有引用知识库时打开；V2 会用用户原话直接检索所选知识库并注入，可能与 AstrBot 的结果重复。",
         member_recognition_enabled: "按当前发言者账号，或本轮提及的唯一名称，选取已有成员资料供回复参考。",
+        member_match_aliases: "注入成员相处资料时，是否同时按消息里提到的唯一别名或昵称匹配成员；关闭后只按当前发言者账号匹配。",
         member_clue_chars: "本轮所有成员资料合计的字数上限。",
       },
       inputs: {source_ids: "source-checklist"},
       catalogs: {source_ids: (status) => status?.knowledge_sources || []},
       order: ["source_ids", "entry_limit", "entry_char_limit", "source_limit",
-              "candidate_char_budget", "inject_enabled", "inject_max_entries",
+              "candidate_char_budget", "inject_enabled", "official_in_core",
+              "inject_max_entries",
               "inject_max_chars", "member_recognition_enabled", "member_match_aliases",
               "member_inject_limit", "member_clue_chars"],
       sections: [
         {id: "import", title: "AstrBot 官方知识库", fields: ["source_ids", "entry_limit", "entry_char_limit",
                   "source_limit", "candidate_char_budget"]},
         {id: "inject", title: "在对话中引用", fields: [
-          "inject_enabled", "inject_max_entries", "inject_max_chars"]},
+          "inject_enabled", "official_in_core", "inject_max_entries", "inject_max_chars"]},
         {id: "members", title: "成员相处资料",
          fields: ["member_recognition_enabled", "member_match_aliases", "member_inject_limit",
                   "member_clue_chars"]},
@@ -1165,28 +1183,66 @@ window.CompanionConfigEditors = (() => {
       labels: {
         enabled: "启用参考图",
         group_enabled: "允许群聊使用参考图",
-        daily_outfit_enabled: "启用每日穿搭",
-        daily_outfit_rotation_days: "同一套穿搭的轮换间隔（天）",
+        daily_outfit_enabled: "启用每日穿搭图",
+        daily_outfit_rotation_days: "衣柜候选轮换间隔（天）",
       },
       helps: {
         enabled: "关闭后参考图既不能读取也不能新登记；已登记的素材保留，撤回仍然可用。",
         group_enabled: "单独控制本角色的已登记参考图能否用于群聊；默认关闭，私聊使用不受它影响。",
-        daily_outfit_enabled: "同意使用参考图，不等于同意每天都出一张穿搭图，所以这里是独立开关。",
-        daily_outfit_rotation_days: "同一套衣服再次出现前至少要间隔多少天。",
+        daily_outfit_enabled: "根据角色设定、当天日程和已配置的天气生成穿搭图，需要可用的 Image 生图路线。",
+        daily_outfit_rotation_days: "选取衣柜参考时优先避开这段时间内选过的衣物。",
       },
       choices: {},
       order: ["enabled", "group_enabled", "daily_outfit_enabled", "daily_outfit_rotation_days"],
       sections: [
-        {id: "switches", title: "能力开关", help: "参考图总闸、群聊使用和每日穿搭分别控制；群聊默认不读取角色参考素材。",
+        {id: "switches", title: "能力开关", help: "每日穿搭图有独立开关，生成时可选用角色参考图。",
          fields: ["enabled", "group_enabled", "daily_outfit_enabled"]},
-        {id: "rotation", title: "轮换", help: "只影响同款出现的间隔，不改变已登记素材。",
+        {id: "rotation", title: "轮换",
          fields: ["daily_outfit_rotation_days"]},
+      ],
+    },
+    "device.phone": {
+      title: "ADB 操作设置",
+      labels: {
+        enabled: "允许角色操作手机",
+        adb_path: "adb 可执行文件路径",
+        serial: "目标设备序列号",
+        connect: "无线调试地址（host:port）",
+        max_steps: "单个任务最多步数",
+        unicode_input: "中文输入方式",
+        ime_restore_seconds: "输入法切回延迟（秒）",
+        allowed_actions: "允许的动作（逗号分隔）",
+        allowed_subjects: "允许使用的对象（逗号分隔）",
+      },
+      helps: {
+        enabled: "关闭后，角色停止新建和启动手机操作任务。",
+        adb_path: "留空时依次查 ANDROID_HOME、ANDROID_SDK_ROOT、Windows 默认 SDK 目录和 PATH。",
+        serial: "同时连接多台设备时必须填；只连一台可留空。",
+        connect: "Android 无线调试页面显示的 IP 地址和端口。",
+        max_steps: "单个任务最多走几步。步数越多越慢，也越容易在界面变化时走偏。",
+        unicode_input: "关闭时只接受可打印 ASCII；中文/emoji 需要手机端安装并启用 ADBKeyboard。",
+        ime_restore_seconds: "打完中文后延迟这么久再切回原输入法；立刻切回会丢字。",
+        allowed_actions: "只能使用这些动作；done 和 fail 必须保留。force_stop 默认不在这里，需要时再显式加入。",
+        allowed_subjects: "留空表示所有能私聊这个角色的对象都可以使用；建议填写你自己的 subject id。",
+      },
+      choices: {
+        unicode_input: {off: "关闭（仅 ASCII）", adbkeyboard: "ADBKeyboard"},
+      },
+      inputs: {adb_path: "line", serial: "line", connect: "line"},
+      rows: {allowed_actions: 2, allowed_subjects: 2},
+      order: ["enabled", "adb_path", "serial", "connect", "max_steps",
+        "unicode_input", "ime_restore_seconds", "allowed_actions", "allowed_subjects"],
+      sections: [
+        {id: "master", title: "操作设备", fields: ["enabled", "adb_path", "serial", "connect"]},
+        {id: "typing", title: "输入与任务步数", fields: ["unicode_input", "ime_restore_seconds", "max_steps"]},
+        {id: "scope", title: "操作授权", fields: ["allowed_actions", "allowed_subjects"]},
       ],
     },
     group_participation: {
       title: "群聊参与",
       note: "决定角色在群里怎么旁听、何时接话，以及复读跟读的尺度。话题线只为当前群聊回复提供参考，不会单独唤醒或主动发言。",
       labels: {
+        mention_force_reply_enabled: "被 @ 或命中唤醒词时直接应答",
         enable_group_social_context: "启用群聊氛围参考",
         enable_group_topic_threads: "跟踪群聊话题线",
         group_topic_thread_max: "最多保留的话题线",
@@ -1229,6 +1285,7 @@ window.CompanionConfigEditors = (() => {
         enable_group_interjection: "关闭时下面四项都不起作用；开启也只是允许，仍要按间隔与上限判断。",
         group_interject_min_interval_minutes: "0 表示不限间隔；调小会让插话更频繁。",
         group_interject_max_daily: "0 表示不在群里主动插话。",
+        enable_group_interjection_feedback: "记录群友对主动插话的回应反馈，并据此动态调整后续插话频率；关闭后按固定间隔与上限判断。",
         group_interject_feedback_window_seconds: "统计这段时间里群友对插话的反应；调小只参考最近的反馈。",
         enable_group_repeat_follow: "复读只会跟读原句或打断，不生成普通回答。关闭后不参与复读。",
         group_repeat_count_distinct_users_only: "开启后同一人连发多次不算数，必须多人重复才跟读。",
@@ -1240,8 +1297,11 @@ window.CompanionConfigEditors = (() => {
         group_repeat_interrupt_image_path: "填写 AstrBot 所在机器上的本地图片完整路径。配置有效图片时只发图片；留空、文件缺失或无效时使用打断语。",
         group_repeat_window_seconds: "在这段时间内的重复才计入次数；调大更容易触发。",
         group_context_max_age_hours: "只把这段时间内已验证的群友发言和已送达回复纳入历史；更早内容不会参与本轮上下文。",
+        enable_group_behavior_learning: "允许从本群已认证成员的真实发言中学习或修订互动习惯笔记；只做记录与整理，不会直接对外发送消息。",
+        enable_group_behavior_imitation: "允许在群聊真实回复中选择已学互动习惯与群内认证对象自然参与互动；只辅助本轮表达，不单独发起发言。",
+        enable_group_behavior_feedback: "依据群成员在实际发送后的真实回应评估互动效果，用于修正后续互动习惯；没有回应不会记作欢迎。",
       },
-      order: ["enable_group_topic_threads", "group_topic_thread_max",
+      order: ["mention_force_reply_enabled", "enable_group_topic_threads", "group_topic_thread_max",
               "enable_group_social_context", "enable_group_mood_detection",
               "enable_group_roleplay_strength", "enable_group_moments",
               "enable_group_moment_portrait", "enable_group_joke_guard",
@@ -1258,6 +1318,7 @@ window.CompanionConfigEditors = (() => {
       /* 三条链各自独立：氛围参考有一层总闸，插话与跟读各有自己的总闸与预算。
          不分组的话，关掉总闸后调下面的数字会毫无反应，看着像坏了。 */
       sections: [
+        {id: "direct_address", title: "明确点名", fields: ["mention_force_reply_enabled"]},
         {id: "behavior", title: "行为模仿", help: "",
          fields: ["enable_group_behavior_learning", "enable_group_behavior_imitation",
                   "enable_group_behavior_feedback", "group_behavior_guidance"]},
@@ -1417,7 +1478,9 @@ window.CompanionConfigEditors = (() => {
         contact_followup_after_minutes: "接回旧话题前的等待时间（分钟）",
         contact_followup_cooldown_minutes: "接回旧话题的冷却时间（分钟）",
         generation_history_limit: "主动消息参考的近期对话轮数",
+        generation_mode: "主动消息生成方式",
         history_max_chars: "历史材料最长字数",
+        important_dates: "自定义重要日期（JSON）",
         style_prompt: "主动开口的风格补充",
         expression_prompt: "主动表达模板",
         news_sharing_prompt: "新闻分享模板",
@@ -1466,8 +1529,10 @@ window.CompanionConfigEditors = (() => {
         proactive_persona_judge_threshold: "复核分低于该阈值即不通过。",
         proactive_persona_judge_cache_minutes: "相同草稿在这段时间内复用复核结论，避免反复调用模型。",
         proactive_persona_judge_exempt_purposes: "逗号分隔的契机名，可填 affection、care、play、repair、chat、greeting、life、creation、news、followup、invitation、reminder、environment、meal、screen。",
-        ...Object.fromEntries(CONTACT_PURPOSES.map(([, name]) =>
-          [name + ".pause_until", "留空取消该契机的全局暂停；个人暂停仍生效。时间需带时区。"])),
+        ...Object.fromEntries(CONTACT_PURPOSES.flatMap(([, name, label]) => [
+          [name + ".enabled", `控制「${label}」这一类契机是否参与主动联系候选生成与调度；关闭后不再主动发起此类联系，个人偏好仍可在私聊用户页单独调整。`],
+          [name + ".pause_until", "留空取消该契机的全局暂停；个人暂停仍生效。时间需带时区。"],
+        ])),
         enable_daily_greetings: "关闭时三个问候窗口都不再开口。",
         greeting_morning_window: "本地时间 HH:MM-HH:MM，必须当天内结束，不能跨午夜。",
         greeting_noon_window: "本地时间 HH:MM-HH:MM，必须当天内结束，不能跨午夜。",
@@ -1550,7 +1615,9 @@ window.CompanionConfigEditors = (() => {
         contact_followup_after_minutes: "原主动消息确认送达后，至少等候多久才考虑接回；新消息到达或原话失效时不会触发。",
         contact_followup_cooldown_minutes: "两次接回旧话题之间的最短间隔；从最近一次接回记录计算。",
         generation_history_limit: "按一轮对话计数，同一轮的分段会合并；默认 8 轮，最多 64 轮，仍受上下文字数预算约束；0 表示不带入近期对话。",
+        generation_mode: "决定主动消息按单阶段直接起草（single）还是先规划切口再写作（two_stage）。",
         history_max_chars: "这些历史材料的总字数上限，防止挤占本轮上下文。",
+        important_dates: "JSON 数组格式的自定义重要日期（最多 32 项）；常规生日与纪念日已自动从角色设定和关系资料读取。",
         style_prompt: "用你自己的话补充主动开口的风格；留空使用默认。",
         expression_prompt: "主动联系的表达方式；保存后替换该段模板。",
         news_sharing_prompt: "新闻分享时使用的表达模板；保存后替换该段模板。",
@@ -1600,10 +1667,10 @@ window.CompanionConfigEditors = (() => {
      * 在空间里公开动作（总闸 + 三个能力开关）、一轮能做多少（间隔、条数、
      * 每日上限），以及一条说说要满足什么条件才发得出去（主题判定 + 七个主题）。
      * 值按角色共享，窗口层只作为旧值的回落，
-     * 卡片右上角那句由内核按继承链写，不需要自己声明 scopeNote。
+     * 卡片右上角由内核显示实际写入层，无需另外声明 scopeNote。
      *
-     * 注册表里这一组是 47 项：9 项全局 + 7 个主题各 5 项。主题那 35 项由下面
-     * 两张表拼出来——47 个字段名手写一遍，漏一个不会有任何报错，只会让审计
+     * 七个主题各 5 项由下面两张表拼出来——所有字段名手写一遍，
+     * 漏一个不会有任何报错，只会让审计
      * 报「没有控件声明」；场景取值也必须与后端 topics.py 的 TOPIC_SPECS 一致，
      * 多写一个合法的场景 id 会在后端整组校验时被拒（那个场景不属于这个主题）。 */
     qzone: {
@@ -1611,13 +1678,15 @@ window.CompanionConfigEditors = (() => {
       note: "决定角色的 QQ 空间能力放不放行公开动作、一轮能做多少，以及发说说前必须确定的主题与场景。关闭总闸时下面几项都不起作用；登录凭据不在这一组里维护。",
       labels: {
         enabled: "启用 QQ 空间",
-        like_enabled: "允许点赞",
-        comment_enabled: "允许回复",
-        publish_enabled: "允许发说说",
+        like_enabled: "允许给空间动态点赞",
+        comment_enabled: "允许回复空间评论",
+        publish_enabled: "允许在空间发说说",
         feed_recent_posts: "每次刷空间读取条数",
         comment_recent_posts: "回复前回看自己的说说条数",
+        owner_uin: "主人 QQ 号",
         action_min_interval_minutes: "两次同类公开动作最短间隔（分钟）",
         max_actions_per_tick: "单轮公开动作上限",
+        daily_limits_enabled: "启用每日次数限制",
         publish_max_daily: "每日说说上限",
         topic_auto_enabled: "允许模型自行发布",
         topic_require_confirmation: "主题必须人工确认",
@@ -1626,6 +1695,7 @@ window.CompanionConfigEditors = (() => {
         life_publish_probability: "每次检查的发布概率",
         life_publish_min_interval_hours: "两条生活说说最短间隔（小时）",
         life_publish_max_daily: "生活说说每日上限",
+        life_publish_retry_minutes: "生活说说失败重试间隔（分钟）",
         life_publish_style_prompt: "生活说说风格补充",
         ...Object.fromEntries(QZONE_TOPIC_SECTIONS.flatMap(({prefix, title}) => [
           [prefix + "_enabled", title + " · 启用"],
@@ -1638,26 +1708,29 @@ window.CompanionConfigEditors = (() => {
       helps: {
         enabled: "关闭后不再发任何空间请求，也不再为它花模型额度；页面上手动刷空间同样会被挡。",
         like_enabled: "关闭时点赞按钮不可用；已经点过赞的动态不受影响。",
-        comment_enabled: "关闭时回复框不可用。回复是公开动作，未确认的结果不会自动重发。",
+        comment_enabled: "关闭时空间评论回复不可用，不影响私聊或群聊。回复是公开动作，未确认的结果不会自动重发。",
         publish_enabled: "关闭时不能发说说。发布同样是公开动作，还要受下面的间隔、每日上限与主题条件约束。",
         feed_recent_posts: "刷空间一次最多读多少条，好友动态与我的动态都在这个范围内，1 到 30。",
         comment_recent_posts: "回复前回看自己最近几条说说，用来判断上下文，1 到 20。",
+        owner_uin: "需要查看主人 QQ 空间动态时填写纯数字 QQ 号（不超过 20 位）；留空表示暂不指定。",
         action_min_interval_minutes: "点赞、回复、发说说共用这一条间隔，5 到 1440 分钟；调小只是允许更频繁，不代表会真的更频繁。",
         max_actions_per_tick: "一轮里最多做几个公开动作，1 到 5。调大不会放宽间隔，也不会放宽每日上限。",
-        publish_max_daily: "每天最多发几条说说，1 到 10；达到上限后当天不再发。",
+        daily_limits_enabled: "开启时同时执行说说总数、各主题和生活说说的每日上限；关闭后每日次数不限，冷却间隔、内容去重和发布授权仍然生效。",
+        publish_max_daily: "仅在「启用每日次数限制」开启时生效：每天最多发几条说说，1 到 10；达到上限后当天不再发。",
         topic_auto_enabled: "开启后才允许模型在无需人工确认的情况下自行发布；默认关闭，关着时模型提出的主题必须有人确认。",
         topic_require_confirmation: "开启时模型提出的主题必须有人确认才能发布；默认开启，只有上面那项打开且这一项关闭，模型才可能不经过确认就发。",
         topic_prompt_guidance: "给模型的补充表达指引（例如口吻、篇幅、不要写什么）；只影响怎么写，不改主题目录、场景放行与任何授权。",
-        life_publish_enabled: "开启后按下面的间隔与概率把角色自己的生活写成说说；还需要「启用 QQ 空间」和「允许发说说」同时打开，发布时仍会再查一次主题门槛与额度。",
+        life_publish_enabled: "开启后按下面的间隔与概率把角色自己的生活写成说说；还需要「启用 QQ 空间」和「允许在空间发说说」同时打开，发布时仍会再查一次主题门槛与额度。",
         life_publish_probability: "每次到点检查时的发布概率，0 到 1 之间；0 表示永不自动发，1 表示每次到点都发。",
-        life_publish_min_interval_hours: "两条生活说说之间至少隔多少小时，1 到 168；失败或结果未知也算一次尝试，会按这个间隔推迟下一次。",
-        life_publish_max_daily: "生活说说每天最多发几条，1 到 10；与「每日说说上限」同时生效时，先撞到哪条算哪条。",
+        life_publish_min_interval_hours: "两条成功说说的最短间隔，1 到 168 小时；只按成功发布计算，草稿或已知发布失败不会占满整个间隔。",
+        life_publish_max_daily: "仅在「启用每日次数限制」开启时生效：生活说说每天最多发几条，1 到 10；与「每日说说上限」同时生效时，先撞到哪条算哪条。",
+        life_publish_retry_minutes: "草稿或已知发布失败后，隔多少分钟允许再试，5 到 180；结果未知仍会按更长的间隔等待，避免重复发布。",
         life_publish_style_prompt: "只影响生活说说的语气与写法（例如更口语、少用感叹号）；不改变主题、授权、间隔与任何事实边界。",
         ...Object.fromEntries(QZONE_TOPIC_SECTIONS.flatMap(({prefix, title, scenes}) => [
           [prefix + "_enabled", "关闭后这个主题的说说一律不发，模型提出的该主题会被拒；不影响其他主题。"],
           [prefix + "_scenes", `这个主题允许出现在哪些场景，用半角逗号分隔，只能填该主题自己的场景：${qzoneSceneWords(scenes)}。留空、重复或写了别的场景会被后端拒绝；多个场景之间没有优先级。`],
           [prefix + "_min_confidence", "主题判定置信度门槛，0 到 1 之间的小数；低于它就不发这一条。「发说说」里由人手动选择的主题按 1 处理。"],
-          [prefix + "_daily_max", "这个主题每天最多发几条，0 到 10；0 表示这个主题今天一条都不发。与「每日说说上限」同时生效时，先撞到哪条算哪条。"],
+          [prefix + "_daily_max", "仅在「启用每日次数限制」开启时生效：这个主题每天最多发几条，0 到 10；0 表示这个主题一条都不发。与「每日说说上限」同时生效时，先撞到哪条算哪条。"],
           [prefix + "_cooldown_minutes", "这个主题两次发布之间的最短间隔，0 到 1440 分钟；0 表示不按主题单独限制间隔。"],
         ])),
       },
@@ -1754,79 +1827,8 @@ window.CompanionConfigEditors = (() => {
     return null;
   }
 
-  const errors = {
-    configuration_revision_conflict: "配置已经更新。草稿已保留，读取新版本后再核对。",
-    invalid_configuration_value: "请核对数值类型与范围。",
-    invalid_probability: "请填写 0 到 1 之间的小数。",
-    invalid_precision: "数值精度超出允许范围。",
-    invalid_weight: "该权重需为正数。",
-    configuration_request_invalid: "请求格式有误，请刷新后重试。",
-    route_not_found: "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
-    "未找到该路由": "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
-    busy_gate_settings_invalid: "繁忙闸门的关键词需要是短词，且每一项不超过 64 个。",
-    qzone_scene_list_invalid: "QQ 空间主题的场景清单只能用半角逗号分隔、不能重复，且只能填该主题自己的场景；请对照该主题段落说明里的可选值。",
-    image_quota_scope_invalid: "额度按安装与角色生效，请选择一个已初始化的私聊对象。",
-    image_quota_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    image_review_scope_invalid: "群图审核按会话生效，请选择一个已初始化的私聊对象。",
-    image_review_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    reaction_configuration_scope_invalid: "表情检索配置按插件安装全局生效，请使用管理员账号。",
-    reaction_configuration_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    busy_gate_scope_invalid: "繁忙闸门按会话生效，请选择一个已初始化的私聊对象。",
-    busy_gate_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    model_budget_scope_invalid: "预算按安装与角色生效，请选择一个已初始化的私聊对象。",
-    model_budget_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    recall_scope_invalid: "撤回原文转写按会话生效，请选择一个已初始化的私聊对象。",
-    recall_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    recall_configuration_invalid: "请核对转写条数、字数与时间窗的取值范围。",
-    screen_scope_invalid: "屏幕解读按会话生效，请选择一个已初始化的私聊对象。",
-    screen_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    screen_configuration_invalid: "请核对开关与素材字数上限。",
-    person_scope_invalid: "熟人卡按对象生效，请选择一个已初始化的私聊对象。",
-    person_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    role_growth_scope_invalid: "请从私聊用户页打开对应用户后再调整成长权限。",
-    role_growth_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    growth_target_changed: "当前对象或角色绑定已变化，请重新读取后再保存。",
-    library_scope_invalid: "书架按角色生效，请选择一个已初始化的私聊对象。",
-    library_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    library_configuration_invalid: "请核对开关与两项数量上限的取值范围。",
-    reference_scope_invalid: "参考图按角色生效，请选择一个已初始化的私聊对象。",
-    reference_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    photo_reference_configuration_invalid: "请核对两个开关与轮换天数（1 到 365）的取值范围。",
-    wardrobe_scope_invalid: "衣柜按角色生效，请选择一个已初始化的私聊对象。",
-    wardrobe_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    wardrobe_configuration_invalid: "请核对开关、两处文字（各不超过 800 字）与两项数量上限的取值范围。",
-    knowledge_scope_invalid: "知识库按会话生效，请选择一个已初始化的私聊对象。",
-    knowledge_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    knowledge_settings_invalid: "知识库设置不合法：单轮的引用字符上限不能小于单条素材的字数上限。",
-    role_life_scope_invalid: "日记与梦境按会话生效，请选择一个已初始化的私聊对象。",
-    role_life_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    rest_gate_settings_invalid: "休息判定设置不合法：判定方式只能选概率或模型，时段格式形如 23:00-08:30。",
-    life_timezone_invalid: "请填写有效的 IANA 时区，例如 Asia/Shanghai。",
-    life_clock_invalid: "请填写二十四小时制的时刻，形如 23:50 或 00:30。",
-    life_sleep_variation_invalid: "入睡浮动需为 0 到 120 分钟之间的整数。",
-    group_participation_scope_invalid: "群聊参与按会话生效，请选择一个已初始化的私聊对象。",
-    group_participation_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    group_participation_configuration_invalid: "请核对群聊参与设置：概率需在 0 到 1 之间，数字项需在各自范围内；打断语只能是一行、不超过 80 字。",
-    proactive_contact_scope_invalid: "当前对象的联系状态不可用，请选择已建立私聊的用户。",
-    proactive_contact_target_changed: "当前对象或角色绑定已变化，请重新读取。",
-    proactive_contact_configuration_invalid: "请核对主动联系设置：数值需在各自范围内，枚举项需在下拉选项内。",
-    configuration_relationship_required: "主动联系偏好需要一个已绑定的角色和这个会话的真人关系；请先完成对象与角色的绑定。",
-    invalid_contact_preference: "主动联系设置有字段不合法：时刻用 HH:MM，问候窗口用 HH:MM-HH:MM，时区用 IANA 名称，暂停时间点用带时区的 ISO 时间，活跃曲线写满 24 个数字，清单只能填允许的名字，重要日期要是 JSON 数组。",
-    proactive_contact_clock_invalid: "请填写二十四小时制的时刻，形如 23:00 或 07:45。",
-    proactive_contact_window_invalid: "问候窗口形如 07:45-10:20，且必须当天内结束，不能跨午夜。",
-    proactive_contact_timezone_invalid: "请填写有效的 IANA 时区，例如 Asia/Shanghai。",
-    proactive_contact_pause_invalid: "暂停时间点要带时区，形如 2026-09-28T12:00:00+00:00；留空表示本层不设暂停。",
-    proactive_contact_curve_invalid: "活跃曲线必须写满 24 个 0.05 到 2.00 之间的数字，用逗号分隔。",
-    proactive_contact_list_invalid: "清单里只能填允许的名字，用逗号分隔且不能重复；热榜来源只接受 weibo 与 hackernews。",
-    proactive_contact_dates_invalid: "重要日期要写成 JSON 数组，最多 32 项。",
-    proactive_contact_source_invalid: "资讯来源类型与 UID / 地址不匹配：B 站动态要十进制 UID，RSS 与 HTTPS JSON 要 https 地址。",
-    dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开小屋。",
-    core_access_required: "当前账号没有管理权限。",
-    staging_not_initialized: "角色数据尚未就绪，请在「账号与会话」保存角色映射；已保存可重新读取状态。",
-    staging_host_terminated: "插件已停止，请重新进入插件。",
-    bridge_timeout: "连接超时，请核对连接后重试。",
-    invalid_response: "返回数据不完整，请刷新核对。",
-  };
+  /* 所有配置错误码统一收敛在 workbench-page.js 的 CompanionWorkbench.errors，
+     避免在适配层维护第二份会漂移的副本。 */
 
   /* 配置接口地址取自 page/targets 下发的 config_api；
      回退到按 reply_api 推导，保证未升级的宿主目录仍可用。
@@ -1838,12 +1840,15 @@ window.CompanionConfigEditors = (() => {
    * 一次抛错会让**整条面板挂载链**中断：这一页的配置分区没有，后面所有
    * 工作区也全都不会挂上。用户看到的就是「这些页面完全无法使用」。
    * 读不到就返回 null，由调用方渲染等待态，而不是把整页一起带走。 */
+  const INSTALLATION_KINDS = new Set(["proactive.contact", "reaction", "budget", "private_access_installation"]);
+  const groupOnlyUnavailable = (product, kind, override) => !(typeof override === "string" && override.endsWith("/reply/participation"))
+    && product?.roleTarget?.()?.scope_kind === "group" && kind !== "system.prompts"
+    && !INSTALLATION_KINDS.has(kind);
   function endpointFor(product, override = "", kinds = []) {
-    const installationKinds = new Set(["proactive.contact", "reaction", "budget",
-      "private_access_installation"]);
-    if (Array.isArray(kinds) && kinds.some(kind => installationKinds.has(kind))) {
-      return kinds.every(kind => installationKinds.has(kind)) ? PREFIX + "config" : null;
+    if (Array.isArray(kinds) && kinds.some(kind => INSTALLATION_KINDS.has(kind))) {
+      return kinds.every(kind => INSTALLATION_KINDS.has(kind)) ? PREFIX + "config" : null;
     }
+    if (kinds.some(kind => groupOnlyUnavailable(product, kind, override))) return null;
     if (override) return typeof override === "string" && override.startsWith(PREFIX)
       && (override.endsWith("/config") || override.endsWith("/reply/participation")) ? override : null;
     if (!product || typeof product.role !== "function") return null;
@@ -1861,8 +1866,10 @@ window.CompanionConfigEditors = (() => {
   function create(kinds, rootProvider, views = {}, endpointOverride = "") {
     const product = window.CompanionProduct;
     const names = (kinds || []).filter(kind => Object.hasOwn(spec, kind));
-    const endpoint = endpointFor(product, endpointOverride, names);
-    if (!names.length || !endpoint) return null;
+    const unavailableKinds = new Set(names.filter(kind => groupOnlyUnavailable(product, kind, endpointOverride)));
+    const availableNames = names.filter(kind => !unavailableKinds.has(kind));
+    const endpoint = endpointFor(product, endpointOverride, availableNames);
+    if (!names.length || (!endpoint && availableNames.length)) return null;
     if (!window.CompanionWorkbench?.create) return null;
     let rolePeople = [];
     /* One page often owns several configuration groups.  The backend accepts a
@@ -1870,13 +1877,13 @@ window.CompanionConfigEditors = (() => {
        workbench its slice instead of making one request per section.  The
        shared promise is lazy: the first mounted editor starts it, all later
        editors reuse the same response. */
-    const canBatchRead = names.length > 1 && typeof product?.request === "function" && names.every(kind =>
+    const canBatchRead = availableNames.length > 1 && typeof product?.request === "function" && availableNames.every(kind =>
       !spec[kind]?.query && !views?.[kind]?.query);
     let batchRead = null;
     let batchPrimed = false;
     if (canBatchRead) {
-      const sectionNames = names.join(",");
-      const configBus = endpoint.endsWith("/config");
+      const sectionNames = availableNames.join(",");
+      const configBus = endpoint === PREFIX + "config";
       batchRead = () => {
         if (!batchRead.promise) {
           /* The shared /config route resolves the page's selected target; other
@@ -1929,7 +1936,7 @@ window.CompanionConfigEditors = (() => {
         for (const key of ["title", "note", "scopeNote", "navigationLimit", "segmentedChoices", "onStatus", "presentation", "sectionTabPrefix", "initialSection", "query", "requestSection", "savePath", "resetKey", "normalizeDraft"]) {
           if (Object.hasOwn(view, key)) current = {...current, [key]:view[key]};
         }
-        for (const key of ["labels", "helps", "rows", "inputs", "catalogs"]) {
+        for (const key of ["labels", "helps", "rows", "inputs", "catalogs", "listFields"]) {
           if (view[key]) current = {...current, [key]:{...current[key], ...view[key]}};
         }
       }
@@ -1949,8 +1956,7 @@ window.CompanionConfigEditors = (() => {
          因此归一后的值仍算未保存改动，会在下一次保存时写回规范值。 */
       normalizeDraft: current.normalizeDraft || null,
       order: current.order,
-      /* 卡片右上角的生效范围文案默认由内核按继承链推断；四层组（主动联系偏好，
-         链里多一层关系）必须自己声明，否则会被说成「角色共享」而漏掉关系层。 */
+      /* 补充范围说明；本次保存层由内核按后端字段合同展示。 */
       scopeNote: current.scopeNote || "",
       /* 段落声明同样必须转交：漏传时内核退回单段渲染，分组与依赖说明
          会被静默丢掉——看起来一切正常，只是少了几段。 */
@@ -1963,15 +1969,34 @@ window.CompanionConfigEditors = (() => {
       inputs: current.inputs || {},
       catalogs: current.catalogs || {},
       rows: current.rows || {},
-      /* 分段条、词条快选同样由 spec 声明；漏传时内核退回普通文本框。 */
+      /* 分段条、词条限制与词条快选同样由 spec/view 声明；漏传时内核退回默认值或普通文本框。 */
       segmentedChoices: current.segmentedChoices || [],
+      listFields: current.listFields || {},
       chipOptions: current.chipOptions || {},
       audit: current.audit || null,
       onStatus: current.onStatus || null,
       endpoint,
+      unavailable: unavailableKinds.has(kind)
+        ? "当前角色只有群聊入口，此设置尚无角色默认接口。请在「账号与会话」配置该角色的私聊入口后使用。" : "",
+      statusRestriction: status => {
+        if (typeof product?.selection !== "function") return "";
+        const fields = status?.fields || {};
+        const fieldNames = Object.keys(fields);
+        const fallbackLayer = status?.scope || status?.layers?.at(-1) || "window";
+        const needsWindow = fieldNames.some(name => {
+          const field = fields[name], layer = field.write_layer || fallbackLayer;
+          return ["window", "relationship"].includes(layer)
+            && (!field.editable_layers?.length || field.editable_layers.includes(layer));
+        }) || (!fieldNames.length && ["window", "relationship"].includes(fallbackLayer));
+        if (!needsWindow) return "";
+        const selected = product.selection();
+        if (!selected?.target_id) return "configuration_window_selection_required";
+        const boundTarget = endpoint?.match(/\/targets\/([^/]+)\/roles\//)?.[1];
+        return boundTarget && boundTarget !== selected.target_id ? "configuration_window_selection_mismatch" : "";
+      },
       /* Multi-section pages share one batched response; a single-section page
          keeps the normal direct read. */
-      prefetch: batchRead ? async () => {
+      prefetch: batchRead && !unavailableKinds.has(kind) ? async () => {
         const payload = await batchRead();
         if (!payload.sections[kind]) throw new Error("batch configuration section is missing");
         return {sections: {[kind]: payload.sections[kind]}};
@@ -2029,8 +2054,11 @@ window.CompanionConfigEditors = (() => {
           .map(instance => instance.refresh()));
       },
       selectSection(id) { for (const instance of instances) instance.selectSection(id); },
-      setVisibleGroups(ids, preferredId) {
-        for (const instance of instances) instance.setVisibleGroups?.(ids, preferredId);
+      setVisibleGroups(ids, preferredId, options) {
+        for (const instance of instances) {
+          if (options === undefined) instance.setVisibleGroups?.(ids, preferredId);
+          else instance.setVisibleGroups?.(ids, preferredId, options);
+        }
       },
       saveField(kind, field, value) {
         const instance = instances.find(item => item.group === kind);
@@ -2069,5 +2097,7 @@ window.CompanionConfigEditors = (() => {
     });
   }
 
-  return {create, spec, searchEntries, errors, endpointFor};
+  return {create, spec, searchEntries, get errors() { return window.CompanionWorkbench?.errors || {}; }, endpointFor};
 })();
+
+

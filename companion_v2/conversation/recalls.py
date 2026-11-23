@@ -141,13 +141,15 @@ class ConversationRecalls:
             for row in native:
                 try:
                     from companion_v2.execution.models import TaskContext
-                    original = TaskContext.restore(json.loads(row["context_json"]))
+                    from companion_v2.storage.native_dedup import resolve_context_json
+                    resolved_ctx = json.loads(resolve_context_json(self.runtime, row["context_json"]))
+                    original = TaskContext.restore(resolved_ctx)
                     sender = original.actor.principal.native_account_id
                     if (original.scope != context.scope or original.key != context.key
                             or row["source_hash"] != row["content_hash"]
                             or not self.recalled(original.scope, row["event_id"], sender)):
                         continue
-                    data = {"scope": json.loads(row["context_json"])["audience"]["scope"],
+                    data = {"scope": resolved_ctx["audience"]["scope"],
                             "principal": {"native_account_id": sender}}
                     projected.append({"event_key": digest([original.scope, sender, row["event_id"]]),
                                       "event_json": json.dumps(data), **dict(row)})
@@ -277,19 +279,26 @@ class ConversationRecalls:
                             cancelled += 1
             from .native_observations import observations_available
             if observations_available(self.runtime):
-                for row in self.runtime.read_all("""SELECT source_json, context_json
-                    FROM conversation_native_observations WHERE kind = 'input' AND event_id = ?
-                    AND json_extract(context_json, '$.audience.scope.installation_id') = ?
-                    AND json_extract(context_json, '$.audience.scope.platform') = ?
-                    AND json_extract(context_json, '$.audience.scope.bot_id') = ?
-                    AND json_extract(context_json, '$.audience.scope.account_id') = ?
-                    AND json_extract(context_json, '$.audience.scope.kind') = ?
-                    AND json_extract(context_json, '$.audience.scope.native_scope_id') = ?""",
-                    (notice.message_id, notice.installation_id, notice.platform,
-                     notice.bot_id, notice.account_id, notice.kind.value, notice.native_scope_id)):
-                    from companion_v2.execution.models import TaskContext
-                    original = TaskContext.restore(json.loads(row["context_json"]))
-                    if not notice.matches(original.scope):
+                from companion_v2.execution.models import TaskContext
+                from companion_v2.storage.native_dedup import resolve_context_json
+                for row in self.runtime.read_all(
+                    """SELECT source_json, context_json
+                       FROM conversation_native_observations
+                       WHERE kind = 'input' AND event_id = ?""",
+                    (notice.message_id,),
+                ):
+                    original = TaskContext.restore(json.loads(resolve_context_json(self.runtime, row["context_json"])))
+                    scope = original.scope
+                    if (
+                        scope.installation_id != notice.installation_id
+                        or scope.platform != notice.platform
+                        or scope.bot_id != notice.bot_id
+                        or scope.account_id != notice.account_id
+                        or scope.kind != notice.kind
+                        or scope.native_scope_id != notice.native_scope_id
+                    ):
+                        continue
+                    if not notice.matches(scope):
                         raise TaskError("recall_route_mismatch", "stored native observation route changed")
                     withdrawn += self._revoke(source_from_document(json.loads(row["source_json"])))
             platform_ref = "onebot-message:" + digest([notice.platform, notice.account_id])[:24] + ":" + notice.message_id

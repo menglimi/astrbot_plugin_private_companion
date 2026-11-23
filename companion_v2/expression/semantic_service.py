@@ -9,7 +9,7 @@ import time
 from companion_v2.execution.models import encode_prompt
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind
-from companion_v2.model_gateway.embedding import EmbeddingGateway
+from companion_v2.model_gateway.embedding import EmbeddingGateway, shared_query_embedding_cache
 from companion_v2.model_gateway.semantic_search import CatalogSearch
 from companion_v2.model_gateway.models import ToolSpec
 from companion_v2.storage.semantic import SemanticStore
@@ -42,7 +42,12 @@ class SemanticService:
         self.app = app
         self.reaction_role_count = reaction_role_count
         self.store = SemanticStore(app.runtime.data_root)
-        self.gateway = EmbeddingGateway(port, timeout=self.store.settings()["timeout_seconds"])
+        cache_namespace = str(app.runtime.data_root.resolve())
+        self.gateway = EmbeddingGateway(
+            port,
+            timeout=self.store.settings()["timeout_seconds"],
+            cache=shared_query_embedding_cache(cache_namespace),
+        )
         self.memory = MemorySemanticRecall(app.memory, self.gateway, self.store.settings)
         self.slang = GroupSlang(self)
         self.reactions = ReactionLibrary(self)
@@ -53,6 +58,7 @@ class SemanticService:
         self.backfill_runs = {}
         self.reaction_capture_runs = {}
         self._reaction_catalog_ready = set()
+        self._reaction_promoted_windows = set()
         self.prepared = set()
         self.closed = False
         descriptions = {"reaction.search": "按角色想怎样回应检索表情原图，可提供安慰、吐槽等用途及否定语境；找不到可不发。",
@@ -69,39 +75,55 @@ class SemanticService:
                        s.kind, s.native_scope_id, s.session_id if s.kind is ScopeKind.GROUP else "", context.role_binding.role])
 
     @staticmethod
-    def reaction_owner(context):
-        scope = context.scope
-        owner = RoleOwnerRef(scope.installation_id, scope.bot_id,
-                             context.role_binding.role.subject_id)
+    def reaction_owner_for_role(installation_id, bot_id, role_id):
+        owner = RoleOwnerRef(installation_id, bot_id, role_id)
         return digest(["semantic-reaction-role.v1", owner])
 
-    def ensure_reaction_catalog(self, context):
+    @staticmethod
+    def reaction_owner(context):
+        scope = context.scope
+        return SemanticService.reaction_owner_for_role(
+            scope.installation_id, scope.bot_id, context.role_binding.role.subject_id)
+
+    def ensure_reaction_catalog_for_role(self, installation_id, bot_id, role_id):
         """Promote old window catalogs for this role, preserving every source row."""
-        target_owner = self.reaction_owner(context)
+        target_owner = self.reaction_owner_for_role(installation_id, bot_id, role_id)
         if target_owner in self._reaction_catalog_ready:
             return target_owner
-        scope, role_id = context.scope, context.role_binding.role.subject_id
         rows = self.app.runtime.read_all("""SELECT DISTINCT context_json FROM conversation_batches
             WHERE json_extract(context_json,'$.role_binding.scope.installation_id')=?
             AND json_extract(context_json,'$.role_binding.scope.bot_id')=?
             AND json_extract(context_json,'$.role_binding.role.subject_id')=?""",
-            (scope.installation_id, scope.bot_id, role_id))
+            (installation_id, bot_id, role_id))
         for row in rows:
             try:
                 candidate = TaskContext.restore(json.loads(row["context_json"]))
             except (KeyError, TypeError, ValueError):
                 continue
             candidate_scope = candidate.scope
-            if (candidate_scope.installation_id != scope.installation_id
-                    or candidate_scope.bot_id != scope.bot_id
+            if (candidate_scope.installation_id != installation_id
+                    or candidate_scope.bot_id != bot_id
                     or candidate.role_binding.role.subject_id != role_id):
                 continue
-            self.store.promote_reaction_owner(self.owner(candidate), target_owner)
-        self.store.promote_reaction_owner(self.owner(context), target_owner)
+            source_owner = self.owner(candidate)
+            self.store.promote_reaction_owner(source_owner, target_owner)
+            self._reaction_promoted_windows.add((source_owner, target_owner))
         if self.reaction_role_count == 1:
             for source_owner in self.store.unclaimed_legacy_reaction_owners(target_owner):
                 self.store.promote_reaction_owner(source_owner, target_owner)
         self._reaction_catalog_ready.add(target_owner)
+        return target_owner
+
+    def ensure_reaction_catalog(self, context):
+        """Promote old window catalogs for this role, preserving every source row."""
+        scope, role_id = context.scope, context.role_binding.role.subject_id
+        target_owner = self.ensure_reaction_catalog_for_role(
+            scope.installation_id, scope.bot_id, role_id)
+        source_owner = self.owner(context)
+        pair = (source_owner, target_owner)
+        if pair not in self._reaction_promoted_windows:
+            self.store.promote_reaction_owner(source_owner, target_owner)
+            self._reaction_promoted_windows.add(pair)
         return target_owner
 
     def check(self, context, *, action="conversation.reply"):

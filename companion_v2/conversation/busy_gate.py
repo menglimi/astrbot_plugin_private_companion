@@ -294,26 +294,48 @@ def _busy_interval(item, now, settings):
     if schedule is None or duration <= timedelta(0):
         return None
     exceptions = item.get("exceptions") if type(item.get("exceptions")) is dict else {}
+    sequences = set()
     sequence = schedule.first_at_or_after(now - duration)
-    if sequence is None:
-        return None
-    try:
-        if str(sequence) in exceptions:
-            moved = exceptions[str(sequence)]
-            start = datetime.fromisoformat(moved) if moved else None
-        else:
-            start = schedule.at(sequence)
-    except (AgendaError, TypeError, ValueError):
-        return None
-    if start is None or not start <= now < start + duration:
+    if sequence is not None:
+        sequences.add(sequence)
+    for raw_seq, moved in exceptions.items():
+        if not moved:
+            continue
+        try:
+            seq_num = int(raw_seq)
+            moved_at = datetime.fromisoformat(moved)
+        except (TypeError, ValueError):
+            continue
+        if moved_at.tzinfo is None:
+            continue
+        if moved_at <= now < moved_at + duration:
+            sequences.add(seq_num)
+    matched_sequence = None
+    matched_start = None
+    for candidate in sorted(sequences):
+        try:
+            if str(candidate) in exceptions:
+                moved = exceptions[str(candidate)]
+                start = datetime.fromisoformat(moved) if moved else None
+            else:
+                start = schedule.at(candidate)
+        except (AgendaError, TypeError, ValueError):
+            continue
+        if start is not None and start.tzinfo is not None and start <= now < start + duration:
+            matched_sequence = candidate
+            matched_start = start
+            break
+    if matched_start is None:
         return None
     title = _single_line(item.get("title"), 256)
-    detail = _single_line(item.get("detail"), 1024)
+    details = item.get("details") if type(item.get("details")) is dict else {}
+    raw_detail = details.get(str(matched_sequence), item.get("detail"))
+    detail = _single_line(raw_detail, 1024)
     presence = _single_line(item.get("presence"), 8)
     if not is_busy_text(f"{title} {detail} {presence}", settings):
         return None
     label = " ".join(part for part in (title, presence) if part) or detail
-    return start + duration, _single_line(label, 220) or "role_plan"
+    return matched_start + duration, _single_line(label, 220) or "role_plan"
 
 
 def busy_items(items, *, now, settings):
@@ -433,6 +455,7 @@ EVENT_MARKERS = frozenset((
     "activity_event", "growth_event", "journal_event", "calendar_event",
     "reminiscence_event", "date_event", "meal_event",
     "weather_event", "weather_change_event", "official_alert_event", "balance_event", "news_event",
+    "reality_location_event",
 ))
 
 

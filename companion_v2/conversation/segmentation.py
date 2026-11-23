@@ -328,7 +328,7 @@ class SegmentationPolicy:
     def parts(self, text):
         if not isinstance(text, str) or not text.strip() or len(text) > 65536:
             raise ValueError("segmentation needs a bounded complete reply")
-        parts, _ = controlled_parts(text)
+        parts, _ = controlled_parts(text, split_inline=self.enabled and self.llm_controlled)
         if not parts:
             raise ValueError("reply contains only control tokens")
         if not self.enabled:

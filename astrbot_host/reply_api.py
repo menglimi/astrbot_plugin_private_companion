@@ -12,10 +12,12 @@ from companion_v2.conversation.reply_management import ReplyManagement
 from companion_v2.execution.models import TaskError
 from companion_v2.expression.style_management import ExpressionStyleManagement
 from companion_v2.foundation.outcome import Outcome
+from companion_v2.storage.runtime import StorageOpenError
 from .management_identity import dashboard_operator
 
 
 PREFIX = "/astrbot_plugin_private_companion/reply"
+READ_ONLY_STYLE_METHODS = frozenset({"list", "list_samples", "export_pack", "preview_import"})
 
 
 class ReplyWebAPI:
@@ -66,6 +68,33 @@ class ReplyWebAPI:
         from .voice import tts_provider_catalog
         return tts_provider_catalog(self.controller.context)
 
+    def _snapshot(self, *, not_initialized_message="load the V2 profile first"):
+        controller = self.controller
+        if controller._terminated:
+            raise TaskError("staging_host_terminated", "plugin is stopped")
+        session = controller.session or controller.last_session
+        runtime = controller.runtime
+        if session is None or runtime is None:
+            raise TaskError("staging_not_initialized", not_initialized_message)
+        return session, runtime, controller.now()
+
+    def _attach_status_capabilities(self, session, observed_at, result, action):
+        if result.is_success and action in ("status", "configure"):
+            status = result.value if action == "status" else result.value["status"]
+            status["tts"] = self._tts_catalog()
+            # 附件解析器与视频工具是否装好，直接随设置一起下发，理解页不用另开接口。
+            from .files.parsing import parser_availability
+            from .video.compressor import video_capabilities_status
+            status["documents"] = parser_availability()
+            status["video"] = video_capabilities_status()
+            try:
+                from companion_v2.conversation.web_understanding import WebUnderstandingSettings
+                status["web"] = WebUnderstandingSettings(
+                    session.application.configuration).read(session.profile.target, observed_at)
+            except Exception:
+                status["web"] = {}
+        return result
+
     async def _run(self, action):
         from .web_api import outcome_response
         try:
@@ -94,14 +123,9 @@ class ReplyWebAPI:
                 if (type(data) is not dict or not expected <= set(data)
                         or set(data) - expected - optional):
                     raise ValueError("unexpected or missing reply fields")
-            async with self.controller._control_lock:
-                controller = self.controller
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load the V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
+
+            def execute(session, runtime, observed_at):
+                operator = dashboard_operator(runtime, username, at=observed_at)
                 manager = ReplyManagement(session.application, session.profile.target, layer=ConfigLayer.ROLE)
                 if action == "status":
                     result = manager.status(operator)
@@ -113,21 +137,19 @@ class ReplyWebAPI:
                     result = manager.expression_configure(operator, data)
                 else:
                     result = manager.configure(operator, data)
-                if result.is_success and action in ("status", "configure"):
-                    status = result.value if action == "status" else result.value["status"]
-                    status["tts"] = self._tts_catalog()
-                    # 附件解析器是否装好，直接随设置一起下发，理解页不用另开接口。
-                    from .files.parsing import parser_availability
-                    status["documents"] = parser_availability()
-                    try:
-                        from companion_v2.conversation.web_understanding import WebUnderstandingSettings
-                        status["web"] = WebUnderstandingSettings(
-                            session.application.configuration).read(session.profile.target, controller.now())
-                    except Exception:
-                        status["web"] = {}
-                return outcome_response(result)
+                return self._attach_status_capabilities(session, observed_at, result, action)
+
+            if action in ("status", "expression", "preview"):
+                async with self.controller._control_lock:
+                    session, runtime, observed_at = self._snapshot()
+                return outcome_response(await asyncio.to_thread(execute, session, runtime, observed_at))
+            async with self.controller._control_lock:
+                session, runtime, observed_at = self._snapshot()
+                return outcome_response(await asyncio.to_thread(execute, session, runtime, observed_at))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("reply_storage_unavailable", "the reply store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("reply_request_invalid", "invalid UTF-8 reply settings request"))
 
@@ -153,23 +175,31 @@ class ReplyWebAPI:
             if type(username) is not str or not username.strip() or username.startswith("api_key:"):
                 raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
             controller = self.controller
-            async with (controller._lifecycle_lock if method == "list" else nullcontext()):
+            read_only = method in READ_ONLY_STYLE_METHODS
+            async with (controller._lifecycle_lock if read_only else nullcontext()):
                 async with controller._control_lock:
-                    if controller._terminated:
-                        raise TaskError("staging_host_terminated", "plugin is stopped")
-                    session = controller.session or controller.last_session
-                    if session is None or controller.runtime is None:
-                        raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
-                    operator = dashboard_operator(controller.runtime, username, at=controller.now())
+                    session, runtime, observed_at = self._snapshot(
+                        not_initialized_message="load an initialized V2 profile first")
+                    if not read_only:
+                        def execute_mutation():
+                            operator = dashboard_operator(runtime, username, at=observed_at)
+                            manager = ExpressionStyleManagement(session.application)
+                            return getattr(manager, method)(
+                                operator=operator, context=session.profile.target, **arguments)
+
+                        return outcome_response(await asyncio.to_thread(execute_mutation))
+
+                def execute_read():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
                     manager = ExpressionStyleManagement(session.application)
-                    context = session.profile.target
-                    if method != "list":
-                        result = getattr(manager, method)(operator=operator, context=context, **arguments)
-                        return outcome_response(result)
-                result = await asyncio.to_thread(manager.list, operator=operator, context=context, **arguments)
-                return outcome_response(result)
+                    return getattr(manager, method)(
+                        operator=operator, context=session.profile.target, **arguments)
+
+                return outcome_response(await asyncio.to_thread(execute_read))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("reply_storage_unavailable", "the reply store is not available"))
 
     async def style(self):
         from .web_api import outcome_response
@@ -320,17 +350,17 @@ class ReplyWebAPI:
             if type(username) is not str or not username.strip() or username.startswith("api_key:"):
                 raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
             async with self.controller._control_lock:
-                controller = self.controller
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load the V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                return outcome_response(RecallManagement(session.application, session.profile.target)
-                                        .transcribe(operator, limit=limit))
+                session, runtime, observed_at = self._snapshot()
+
+            def load_recalls():
+                operator = dashboard_operator(runtime, username, at=observed_at)
+                return RecallManagement(session.application, session.profile.target).transcribe(operator, limit=limit)
+
+            return outcome_response(await asyncio.to_thread(load_recalls))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("reply_storage_unavailable", "the reply store is not available"))
         except (ValueError, TypeError, KeyError):
             return outcome_response(Outcome.failed("recall_request_invalid", "invalid recall query"))
 
@@ -379,9 +409,12 @@ class ReplyWebAPI:
         try:
             async with self.controller._control_lock:
                 runtime = self._harassment_runtime()
-                return outcome_response(Outcome.success(self._harassment_snapshot(runtime, policy)))
+            snapshot = await asyncio.to_thread(self._harassment_snapshot, runtime, policy)
+            return outcome_response(Outcome.success(snapshot))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("reply_storage_unavailable", "the reply store is not available"))
 
     async def harassment_settings(self):
         from .web_api import outcome_response
@@ -490,13 +523,19 @@ class ReplyWebAPI:
             await self._harassment_body({"scope"})
             async with self.controller._control_lock:
                 runtime = self._harassment_runtime()
-                return outcome_response(Outcome.success({
+
+            def load_export():
+                return {
                     "settings": policy.read_settings(runtime),
                     "entries": policy.entries(runtime),
                     "audit": policy.audit(runtime),
-                }))
+                }
+
+            return outcome_response(Outcome.success(await asyncio.to_thread(load_export)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("reply_storage_unavailable", "the reply store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("harassment_export_invalid", "导出请求无效"))
 

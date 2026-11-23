@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
@@ -236,6 +236,16 @@ class AgendaToolTests(unittest.TestCase):
         self.assertEqual(self.service.repository.reminder(receipt["object_id"]).target.owner, USER)
         self.assertEqual(self.runtime.read_all("SELECT * FROM agenda_memos", ()), ())
 
+    def test_incomplete_reminder_forms_still_fail_in_the_business_layer(self):
+        session, _ = self.session()
+        schedule = {"anchor": NOW.isoformat(), "timezone_name": "Asia/Shanghai"}
+        for call_id, arguments in (("no-message", {"schedule": schedule}),
+                                   ("no-time", {"message": "喝水"})):
+            with self.subTest(call_id=call_id):
+                result = session.execute(call_id=call_id, action="reminder.create", arguments=arguments).unwrap()
+                self.assertEqual(result.state, "failed")
+        self.assertEqual(self.runtime.read_all("SELECT * FROM agenda_reminders", ()), ())
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -244,7 +254,8 @@ class AgendaToolSchemaTests(unittest.TestCase):
     def test_reminder_create_schema_declares_absolute_schedule_and_message(self):
         from companion_v2.conversation.tool_loop import specification
 
-        schema = json.loads(specification("reminder.create", *TOOL_FIELDS["reminder.create"]).parameters_json)
+        spec = specification("reminder.create", *TOOL_FIELDS["reminder.create"])
+        schema = json.loads(spec.parameters_json)
         schedule = schema["properties"]["schedule"]
 
         self.assertEqual(schedule["type"], "object")
@@ -254,10 +265,12 @@ class AgendaToolSchemaTests(unittest.TestCase):
         self.assertEqual(schedule["properties"]["timezone_name"]["type"], "string")
         self.assertEqual(schema["properties"]["message"]["type"], "string")
         self.assertFalse(schema["additionalProperties"])
-        # 直接给时间，或关联已有便签；两种合法用法都不能被 required 拦死。
-        self.assertEqual(len(schema["anyOf"]), 2)
-        self.assertEqual(set(schema["anyOf"][0]["required"]), {"schedule", "message"})
-        self.assertEqual(set(schema["anyOf"][1]["required"]), {"memo_id", "expected_memo_revision"})
+        # Claude rejects root-level combinators; both forms remain optional in
+        # the schema and are explained to the model before business validation.
+        self.assertFalse({"anyOf", "oneOf", "allOf"} & schema.keys())
+        self.assertEqual(schema["required"], [])
+        self.assertIn("schedule and message together", spec.description)
+        self.assertIn("memo_id and expected_memo_revision together", spec.description)
 
     def test_schedule_fold_stays_a_bounded_integer_instead_of_an_enum(self):
         from companion_v2.conversation.tool_loop import specification

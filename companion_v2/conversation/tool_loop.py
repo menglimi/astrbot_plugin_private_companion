@@ -142,17 +142,13 @@ def specification(action, required, optional=(), description="Use the original r
         properties["message"] = dict(_FIELD_SCHEMAS["message"])
         properties["memo_id"] = {"type": "string", "description": "已存在便签的 id；与 schedule/message 二选一，关联后按便签自身的时间触发"}
         properties["expected_memo_revision"] = {"type": "integer", "minimum": 1, "description": "关联便签时的版本号"}
+        description += (" For a new reminder, pass schedule and message together. "
+                        "To link an existing scheduled memo, pass memo_id and expected_memo_revision together. "
+                        "Use exactly one form; do not mix their fields.")
     schema = {
         "type": "object", "properties": properties,
         "required": sorted(required), "additionalProperties": False,
     }
-    if action == "reminder.create":
-        # 两种合法用法：直接给时间提醒，或关联一条已经有时间的便签。
-        # 不把 required 写死成其中一种，否则另一种调用会被 schema 直接拒绝。
-        schema["anyOf"] = [
-            {"required": ["schedule", "message"]},
-            {"required": ["memo_id", "expected_memo_revision"]},
-        ]
     return ToolSpec(action, description, encode(schema))
 
 
@@ -521,7 +517,12 @@ class LocalRoleTools:
     @staticmethod
     def _visible(row):
         if row["state"] in ("started", "unknown"):
-            return {"state": "unknown", "code": "original_tool_result_unknown", "effect": row["effect"]}
+            saved = json.loads(row["result_json"]) if row["result_json"] else None
+            if (isinstance(saved, dict) and saved.get("state") == "unknown"
+                    and saved.get("effect") == row["effect"]):
+                return saved
+            return {"state": "unknown", "code": "original_tool_result_unknown", "effect": row["effect"],
+                    "retry_disposition": "external_effect_unknown"}
         return json.loads(row["result_json"])
 
     def _validate_result(self, row, request, context, at):
