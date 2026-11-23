@@ -31,8 +31,8 @@ def _record_turn_note(session, text):
 
 logger = logging.getLogger(__name__)
 _PURPOSES = {
-    "image.generate": "没有可用参考图时按画面描述生成新图；包括全新角色、普通场景与无身份锚点的自拍",
-    "image.edit": "依据本轮附图、已保存产物或角色参考素材改图；需要保持角色身份或参考图一致时优先使用",
+    "image.generate": "仅在没有底图和参考图、需要从零生成全新图片时使用（包括全新角色、普通场景与无身份锚点的自拍）；修改本轮附图、引用图或刚发出的图片时不要使用此工具",
+    "image.edit": "修改已有图片或保持人物/参考一致时优先使用（依据本轮附图、引用图、当前会话最近生成的图、已保存产物或角色参考素材改图；改表情、换装、换背景或微调细节时，针对本轮附图或刚生成的图只需传 prompt 即可自动选图）",
     "image.mask_edit": "使用明确底图和蒙版做局部编辑",
 }
 _DELIVERY = (
@@ -65,6 +65,11 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
                                   "不要重复或改写参考图已有的固定外貌；自拍写明 selfie。"
                                   "多张参考图按实际上传顺序写明图一、图二等用途；"
                                   "模仿用户附图姿势时必须实际选择该图并赋予 pose，不能只转述姿势后省略图片。")
+    if action == "image.edit" and isinstance(properties.get("reference_indices"), dict):
+        properties["reference_indices"]["description"] = (
+            "可选：按 0 起始编号精确选择本轮附图或引用图；省略时自动选用本轮附图/引用图，"
+            "本轮无附图时自动回退当前会话最近生成的图；仅使用 reference_ids 时才填写 []。"
+        )
     if action == "image.edit" and type(reference_limit) is int and reference_limit > 0:
         for name in ("reference_ids", "reference_indices", "reference_roles"):
             reference = properties.get(name)
@@ -73,7 +78,7 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
                                              + f"；当前路线最多选择 {reference_limit} 张，优先用户指向的附图与 identity")
     if action == "image.edit" and isinstance(properties.get("artifact_id"), dict):
         properties["artifact_id"]["description"] = (
-            "仅编辑已保存生成产物时填写真实的非空 ID；使用 reference_ids 或本轮附图时省略此字段，不要传空字符串。")
+            "仅编辑已保存生成产物时填写真实的非空 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不要传空字符串。")
     return description, parameters
 
 
@@ -208,8 +213,9 @@ def _attachment_guidance(session):
     indices = "0" if count == 1 else f"0 到 {count - 1}"
     return (
         f"本轮用户随消息附了 {count} 张图（按顺序对应 reference_indices 的 {indices}）。"
-        "如果这轮要改图、且用户指着附图说“这个/这张/照这个/同款/按这张来”，"
-        "附图就是改图依据：reference_indices 选中对应序号，"
+        "如果这轮要改图、且用户指着附图说“这个/这张/改这张/换表情/照这个/同款/按这张来”，"
+        "必须调用改图工具（image.edit），不要误走从零生成（image.generate）；仅基于附图直接改图可只传 prompt，"
+        "需要精确挑图或叠加角色身份时，附图就是改图依据：reference_indices 选中对应序号，"
         "reference_roles 先写附图用途（scene、style、pose、outfit 等），"
         "额度允许时再按顺序追加 reference_ids 的 identity；"
         "不要用 reference_indices=[] 把本轮附图排除。"
