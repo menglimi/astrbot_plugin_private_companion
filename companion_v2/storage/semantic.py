@@ -1,10 +1,16 @@
 """V2-only semantic catalog. Originals are versioned; vectors are disposable."""
 
 from contextlib import contextmanager
+import hashlib
 import json
 import math
+import os
+from pathlib import Path
+import re
 import sqlite3
 import struct
+import tempfile
+import time
 
 try:
     import numpy as _NP
@@ -12,10 +18,13 @@ except Exception:  # pragma: no cover - optional acceleration
     _NP = None
 
 from companion_v2.execution.models import TaskError, digest, encode
+from companion_v2.storage.image_payloads import image_extension
 from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
 
 
 VECTOR_BLOB_MAGIC = b"F16\x00"
+REACTION_FILE_MARKER = b"\x00PCREACT1/"
+_REACTION_MARKER_RE = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{64}\.(?:png|jpg|webp|gif|bin)$")
 
 
 def encode_vector_blob(vector) -> bytes:
@@ -178,9 +187,11 @@ class SemanticStore:
     BUSY_TIMEOUT_MS = 5000
 
     def __init__(self, root):
-        self.path = root / "semantic-catalog.sqlite3"
+        self.root = Path(root)
+        self.path = self.root / "semantic-catalog.sqlite3"
         self._profile = tuning_profile()
-        with self.db(enable_wal=True) as db:
+        is_new = not self.path.exists()
+        with self.db(enable_wal=True, set_incremental_vacuum=is_new) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                 raise ValueError("unsupported semantic catalog version")
@@ -266,11 +277,74 @@ class SemanticStore:
                 db.execute("UPDATE settings SET revision=revision+1,payload=? WHERE id=1 AND revision=?",
                            (encode(configured), row["revision"]))
 
+    @property
+    def reaction_media_root(self) -> Path:
+        return self.root / "media" / "reactions"
+
+    @staticmethod
+    def is_reaction_file_marker(value) -> bool:
+        return isinstance(value, (bytes, bytearray, memoryview)) and bytes(value).startswith(REACTION_FILE_MARKER)
+
+    def _store_reaction_bytes(self, content: bytes, *, mime_type: str = "") -> bytes:
+        raw = bytes(content)
+        if not raw or self.is_reaction_file_marker(raw):
+            return raw
+        digest_hex = hashlib.sha256(raw).hexdigest()
+        ext = image_extension(raw, mime_type)
+        rel = f"{digest_hex[:2]}/{digest_hex}{ext}"
+        target_dir = self.reaction_media_root / digest_hex[:2]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{digest_hex}{ext}"
+        if not target.is_file() or target.stat().st_size != len(raw):
+            fd, tmp_name = tempfile.mkstemp(prefix=".react-", suffix=".tmp", dir=target_dir)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(raw)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp_name, target)
+            finally:
+                if os.path.exists(tmp_name):
+                    os.unlink(tmp_name)
+        return REACTION_FILE_MARKER + rel.encode("ascii")
+
+    def _load_reaction_bytes(self, value):
+        if value is None:
+            return None
+        if isinstance(value, (bytearray, memoryview)):
+            value = bytes(value)
+        if not isinstance(value, bytes) or not self.is_reaction_file_marker(value):
+            return value
+        try:
+            rel = value[len(REACTION_FILE_MARKER):].decode("ascii", errors="strict")
+        except UnicodeDecodeError as error:
+            raise TaskError("reaction_media_corrupt", "reaction media marker is invalid") from error
+        if not _REACTION_MARKER_RE.match(rel):
+            raise TaskError("reaction_media_corrupt", "reaction media marker is invalid")
+        path = self.reaction_media_root / rel
+        try:
+            return path.read_bytes()
+        except OSError as error:
+            raise TaskError("reaction_media_missing", "reaction media file is unavailable") from error
+
+    def _decode_item_row(self, row) -> dict:
+        record = dict(row)
+        record.pop("_rowid", None)
+        record["payload"] = json.loads(record["payload"])
+        if record.get("content") is not None and self.is_reaction_file_marker(record["content"]):
+            record["content"] = self._load_reaction_bytes(record["content"])
+        return record
+
     @contextmanager
-    def db(self, *, enable_wal=False, read_only=False):
+    def db(self, *, enable_wal=False, read_only=False, set_incremental_vacuum=False):
         db = sqlite3.connect(self.path, timeout=self.BUSY_TIMEOUT_MS / 1000.0)
         db.row_factory = sqlite3.Row
         try:
+            if set_incremental_vacuum and not read_only:
+                try:
+                    db.execute("PRAGMA auto_vacuum = INCREMENTAL")
+                except sqlite3.Error:
+                    pass
             apply_sidecar_pragmas(
                 db,
                 profile=self._profile,
@@ -346,13 +420,13 @@ class SemanticStore:
             row = db.execute("SELECT * FROM items WHERE owner=? AND kind=? AND id=?", (owner, kind, identifier)).fetchone()
             if row is None:
                 raise TaskError("semantic_item_missing", "catalog item is unavailable")
-            return {**dict(row), "payload": json.loads(row["payload"])}
+            return self._decode_item_row(row)
 
     def list(self, owner, kind, *, after="", limit=64):
         with self.db(read_only=True) as db:
             rows = db.execute("SELECT * FROM items WHERE owner=? AND kind=? AND id>? ORDER BY id LIMIT ?",
                               (owner, kind, after, limit)).fetchall()
-            return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
+            return [self._decode_item_row(r) for r in rows]
 
     def list_recent_page(self, owner, kind, *, after="", limit=24):
         """Return up to ``limit`` items newest-first plus the next opaque cursor."""
@@ -379,13 +453,17 @@ class SemanticStore:
         has_more = len(rows) > limit
         page = rows[:limit]
         next_after = f"r:{page[-1]['_rowid']}" if has_more else None
-        items = []
-        for row in page:
-            record = dict(row)
-            record.pop("_rowid", None)
-            record["payload"] = json.loads(record["payload"])
-            items.append(record)
+        items = [self._decode_item_row(row) for row in page]
         return items, next_after
+
+    def reaction_frames(self, owner, identifier) -> tuple[bytes, ...]:
+        """Load animation frame bytes for one reaction, resolving file markers transparently."""
+        with self.db(read_only=True) as db:
+            rows = db.execute(
+                "SELECT content FROM reaction_frames WHERE owner=? AND id=? ORDER BY position",
+                (owner, identifier),
+            ).fetchall()
+        return tuple(self._load_reaction_bytes(row[0]) for row in rows)
 
     def record_slang_candidates(self, owner, event_key, terms, *, observed_at):
         """Accumulate bounded vocabulary counts once per authorized input source."""
@@ -423,18 +501,155 @@ class SemanticStore:
         return {row["term"]: row["occurrences"] for row in rows}
 
     def put(self, owner, kind, identifier, payload, *, expected=0, content=None, enabled=True, frames=None):
+        stored_content = content
+        if kind == "reaction" and isinstance(content, (bytes, bytearray, memoryview)) and len(content) > 0:
+            mime_type = ""
+            if isinstance(payload, dict):
+                desc = payload.get("descriptor")
+                if isinstance(desc, dict):
+                    mime_type = str(desc.get("mime_type") or "")
+            stored_content = self._store_reaction_bytes(bytes(content), mime_type=mime_type)
+        stored_frames = None
+        if frames is not None:
+            stored_frames = [
+                (position, self._store_reaction_bytes(bytes(image)) if isinstance(image, (bytes, bytearray, memoryview)) and len(image) > 0 else image)
+                for position, image in frames
+            ]
         with self.db() as db:
             old = db.execute("SELECT * FROM items WHERE owner=? AND kind=? AND id=?", (owner, kind, identifier)).fetchone()
             if (old["revision"] if old else 0) != expected:
                 raise TaskError("semantic_conflict", "item changed; refresh before saving")
             db.execute("INSERT OR REPLACE INTO items VALUES (?,?,?,?,?,?,?)", (owner, kind, identifier,
-                       expected + 1, encode(payload), content if content is not None else old["content"] if old else None, int(enabled)))
-            if frames is not None:
+                       expected + 1, encode(payload), stored_content if stored_content is not None else old["content"] if old else None, int(enabled)))
+            if stored_frames is not None:
                 db.execute("DELETE FROM reaction_frames WHERE owner=? AND id=?", (owner, identifier))
                 db.executemany("INSERT INTO reaction_frames VALUES (?,?,?,?)",
-                               ((owner, identifier, position, image) for position, image in frames))
+                               ((owner, identifier, position, image) for position, image in stored_frames))
             db.execute("DELETE FROM vectors WHERE owner=? AND kind=? AND id=?", (owner, kind, identifier))
         return self.get(owner, kind, identifier)
+
+    def migrate_reaction_blobs_to_files(self, *, batch_size: int = 64) -> dict[str, int]:
+        """Losslessly offload legacy inline reaction & frame BLOBs to content-addressed files."""
+        chunk = max(8, int(batch_size))
+        items_migrated = 0
+        frames_migrated = 0
+        already_file_backed = 0
+        bytes_offloaded = 0
+
+        last_rowid = 0
+        while True:
+            with self.db(read_only=True) as db:
+                rows = db.execute(
+                    "SELECT rowid, owner, kind, id, payload, content FROM items "
+                    "WHERE rowid > ? AND kind = 'reaction' AND content IS NOT NULL "
+                    "ORDER BY rowid ASC LIMIT ?",
+                    (last_rowid, chunk),
+                ).fetchall()
+            if not rows:
+                break
+            updates: list[tuple[bytes, str, str, str]] = []
+            for row in rows:
+                last_rowid = int(row["rowid"])
+                raw = bytes(row["content"])
+                if not raw or self.is_reaction_file_marker(raw):
+                    already_file_backed += 1
+                    continue
+                mime_type = ""
+                try:
+                    desc = json.loads(row["payload"]).get("descriptor")
+                    if isinstance(desc, dict):
+                        mime_type = str(desc.get("mime_type") or "")
+                except (TypeError, ValueError, AttributeError):
+                    pass
+                marker = self._store_reaction_bytes(raw, mime_type=mime_type)
+                updates.append((marker, row["owner"], row["kind"], row["id"]))
+                items_migrated += 1
+                bytes_offloaded += max(0, len(raw) - len(marker))
+            if updates:
+                with self.db() as db:
+                    db.executemany(
+                        "UPDATE items SET content = ? WHERE owner = ? AND kind = ? AND id = ?",
+                        updates,
+                    )
+
+        last_rowid = 0
+        while True:
+            with self.db(read_only=True) as db:
+                rows = db.execute(
+                    "SELECT rowid, owner, id, position, content FROM reaction_frames "
+                    "WHERE rowid > ? ORDER BY rowid ASC LIMIT ?",
+                    (last_rowid, chunk),
+                ).fetchall()
+            if not rows:
+                break
+            frame_updates: list[tuple[bytes, str, str, int]] = []
+            for row in rows:
+                last_rowid = int(row["rowid"])
+                raw = bytes(row["content"])
+                if not raw or self.is_reaction_file_marker(raw):
+                    already_file_backed += 1
+                    continue
+                marker = self._store_reaction_bytes(raw)
+                frame_updates.append((marker, row["owner"], row["id"], row["position"]))
+                frames_migrated += 1
+                bytes_offloaded += max(0, len(raw) - len(marker))
+            if frame_updates:
+                with self.db() as db:
+                    db.executemany(
+                        "UPDATE reaction_frames SET content = ? WHERE owner = ? AND id = ? AND position = ?",
+                        frame_updates,
+                    )
+
+        return {
+            "items_migrated": items_migrated,
+            "frames_migrated": frames_migrated,
+            "already_file_backed": already_file_backed,
+            "bytes_offloaded": bytes_offloaded,
+        }
+
+    def gc_unreferenced_reaction_files(self, *, min_age_seconds: float = 300.0) -> dict[str, int]:
+        """Remove unreferenced files under ``media/reactions`` older than *min_age_seconds*.
+
+        The cutoff timestamp is captured *before* reading committed SQLite
+        references so concurrent writers that flush a new file to disk before
+        committing their metadata row are protected by the grace window.
+        """
+        if not self.reaction_media_root.exists():
+            return {"removed_files": 0, "reclaimed_bytes": 0}
+        grace = max(0.0, float(min_age_seconds))
+        cutoff = time.time() - grace
+        referenced: set[str] = set()
+        with self.db(read_only=True) as db:
+            for query in (
+                "SELECT content FROM items WHERE content IS NOT NULL",
+                "SELECT content FROM reaction_frames WHERE content IS NOT NULL",
+            ):
+                for row in db.execute(query):
+                    raw = bytes(row[0])
+                    if self.is_reaction_file_marker(raw):
+                        try:
+                            rel = raw[len(REACTION_FILE_MARKER):].decode("ascii", errors="strict")
+                        except UnicodeDecodeError:
+                            continue
+                        if _REACTION_MARKER_RE.match(rel):
+                            referenced.add(rel)
+        removed = 0
+        reclaimed = 0
+        for file_path in self.reaction_media_root.rglob("*"):
+            if not file_path.is_file() or file_path.name.startswith("."):
+                continue
+            rel = file_path.relative_to(self.reaction_media_root).as_posix()
+            if rel not in referenced:
+                try:
+                    st = file_path.stat()
+                    if grace > 0.0 and st.st_mtime >= cutoff:
+                        continue
+                    file_path.unlink()
+                    removed += 1
+                    reclaimed += st.st_size
+                except OSError:
+                    continue
+        return {"removed_files": removed, "reclaimed_bytes": reclaimed}
 
     def delete(self, owner, kind, identifier, *, expected):
         with self.db() as db:

@@ -16,6 +16,7 @@ import time
 from typing import Iterator
 
 from .sqlite_tuning import SqliteTuningProfile, tuning_profile
+from .write_batcher import WriteBehindBatcher
 
 from .schema import (
     SCHEMA_VERSION_V69, MIGRATION_V68_TO_V69_ID, MIGRATION_V68_TO_V69_FINGERPRINT,
@@ -511,6 +512,7 @@ class StorageRuntime:
         self._transaction_rollback_epoch = 0
         self._configuration_only = False
         self._configuration_store: StorageRuntime | None = None
+        self._write_batcher = WriteBehindBatcher(self)
 
     @property
     def tuning_profile(self) -> SqliteTuningProfile:
@@ -676,6 +678,42 @@ class StorageRuntime:
                 return False
             return self._run_pragma_optimize(connection)
 
+    def incremental_vacuum(self, pages: int = 256) -> int:
+        """Reclaim up to *pages* freelist pages when ``auto_vacuum = INCREMENTAL``.
+
+        Returns the number of freelist pages actually reclaimed (0 when the
+        database is still in legacy ``auto_vacuum = NONE`` mode or busy).
+        """
+        page_budget = max(1, int(pages))
+        with self._lock:
+            connection = self._connection
+            if connection is None or connection.in_transaction:
+                return 0
+            try:
+                mode = int(connection.execute("PRAGMA auto_vacuum").fetchone()[0])
+                if mode != 2:
+                    return 0
+                before = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+                if before <= 0:
+                    return 0
+                connection.execute(f"PRAGMA incremental_vacuum({page_budget})")
+                after = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+                return max(0, before - after)
+            except sqlite3.Error:
+                return 0
+
+    def enqueue_batched_write(self, callback, *, key: str | None = None) -> bool:
+        """Queue a non-critical write callback for coalesced micro-batch commit."""
+        return self._write_batcher.enqueue(callback, key=key)
+
+    def flush_batched_writes(self, *, timeout: float = 5.0) -> int:
+        """Flush all pending micro-batched writes synchronously."""
+        return self._write_batcher.flush(timeout=timeout)
+
+    def batched_write_stats(self) -> dict[str, int]:
+        """Return micro-batcher counters for diagnostics and health checks."""
+        return self._write_batcher.stats()
+
     @property
     def configuration_store(self) -> "StorageRuntime":
         """The runtime that owns configuration rows (this one unless split)."""
@@ -825,6 +863,7 @@ class StorageRuntime:
     def close(self) -> None:
         """Close this runtime and its attached configuration store."""
         started = time.perf_counter()
+        self._write_batcher.close()
         with self._reader_condition:
             self._reader_closing = True
             self._reader_condition.notify_all()
@@ -1166,6 +1205,7 @@ class StorageRuntime:
         connection: sqlite3.Connection | None = None
         try:
             self._data_root.mkdir(parents=True, exist_ok=True)
+            is_new_db = not self._database_path.exists() or self._database_path.stat().st_size == 0
             connection = sqlite3.connect(
                 str(self._database_path),
                 timeout=5.0,
@@ -1174,6 +1214,8 @@ class StorageRuntime:
                 cached_statements=0,
             )
             connection.row_factory = sqlite3.Row
+            if is_new_db:
+                connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = NORMAL")
@@ -2188,6 +2230,10 @@ class StorageRuntime:
         if "conversation_native_turns" in tables or "conversation_native_observations" in tables:
             from .native_conversation_schema import ensure_native_conversation_migrations
             if ensure_native_conversation_migrations(connection):
+                changed = True
+        if "astrbot_core_reply_observations" in tables:
+            from .core_reply_telemetry_schema import ensure_core_reply_telemetry_migrations
+            if ensure_core_reply_telemetry_migrations(connection):
                 changed = True
         return changed
 

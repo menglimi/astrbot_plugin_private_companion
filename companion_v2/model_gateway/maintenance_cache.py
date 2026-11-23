@@ -347,6 +347,25 @@ class CacheDiagnosticAccumulator:
         except (KeyError, IndexError, TypeError, ValueError, AttributeError):
             return None
 
+    def merge_daily_counts(self, cache_daily: dict) -> None:
+        """Merge pre-aggregated archived daily cache diagnostic counters into this accumulator."""
+        if not cache_daily:
+            return
+        self.saw_core_kind = True
+        for key, days in cache_daily.items():
+            if key not in self.daily or not isinstance(days, dict):
+                continue
+            dst_days = self.daily[key]
+            for day, src_vals in days.items():
+                if not isinstance(src_vals, dict):
+                    continue
+                dst = dst_days.setdefault(day, _empty_cache_day(day))
+                for field, val in src_vals.items():
+                    if field == "day":
+                        continue
+                    if isinstance(val, (int, float)):
+                        dst[field] = dst.get(field, 0) + val
+
     def add_row(self, row, *, allowed_days=None, track_sort_key: bool = False) -> None:
         raw_signature = row.get("signature") if isinstance(row, dict) else None
         signature = (
@@ -674,7 +693,8 @@ def _build_usage_report_from_pricing_rows(
     for row, cost_meta, recent in enrich_core_rows(pricing_rows):
         usage_report.add_group({**row, **row["aggregate"], **cost_meta})
         usage_report.add_hour({**row, **cost_meta})
-        new_recent.append(_strip_recent_row(recent))
+        if not row.get("_is_rollup"):
+            new_recent.append(_strip_recent_row(recent))
     usage_report.recent_rows = sorted(new_recent, key=_recent_sort_key, reverse=True)[:80]
     return usage_report
 
@@ -1021,14 +1041,21 @@ def read_shared_db_token(runtime) -> _DatabaseWriteToken | None:
 
 
 def read_fast_table_watermark(runtime, *, role_key_value: str, core_available: bool) -> tuple:
-    """Fast O(1)/covering-index watermark across the four primary maintenance tables."""
+    """Fast O(1)/covering-index watermark across the primary maintenance tables."""
+    from companion_v2.storage.telemetry_archive import read_core_rollups_watermark
+
     if core_available:
         core_row = runtime.read_one(
             "SELECT COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(MAX(received_at), '') "
             "FROM astrbot_core_reply_observations WHERE role_key = ?",
             (role_key_value,),
         )
-        core_mark = (int(core_row[0]), int(core_row[1]), core_row[2]) if core_row else (0, 0, "")
+        rollup_mark = read_core_rollups_watermark(runtime, role_key_value=role_key_value)
+        core_mark = (
+            (int(core_row[0]), int(core_row[1]), core_row[2], rollup_mark)
+            if core_row
+            else (0, 0, "", rollup_mark)
+        )
     else:
         core_mark = None
     calls_row = runtime.read_one("SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM model_calls", ())
@@ -1045,16 +1072,23 @@ def read_fast_table_watermark(runtime, *, role_key_value: str, core_available: b
 def read_core_history_watermark(
     runtime, *, role_key_value: str, history_cutoff: str, core_available: bool
 ) -> tuple | None:
-    """Detect any insert, delete, backfill, or revision update before *history_cutoff*."""
+    """Detect any insert, delete, backfill, rollup, or revision update before *history_cutoff*."""
     if not core_available:
         return None
+    from companion_v2.storage.telemetry_archive import read_core_rollups_watermark
+
     row = runtime.read_one(
         "SELECT COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(SUM(revision), 0), "
         "COALESCE(MAX(observed_at), ''), COALESCE(MAX(received_at), '') "
         "FROM astrbot_core_reply_observations WHERE role_key = ? AND received_at < ?",
         (role_key_value, history_cutoff),
     )
-    return (int(row[0]), int(row[1]), int(row[2]), row[3], row[4]) if row else (0, 0, 0, "", "")
+    rollup_mark = read_core_rollups_watermark(runtime, role_key_value=role_key_value)
+    return (
+        (int(row[0]), int(row[1]), int(row[2]), row[3], row[4], rollup_mark)
+        if row
+        else (0, 0, 0, "", "", rollup_mark)
+    )
 
 
 def read_core_today_watermark(
@@ -1447,10 +1481,13 @@ def _read_storage_pragmas(runtime) -> dict:
 
 
 def _decode_core_partition_rows(
+    runtime,
     rows,
     *,
     end_dt: datetime,
 ) -> tuple[list[tuple[dict, str, datetime]], bool, datetime | None]:
+    from companion_v2.storage.native_dedup import resolve_context_json
+
     result: list[tuple[dict, str, datetime]] = []
     has_future = False
     max_dt: datetime | None = None
@@ -1469,7 +1506,11 @@ def _decode_core_partition_rows(
                 hook_tool_count = row["hook_tool_count"]
                 if hook_tool_count is not None:
                     record["request_hook_signature"] = {"tool_count": hook_tool_count}
-                obs = {**record, "context_key": row["context_key"], "context_json": row["context_json"]}
+                obs = {
+                    **record,
+                    "context_key": row["context_key"],
+                    "context_json": resolve_context_json(runtime, row["context_json"]),
+                }
                 result.append((obs, row["scope_kind"], row_dt))
         except (TypeError, ValueError):
             continue
@@ -1518,7 +1559,7 @@ def _query_core_partition_rows(
         + " ORDER BY received_at DESC, turn_id DESC",
         tuple(values),
     )
-    return _decode_core_partition_rows(rows, end_dt=end_dt)
+    return _decode_core_partition_rows(runtime, rows, end_dt=end_dt)
 
 
 def _query_core_partition_rows_chunked(
@@ -1577,7 +1618,7 @@ def _query_core_partition_rows_chunked(
         )
         if not batch:
             break
-        chunk_obs, chunk_future, chunk_max_dt = _decode_core_partition_rows(batch, end_dt=end_dt)
+        chunk_obs, chunk_future, chunk_max_dt = _decode_core_partition_rows(runtime, batch, end_dt=end_dt)
         result.extend(chunk_obs)
         if chunk_future:
             has_future = True
@@ -1950,9 +1991,36 @@ def _build_core_raw_history_base(
     role_key_value: str,
     history_cutoff: str,
 ) -> _CoreRawHistoryEntry | None:
-    """Extension hook for archived daily rollups (None when no archive rollup table is active)."""
-    del runtime, role_key_value, history_cutoff
-    return None
+    """Load pre-aggregated archived daily rollups as the pricing-independent historical base."""
+    del history_cutoff
+    from companion_v2.storage.telemetry_archive import load_core_daily_rollups
+
+    archived_rollups = load_core_daily_rollups(runtime, role_key_value=role_key_value)
+    if not archived_rollups:
+        return None
+    r_days: set[str] = set()
+    r_avail = (0, 0, 0, 0, 0, 0, 0, 0)
+    r_cache_diag = CacheDiagnosticAccumulator()
+    r_pricing: list[dict] = []
+    for item in archived_rollups:
+        payload = item["payload"]
+        r_days.update(payload.get("core_days") or ())
+        avail_list = payload.get("availability_counts")
+        if isinstance(avail_list, list) and len(avail_list) == 8:
+            r_avail = _add_availability_counts(r_avail, tuple(int(v) for v in avail_list))
+        r_cache_diag.merge_daily_counts(payload.get("cache_daily") or {})
+        for prow in payload.get("pricing_rows") or ():
+            if isinstance(prow, dict):
+                r_pricing.append(prow)
+    return _CoreRawHistoryEntry(
+        hist_watermark=None,
+        hist_max_utc_dt=None,
+        core_days=frozenset(r_days),
+        availability_counts=r_avail,
+        cache_diag=r_cache_diag,
+        private_7d_records=(),
+        pricing_rows=tuple(r_pricing),
+    )
 
 
 def _fold_core_observations(
@@ -2980,8 +3048,18 @@ class _RuntimeMaintenanceCache:
             full_obs = observations_with_scope_for_role(runtime, context, end=eff_now.isoformat())
             raw_obs = [obs for obs, _scope_kind, _row_dt in full_obs]
             raw_rows = request_rows(raw_obs, include_signature_json=False)
+            rollup_raw = _build_core_raw_history_base(
+                runtime,
+                role_key_value=role_key_value,
+                history_cutoff=history_cutoff,
+            )
+            rollup_hist = (
+                _materialize_core_history_entry(rollup_raw, enrich_core_rows=enrich_core_rows)
+                if rollup_raw is not None
+                else None
+            )
             full_entry, _ = _fold_core_observations(
-                None,
+                rollup_hist,
                 [
                     (obs, scope_kind, row_dt if row_dt is not None else _parse_utc_timestamp(obs.get("received_at")))
                     for obs, scope_kind, row_dt in full_obs

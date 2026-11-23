@@ -22,6 +22,7 @@ from pathlib import Path
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
+from companion_v2.storage.compaction import compact_and_slim_databases, database_health_report
 from companion_v2.storage.management import (auto_backup_policy, cleanup_backups, cleanup_plan,
                                              inventory, retention_policy, valid_auto_backup_interval)
 
@@ -67,7 +68,9 @@ class StorageWebAPI:
 
     def routes(self):
         return [(PREFIX, self.status, ["GET"], "Read V2 storage usage and retention"),
-                (PREFIX, self.update, ["POST"], "Save V2 storage location and cleanup policy")]
+                (PREFIX, self.update, ["POST"], "Save V2 storage location and cleanup policy"),
+                (f"{PREFIX}/health", self.health, ["GET"], "Inspect V2 SQLite database health and slimming report"),
+                (f"{PREFIX}/compact", self.compact, ["POST"], "Run lossless V2 SQLite slimming and compaction")]
 
     def _operator(self):
         username = request.username
@@ -158,6 +161,93 @@ class StorageWebAPI:
         with backup_operation_lock(self.controller):
             return finish_backup_relocation(transfers)
 
+    def _active_runtime(self):
+        controller = self.controller
+        runtime = getattr(controller, "runtime", None)
+        if runtime is not None:
+            return runtime
+        session = getattr(controller, "session", None) or getattr(controller, "last_session", None)
+        if session is not None:
+            application = getattr(session, "application", None)
+            runtime = getattr(application, "runtime", None)
+            if runtime is not None:
+                return runtime
+        raise TaskError("staging_not_initialized", "load the V2 profile first")
+
+    @staticmethod
+    def _parse_compact_options(document: dict) -> dict:
+        allowed = {
+            "action", "ttl_days", "vacuum", "enable_incremental_vacuum",
+            "archive_telemetry", "dedup_native", "offload_media",
+        }
+        if not set(document) <= allowed:
+            raise ValueError("unexpected fields")
+        options: dict = {}
+        if "ttl_days" in document:
+            ttl = document["ttl_days"]
+            if type(ttl) is not int or not 1 <= ttl <= 3650:
+                raise ValueError("invalid ttl_days")
+            options["ttl_days"] = ttl
+        for key in ("vacuum", "enable_incremental_vacuum", "archive_telemetry", "dedup_native", "offload_media"):
+            if key in document:
+                if type(document[key]) is not bool:
+                    raise ValueError(f"invalid {key}")
+                options[key] = document[key]
+        return options
+
+    def _health(self, runtime):
+        return database_health_report(runtime)
+
+    def _compact(self, runtime, options: dict):
+        with backup_operation_lock(self.controller):
+            return compact_and_slim_databases(runtime, **options)
+
+    async def health(self):
+        from .web_api import outcome_response
+        controller = self.controller
+        try:
+            async with storage_request_lock(controller):
+                async with controller._control_lock:
+                    self._operator()
+                    if getattr(controller, "_terminated", False):
+                        raise TaskError("staging_host_terminated", "plugin is stopped")
+                    runtime = self._active_runtime()
+                report = await asyncio.to_thread(self._health, runtime)
+                return {"status": "ok", "data": report}
+        except (TaskError, ValueError) as error:
+            code = error.code if isinstance(error, TaskError) else "storage_request_invalid"
+            return outcome_response(Outcome.failed(code, str(error)))
+        except OSError:
+            return outcome_response(Outcome.failed("storage_operation_failed",
+                                                   "storage health could not be read"))
+
+    async def compact(self):
+        from .web_api import outcome_response
+        controller = self.controller
+        try:
+            raw = await request.body()
+            if len(raw) > MAX_REQUEST_BYTES or request.query:
+                raise ValueError("request too large or query provided")
+            document = self._body(raw) if raw and raw.strip() else {}
+            if type(document) is not dict:
+                raise ValueError("object required")
+            options = self._parse_compact_options(document)
+            async with storage_request_lock(controller):
+                async with controller._control_lock:
+                    self._operator()
+                    if getattr(controller, "_terminated", False):
+                        raise TaskError("staging_host_terminated", "plugin is stopped")
+                    runtime = self._active_runtime()
+                result = await asyncio.to_thread(self._compact, runtime, options)
+                return {"status": "ok", "data": result}
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, UnicodeError, RecursionError, TypeError, KeyError):
+            return outcome_response(Outcome.failed("storage_request_invalid", "compaction options are invalid"))
+        except OSError:
+            return outcome_response(Outcome.failed("storage_operation_failed",
+                                                   "database compaction could not complete"))
+
     async def status(self):
         from .web_api import outcome_response
         controller = self.controller
@@ -188,10 +278,20 @@ class StorageWebAPI:
             if type(document) is not dict:
                 raise ValueError("object required")
             action = document.get("action")
-            if action not in ("clean", "save", "cache"):
+            if action not in ("clean", "save", "cache", "compact"):
                 raise ValueError("unexpected action")
 
             async with storage_request_lock(controller):
+                if action == "compact":
+                    options = self._parse_compact_options(document)
+                    async with controller._control_lock:
+                        self._operator()
+                        if getattr(controller, "_terminated", False):
+                            raise TaskError("staging_host_terminated", "plugin is stopped")
+                        runtime = self._active_runtime()
+                    result = await asyncio.to_thread(self._compact, runtime, options)
+                    return {"status": "ok", "data": {"compact_result": result}}
+
                 if action == "cache":
                     if set(document) != {"action"}:
                         raise ValueError("unexpected fields")

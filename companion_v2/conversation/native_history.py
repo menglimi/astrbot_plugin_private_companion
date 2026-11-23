@@ -7,6 +7,7 @@ from companion_v2.foundation.refs import normalize_utc
 from companion_v2.sources import dependencies as source_dependencies
 from companion_v2.sources.models import GovernanceState
 from companion_v2.sources.repositories import SourceRepository, _source_from_row
+from companion_v2.storage.native_dedup import resolve_context_json, resolve_rows_context
 from companion_v2.storage.runtime import table_exists
 
 from .messages import ConversationMessages, source_from_document
@@ -52,7 +53,7 @@ def rows(runtime, context, *, start=None, end=None, kind=None, limit=32):
     query = ("SELECT n.*, s.sent_at FROM conversation_native_observations n LEFT JOIN conversation_native_sends s USING(observation_id) "
              if has_sends else "SELECT n.*, NULL AS sent_at FROM conversation_native_observations n ")
     query += "WHERE " + " AND ".join(where) + " ORDER BY n.effective_at DESC, n.rowid DESC LIMIT ?"
-    return runtime.read_all(query, (*values, limit))
+    return resolve_rows_context(runtime, runtime.read_all(query, (*values, limit)))
 
 
 def _format_body(row, source, record, at, *, sent_at, has_sent_row):
@@ -84,7 +85,7 @@ def body(messages, ref, context, at, *, historical=False):
     if (row is None or reference(row) != ref or row["context_key"] != context.key
             or row["delivery_state"] not in ("input_observed", "send_returned") or row["observed_at"] > stamp(at)):
         raise TaskError("native_history_changed", "the native history changed or was not sent")
-    original = TaskContext.restore(json.loads(row["context_json"]))
+    original = TaskContext.restore(json.loads(resolve_context_json(messages.runtime, row["context_json"])))
     if original.key != context.key or original.scope != context.scope:
         raise TaskError("native_history_context", "native history belongs to another authenticated context")
     source = source_from_document(json.loads(row["source_json"]))
@@ -148,7 +149,7 @@ def _dialogue_batched(messages, context, at, *, start=None, end=None, limit=32, 
                     or row["observed_at"] > at_stamp):
                 continue
             try:
-                original = TaskContext.restore(json.loads(row["context_json"]))
+                original = TaskContext.restore(json.loads(resolve_context_json(messages.runtime, row["context_json"])))
                 if original.key != context.key or original.scope != context.scope:
                     continue
                 source = source_from_document(json.loads(row["source_json"]))

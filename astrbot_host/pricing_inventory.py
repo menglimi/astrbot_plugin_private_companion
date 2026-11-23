@@ -547,6 +547,31 @@ def collect_usage_consumption(
                                     "output_tokens": int(usage.get("output_tokens") or 0),
                                 },
                             )
+
+                # 3. Merge archived cold-telemetry daily rollups so lifetime provider
+                #    counts remain exact after cold observations are archived.
+                try:
+                    from companion_v2.storage.telemetry_archive import load_core_daily_rollups
+                    rollup_role = params[0] if params else None
+                    for item in load_core_daily_rollups(runtime, role_key_value=rollup_role):
+                        totals = item["payload"].get("provider_totals") or {}
+                        for pid, vals in totals.items():
+                            if isinstance(vals, dict):
+                                _accumulate(
+                                    pid,
+                                    "",
+                                    {
+                                        "calls": int(vals.get("calls") or 0),
+                                        "requests": int(vals.get("requests") or 0),
+                                        "total_tokens": int(vals.get("total_tokens") or 0),
+                                        "input_tokens": int(vals.get("input_tokens") or 0),
+                                        "cached_input_tokens": int(vals.get("cached_input_tokens") or 0),
+                                        "cache_creation_tokens": int(vals.get("cache_creation_tokens") or 0),
+                                        "output_tokens": int(vals.get("output_tokens") or 0),
+                                    },
+                                )
+                except Exception:
+                    pass
     except Exception:
         pass
 

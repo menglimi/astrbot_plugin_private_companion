@@ -544,8 +544,9 @@ class LayaDecisionService:
                 f"SELECT turn_id, context_json FROM astrbot_core_reply_observations WHERE turn_id IN ({placeholders})",
                 tuple(chunk),
             )
+            from companion_v2.storage.native_dedup import resolve_context_json
             for row in obs_rows:
-                parsed = _parse_observation_scope(row["context_json"])
+                parsed = _parse_observation_scope(resolve_context_json(self.runtime, row["context_json"]))
                 if parsed:
                     by_batch[row["turn_id"]] = parsed
         for start in range(0, len(clean_origins), _OBSERVATION_BATCH_CHUNK):
@@ -556,8 +557,9 @@ class LayaDecisionService:
                 f"WHERE context_key IN ({placeholders}) GROUP BY context_key",
                 tuple(chunk),
             )
+            from companion_v2.storage.native_dedup import resolve_context_json
             for row in obs_rows:
-                parsed = _parse_observation_scope(row["context_json"])
+                parsed = _parse_observation_scope(resolve_context_json(self.runtime, row["context_json"]))
                 if parsed:
                     by_origin[row["context_key"]] = parsed
         return by_batch, by_origin

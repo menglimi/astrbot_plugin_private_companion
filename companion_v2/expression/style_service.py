@@ -2059,7 +2059,7 @@ class ExpressionStyleService:
             elif context.scope.kind is ScopeKind.GROUP:
                 obs_row = read_one(
                     """SELECT observation_id, observed_at FROM conversation_native_observations
-                       WHERE json_extract(context_json, '$.role_binding') = ?
+                       WHERE role_binding_key = ?
                          AND kind = 'input' AND delivery_state = 'input_observed'
                        ORDER BY observed_at DESC, observation_id ASC LIMIT 1""",
                     (encode(context.role_binding),),

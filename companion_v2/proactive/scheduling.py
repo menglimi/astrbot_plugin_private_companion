@@ -1615,13 +1615,13 @@ class ContactSchedule:
         legacy_rows = self._legacy_rows(self._cursor)
         from companion_v2.conversation.native_turns import project, turns_available
         native_rows = self.runtime.read_all("""SELECT n.rowid AS sequence, n.* FROM conversation_native_turns n
-            WHERE n.rowid > ? AND json_extract(n.context_json, '$.audience.scope.kind') = 'private'
+            WHERE n.rowid > ? AND n.scope_kind = 'private'
             AND n.generation_state = 'completed'
             AND NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
                 WHERE newer.context_key = n.context_key
                 AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
             ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
-        rows = (*legacy_rows, *(project(row) for row in native_rows))
+        rows = (*legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
         return now, rows, available, len(legacy_rows), len(native_rows)
 
     def _plan_one(self, row, now):

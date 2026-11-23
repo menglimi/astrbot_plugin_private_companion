@@ -153,11 +153,16 @@ def _make_pricing_resolver(
             measurable = (row["actual_tokens"] is not None
                           or row["input_tokens"] is not None
                           or row["output_tokens"] is not None)
-            turn_id = str(row.get("call_id") or "").rsplit(":", 1)[0]
-            turn_key = (turn_id, pid)
-            is_new_turn = turn_key not in seen_core_turns
-            if measurable:
-                seen_core_turns.add(turn_key)
+            row_calls = max(1, int(row.get("_rollup_calls") or 1))
+            if "_rollup_requests" in row:
+                row_requests = max(0, int(row["_rollup_requests"] or 0))
+            else:
+                turn_id = str(row.get("call_id") or "").rsplit(":", 1)[0]
+                turn_key = (turn_id, pid)
+                is_new_turn = turn_key not in seen_core_turns
+                if measurable:
+                    seen_core_turns.add(turn_key)
+                row_requests = 1 if is_new_turn else 0
             est = (
                 evaluate_call_cost_microusd(
                     eff,
@@ -168,8 +173,8 @@ def _make_pricing_resolver(
                     output_tokens=row["output_tokens"],
                     total_tokens=row["actual_tokens"],
                     model=cmodel,
-                    calls=1,
-                    requests=1 if is_new_turn else 0,
+                    calls=row_calls,
+                    requests=row_requests,
                     strict_expr=False,
                 )
                 if (eff is not None and measurable)
@@ -178,7 +183,7 @@ def _make_pricing_resolver(
             if est is not None:
                 cost_meta = {
                     "cost_microusd": est, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
-                    "estimated_cost_calls": 1, "estimated_cost_microusd": est, "unpriced_token_calls": 0,
+                    "estimated_cost_calls": row_calls, "estimated_cost_microusd": est, "unpriced_token_calls": 0,
                 }
                 enriched_core_recent = {
                     **row, "actual_cost": est, "estimated_cost_microusd": est,
@@ -188,7 +193,7 @@ def _make_pricing_resolver(
                 cost_meta = {
                     "cost_microusd": 0, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
                     "estimated_cost_calls": 0, "estimated_cost_microusd": 0,
-                    "unpriced_token_calls": 1 if measurable else 0,
+                    "unpriced_token_calls": row_calls if measurable else 0,
                 }
                 enriched_core_recent = {
                     **row, "actual_cost": None, "cost_basis": "unconfigured",

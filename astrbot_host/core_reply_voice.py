@@ -25,6 +25,16 @@ from companion_v2.conversation.voice_markup import slice_speech, strip_singing_p
 from .voice import singsing_config_origin
 
 
+MAX_CONCURRENT_TTS = 3
+
+
+def _max_concurrent_tts(policy=None) -> int:
+    value = getattr(policy, "max_concurrent_tts", None)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return MAX_CONCURRENT_TTS
+
+
 _SINGSING_INSTRUCTION = (
     '遵守本轮触发条件和朗读范围，按语境自主选择说话或唱歌。'
     '适合说话时用 <pc_tts>实际要说的话</pc_tts>，'
@@ -289,6 +299,242 @@ def _message_with_voice(message, visible, records, policy, *, hide_text, singing
     return derive(output) if callable(derive) else MessageChain(chain=output)
 
 
+def _extract_segment_speech(core, message, policy, *, singsing, whole=False):
+    """Extract visible text, cleaned chain, and spoken content for one segment."""
+    source = _plain_text(message)
+    matching_source = getattr(message, "_companion_v2_voice_source", source)
+    checked_code = _already_checked_code(core, matching_source)
+    chain = getattr(message, "chain", None)
+    if isinstance(message, Record) or (isinstance(chain, (list, tuple)) and
+                                       any(isinstance(component, Record) for component in chain)):
+        return {"skip_state": "native_voice_exists", "message": message}
+    if not source.strip() and not whole:
+        return {"skip_state": "no_text", "message": message}
+    visible, spans, cleaned_message = ((source, (), message) if checked_code
+                                       else _clean_plain_runs(message, policy, singsing=singsing))
+    if not visible.strip() and not whole:
+        return {"skip_state": "no_visible_text", "message": cleaned_message}
+    voice_source = getattr(message, "_companion_v2_voice_source", source if checked_code else visible)
+    captured_speech = _captured_speech(core, voice_source) if not spans else ""
+    candidates = speech_candidates(visible, (visible,), spans, policy)
+    segment_speech = captured_speech or (candidates[0].strip() if candidates else "")
+    singing = bool(captured_speech and isinstance(core, dict) and singsing
+                   and core.get("_voice_authored", {}).get("singing", False))
+    return {
+        "skip_state": None,
+        "visible": visible,
+        "cleaned_message": cleaned_message,
+        "segment_speech": segment_speech,
+        "singing": singing,
+    }
+
+
+async def _render_chunk(
+    event,
+    context,
+    chunk,
+    policy,
+    *,
+    kind,
+    singing,
+    renderer,
+    segment_index,
+    segment_count,
+    whole,
+):
+    language = detected_speech_language(chunk) or policy.language
+    render_options = {
+        "provider_id": policy.provider_for_language(kind, language=language),
+        "timeout_seconds": policy.timeout_seconds,
+    }
+    model_override = getattr(policy, "_model_override", "")
+    voice_override = getattr(policy, "_voice_override", "")
+    if model_override:
+        render_options["model_override"] = model_override
+    if voice_override:
+        render_options["voice_override"] = voice_override
+    if singing:
+        render_options["singing"] = True
+        umo = getattr(event, "unified_msg_origin", "")
+        if umo:
+            render_options.update(singing_umo=umo, singing_config_umo=singsing_config_origin(event))
+    render = renderer(context, chunk, **render_options)
+    budget = tts_wait_budget(
+        policy,
+        segment_index=segment_index,
+        segment_count=segment_count,
+        whole_reply=whole,
+    )
+    if budget is not None:
+        audio = await asyncio.wait_for(render, timeout=budget)
+    else:
+        audio = await render
+    audio_data = audio.get("data") if isinstance(audio, dict) and audio.get("type") == "record" else None
+    file_value = audio_data.get("file") if isinstance(audio_data, dict) else None
+    if not isinstance(file_value, str) or not file_value.startswith("base64://"):
+        raise ValueError("tts_audio_unavailable")
+    record = Record(file=file_value, text=chunk)
+    object.__setattr__(record, "_companion_v2_spoken_text", visible_speech(chunk).strip())
+    if singing:
+        object.__setattr__(record, "_companion_v2_optional_singing", True)
+    return record, language
+
+
+async def _synthesize_chunks(
+    event,
+    context,
+    chunks,
+    policy,
+    *,
+    kind,
+    singing,
+    renderer,
+    segment_index,
+    segment_count,
+    whole,
+    authorize=None,
+    semaphore=None,
+):
+    """Synthesize speech chunks concurrently under a bounded semaphore, preserving chunk order."""
+    if authorize is not None:
+        await authorize()
+    if len(chunks) == 1:
+        chunk = chunks[0]
+        if semaphore is not None:
+            async with semaphore:
+                record, language = await _render_chunk(
+                    event, context, chunk, policy,
+                    kind=kind, singing=singing, renderer=renderer,
+                    segment_index=segment_index, segment_count=segment_count, whole=whole,
+                )
+        else:
+            record, language = await _render_chunk(
+                event, context, chunk, policy,
+                kind=kind, singing=singing, renderer=renderer,
+                segment_index=segment_index, segment_count=segment_count, whole=whole,
+            )
+        return [record], language
+
+    sem = semaphore if semaphore is not None else asyncio.Semaphore(_max_concurrent_tts(policy))
+
+    async def render_one(chunk):
+        async with sem:
+            return await _render_chunk(
+                event, context, chunk, policy,
+                kind=kind, singing=singing, renderer=renderer,
+                segment_index=segment_index, segment_count=segment_count, whole=whole,
+            )
+
+    tasks = [asyncio.create_task(render_one(chunk)) for chunk in chunks]
+    pending = set(tasks)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+            for finished in done:
+                error = finished.exception()
+                if error is not None:
+                    raise error
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    results = [task.result() for task in tasks]
+    return [record for record, _ in results], results[-1][1]
+
+
+def init_core_voice_segment_prefetch(core, prepared, parts):
+    """Prepare bounded concurrent TTS pre-synthesis state for multi-segment replies."""
+    if not isinstance(core, dict) or not isinstance(prepared, Mapping) or len(parts) <= 1:
+        return None
+    policy = prepared.get("voice_reply_policy")
+    if not isinstance(policy, VoiceReplyPolicy) or policy.segment_mode != "each":
+        return None
+    state = {
+        "parts": tuple(parts),
+        "semaphore": asyncio.Semaphore(_max_concurrent_tts(policy)),
+        "started": False,
+        "plans": {},
+        "tasks": {},
+    }
+    core["_voice_segment_prefetch"] = state
+    return state
+
+
+async def cancel_core_voice_segment_prefetch(core):
+    """Cancel and await any unconsumed segment TTS pre-synthesis tasks."""
+    if not isinstance(core, dict):
+        return
+    prefetch = core.pop("_voice_segment_prefetch", None)
+    if not isinstance(prefetch, dict):
+        return
+    tasks = list(prefetch.get("tasks", {}).values())
+    prefetch["tasks"] = {}
+    prefetch["plans"] = {}
+    if not tasks:
+        return
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _schedule_remaining_segment_prefetch(
+    prefetch,
+    event,
+    core,
+    policy,
+    *,
+    singsing,
+    context,
+    kind,
+    renderer,
+    start_index,
+    segment_count,
+):
+    parts = prefetch["parts"]
+    semaphore = prefetch["semaphore"]
+    for idx in range(start_index, min(segment_count, len(parts))):
+        extracted = _extract_segment_speech(core, parts[idx], policy, singsing=singsing, whole=False)
+        if extracted["skip_state"] is not None:
+            prefetch["plans"][idx] = extracted
+            continue
+        speech = extracted["segment_speech"]
+        if not speech:
+            prefetch["plans"][idx] = {
+                "skip_state": "no_authored_speech",
+                "message": extracted["cleaned_message"],
+            }
+            continue
+        if singsing:
+            speech = strip_singing_provider_cue(speech)
+        chunks = speech_chunks(speech, policy.max_speech_chars)
+        if not chunks:
+            prefetch["plans"][idx] = {
+                "skip_state": "no_authored_speech",
+                "message": extracted["cleaned_message"],
+            }
+            continue
+        prefetch["plans"][idx] = {
+            "skip_state": None,
+            "visible": extracted["visible"],
+            "cleaned_message": extracted["cleaned_message"],
+            "speech": speech,
+            "singing": extracted["singing"],
+            "chunks": chunks,
+        }
+        prefetch["tasks"][idx] = asyncio.create_task(
+            _synthesize_chunks(
+                event, context, chunks, policy,
+                kind=kind, singing=extracted["singing"], renderer=renderer,
+                segment_index=idx, segment_count=segment_count, whole=False,
+                authorize=None, semaphore=semaphore,
+            )
+        )
+
+
 async def prepare_core_reply_voice_message(
     event,
     prepared,
@@ -325,33 +571,73 @@ async def prepare_core_reply_voice_message(
         note["state"] = "renderer_unavailable"
         return message if checked_code else _clean_plain_runs(message, policy, singsing=singsing)[2]
 
-    chain = getattr(message, "chain", None)
-    if isinstance(message, Record) or (isinstance(chain, (list, tuple)) and
-                                       any(isinstance(component, Record) for component in chain)):
-        note["state"] = "native_voice_exists"
-        return message
     segment_index = max(0, int(segment_index))
     segment_count = max(1, int(segment_count))
+    prefetch = core.get("_voice_segment_prefetch") if isinstance(core, dict) else None
+    if (isinstance(prefetch, dict) and policy.segment_mode == "each"
+            and segment_index in prefetch.get("plans", {})):
+        plan = prefetch["plans"].pop(segment_index)
+        task = prefetch["tasks"].pop(segment_index, None)
+        if plan["skip_state"] is not None:
+            note["state"] = plan["skip_state"]
+            if note["state"] == "no_authored_speech":
+                logger.info("[CompanionV2][media] stage=delivery event_ref=%s media=voice state=%s segment=%s/%s",
+                            prepared.get("event_ref", "unknown"), note["state"], segment_index + 1, segment_count)
+            return plan["message"]
+        visible = plan["visible"]
+        cleaned_message = plan["cleaned_message"]
+        speech = plan["speech"]
+        singing = plan["singing"]
+        chunks = plan["chunks"]
+        note["chars"], note["chunks"] = len(speech), len(chunks)
+        try:
+            await authorize()
+            records, language = await task
+            note["language"] = language
+        except asyncio.CancelledError:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            raise
+        except Exception as error:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            note["state"] = "synthesis_failed"
+            note["error_type"] = type(error).__name__
+            logger.warning("[CompanionV2] 核心回复 TTS 降级为文字 event_ref=%s error_type=%s",
+                           prepared.get("event_ref", "unknown"), type(error).__name__)
+            return cleaned_message
+        note["state"] = "ready"
+        logger.info("[CompanionV2] 核心回复 TTS 已合成 event_ref=%s language=%s chars=%s segment=%s/%s",
+                    prepared.get("event_ref", "unknown"), note.get("language") or policy.language, len(speech),
+                    segment_index + 1, segment_count)
+        same_text = re.sub(r"\s+", "", visible) == re.sub(r"\s+", "", visible_speech(speech))
+        platform = getattr(event, "get_platform_name", None)
+        native_text_carrier = (callable(platform) and platform() == "wechat_native"
+                               and any(isinstance(part, (Reply, At, AtAll))
+                                       for part in getattr(cleaned_message, "chain", ())))
+        return _message_with_voice(cleaned_message, visible, records, policy, singing=singing,
+                                   hide_text=(policy.delivery_mode == "voice_only"
+                                              and not singing
+                                              and not (policy.segment_mode == "whole" and segment_count > 1)
+                                              and same_text and not native_text_carrier))
+
     # Whole-reply voice speaks the joined text of the turn, so a segment with no
     # text of its own (a trailing image, say) still has to reach the bucket
     # below: bailing out here dropped the speech collected so far and the turn
     # ended silently.
     whole = policy.segment_mode == "whole" and isinstance(core, dict)
-    if not source.strip() and not whole:
-        note["state"] = "no_text"
-        return message
-
-    visible, spans, cleaned_message = ((source, (), message) if checked_code
-                                       else _clean_plain_runs(message, policy, singsing=singsing))
-    if not visible.strip() and not whole:
-        note["state"] = "no_visible_text"
-        return cleaned_message
-    voice_source = getattr(message, "_companion_v2_voice_source", source if checked_code else visible)
-    captured_speech = _captured_speech(core, voice_source) if not spans else ""
-    candidates = speech_candidates(visible, (visible,), spans, policy)
-    segment_speech = captured_speech or (candidates[0].strip() if candidates else "")
-    singing = bool(captured_speech and isinstance(core, dict) and singsing
-                   and core.get("_voice_authored", {}).get("singing", False))
+    extracted = _extract_segment_speech(core, message, policy, singsing=singsing, whole=whole)
+    if extracted["skip_state"] is not None:
+        note["state"] = extracted["skip_state"]
+        return extracted["message"]
+    visible = extracted["visible"]
+    cleaned_message = extracted["cleaned_message"]
+    segment_speech = extracted["segment_speech"]
+    singing = extracted["singing"]
     if whole:
         # Whole-reply voice waits until every text segment has been prepared,
         # then synthesizes the joined speech once.  Per-segment TTS cuts the
@@ -401,52 +687,33 @@ async def prepare_core_reply_voice_message(
     claim_route = getattr(delivery, "claim_core_route", None)
     kind = getattr(getattr(getattr(context, "scope", None), "kind", None), "value", None)
     cooldown = policy.cooldown(kind) if kind is not None else policy.cooldown_seconds
-    if callable(claim_route) and cooldown:
+    has_cooldown_claim = callable(claim_route) and bool(cooldown)
+    if has_cooldown_claim:
         claim = claim_route(context, event_id, cooldown)
         if claim is None:
             note["state"] = "cooldown"
             return cleaned_message
 
     try:
-        records = []
-        for chunk in chunks:
-            await authorize()
-            # The model may have honoured a user request for another language than
-            # the configured default; route the provider by the text that will
-            # actually be spoken instead of trusting the setting alone.
-            language = detected_speech_language(chunk) or policy.language
-            note["language"] = language
-            render_options = {"provider_id": policy.provider_for_language(kind, language=language),
-                              "timeout_seconds": policy.timeout_seconds}
-            model_override = getattr(policy, "_model_override", "")
-            voice_override = getattr(policy, "_voice_override", "")
-            if model_override:
-                render_options["model_override"] = model_override
-            if voice_override:
-                render_options["voice_override"] = voice_override
-            if singing:
-                render_options["singing"] = True
-                umo = getattr(event, "unified_msg_origin", "")
-                if umo:
-                    render_options.update(singing_umo=umo, singing_config_umo=singsing_config_origin(event))
-            render = renderer(context, chunk, **render_options)
-            budget = tts_wait_budget(policy, segment_index=segment_index,
-                                     segment_count=segment_count, whole_reply=whole)
-            if budget is not None:
-                # Only a mid-reply segment is capped: the final one (and the
-                # whole-reply synthesis) is bounded by the renderer's own timeout.
-                audio = await asyncio.wait_for(render, timeout=budget)
-            else:
-                audio = await render
-            audio_data = audio.get("data") if isinstance(audio, dict) and audio.get("type") == "record" else None
-            file_value = audio_data.get("file") if isinstance(audio_data, dict) else None
-            if not isinstance(file_value, str) or not file_value.startswith("base64://"):
-                raise ValueError("tts_audio_unavailable")
-            record = Record(file=file_value, text=chunk)
-            object.__setattr__(record, "_companion_v2_spoken_text", visible_speech(chunk).strip())
-            if singing:
-                object.__setattr__(record, "_companion_v2_optional_singing", True)
-            records.append(record)
+        await authorize()
+        semaphore = None
+        if (isinstance(prefetch, dict) and policy.segment_mode == "each"
+                and not prefetch.get("started")):
+            prefetch["started"] = True
+            semaphore = prefetch["semaphore"]
+            if not has_cooldown_claim and segment_index + 1 < segment_count:
+                _schedule_remaining_segment_prefetch(
+                    prefetch, event, core, policy,
+                    singsing=singsing, context=context, kind=kind, renderer=renderer,
+                    start_index=segment_index + 1, segment_count=segment_count,
+                )
+        records, language = await _synthesize_chunks(
+            event, context, chunks, policy,
+            kind=kind, singing=singing, renderer=renderer,
+            segment_index=segment_index, segment_count=segment_count, whole=whole,
+            authorize=None, semaphore=semaphore,
+        )
+        note["language"] = language
     except asyncio.CancelledError:
         if claim is not None:
             delivery.release(claim, claim["part_id"])

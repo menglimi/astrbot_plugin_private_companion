@@ -497,9 +497,10 @@ class ExpressionSampleCatalog:
                         (key,))
                 except Exception:
                     rows = ()
+            from companion_v2.storage.native_dedup import resolve_context_json
             for row in rows:
                 try:
-                    original = TaskContext.restore(json.loads(row["context_json"]))
+                    original = TaskContext.restore(json.loads(resolve_context_json(self.runtime, row["context_json"])))
                 except (TypeError, ValueError, KeyError):
                     continue
                 if (original.key == key and original.scope == context.scope

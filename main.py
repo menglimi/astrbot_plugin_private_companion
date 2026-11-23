@@ -272,6 +272,9 @@ def _should_skip_hijacked_external_stt(event: Any) -> bool:
     PLUGIN_VERSION,
 )
 class PrivateCompanionV2StagingPlugin(Star):
+    PLATFORM_STARTUP_COALESCE_SECONDS = 1.5
+    PLATFORM_BATCH_COALESCE_SECONDS = 0.05
+
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
         self._imports_retired = False
         try:
@@ -659,6 +662,20 @@ class PrivateCompanionV2StagingPlugin(Star):
                 "staging_application_not_running" if app_state != "running" else
                 "staging_target_not_claimed")
 
+    def _platform_loaded_signal(self) -> asyncio.Event:
+        signal = getattr(self, "_platform_loaded_event", None)
+        if signal is None:
+            signal = asyncio.Event()
+            self._platform_loaded_event = signal
+        return signal
+
+    def _platform_loaded_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_platform_loaded_hook_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._platform_loaded_hook_lock = lock
+        return lock
+
     async def initialize(self) -> None:
         if self._session_settings_warm_task is None or self._session_settings_warm_task.done():
             self._session_settings_warm_task = asyncio.create_task(
@@ -672,6 +689,11 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._qzone_life_publisher = QzoneLifePublisher(self.staging).start()
         if self.staging.settings is None or not self.staging.settings.enabled:
             logger.info("[CompanionV2] 共享宿主已加载，等待账号与人格配置")
+            return
+        should_wait = getattr(self.staging, "should_wait_for_initial_platform", None)
+        if callable(should_wait) and should_wait():
+            logger.info("[CompanionV2] 等待平台适配器加载完成后再装配共享宿主")
+            self._schedule_host_start(wait_for_platform_seconds=self.PLATFORM_STARTUP_COALESCE_SECONDS)
             return
         if not await self._try_start_host():
             self._schedule_host_start()
@@ -768,7 +790,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.warning("[CompanionV2] 保存的运行档暂不能启动%s code=%s error_type=%s detail=%s",
                            suffix, code, error_type or "unknown", detail or "unavailable")
 
-    def _schedule_host_start(self) -> None:
+    def _schedule_host_start(self, *, wait_for_platform_seconds: float = 0.0) -> None:
         if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):
             return
         session = self.staging.session
@@ -782,17 +804,47 @@ class PrivateCompanionV2StagingPlugin(Star):
             if bridges_current:
                 return
             self.staging._accepting = False
-        task = self._host_start_task
+        task = getattr(self, "_host_start_task", None)
         if task is None or task.done():
             self._host_start_task = asyncio.create_task(
-                self._wait_for_host_start(), name="companion:host-startup")
+                self._wait_for_host_start(wait_for_platform_seconds=wait_for_platform_seconds),
+                name="companion:host-startup")
 
-    async def _wait_for_host_start(self) -> None:
+    async def _wait_for_host_start(self, *, wait_for_platform_seconds: float = 0.0) -> None:
         loop = asyncio.get_running_loop()
+        if (wait_for_platform_seconds > 0
+                and not self.staging._terminated
+                and not getattr(self.staging, "_stopped_by_user", False)):
+            should_wait = getattr(self.staging, "should_wait_for_initial_platform", None)
+            all_loaded = getattr(self.staging, "all_configured_platforms_loaded", None)
+            if callable(should_wait) and should_wait():
+                signal = self._platform_loaded_signal()
+                signal.clear()
+                try:
+                    await asyncio.wait_for(signal.wait(), timeout=wait_for_platform_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                batch_window = getattr(self, "PLATFORM_BATCH_COALESCE_SECONDS", 0.05)
+                if (not self.staging._terminated
+                        and not getattr(self.staging, "_stopped_by_user", False)
+                        and batch_window > 0
+                        and callable(all_loaded)
+                        and not all_loaded()):
+                    deadline = loop.time() + batch_window
+                    while loop.time() < deadline and not all_loaded():
+                        signal.clear()
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            await asyncio.wait_for(signal.wait(), timeout=remaining)
+                        except asyncio.TimeoutError:
+                            break
         started_at = loop.time()
         delay = 0.5
         warned = False
         while not self.staging._terminated:
+            generation_before = getattr(self, "_platform_loaded_generation", 0)
             try:
                 finished = await self._try_start_host()
             except asyncio.CancelledError:
@@ -802,6 +854,17 @@ class PrivateCompanionV2StagingPlugin(Star):
                                getattr(error, "code", "startup_failed"), type(error).__name__)
                 return
             if finished:
+                if (getattr(self, "_platform_loaded_generation", 0) != generation_before
+                        and not self.staging._terminated
+                        and not getattr(self.staging, "_stopped_by_user", False)
+                        and self.staging.session is not None):
+                    recover = getattr(self.staging, "recover_accounts", None)
+                    if callable(recover):
+                        await recover()
+                    checker = getattr(self.staging, "native_bridges_current", None)
+                    if callable(checker) and not checker():
+                        self.staging._accepting = False
+                        continue
                 return
             if not warned and loop.time() - started_at >= 30:
                 logger.warning("[CompanionV2] 运行档尚未进入接收状态，恢复任务仍在运行并会自动重试")
@@ -811,7 +874,21 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_platform_loaded()
     async def on_companion_platform_loaded(self) -> None:
-        if self.staging.settings is not None and self.staging.settings.enabled:
+        self._platform_loaded_generation = getattr(self, "_platform_loaded_generation", 0) + 1
+        signal = getattr(self, "_platform_loaded_event", None)
+        if signal is not None:
+            signal.set()
+        if self.staging.settings is None or not self.staging.settings.enabled:
+            return
+        if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):
+            return
+        task = getattr(self, "_host_start_task", None)
+        if task is not None and not task.done():
+            return
+        async with self._platform_loaded_lock():
+            task = getattr(self, "_host_start_task", None)
+            if task is not None and not task.done():
+                return
             await self.staging.recover_accounts()
             self._schedule_host_start()
 
