@@ -951,3 +951,142 @@ test("工作区卸载隔离：首次配置引导卸载不误伤表达/理解/决
   const maintSrc = read("pages", "陪伴小屋", "maintenance-page.js");
   assert.doesNotMatch(maintSrc, /data-lucide="[^"]*image-check|"image-check"/);
 });
+
+test("全站右侧滑出抽屉双向丝滑动效：detailDialog、semantic-editor-drawer 与 mem-detail 均支持平滑开合与减弱动效", async () => {
+  // 1. #detailDialog / .detail-dialog (page-motion.css + app.js)
+  const motionCss = read("pages", "陪伴小屋", "page-motion.css");
+  assert.match(motionCss, /:is\(#detailDialog,\s*\.detail-dialog\)\s*\{[^}]*translate3d\(100%,\s*0,\s*0\)[^}]*220ms cubic-bezier\(0\.4,\s*0,\s*1,\s*1\)/);
+  assert.match(motionCss, /:is\(#detailDialog,\s*\.detail-dialog\)\[open\]\s*\{[^}]*translate3d\(0,\s*0,\s*0\)[^}]*260ms cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\)/);
+  assert.match(motionCss, /@starting-style\s*\{[\s\S]*?:is\(#detailDialog,\s*\.detail-dialog\)\[open\]\s*\{[^}]*translate3d\(100%,\s*0,\s*0\)/);
+  assert.match(motionCss, /:root\[data-motion="off"\]\s*:is\(#detailDialog,\s*\.detail-dialog/);
+  assert.match(motionCss, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?:is\(#detailDialog,\s*\.detail-dialog/);
+  const appJs = read("pages", "陪伴小屋", "app.js");
+  assert.match(appJs, /detailCloseTimer/);
+
+  // 2. .semantic-editor-drawer (semantic-page.css + expression-config.css + semantic-page.js 实跑 DOM 生命周期)
+  const semCss = read("pages", "陪伴小屋", "semantic-page.css");
+  assert.match(semCss, /\.semantic-editor-drawer\{[^}]*pointer-events:none[^}]*visibility:hidden/);
+  assert.match(semCss, /\.semantic-editor-drawer\.is-open\s+\.semantic-editor\{[^}]*translate3d\(0,0,0\)[^}]*260ms cubic-bezier\(0\.22,1,0\.36,1\)/);
+  assert.match(semCss, /\.semantic-editor\{[^}]*translate3d\(100%,0,0\)[^}]*220ms cubic-bezier\(0\.4,0,1,1\)/);
+  assert.match(semCss, /:root\[data-motion="off"\]\s*\.semantic-editor-drawer/);
+  assert.match(semCss, /:root\[data-motion="low"\]\s*\.semantic-editor-drawer\s+\.semantic-editor/);
+  const expCss = read("pages", "陪伴小屋", "expression-config.css");
+  assert.doesNotMatch(expCss, /\.expression-reaction-workspace\s+\.semantic-editor\{[^}]*transform:/, "expression-config.css 不得覆写 .semantic-editor 的滑出 transform");
+
+  // 实跑 semantic-page.js 持久抽屉壳：打开先挂壳下一帧加 .is-open、关闭先撤 .is-open 保活内容再清空
+  const semSrc = read("pages", "陪伴小屋", "semantic-page.js");
+  const rafs = [];
+  const timers = [];
+  function makeNode(tag = "div") {
+    const classes = new Set();
+    const attrs = {};
+    const handlers = {};
+    const node = {
+      tagName: tag.toUpperCase(),
+      isConnected: true,
+      parentNode: null,
+      children: [],
+      offsetWidth: 440,
+      _html: "",
+      get firstChild() { return node.children[0] || null; },
+      get className() { return [...classes].join(" "); },
+      set className(v) { classes.clear(); String(v || "").split(/\s+/).filter(Boolean).forEach(c => classes.add(c)); },
+      get innerHTML() { return node._html; },
+      set innerHTML(v) { node._html = String(v); if (v === "") node.children.length = 0; },
+      classList: {
+        add: c => classes.add(c),
+        remove: c => classes.delete(c),
+        contains: c => classes.has(c),
+        toggle: (c, on) => on ? classes.add(c) : classes.delete(c),
+      },
+      setAttribute: (k, v) => { attrs[k] = String(v); },
+      getAttribute: k => attrs[k] ?? null,
+      appendChild(child) { child.parentNode = node; node.children.push(child); return child; },
+      removeChild(child) { const i = node.children.indexOf(child); if (i >= 0) node.children.splice(i, 1); child.parentNode = null; return child; },
+      insertAdjacentHTML(_pos, html) {
+        const stub = makeNode("section");
+        stub._html = String(html);
+        const idx = node.parentNode ? node.parentNode.children.indexOf(node) : -1;
+        if (idx >= 0) { stub.parentNode = node.parentNode; node.parentNode.children.splice(idx, 0, stub); }
+      },
+      addEventListener(type, fn) { handlers[type] = fn; },
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      _handlers: handlers,
+    };
+    return node;
+  }
+  const docHandlers = {};
+  const fakeDoc = {
+    documentElement: {dataset: {motion: "full"}},
+    body: {classList: {contains: () => false}},
+    createElement: tag => makeNode(tag),
+    addEventListener(type, fn) { docHandlers[type] = fn; },
+  };
+  const bridge = {
+    apiGet: async (_r, params) => {
+      if (params?.id) return {item: {id: params.id, kind: "reaction", revision: 1, enabled: true, payload: {name: "笑脸"}}, image_url: ""};
+      return {
+        state: "ready", selection_ready: true, reaction_ready: true,
+        settings: {revision: 1}, providers: {}, catalog: {reaction: {enabled: 1, total: 1}},
+        items: [{id: "r1", kind: "reaction", revision: 1, enabled: true, payload: {name: "笑脸"}}],
+        next_after: null,
+      };
+    },
+    apiPost: async () => ({ok: true}),
+  };
+  const semWin = {
+    CompanionProduct: {
+      hosted: () => true, scopeKey: () => "scope-1",
+      selection: () => ({target_id: "t1", role_id: "r1"}),
+      target: () => ({scope_kind: "private"}),
+      unwrap: v => v, bridgeNow: () => bridge, bridgeFor: async () => bridge,
+    },
+    CompanionWorkbench: {scopeHintMarkup: () => "", scopeHintReset() {}, scopeHintKeydown() {}, scopeHintClick: () => false, dismissScopeHints() {}},
+    lucide: {createIcons() {}},
+    matchMedia: () => ({matches: false}),
+  };
+  const semCtx = vm.createContext({
+    window: semWin, document: fakeDoc, AbortController,
+    requestAnimationFrame: fn => { rafs.push(fn); return rafs.length; },
+    cancelAnimationFrame() {},
+    setTimeout: (fn, ms) => { timers.push({fn, ms}); return timers.length; },
+    clearTimeout() {},
+    Promise, Object, Array, String, Number, Boolean, Math, Date, Map, Set, FormData: class {}, FileReader: class {},
+  });
+  vm.runInContext(semSrc, semCtx);
+  const host = makeNode("div");
+  semWin.CompanionSemanticPage.mount(host, {view: "expression"});
+  await flush();
+  const drawer = host.children.find(c => c.classList.contains("semantic-editor-drawer"));
+  assert.ok(drawer, "首次渲染后应挂载持久 .semantic-editor-drawer 容器");
+  assert.equal(drawer.classList.contains("is-open"), false);
+  assert.equal(drawer.getAttribute("aria-hidden"), "true");
+
+  // 点击打开条目 -> 先写入内容但不立刻 is-open，rAF 后切 .is-open 触发滑入过渡
+  host._handlers.click({target: {closest: s => s === "[data-semantic-open]" ? {dataset: {semanticOpen: "r1", semanticKind: "reaction"}} : null}});
+  await flush();
+  assert.match(drawer.innerHTML, /id="semanticEditor"/);
+  assert.equal(drawer.getAttribute("aria-hidden"), "false");
+  assert.equal(drawer.classList.contains("is-open"), false, "打开首帧应先处于滑出起点，由下一帧触发滑入过渡");
+  assert.ok(rafs.length >= 1);
+  rafs.pop()();
+  assert.equal(drawer.classList.contains("is-open"), true, "下一帧后进入 .is-open 完成平滑滑入");
+
+  // 按 Escape 关闭 -> 立即撤掉 .is-open 与置 aria-hidden="true"，但保留内容 240ms 供平滑滑出后再清空
+  docHandlers.keydown({key: "Escape", preventDefault() {}});
+  assert.equal(drawer.classList.contains("is-open"), false);
+  assert.equal(drawer.getAttribute("aria-hidden"), "true");
+  assert.match(drawer.innerHTML, /id="semanticEditor"/, "关闭过渡期间应保留抽屉内容避免闪断");
+  assert.ok(timers.length >= 1);
+  timers.pop().fn();
+  assert.equal(drawer.innerHTML, "", "滑出过渡完成后清空隐藏抽屉内容");
+  semWin.CompanionSemanticPage.unmount();
+
+  // 3. .mem-detail (memory-page.css)
+  const memCss = read("pages", "陪伴小屋", "memory-page.css");
+  assert.match(memCss, /\.mem-detail\{[^}]*translate3d\(100%,0,0\)[^}]*220ms cubic-bezier\(0\.4,0,1,1\)/);
+  assert.match(memCss, /\.mem-detail\.is-open\{[^}]*translate3d\(0,0,0\)[^}]*260ms cubic-bezier\(0\.22,1,0\.36,1\)/);
+  assert.match(memCss, /:root\[data-motion="off"\]\s*\.mem-detail/);
+  assert.match(memCss, /@media\(prefers-reduced-motion:reduce\)\{\.mem-detail/);
+});

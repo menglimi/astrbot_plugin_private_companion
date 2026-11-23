@@ -85,30 +85,49 @@
   #homeShell details[open]::details-content { height: auto; opacity: 1; content-visibility: visible; }
 }
 
-:is(#detailDialog, #searchDialog, #navigationDialog) {
+:is(#searchDialog, #navigationDialog) {
   opacity: 0;
   transform: translateY(10px) scale(.985);
   transition: opacity var(--dur-fast), transform var(--dur) var(--ease-control),
     display var(--dur) allow-discrete, overlay var(--dur) allow-discrete;
 }
-#detailDialog { transform: translateX(14px); }
-:is(#detailDialog, #searchDialog, #navigationDialog)[open] { opacity: 1; transform: none; }
-:is(#detailDialog, #searchDialog, #navigationDialog):not([open]),
-:is(#detailDialog, #searchDialog, #navigationDialog):not([open])::backdrop { pointer-events: none; }
-:is(#detailDialog, #searchDialog, #navigationDialog)::backdrop {
+:is(#detailDialog, .detail-dialog) {
+  opacity: 0;
+  transform: translate3d(100%, 0, 0);
+  transition: opacity 200ms ease-in, transform 220ms cubic-bezier(0.4, 0, 1, 1),
+    display 220ms allow-discrete, overlay 220ms allow-discrete;
+}
+:is(#searchDialog, #navigationDialog)[open] { opacity: 1; transform: none; }
+:is(#detailDialog, .detail-dialog)[open] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition: opacity 220ms ease-out, transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    display 260ms allow-discrete, overlay 260ms allow-discrete;
+}
+:is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog):not([open]),
+:is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog):not([open])::backdrop { pointer-events: none; }
+:is(#searchDialog, #navigationDialog)::backdrop {
   opacity: 0;
   transition: opacity var(--dur), display var(--dur) allow-discrete, overlay var(--dur) allow-discrete;
 }
-:is(#detailDialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 1; }
-@starting-style {
-  :is(#detailDialog, #searchDialog, #navigationDialog)[open] { opacity: 0; transform: translateY(10px) scale(.985); }
-  #detailDialog[open] { transform: translateX(14px); }
-  :is(#detailDialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 0; }
+:is(#detailDialog, .detail-dialog)::backdrop {
+  opacity: 0;
+  transition: opacity 200ms ease-in, display 220ms allow-discrete, overlay 220ms allow-discrete;
 }
-@media (max-width: 760px) {
-  #detailDialog { transform: translateY(16px); }
-  #detailDialog[open] { transform: none; }
-  @starting-style { #detailDialog[open] { transform: translateY(16px); } }
+:is(#searchDialog, #navigationDialog)[open]::backdrop { opacity: 1; }
+:is(#detailDialog, .detail-dialog)[open]::backdrop {
+  opacity: 1;
+  transition: opacity 220ms ease-out, display 260ms allow-discrete, overlay 260ms allow-discrete;
+}
+@starting-style {
+  :is(#searchDialog, #navigationDialog)[open] { opacity: 0; transform: translateY(10px) scale(.985); }
+  :is(#detailDialog, .detail-dialog)[open] { opacity: 0; transform: translate3d(100%, 0, 0); }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 0; }
+}
+@media (max-width: 650px) {
+  :is(#detailDialog, .detail-dialog) { transform: translate3d(0, 100%, 0); }
+  :is(#detailDialog, .detail-dialog)[open] { transform: translate3d(0, 0, 0); }
+  @starting-style { :is(#detailDialog, .detail-dialog)[open] { opacity: 0; transform: translate3d(0, 100%, 0); } }
 }
 
 @keyframes search-target-pulse {
@@ -150,29 +169,29 @@ body.reduce-motion .is-search-target {
 }
 :root[data-motion="low"] #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
 :root[data-motion="low"] #homeShell .shell-nav-link:hover svg,
-:root[data-motion="low"] :is(#detailDialog, #searchDialog, #navigationDialog) { transform: none; }
-:root[data-motion="off"] :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
-body.reduce-motion :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) * {
+:root[data-motion="low"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog) { transform: none; }
+:root[data-motion="off"] :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
+body.reduce-motion :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) * {
   transition: none !important;
   animation: none !important;
 }
 :root:is([data-motion="low"], [data-motion="off"]) #homeShell details::details-content,
 body.reduce-motion #homeShell details::details-content { transition: none; }
-:root[data-motion="off"] :is(#detailDialog, #searchDialog, #navigationDialog),
-body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog) { transition: none !important; transform: none; }
-:root[data-motion="off"] :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop,
-body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
+:root[data-motion="off"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+body.reduce-motion :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog) { transition: none !important; transform: none; }
+:root[data-motion="off"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop,
+body.reduce-motion :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
 @media (prefers-reduced-motion: reduce) {
   :root { --control-hover-y: 0px; --control-press-y: 0px; --control-press-scale: 1; --control-icon-x: 0px; }
   .is-search-target {
     animation: none !important;
     background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
   }
-  :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
+  :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
   #homeShell details::details-content,
-  :is(#detailDialog, #searchDialog, #navigationDialog),
-  :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; animation: none !important; }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; animation: none !important; }
   #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
   #homeShell .shell-nav-link:hover svg,
-  :is(#detailDialog, #searchDialog, #navigationDialog) { transform: none; }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog) { transform: none; }
 }

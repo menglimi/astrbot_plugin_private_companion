@@ -74,6 +74,18 @@ window.CompanionSemanticPage = (() => {
      才能拿到新版本号。重读会把 state 换成服务端的值，所以本地草稿要单独留一份，
      否则用户刚填的值会被服务端旧值覆盖。 */
   let root,scope,abort,state,kind="reaction",view="all",after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,refreshing=false,refreshedAt="",editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
+  let drawerEl=null,drawerCloseTimer=0,drawerOpenFrame=0;
+  function reducedMotion(){
+    if(typeof document==="undefined")return true;
+    return document.documentElement?.dataset?.motion==="off"
+      ||document.body?.classList?.contains?.("reduce-motion")
+      ||Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+  }
+  function clearDrawerTimers(){
+    if(drawerCloseTimer&&typeof clearTimeout==="function")clearTimeout(drawerCloseTimer);
+    if(drawerOpenFrame&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(drawerOpenFrame);
+    drawerCloseTimer=0;drawerOpenFrame=0;
+  }
   const MAX_REFRESH_PAGES = 8;
   const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const visibleFlags = () => view === "expression"
@@ -108,8 +120,8 @@ window.CompanionSemanticPage = (() => {
     const source=String(value||"").trim();
     return /^(?:data:image\/[a-z0-9.+-]+;|https:\/\/|http:\/\/|\/)/i.test(source)?source:"";
   };
-  function editor(item) {
-    let html='<div class="semantic-editor-drawer"><div class="semantic-editor-backdrop" data-semantic="close" aria-hidden="true"></div><form id="semanticEditor" class="semantic-editor"><div class="semantic-heading"><h3>'+escape(item.payload.name||item.payload.term||"素材详情")+'</h3><button type="button" class="icon-button" data-semantic="close" aria-label="关闭编辑" title="关闭"><i data-lucide="x"></i></button></div>';
+  function editorInner(item) {
+    let html='<div class="semantic-editor-backdrop" data-semantic="close" aria-hidden="true"></div><form id="semanticEditor" class="semantic-editor"><div class="semantic-heading"><h3>'+escape(item.payload.name||item.payload.term||"素材详情")+'</h3><button type="button" class="icon-button" data-semantic="close" aria-label="关闭编辑" title="关闭"><i data-lucide="x"></i></button></div>';
     const source=imageSource(item.image_url||item.payload?.image_url||item.payload?.url);
     if(source)html+='<img src="'+escape(source)+'" alt="'+escape(item.payload.name||"表情原图")+'" loading="lazy">';
     html+=fields[kind].map(([id,label])=>'<label>'+label+'<textarea name="'+id+'" rows="'+(id==="description"||id==="meaning"?3:2)+'" maxlength="'+(kind==="slang"?500:1500)+'">'+escape(item.payload[id]||"")+'</textarea></label>').join("");
@@ -117,7 +129,54 @@ window.CompanionSemanticPage = (() => {
     html+='<div class="semantic-actions"><button class="button primary" type="submit" '+(busy?"disabled":"")+'>保存修改</button>';
     if(kind==="reaction")html+='<button class="button" type="button" data-semantic="analyze" '+(busy?"disabled":"")+'>补全空白字段</button>';
     if(kind==="reaction")html+='<button class="icon-button danger" type="button" data-semantic="delete" aria-label="删除表情素材" title="删除表情素材" '+(busy?"disabled":"")+'><i data-lucide="trash-2"></i></button>';
-    return html+'<button class="button" type="button" data-semantic="close">取消</button></div></form></div>';
+    return html+'<button class="button" type="button" data-semantic="close">取消</button></div></form>';
+  }
+  function editor(item) {
+    return '<div class="semantic-editor-drawer is-open" aria-hidden="false">'+editorInner(item)+'</div>';
+  }
+  function commitView(mainHtml) {
+    if(typeof document==="undefined"||typeof root?.insertAdjacentHTML!=="function"){
+      root.innerHTML=mainHtml+(editing?editor(editing):"");
+      window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
+      return;
+    }
+    if(!drawerEl||drawerEl.parentNode!==root){
+      drawerEl=document.createElement("div");
+      drawerEl.className="semantic-editor-drawer";
+      drawerEl.setAttribute("aria-hidden","true");
+      root.innerHTML="";
+      root.appendChild(drawerEl);
+    }else{
+      while(root.firstChild&&root.firstChild!==drawerEl)root.removeChild(root.firstChild);
+    }
+    drawerEl.insertAdjacentHTML("beforebegin",mainHtml);
+    clearDrawerTimers();
+    const wasOpen=drawerEl.classList.contains("is-open");
+    if(editing){
+      drawerEl.innerHTML=editorInner(editing);
+      drawerEl.setAttribute("aria-hidden","false");
+      if(wasOpen||reducedMotion()||typeof requestAnimationFrame!=="function"){
+        drawerEl.classList.add("is-open");
+      }else{
+        void drawerEl.offsetWidth;
+        drawerOpenFrame=requestAnimationFrame(()=>{
+          drawerOpenFrame=0;
+          if(editing&&drawerEl?.isConnected)drawerEl.classList.add("is-open");
+        });
+      }
+    }else{
+      drawerEl.classList.remove("is-open");
+      drawerEl.setAttribute("aria-hidden","true");
+      if(wasOpen&&!reducedMotion()&&typeof setTimeout==="function"){
+        drawerCloseTimer=setTimeout(()=>{
+          drawerCloseTimer=0;
+          if(!editing&&drawerEl?.isConnected)drawerEl.innerHTML="";
+        },240);
+      }else{
+        drawerEl.innerHTML="";
+      }
+    }
+    window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
   }
   function pendingAnalysis(item) {
     const payload=item?.payload||{},itemKind=item?.kind||kind;
@@ -164,7 +223,6 @@ window.CompanionSemanticPage = (() => {
       html+='<div class="semantic-list">'+rows+'</div>';
       if(!state.items?.length)html+='<p class="semantic-learning-empty">暂无语义条目</p>';
       if(Object.values(after).some(Boolean))html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
-      if(editing)html+=editor(editing);
     }
     html+='</section>';
     }
@@ -196,8 +254,9 @@ window.CompanionSemanticPage = (() => {
     if(!current())return;
     root?.classList?.toggle?.("semantic-expression-view", view === "expression");
     root?.classList?.toggle?.("semantic-learning-view", view !== "expression");
-    if(!product.hosted()){root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div><p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="semantic-actions"><button class="button" type="button" data-workspace-retry>重新读取</button></div>';return;}
+    if(!product.hosted()){clearDrawerTimers();drawerEl=null;root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div><p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="semantic-actions"><button class="button" type="button" data-workspace-retry>重新读取</button></div>';return;}
     if(!state){
+      clearDrawerTimers();drawerEl=null;
       const action=busy?"":'<div class="semantic-actions"><button class="button" type="button" data-semantic="retry">重新读取</button></div>';
       root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div>'
         +'<p class="memory-notice" role="status">'+escape(message||"正在读取实际配置…")+'</p>'+action;
@@ -209,8 +268,7 @@ window.CompanionSemanticPage = (() => {
     const currentViewFlags=visibleFlags(),currentViewProviders=visibleProviders(),currentViewNumbers=visibleNumbers();
     const kinds=visibleKinds(group);
     if(view==="learning"){
-      root.innerHTML=renderLearning(cfg,group);
-      window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
+      commitView(renderLearning(cfg,group));
       return;
     }
     const heading=view==="expression"?"表情配图":group?"群词义与语义设置":"语义理解与学习素材";
@@ -267,13 +325,11 @@ window.CompanionSemanticPage = (() => {
         return '<article class="semantic-row" data-semantic-open="'+escape(item.id)+'"><div class="semantic-row-media">'+media+'<span class="semantic-row-state '+(item.enabled?"is-enabled":"is-disabled")+'">'+(item.enabled?"已启用":"已停用")+'</span></div><div class="semantic-row-body"><strong>'+escape(title)+'</strong><p>'+escape(detail)+'</p><small>'+escape(collectionState||source)+' · '+escape(analysis)+(item.source_valid===false?" · 来源已失效":"")+'</small></div><button class="button small" type="button" data-semantic-open="'+escape(item.id)+'">编辑</button></article>';}).join("")+'</div>';
       if(!state.items?.length)html+='<p class="memory-notice">当前没有素材。</p>';
       if(state.next_after)html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
-      if(editing)html+=editor(editing);
       }
       html+='</div>';
     }
     if(kinds.length)html+='</section>';
-    root.innerHTML=html;
-    window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
+    commitView(html);
   }
   function collectionSummary(summary,catalog={}) {
     const totals=summary?.totals||{},recent=summary?.recent||[];
@@ -496,7 +552,7 @@ window.CompanionSemanticPage = (() => {
     if(busy)return;const ticket=++generation;busy=true;message="正在读取原件…";render();
     try{const data=await api("GET",{...selection(),kind,id});if(active(ticket)){editing={...data.item,image_url:data.image_url};message="";}}
     catch(error){if(active(ticket))message=localized(error,"原件暂不可用");}
-    finally{if(active(ticket)){busy=false;render();root.querySelector("#semanticEditor")?.scrollIntoView({block:"nearest"});}}
+    finally{if(active(ticket)){busy=false;render();root.querySelector('#semanticEditor [data-semantic="close"]')?.focus?.({preventScroll:true});}}
   }
   function mount(node,options={}){
     unmount();root=node;selectedTarget=options.target||null;selectedSelection=options.selection||null;selectedScopeKey=typeof options.scopeKey==="string"?options.scopeKey:"";
@@ -507,6 +563,11 @@ window.CompanionSemanticPage = (() => {
     for(const type of ["focusin","focusout","pointerover","pointerout"])
       node.addEventListener(type,window.CompanionWorkbench.scopeHintReset,{signal:abort.signal});
     node.addEventListener("keydown",window.CompanionWorkbench.scopeHintKeydown,{signal:abort.signal});
+    if(typeof document!=="undefined"&&typeof document.addEventListener==="function"){
+      document.addEventListener("keydown",event=>{
+        if(event.key==="Escape"&&editing&&current()){event.preventDefault();editing=null;render();}
+      },{signal:abort.signal});
+    }
     node.addEventListener("click",async event=>{
       if(window.CompanionWorkbench.scopeHintClick(event))return;
       const item=event.target.closest("[data-semantic-open]");if(item){kind=item.dataset.semanticKind||kind;open(item.dataset.semanticOpen);return;}
@@ -653,7 +714,7 @@ window.CompanionSemanticPage = (() => {
     });
   }
   function shownValue(id){return (draft?{...state.settings,...draft}:state.settings)[id];}
-  function unmount(){if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
+  function unmount(){clearDrawerTimers();drawerEl=null;if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
   /* 页面级未保存守卫（page-guards.js）：草稿存在就说明有未提交的改法。
      unmount 已经把 draft 之外的引用清掉，这里跟着 root 一起判断。 */
   function isDirty(){return !!draft&&!!root;}

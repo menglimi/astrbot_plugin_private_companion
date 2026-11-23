@@ -1961,11 +1961,18 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
   .mem-detail{
     position:fixed;z-index:40;inset:0;max-height:100dvh;overflow-y:auto;
     background:var(--t-surface-raised);border-radius:0;border:0;
-    transform:translateX(100%);
-    transition:transform .3s cubic-bezier(.16,1,.3,1),visibility .3s ease;
+    opacity:0;transform:translate3d(100%,0,0);
+    transition:transform 220ms cubic-bezier(0.4,0,1,1),opacity 200ms ease-in,visibility 0s linear 220ms;
   }
   .mem-detail:not(.is-open){visibility:hidden;pointer-events:none}
-  .mem-detail.is-open{visibility:visible;pointer-events:auto;transform:none;box-shadow:var(--t-shadow-lift)}
+  .mem-detail.is-open{
+    visibility:visible;pointer-events:auto;opacity:1;transform:translate3d(0,0,0);
+    box-shadow:var(--t-shadow-lift);
+    transition:transform 260ms cubic-bezier(0.22,1,0.36,1),opacity 220ms ease-out,visibility 0s linear 0s;
+  }
+  :root[data-motion="low"] .mem-detail{transform:none}
+  :root[data-motion="off"] .mem-detail,body.reduce-motion .mem-detail{transition:none!important;transform:none}
+  @media(prefers-reduced-motion:reduce){.mem-detail{transition:none!important;transform:none}}
   .mem-detail-close{display:inline-flex!important;margin-right:auto}
   .mem-detail-top{flex-wrap:wrap}
   .mem-vitals-figure b{font-size:var(--fs-display)}
@@ -5813,7 +5820,7 @@ body.state-connected{min-width:320px}
 }
 
 /* 表情库：配置卡、搜索卡、素材网格和详情编辑器分层。 */
-.expression-reaction-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-5)}.expression-reaction-workspace>#reactionConfigWorkspace{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-reaction-workspace .semantic-section{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top-color:var(--t-line)}.expression-reaction-workspace .semantic-flags{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2)}.expression-reaction-workspace .semantic-providers{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3)}.expression-reaction-workspace .semantic-collection-summary{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}.expression-reaction-workspace .semantic-toolbar{padding:var(--sp-2) 0;border-top:1px solid var(--t-line);border-bottom:1px solid var(--t-line)}.expression-reaction-workspace .semantic-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--sp-3);border:0}.expression-reaction-workspace .semantic-row{display:grid;align-content:start;gap:var(--sp-2);min-height:130px;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--t-accent) 5%,transparent)}.expression-reaction-workspace .semantic-row strong{font-size:var(--fs-lead)}.expression-reaction-workspace .semantic-row p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--fs-tiny)}.expression-reaction-workspace .semantic-row small{font-size:var(--fs-micro)}.expression-reaction-workspace .semantic-row .button{justify-self:start}.expression-reaction-workspace .semantic-editor{position:fixed;z-index:80;top:50%;left:50%;width:min(520px,calc(100vw - 32px));max-height:86vh;overflow:auto;transform:translate(-50%,-50%);margin:0;padding:var(--sp-5);border:1px solid var(--t-accent);border-radius:var(--r-lg);background:var(--t-surface);box-shadow:var(--t-shadow-lift)}
+.expression-reaction-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-5)}.expression-reaction-workspace>#reactionConfigWorkspace{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-reaction-workspace .semantic-section{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top-color:var(--t-line)}.expression-reaction-workspace .semantic-flags{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2)}.expression-reaction-workspace .semantic-providers{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3)}.expression-reaction-workspace .semantic-collection-summary{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}.expression-reaction-workspace .semantic-toolbar{padding:var(--sp-2) 0;border-top:1px solid var(--t-line);border-bottom:1px solid var(--t-line)}.expression-reaction-workspace .semantic-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--sp-3);border:0}.expression-reaction-workspace .semantic-row{display:grid;align-content:start;gap:var(--sp-2);min-height:130px;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--t-accent) 5%,transparent)}.expression-reaction-workspace .semantic-row strong{font-size:var(--fs-lead)}.expression-reaction-workspace .semantic-row p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--fs-tiny)}.expression-reaction-workspace .semantic-row small{font-size:var(--fs-micro)}.expression-reaction-workspace .semantic-row .button{justify-self:start}.expression-reaction-workspace .semantic-editor{position:fixed;z-index:80;top:50%;left:50%;width:min(520px,calc(100vw - 32px));max-height:86vh;overflow:auto;margin:0;padding:var(--sp-5);border:1px solid var(--t-accent);border-radius:var(--r-lg);background:var(--t-surface);box-shadow:var(--t-shadow-lift)}
 
 @container expression-modules (max-width:1080px){
   .expression-platform-workspace{grid-template-columns:minmax(0,1fr)}
@@ -5828,7 +5835,7 @@ body.state-connected{min-width:320px}
 
 /* 语义素材区在表达页里的独立视觉层。语义页仍可单独复用原布局。 */
 #semanticExpressionWorkspace.semantic-expression-view{display:grid;gap:var(--sp-4);min-width:0}#semanticExpressionWorkspace.semantic-expression-view>.settings-heading{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-1) 0}#semanticExpressionWorkspace.semantic-expression-view>.settings-heading h2{font-size:var(--fs-title)}#semanticExpressionWorkspace.semantic-expression-view>.semantic-section{margin:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface)}#semanticExpressionWorkspace.semantic-expression-view>.semantic-section:first-of-type{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}#semanticExpressionWorkspace.semantic-expression-view .semantic-heading{align-items:flex-start}#semanticExpressionWorkspace.semantic-expression-view .semantic-heading span{font-size:var(--fs-micro)}#semanticExpressionWorkspace.semantic-expression-view .semantic-meta{font-size:var(--fs-micro)}#semanticExpressionWorkspace.semantic-expression-view .semantic-toggle{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}#semanticExpressionWorkspace.semantic-expression-view .semantic-flags{margin:0}#semanticExpressionWorkspace.semantic-expression-view .semantic-providers{margin:0}#semanticExpressionWorkspace.semantic-expression-view .semantic-actions{margin:0;padding-top:var(--sp-2)}#semanticExpressionWorkspace.semantic-expression-view>.semantic-section:nth-of-type(2){display:grid;gap:var(--sp-3)}#semanticExpressionWorkspace.semantic-expression-view .semantic-section .semantic-heading+ .semantic-session{margin-top:0}#semanticExpressionWorkspace.semantic-expression-view .semantic-import{padding:var(--sp-3);border:1px dashed var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-soft)}#semanticExpressionWorkspace.semantic-expression-view .semantic-results{padding:var(--sp-2);border-radius:var(--r-sm);background:var(--t-accent-quiet)}#semanticExpressionWorkspace.semantic-expression-view .semantic-row{transition:transform var(--dur-fast) ease,box-shadow var(--dur-fast) ease}#semanticExpressionWorkspace.semantic-expression-view .semantic-row:hover{transform:translateY(-2px);box-shadow:var(--t-shadow)}#semanticExpressionWorkspace.semantic-expression-view .semantic-editor::before{content:"";position:fixed;inset:0;z-index:-1;background:var(--scrim)}
-.expression-reaction-workspace .semantic-import{padding:0;border:0;background:transparent}.expression-reaction-workspace .semantic-editor{top:0;right:0;left:auto;width:min(440px,calc(100vw - 24px));height:100%;max-height:none;transform:none;border:0;border-left:1px solid var(--t-line-firm);border-radius:var(--r-md) 0 0 var(--r-md);box-shadow:var(--t-shadow-lift)}.expression-reaction-workspace .semantic-editor-drawer{position:fixed;inset:0;z-index:80}.expression-reaction-workspace .semantic-editor::before{display:none}
+.expression-reaction-workspace .semantic-import{padding:0;border:0;background:transparent}.expression-reaction-workspace .semantic-editor{top:0;right:0;left:auto;width:min(440px,calc(100vw - 24px));height:100%;max-height:none;border:0;border-left:1px solid var(--t-line-firm);border-radius:var(--r-md) 0 0 var(--r-md);box-shadow:var(--t-shadow-lift)}.expression-reaction-workspace .semantic-editor-drawer{position:fixed;inset:0;z-index:80}.expression-reaction-workspace .semantic-editor::before{display:none}
 
 /* Replies are filtered in the workbench before rendering; platform settings keep
    their own two-section navigation while the single voice section has none. */
@@ -13635,10 +13642,11 @@ body.room-editing .product-scope{display:none}
 .semantic-row:hover{border-color:var(--t-line-firm);box-shadow:var(--t-shadow);transform:translateY(-1px)}.semantic-row:focus-within{outline:2px solid var(--t-focus);outline-offset:2px}
 .semantic-row-media{position:relative;display:grid;place-items:center;grid-column:1/-1;aspect-ratio:1.55;min-width:0;overflow:hidden;border-radius:var(--r-xs);background:var(--t-surface-sunken)}.semantic-row-media>img{width:100%;height:100%;object-fit:cover}.semantic-row-placeholder{display:grid;place-items:center;width:54px;height:54px;border:1px solid var(--t-line-firm);border-radius:var(--r-sm);color:var(--t-text-faint)}.semantic-row-placeholder svg{width:28px;height:28px}.semantic-row-state{position:absolute;top:var(--sp-1);right:var(--sp-1);padding:3px var(--sp-2);border-radius:var(--r-pill);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-micro)}.semantic-row-state.is-enabled{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
 .semantic-row-body{display:grid;gap:2px;min-width:0}.semantic-row-body strong{overflow:hidden;color:var(--t-text-strong);font-size:var(--fs-body);text-overflow:ellipsis;white-space:nowrap}.semantic-row-body p{display:-webkit-box;overflow:hidden;margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.45;-webkit-box-orient:vertical;-webkit-line-clamp:2}.semantic-row-body small{overflow:hidden;color:var(--t-text-faint);font-size:var(--fs-micro);text-overflow:ellipsis;white-space:nowrap}.semantic-row>.button{align-self:end}
-.semantic-editor-drawer{position:fixed;inset:0;z-index:80;pointer-events:none}.semantic-editor-backdrop{position:absolute;inset:0;background:var(--scrim);opacity:0;pointer-events:auto;animation:semantic-drawer-fade var(--dur-fast) ease forwards}.semantic-editor{position:absolute;top:0;right:0;display:grid;gap:var(--sp-3);width:min(440px,calc(100vw - 24px));height:100%;overflow:auto;margin:0;padding:var(--sp-5);border:0;border-left:1px solid var(--t-line-firm);border-radius:var(--r-md) 0 0 var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow-lift);pointer-events:auto;animation:semantic-drawer-slide var(--dur) cubic-bezier(.2,.75,.25,1) both}.semantic-editor .semantic-heading{position:sticky;top:calc(-1 * var(--sp-5));z-index:1;padding:var(--sp-1) 0 var(--sp-3);background:var(--t-surface)}.semantic-editor>img{width:100%;max-height:220px;object-fit:contain;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-sunken)}.semantic-editor label{display:grid;gap:var(--sp-1)}.semantic-editor textarea{background:var(--t-surface-soft)}
-@keyframes semantic-drawer-slide{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:translateX(0)}}@keyframes semantic-drawer-fade{from{opacity:0}to{opacity:1}}
+.semantic-editor-drawer{position:fixed;inset:0;z-index:80;pointer-events:none;visibility:hidden;transition:visibility 0s linear 220ms}.semantic-editor-drawer.is-open{visibility:visible;transition:visibility 0s linear 0s}.semantic-editor-backdrop{position:absolute;inset:0;background:var(--scrim);opacity:0;pointer-events:none;transition:opacity 200ms ease-in}.semantic-editor-drawer.is-open .semantic-editor-backdrop{opacity:1;pointer-events:auto;transition:opacity 220ms ease-out}.semantic-editor{position:absolute;top:0;right:0;display:grid;gap:var(--sp-3);width:min(440px,calc(100vw - 24px));height:100%;overflow:auto;margin:0;padding:var(--sp-5);border:0;border-left:1px solid var(--t-line-firm);border-radius:var(--r-md) 0 0 var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow-lift);opacity:0;pointer-events:none;transform:translate3d(100%,0,0);transition:transform 220ms cubic-bezier(0.4,0,1,1),opacity 200ms ease-in}.semantic-editor-drawer.is-open .semantic-editor{opacity:1;pointer-events:auto;transform:translate3d(0,0,0);transition:transform 260ms cubic-bezier(0.22,1,0.36,1),opacity 220ms ease-out}.semantic-editor .semantic-heading{position:sticky;top:calc(-1 * var(--sp-5));z-index:1;padding:var(--sp-1) 0 var(--sp-3);background:var(--t-surface)}.semantic-editor>img{width:100%;max-height:220px;object-fit:contain;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-sunken)}.semantic-editor label{display:grid;gap:var(--sp-1)}.semantic-editor textarea{background:var(--t-surface-soft)}
+:root[data-motion="low"] .semantic-editor-drawer .semantic-editor{transform:none}
+:root[data-motion="off"] .semantic-editor-drawer,:root[data-motion="off"] .semantic-editor-backdrop,:root[data-motion="off"] .semantic-editor,body.reduce-motion .semantic-editor-drawer,body.reduce-motion .semantic-editor-backdrop,body.reduce-motion .semantic-editor{transition:none!important;animation:none!important;transform:none}
 @media(max-width:760px){.semantic-catalog-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.semantic-editor{width:min(100%,440px);border-radius:var(--r-md) 0 0 var(--r-md)}}
-@media(prefers-reduced-motion:reduce){.semantic-catalog-progress>span>i,.semantic-row,.semantic-editor,.semantic-editor-backdrop{transition:none;animation:none}}
+@media(prefers-reduced-motion:reduce){.semantic-catalog-progress>span>i,.semantic-row,.semantic-editor-drawer,.semantic-editor,.semantic-editor-backdrop{transition:none!important;animation:none!important}.semantic-editor{transform:none}}
 
 /* 学习页语义目录：条目先行，配置与入口并列。 */
 .semantic-learning-view{display:grid;gap:var(--sp-4);min-width:0}
@@ -22285,30 +22293,49 @@ kbd{color:var(--t-text-faint);background:var(--t-surface-soft);border-color:var(
   #homeShell details[open]::details-content { height: auto; opacity: 1; content-visibility: visible; }
 }
 
-:is(#detailDialog, #searchDialog, #navigationDialog) {
+:is(#searchDialog, #navigationDialog) {
   opacity: 0;
   transform: translateY(10px) scale(.985);
   transition: opacity var(--dur-fast), transform var(--dur) var(--ease-control),
     display var(--dur) allow-discrete, overlay var(--dur) allow-discrete;
 }
-#detailDialog { transform: translateX(14px); }
-:is(#detailDialog, #searchDialog, #navigationDialog)[open] { opacity: 1; transform: none; }
-:is(#detailDialog, #searchDialog, #navigationDialog):not([open]),
-:is(#detailDialog, #searchDialog, #navigationDialog):not([open])::backdrop { pointer-events: none; }
-:is(#detailDialog, #searchDialog, #navigationDialog)::backdrop {
+:is(#detailDialog, .detail-dialog) {
+  opacity: 0;
+  transform: translate3d(100%, 0, 0);
+  transition: opacity 200ms ease-in, transform 220ms cubic-bezier(0.4, 0, 1, 1),
+    display 220ms allow-discrete, overlay 220ms allow-discrete;
+}
+:is(#searchDialog, #navigationDialog)[open] { opacity: 1; transform: none; }
+:is(#detailDialog, .detail-dialog)[open] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition: opacity 220ms ease-out, transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    display 260ms allow-discrete, overlay 260ms allow-discrete;
+}
+:is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog):not([open]),
+:is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog):not([open])::backdrop { pointer-events: none; }
+:is(#searchDialog, #navigationDialog)::backdrop {
   opacity: 0;
   transition: opacity var(--dur), display var(--dur) allow-discrete, overlay var(--dur) allow-discrete;
 }
-:is(#detailDialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 1; }
-@starting-style {
-  :is(#detailDialog, #searchDialog, #navigationDialog)[open] { opacity: 0; transform: translateY(10px) scale(.985); }
-  #detailDialog[open] { transform: translateX(14px); }
-  :is(#detailDialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 0; }
+:is(#detailDialog, .detail-dialog)::backdrop {
+  opacity: 0;
+  transition: opacity 200ms ease-in, display 220ms allow-discrete, overlay 220ms allow-discrete;
 }
-@media (max-width: 760px) {
-  #detailDialog { transform: translateY(16px); }
-  #detailDialog[open] { transform: none; }
-  @starting-style { #detailDialog[open] { transform: translateY(16px); } }
+:is(#searchDialog, #navigationDialog)[open]::backdrop { opacity: 1; }
+:is(#detailDialog, .detail-dialog)[open]::backdrop {
+  opacity: 1;
+  transition: opacity 220ms ease-out, display 260ms allow-discrete, overlay 260ms allow-discrete;
+}
+@starting-style {
+  :is(#searchDialog, #navigationDialog)[open] { opacity: 0; transform: translateY(10px) scale(.985); }
+  :is(#detailDialog, .detail-dialog)[open] { opacity: 0; transform: translate3d(100%, 0, 0); }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 0; }
+}
+@media (max-width: 650px) {
+  :is(#detailDialog, .detail-dialog) { transform: translate3d(0, 100%, 0); }
+  :is(#detailDialog, .detail-dialog)[open] { transform: translate3d(0, 0, 0); }
+  @starting-style { :is(#detailDialog, .detail-dialog)[open] { opacity: 0; transform: translate3d(0, 100%, 0); } }
 }
 
 @keyframes search-target-pulse {
@@ -22350,31 +22377,31 @@ body.reduce-motion .is-search-target {
 }
 :root[data-motion="low"] #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
 :root[data-motion="low"] #homeShell .shell-nav-link:hover svg,
-:root[data-motion="low"] :is(#detailDialog, #searchDialog, #navigationDialog) { transform: none; }
-:root[data-motion="off"] :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
-body.reduce-motion :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) * {
+:root[data-motion="low"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog) { transform: none; }
+:root[data-motion="off"] :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
+body.reduce-motion :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) * {
   transition: none !important;
   animation: none !important;
 }
 :root:is([data-motion="low"], [data-motion="off"]) #homeShell details::details-content,
 body.reduce-motion #homeShell details::details-content { transition: none; }
-:root[data-motion="off"] :is(#detailDialog, #searchDialog, #navigationDialog),
-body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog) { transition: none !important; transform: none; }
-:root[data-motion="off"] :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop,
-body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
+:root[data-motion="off"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+body.reduce-motion :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog) { transition: none !important; transform: none; }
+:root[data-motion="off"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop,
+body.reduce-motion :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
 @media (prefers-reduced-motion: reduce) {
   :root { --control-hover-y: 0px; --control-press-y: 0px; --control-press-scale: 1; --control-icon-x: 0px; }
   .is-search-target {
     animation: none !important;
     background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
   }
-  :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
+  :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
   #homeShell details::details-content,
-  :is(#detailDialog, #searchDialog, #navigationDialog),
-  :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; animation: none !important; }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; animation: none !important; }
   #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
   #homeShell .shell-nav-link:hover svg,
-  :is(#detailDialog, #searchDialog, #navigationDialog) { transform: none; }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog) { transform: none; }
 }
 
 /* screen-observation.css */

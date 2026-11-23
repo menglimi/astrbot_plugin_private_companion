@@ -5766,9 +5766,11 @@ function showDetail(id){
   openDetailDialog('这件事在别处',`<p>这个入口指向的工作区还没有读到。可以先去下面这几处：</p><div class="dialog-actions">${button('日记与生活','data-life="diary"')}${button('事实与经历','data-go="memories"')}${button('能力目录','data-home-section="furniture"')}</div>`);
 }
 /* 弹窗的统一出口。所有分支都从这里渲染，免得每条分支各写一遍头部。 */
+let detailCloseTimer=0;
 function openDetailDialog(title,body){
   const dialog=$('#detailDialog');
   if(!dialog||!dialog.classList||!$('#dialogContent'))return false;
+  if(detailCloseTimer){clearTimeout(detailCloseTimer);detailCloseTimer=0;}
   identityDialogMount?.unmount?.();
   identityDialogMount=null;
   allFeatureDialogMount?.unmount?.();
@@ -6709,7 +6711,7 @@ document.addEventListener('submit',event=>{
      弹窗里现在不会有 data-form 表单，保留这条兜底防止未捕获的提交刷新页面。 */
   const form=event.target;if(!form.dataset.form)return;event.preventDefault();
 });
-$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
+$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);const d=$('#detailDialog');const finishClasses=()=>{if(detailCloseTimer){clearTimeout(detailCloseTimer);detailCloseTimer=0;}if(!d.open)d.classList.remove('detail-dialog-settings','detail-dialog-native-extension');};const reduced=document.documentElement?.dataset?.motion==='off'||document.body?.classList?.contains?.('reduce-motion')||window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;if(reduced){finishClasses();}else{if(detailCloseTimer)clearTimeout(detailCloseTimer);d.addEventListener('transitionend',event=>{if(event.target===d&&event.propertyName==='transform'&&!d.open)finishClasses();},{once:true});detailCloseTimer=setTimeout(finishClasses,260);}if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
 $('#detailDialog').addEventListener('click',event=>{if(event.target!==event.currentTarget)return;const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDetail();});
 $('#searchDialog').addEventListener('click',event=>{if(event.target===event.currentTarget){const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)event.currentTarget.close();}});
 $('#searchButton').addEventListener('click',openSearch);
