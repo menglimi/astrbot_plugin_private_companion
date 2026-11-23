@@ -13,15 +13,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
-import logging
 from typing import Any, Awaitable, Callable, Mapping
+
+from astrbot.api import logger
 
 from .bot_personal_contract import BOT_PERSONAL_CANONICAL_SCHEMA_VERSION
 from .bot_personal_dto import BotPersonalArchiveDTO, build_bot_personal_dto
 
 
 OUTBOX_STATES = frozenset({"pending", "retry", "sent", "deduplicated", "dead_letter", "invalid"})
-logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:

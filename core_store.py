@@ -672,6 +672,8 @@ class CoreStoreMixin:
         path = self._storage_backend_state_path()
         temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
+            if backend == "sqlite" and sqlite_path:
+                sqlite_path = str(Path(sqlite_path).absolute())
             path.parent.mkdir(parents=True, exist_ok=True)
             with temporary.open("w", encoding="utf-8") as stream:
                 json.dump(

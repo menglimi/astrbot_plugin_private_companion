@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import importlib
 import inspect
-import logging
 import math
 import re
 import time
@@ -12,17 +11,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
+from astrbot.api import logger
+
 from .conversation_prompt_section import (
     PromptRenderMode,
     PromptSection,
     prompt_section,
     render_prompt_sections,
 )
-
-try:
-    from astrbot.api import logger
-except ImportError:  # Standalone unit tests do not load the AstrBot runtime.
-    logger = logging.getLogger(__name__)
 
 SUPPORTED_API_VERSION = 1
 BODY_MONITOR_MODULE = "data.plugins.astrbot_plugin_body_monitor.main"
