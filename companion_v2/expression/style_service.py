@@ -1963,10 +1963,8 @@ class ExpressionStyleService:
         if not callable(read_one):
             return None
         try:
-            has_obs = read_one(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_native_observations'",
-                (),
-            ) is not None
+            from companion_v2.storage.runtime import table_exists
+            has_obs = table_exists(self.runtime, "conversation_native_observations")
             obs_expr = (
                 "(SELECT COALESCE(MAX(rowid), 0) FROM conversation_native_observations)"
                 if has_obs else "0"
@@ -2041,10 +2039,8 @@ class ExpressionStyleService:
         if not callable(read_one) or getattr(context, "role_binding", None) is None:
             return None
         try:
-            has_obs = read_one(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_native_observations'",
-                (),
-            ) is not None
+            from companion_v2.storage.runtime import table_exists
+            has_obs = table_exists(self.runtime, "conversation_native_observations")
             if context.scope.kind is ScopeKind.PRIVATE:
                 obs_row = read_one(
                     """SELECT observation_id, observed_at FROM conversation_native_observations

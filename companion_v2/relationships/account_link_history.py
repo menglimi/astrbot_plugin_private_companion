@@ -45,9 +45,10 @@ def history(application, context, *, at, cursor=None):
     if not members:
         return {"records": [], "next_cursor": None}
     queries, params = [], []
+    from companion_v2.storage.runtime import table_exists
     if observations_available(runtime):
         clause, values = predicate("n.context_json")
-        has_sends = runtime.read_one("SELECT 1 FROM sqlite_master WHERE name='conversation_native_sends'", ())
+        has_sends = table_exists(runtime, "conversation_native_sends")
         projected = "COALESCE(s.sent_at,n.observed_at)" if has_sends else "n.observed_at"
         joins = " LEFT JOIN conversation_native_sends s USING(observation_id)" if has_sends else ""
         sent = "(n.kind='input' OR s.sent_at IS NOT NULL)" if has_sends else "n.kind='input'"
@@ -55,7 +56,7 @@ def history(application, context, *, at, cursor=None):
             " AS actual_at, n.observation_id AS original_id FROM conversation_native_observations n" + joins +
             " WHERE (" + clause + ") AND " + sent + " AND n.delivery_state IN ('input_observed','send_returned')")
         params.extend(values)
-    if runtime.read_one("SELECT 1 FROM sqlite_master WHERE name='background_deliveries'", ()):
+    if table_exists(runtime, "background_deliveries"):
         clause, values = predicate("json_extract(d.request_json, '$.context')")
         queries.append("SELECT 'background' AS kind, 'background:' || d.delivery_id AS record_id, "
             "d.delivered_at AS actual_at, d.delivery_id AS original_id FROM background_deliveries d "

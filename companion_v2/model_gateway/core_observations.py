@@ -6,7 +6,11 @@ import re
 
 from companion_v2.execution.models import digest, encode
 from companion_v2.storage.core_reply_telemetry_schema import STATEMENTS, TABLE
+from companion_v2.storage.runtime import table_exists
 from .usage import CORE_CHAIN_KIND, USAGE_FIELDS
+
+
+_SCHEMA_KEY = "astrbot_core_reply_observations.v1"
 
 
 def role_key(context):
@@ -16,7 +20,7 @@ def role_key(context):
 
 
 def available(runtime):
-    return runtime.read_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (TABLE,)) is not None
+    return table_exists(runtime, TABLE)
 
 
 def _fingerprints_only(value):
@@ -76,12 +80,24 @@ def _validate_record(record):
             raise ValueError("core tool timing must not include arguments or output")
 
 
-def record_observation(runtime, context, record):
-    """Revision fences let asynchronous snapshots finish in any order."""
-    _validate_record(record)
+def _ensure_schema(runtime):
+    ensure = getattr(runtime, "ensure_schema", None)
+    if callable(ensure):
+        def _init(connection):
+            for statement in STATEMENTS:
+                connection.execute(statement)
+        ensure(_SCHEMA_KEY, _init)
+        return
     with runtime.transaction() as connection:
         for statement in STATEMENTS:
             connection.execute(statement)
+
+
+def record_observation(runtime, context, record):
+    """Revision fences let asynchronous snapshots finish in any order."""
+    _validate_record(record)
+    _ensure_schema(runtime)
+    with runtime.transaction() as connection:
         connection.execute("""INSERT INTO astrbot_core_reply_observations
             (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

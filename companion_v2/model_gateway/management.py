@@ -43,6 +43,7 @@ from .maintenance_cache import (
     read_legacy_watermark,
     read_shared_db_token,
     runtime_maintenance_cache,
+    save_disk_core_history,
 )
 from .core_observations import available as _core_observations_available, role_key as _core_role_key
 
@@ -64,6 +65,138 @@ PROMPT_LAYERS = (
     {"key": "terminal_prompt_guard", "label": "请求末尾约束", "editable": False,
      "description": "每轮请求最后追加的简短安全边界；不插入材料前缀，保留服务商可复用的稳定提示前缀。"},
 )
+
+
+def _resolve_provider_pricing_meta(router_providers, provider_metadata):
+    meta_map = provider_metadata if isinstance(provider_metadata, dict) else {}
+    provider_models = {item.binding.provider: item.model for item in router_providers}
+    provider_clusters = {}
+    provider_own_sources = {}
+    for pid_key, info in meta_map.items():
+        if type(pid_key) is not str or not isinstance(info, dict):
+            continue
+        if not provider_models.get(pid_key) and type(info.get("model")) is str and info["model"]:
+            provider_models[pid_key] = info["model"]
+        if type(info.get("cluster_id")) is str and info["cluster_id"]:
+            provider_clusters[pid_key] = info["cluster_id"]
+        if isinstance(info.get("own_source_ids"), (set, frozenset, list, tuple)):
+            provider_own_sources[pid_key] = frozenset(str(x) for x in info["own_source_ids"] if x)
+    return provider_models, provider_clusters, provider_own_sources
+
+
+def _make_pricing_resolver(
+    pricing_settings,
+    pricing_catalog,
+    provider_models,
+    provider_clusters,
+    provider_own_sources,
+):
+    usd_cny_rate = effective_usd_cny_rate(pricing_settings)
+    raw_base_pair_cache = {}
+    has_schedule_pair_cache = {}
+    static_eff_pair_cache = {}
+
+    def model_for(provider_id, call_model=""):
+        if type(call_model) is str and call_model.strip():
+            return call_model.strip()
+        return provider_models.get(provider_id, "")
+
+    def _raw_base_for_pair(pid, cmodel):
+        pair = (pid, cmodel)
+        if pair not in raw_base_pair_cache:
+            raw_base_pair_cache[pair] = resolve_pricing_rule(
+                pid,
+                cmodel,
+                pricing_settings,
+                catalog=pricing_catalog,
+                own_source_ids=provider_own_sources.get(pid, frozenset()),
+            )
+        return raw_base_pair_cache[pair]
+
+    def resolve_for_call(provider_id, cmodel, call_ts=None):
+        pid = provider_id if type(provider_id) is str else ""
+        pair = (pid, cmodel)
+        has_sched = has_schedule_pair_cache.get(pair)
+        if has_sched is None:
+            has_sched = lookup_pricing_schedule(pid, cmodel, pricing_settings) is not None
+            has_schedule_pair_cache[pair] = has_sched
+        if not has_sched or call_ts is None:
+            if pair not in static_eff_pair_cache:
+                static_eff_pair_cache[pair] = resolve_effective_pricing(
+                    pid,
+                    cmodel,
+                    pricing_settings,
+                    catalog=pricing_catalog,
+                    cluster_id=provider_clusters.get(pid),
+                    own_source_ids=provider_own_sources.get(pid, frozenset()),
+                    precomputed_base=_raw_base_for_pair(pid, cmodel),
+                )
+            return static_eff_pair_cache[pair]
+        return resolve_effective_pricing(
+            pid,
+            cmodel,
+            pricing_settings,
+            catalog=pricing_catalog,
+            cluster_id=provider_clusters.get(pid),
+            timestamp=call_ts,
+            own_source_ids=provider_own_sources.get(pid, frozenset()),
+            precomputed_base=_raw_base_for_pair(pid, cmodel),
+        )
+
+    def enrich_core_rows(rows):
+        seen_core_turns = set()
+        for row in rows:
+            pid = row["provider"] if type(row["provider"]) is str else ""
+            cmodel = model_for(pid)
+            call_ts = row.get("finished_at") or row.get("started_at") or row.get("created_at")
+            eff = resolve_for_call(pid, cmodel, call_ts)
+            measurable = (row["actual_tokens"] is not None
+                          or row["input_tokens"] is not None
+                          or row["output_tokens"] is not None)
+            turn_id = str(row.get("call_id") or "").rsplit(":", 1)[0]
+            turn_key = (turn_id, pid)
+            is_new_turn = turn_key not in seen_core_turns
+            if measurable:
+                seen_core_turns.add(turn_key)
+            est = (
+                evaluate_call_cost_microusd(
+                    eff,
+                    usd_cny_rate=usd_cny_rate,
+                    input_tokens=row["input_tokens"],
+                    cached_input_tokens=row["cached_input_tokens"],
+                    cache_creation_tokens=row["cache_creation_tokens"],
+                    output_tokens=row["output_tokens"],
+                    total_tokens=row["actual_tokens"],
+                    model=cmodel,
+                    calls=1,
+                    requests=1 if is_new_turn else 0,
+                    strict_expr=False,
+                )
+                if (eff is not None and measurable)
+                else None
+            )
+            if est is not None:
+                cost_meta = {
+                    "cost_microusd": est, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
+                    "estimated_cost_calls": 1, "estimated_cost_microusd": est, "unpriced_token_calls": 0,
+                }
+                enriched_core_recent = {
+                    **row, "actual_cost": est, "estimated_cost_microusd": est,
+                    "cost_basis": "estimated_local", "cost_availability": "estimated_local",
+                }
+            else:
+                cost_meta = {
+                    "cost_microusd": 0, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
+                    "estimated_cost_calls": 0, "estimated_cost_microusd": 0,
+                    "unpriced_token_calls": 1 if measurable else 0,
+                }
+                enriched_core_recent = {
+                    **row, "actual_cost": None, "cost_basis": "unconfigured",
+                    "cost_availability": "unavailable",
+                }
+            yield row, cost_meta, enriched_core_recent
+
+    return usd_cny_rate, model_for, resolve_for_call, enrich_core_rows
 
 
 def _target(context, layer):
@@ -504,6 +637,71 @@ class ModelManagement:
         active_write = has_active_write_transaction(runtime)
         shared_token_before = None if active_write else read_shared_db_token(runtime)
         promote_ctx = None
+        disk_save_ctx = None
+        pre_cache = None
+        preloaded_hist = None
+        pre_pricing_file_key = None
+        pre_pricing_settings = None
+        pre_pricing_catalog = None
+        pre_pricing_key = None
+        if not active_write and shared_token_before is not None:
+            pre_cache = runtime_maintenance_cache(runtime)
+            pre_gen = shared_token_before.generation
+            if pre_cache is not None:
+                pre_cache.sync_generation(runtime, pre_gen)
+            if pre_cache is not None and _core_observations_available(runtime):
+                pre_now = self.app.now()
+                pre_eff_now = pre_now.replace(tzinfo=timezone.utc) if pre_now.tzinfo is None else pre_now
+                pre_eff_start = (pre_eff_now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+                pre_today = pre_now.date().isoformat()
+                pre_tz = int((pre_eff_now.utcoffset() or timedelta(0)).total_seconds())
+                pre_role_key = _core_role_key(self.context)
+                pre_pricing_file_key = pricing_fingerprint(runtime, pricing_revision)
+                pre_pricing_settings = PricingSettingsStore(runtime.data_root).read_safe()
+                pre_pricing = pricing_summary(pre_pricing_settings, now=pre_now)
+                pre_models, pre_clusters, pre_own_sources = _resolve_provider_pricing_meta(
+                    self.app.router.providers.values(), provider_metadata
+                )
+                pre_pricing_key = (
+                    pre_pricing_file_key, pre_pricing["revision"], tuple(sorted(pre_models.items())),
+                    tuple(sorted(pre_clusters.items())), tuple(sorted(pre_own_sources.items())),
+                )
+                pre_cache_ver = (pre_pricing_key, pre_gen)
+                if pre_cache.needs_core_history_prewarm(
+                    role_key_value=pre_role_key,
+                    history_cutoff=pre_today,
+                    tz_offset_seconds=pre_tz,
+                    cache_version=pre_cache_ver,
+                    raw_cache_version=pre_gen,
+                ):
+                    self._authorize(operator)
+                    pre_pricing_catalog = PriceCatalogStore(runtime.data_root).read_safe(copy=False)
+                    _, _, _, pre_enrich_core_rows = _make_pricing_resolver(
+                        pre_pricing_settings,
+                        pre_pricing_catalog,
+                        pre_models,
+                        pre_clusters,
+                        pre_own_sources,
+                    )
+                    preloaded_hist = pre_cache.prewarm_core_history(
+                        runtime,
+                        role_key_value=pre_role_key,
+                        history_cutoff=pre_today,
+                        tz_offset_seconds=pre_tz,
+                        pricing_key=pre_pricing_key,
+                        enrich_core_rows=pre_enrich_core_rows,
+                        eff_start=pre_eff_start,
+                        eff_now=pre_eff_now,
+                        core_available=True,
+                        expected_generation=pre_gen,
+                    )
+                    shared_token_before = read_shared_db_token(runtime)
+                    if shared_token_before is None or shared_token_before.generation != pre_gen:
+                        if shared_token_before is not None:
+                            pre_cache.sync_generation(runtime, shared_token_before.generation)
+                        preloaded_hist = None
+                    elif preloaded_hist is not None and pricing_fingerprint(runtime, pricing_revision) != pre_pricing_file_key:
+                        preloaded_hist = None
         with runtime.read_snapshot():
             self._authorize(operator)
             now = self.app.now()
@@ -525,31 +723,34 @@ class ModelManagement:
             role_key_value = _core_role_key(self.context)
             core_available = _core_observations_available(runtime)
             file_key = pricing_fingerprint(runtime, pricing_revision)
-            pricing_settings = PricingSettingsStore(runtime.data_root).read_safe()
+            if pre_pricing_settings is not None and file_key == pre_pricing_file_key:
+                pricing_settings = pre_pricing_settings
+            else:
+                pricing_settings = PricingSettingsStore(runtime.data_root).read_safe()
+                preloaded_hist = None
+                pre_pricing_catalog = None
             pricing = pricing_summary(pricing_settings, now=now)
-            meta_map = provider_metadata if isinstance(provider_metadata, dict) else {}
-            provider_models = {item.binding.provider: item.model for item in self.app.router.providers.values()}
-            provider_clusters = {}
-            provider_own_sources = {}
-            for pid_key, info in meta_map.items():
-                if type(pid_key) is not str or not isinstance(info, dict):
-                    continue
-                if not provider_models.get(pid_key) and type(info.get("model")) is str and info["model"]:
-                    provider_models[pid_key] = info["model"]
-                if type(info.get("cluster_id")) is str and info["cluster_id"]:
-                    provider_clusters[pid_key] = info["cluster_id"]
-                if isinstance(info.get("own_source_ids"), (set, frozenset, list, tuple)):
-                    provider_own_sources[pid_key] = frozenset(str(x) for x in info["own_source_ids"] if x)
+            provider_models, provider_clusters, provider_own_sources = _resolve_provider_pricing_meta(
+                self.app.router.providers.values(), provider_metadata
+            )
 
             pricing_key = (
                 file_key, pricing["revision"], tuple(sorted(provider_models.items())),
                 tuple(sorted(provider_clusters.items())), tuple(sorted(provider_own_sources.items())),
             )
             cache = None
+            disk_clear_epoch = None
             snapshot_token = read_shared_db_token(runtime) if shared_token_before is not None else None
-            if (snapshot_token is not None and snapshot_token.generation == shared_token_before.generation
+            if snapshot_token is not None and shared_token_before is not None and snapshot_token.generation != shared_token_before.generation:
+                if pre_cache is not None:
+                    pre_cache.sync_generation(runtime, snapshot_token.generation)
+                preloaded_hist = None
+            elif (snapshot_token is not None and shared_token_before is not None
+                    and snapshot_token.generation == shared_token_before.generation
                     and pricing_fingerprint(runtime, pricing_revision) == file_key):
                 cache = runtime_maintenance_cache(runtime)
+                if cache is not None:
+                    disk_clear_epoch = cache.clear_epoch()
             precomputed = {}
             if cache is not None:
                 cache_version = (pricing_key, shared_token_before.generation)
@@ -576,63 +777,23 @@ class ModelManagement:
             scope = self.context.scope
             role_address = [scope.installation_id, scope.bot_id, asdict(self.context.role_binding.role)]
             role_address_key = digest(role_address)
-            pricing_catalog = PriceCatalogStore(runtime.data_root).read_safe(copy=False)
+            pricing_catalog = (
+                pre_pricing_catalog
+                if pre_pricing_catalog is not None
+                else PriceCatalogStore(runtime.data_root).read_safe(copy=False)
+            )
             if cache is not None and pricing_fingerprint(runtime, pricing_revision) != file_key:
                 cache = None
-            usd_cny_rate = effective_usd_cny_rate(pricing_settings)
+            usd_cny_rate, model_for, resolve_for_call, enrich_core_rows = _make_pricing_resolver(
+                pricing_settings,
+                pricing_catalog,
+                provider_models,
+                provider_clusters,
+                provider_own_sources,
+            )
 
             base_rule_cache = {}
             complex_cache = {}
-            raw_base_pair_cache = {}
-            has_schedule_pair_cache = {}
-            static_eff_pair_cache = {}
-
-            def model_for(provider_id, call_model=""):
-                if type(call_model) is str and call_model.strip():
-                    return call_model.strip()
-                return provider_models.get(provider_id, "")
-
-            def _raw_base_for_pair(pid, cmodel):
-                pair = (pid, cmodel)
-                if pair not in raw_base_pair_cache:
-                    raw_base_pair_cache[pair] = resolve_pricing_rule(
-                        pid,
-                        cmodel,
-                        pricing_settings,
-                        catalog=pricing_catalog,
-                        own_source_ids=provider_own_sources.get(pid, frozenset()),
-                    )
-                return raw_base_pair_cache[pair]
-
-            def resolve_for_call(provider_id, cmodel, call_ts=None):
-                pid = provider_id if type(provider_id) is str else ""
-                pair = (pid, cmodel)
-                has_sched = has_schedule_pair_cache.get(pair)
-                if has_sched is None:
-                    has_sched = lookup_pricing_schedule(pid, cmodel, pricing_settings) is not None
-                    has_schedule_pair_cache[pair] = has_sched
-                if not has_sched or call_ts is None:
-                    if pair not in static_eff_pair_cache:
-                        static_eff_pair_cache[pair] = resolve_effective_pricing(
-                            pid,
-                            cmodel,
-                            pricing_settings,
-                            catalog=pricing_catalog,
-                            cluster_id=provider_clusters.get(pid),
-                            own_source_ids=provider_own_sources.get(pid, frozenset()),
-                            precomputed_base=_raw_base_for_pair(pid, cmodel),
-                        )
-                    return static_eff_pair_cache[pair]
-                return resolve_effective_pricing(
-                    pid,
-                    cmodel,
-                    pricing_settings,
-                    catalog=pricing_catalog,
-                    cluster_id=provider_clusters.get(pid),
-                    timestamp=call_ts,
-                    own_source_ids=provider_own_sources.get(pid, frozenset()),
-                    precomputed_base=_raw_base_for_pair(pid, cmodel),
-                )
 
             def base_rule_for(provider_id):
                 pid = provider_id if type(provider_id) is str else ""
@@ -768,59 +929,6 @@ class ModelManagement:
                 data["cost_availability"] = "unconfigured"
                 return data
 
-            def enrich_core_rows(rows):
-                seen_core_turns = set()
-                for row in rows:
-                    pid = row["provider"] if type(row["provider"]) is str else ""
-                    cmodel = model_for(pid)
-                    call_ts = row.get("finished_at") or row.get("started_at") or row.get("created_at")
-                    eff = resolve_for_call(pid, cmodel, call_ts)
-                    measurable = (row["actual_tokens"] is not None
-                                  or row["input_tokens"] is not None
-                                  or row["output_tokens"] is not None)
-                    turn_id = str(row.get("call_id") or "").rsplit(":", 1)[0]
-                    turn_key = (turn_id, pid)
-                    is_new_turn = turn_key not in seen_core_turns
-                    if measurable:
-                        seen_core_turns.add(turn_key)
-                    est = (
-                        evaluate_call_cost_microusd(
-                            eff,
-                            usd_cny_rate=usd_cny_rate,
-                            input_tokens=row["input_tokens"],
-                            cached_input_tokens=row["cached_input_tokens"],
-                            cache_creation_tokens=row["cache_creation_tokens"],
-                            output_tokens=row["output_tokens"],
-                            total_tokens=row["actual_tokens"],
-                            model=cmodel,
-                            calls=1,
-                            requests=1 if is_new_turn else 0,
-                            strict_expr=False,
-                        )
-                        if (eff is not None and measurable)
-                        else None
-                    )
-                    if est is not None:
-                        cost_meta = {
-                            "cost_microusd": est, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
-                            "estimated_cost_calls": 1, "estimated_cost_microusd": est, "unpriced_token_calls": 0,
-                        }
-                        enriched_core_recent = {
-                            **row, "actual_cost": est, "estimated_cost_microusd": est,
-                            "cost_basis": "estimated_local", "cost_availability": "estimated_local",
-                        }
-                    else:
-                        cost_meta = {
-                            "cost_microusd": 0, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
-                            "estimated_cost_calls": 0, "estimated_cost_microusd": 0,
-                            "unpriced_token_calls": 1 if measurable else 0,
-                        }
-                        enriched_core_recent = {
-                            **row, "actual_cost": None, "cost_basis": "unconfigured",
-                            "cost_availability": "unavailable",
-                        }
-                    yield row, cost_meta, enriched_core_recent
-
             if cache is not None:
                 core_state = cache.load_partitioned_core(
                     runtime,
@@ -837,7 +945,19 @@ class ModelManagement:
                     hist_watermark=precomputed.get("hist_watermark"),
                     can_cache=precomputed.get("can_cache", True),
                     shared_token_before=shared_token_before,
+                    preloaded_hist=preloaded_hist if pre_pricing_key == pricing_key else None,
                 )
+                if core_state.disk_hist_entry is not None and not active_write:
+                    disk_save_ctx = (
+                        role_key_value,
+                        today,
+                        tz_offset_seconds,
+                        pricing_key,
+                        eff_start,
+                        core_state.disk_hist_entry,
+                        shared_token_before.generation,
+                        disk_clear_epoch,
+                    )
             else:
                 core_state = None
 
@@ -845,16 +965,28 @@ class ModelManagement:
             legacy_watermark = None
             if cache is not None and core_state is not None:
                 legacy_key = (role_address_key, self.context.key, cache_version)
-                legacy_watermark = precomputed.get("legacy_watermark")
-                if legacy_watermark is None:
-                    legacy_watermark = read_legacy_watermark(runtime)
-                    precomputed["legacy_watermark"] = legacy_watermark
-                legacy_entry = cache.lookup_legacy(
+                legacy_token = precomputed.get("db_write_token") or shared_token_before
+                legacy_entry = cache.lookup_legacy_fast(
                     legacy_key,
-                    legacy_watermark=legacy_watermark,
+                    db_write_token=legacy_token,
                     core_days=core_state.core_days,
                     today=today,
                 )
+                if legacy_entry is not None:
+                    legacy_watermark = legacy_entry.legacy_watermark
+                    precomputed["legacy_watermark"] = legacy_watermark
+                else:
+                    legacy_watermark = precomputed.get("legacy_watermark")
+                    if legacy_watermark is None:
+                        legacy_watermark = read_legacy_watermark(runtime)
+                        precomputed["legacy_watermark"] = legacy_watermark
+                    legacy_entry = cache.lookup_legacy(
+                        legacy_key,
+                        legacy_watermark=legacy_watermark,
+                        core_days=core_state.core_days,
+                        today=today,
+                        db_write_token=legacy_token,
+                    )
 
             if legacy_entry is not None and core_state is not None:
                 all_days = set(legacy_entry.all_days)
@@ -1131,6 +1263,11 @@ class ModelManagement:
                         or has_active_read_snapshot(runtime)
                     )
                 ):
+                    stable_legacy_token = (
+                        shared_token_before
+                        if (shared_token_before is not None and read_shared_db_token(runtime) == shared_token_before)
+                        else None
+                    )
                     cache.store_legacy(
                         legacy_key,
                         build_legacy_entry(
@@ -1139,6 +1276,7 @@ class ModelManagement:
                             candidate_days=frozenset(valid_candidate_days),
                             reports=reports,
                             cache_diag=legacy_cache_diag,
+                            db_write_token=stable_legacy_token,
                         ),
                     )
 
@@ -1271,6 +1409,18 @@ class ModelManagement:
                             soft_fallback,
                             eff_now,
                         )
+        if disk_save_ctx is not None and not has_active_write_transaction(runtime):
+            save_disk_core_history(
+                runtime,
+                role_key_value=disk_save_ctx[0],
+                history_cutoff=disk_save_ctx[1],
+                tz_offset_seconds=disk_save_ctx[2],
+                pricing_key=disk_save_ctx[3],
+                eff_start=disk_save_ctx[4],
+                entry=disk_save_ctx[5],
+                expected_generation=disk_save_ctx[6],
+                expected_clear_epoch=disk_save_ctx[7],
+            )
         if promote_ctx is not None and not has_active_write_transaction(runtime):
             cache.promote_snapshot_token(
                 runtime,

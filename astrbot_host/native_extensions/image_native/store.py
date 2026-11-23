@@ -8,31 +8,40 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+
 from .types import NativeImageError, document, fingerprint, inspect_image
 
 
+_SCHEMA_STATEMENTS = (
+    "CREATE TABLE IF NOT EXISTS runtime (singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS provider_identity ("
+    "singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity_key TEXT NOT NULL, generation TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS operations ("
+    "id TEXT PRIMARY KEY, scope TEXT NOT NULL, request_id TEXT NOT NULL, "
+    "fingerprint TEXT NOT NULL, generation TEXT NOT NULL, request TEXT NOT NULL, "
+    "state TEXT NOT NULL, locator TEXT NOT NULL DEFAULT '{}', "
+    "receipt TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', "
+    "created REAL NOT NULL, updated REAL NOT NULL, UNIQUE(scope,request_id))",
+    "CREATE TABLE IF NOT EXISTS artifacts ("
+    "id TEXT PRIMARY KEY, scope TEXT NOT NULL, operation_id TEXT NOT NULL, "
+    "ordinal INTEGER NOT NULL, metadata TEXT NOT NULL, data BLOB NOT NULL, "
+    "UNIQUE(operation_id,ordinal), FOREIGN KEY(operation_id) REFERENCES operations(id))",
+)
+
+
 class ImageStore:
+    BUSY_TIMEOUT_MS = 5000
+
     def __init__(self, directory: Path, generation: str | None, *, identity_key: str):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / "native_image.sqlite3"
         self.runtime_id = uuid4().hex
-        with self.db() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS runtime (singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS provider_identity (
-                    singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity_key TEXT NOT NULL, generation TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS operations (
-                    id TEXT PRIMARY KEY, scope TEXT NOT NULL, request_id TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL, generation TEXT NOT NULL, request TEXT NOT NULL,
-                    state TEXT NOT NULL, locator TEXT NOT NULL DEFAULT '{}',
-                    receipt TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '',
-                    created REAL NOT NULL, updated REAL NOT NULL, UNIQUE(scope,request_id));
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    id TEXT PRIMARY KEY, scope TEXT NOT NULL, operation_id TEXT NOT NULL,
-                    ordinal INTEGER NOT NULL, metadata TEXT NOT NULL, data BLOB NOT NULL,
-                    UNIQUE(operation_id,ordinal), FOREIGN KEY(operation_id) REFERENCES operations(id));
-            """)
+        self._profile = tuning_profile()
+        with self.db(enable_wal=True) as db:
+            for statement in _SCHEMA_STATEMENTS:
+                db.execute(statement)
             identity = db.execute("SELECT * FROM provider_identity WHERE singleton=1").fetchone()
             self.generation = generation or (identity["generation"] if identity and identity["identity_key"] == identity_key else uuid4().hex)
             db.execute("INSERT INTO provider_identity(singleton,identity_key,generation) VALUES(1,?,?) "
@@ -42,16 +51,50 @@ class ImageStore:
                        "error='runtime_restarted',updated=? WHERE state IN ('prepared','dispatching')", (time.time(),))
 
     @contextmanager
-    def db(self):
-        db = sqlite3.connect(self.path, timeout=10)
+    def db(self, *, enable_wal: bool = False):
+        """Open a WAL-mode write transaction (BEGIN IMMEDIATE)."""
+        db = sqlite3.connect(self.path, timeout=self.BUSY_TIMEOUT_MS / 1000.0, isolation_level=None)
         db.row_factory = sqlite3.Row
         try:
-            db.execute("PRAGMA foreign_keys=ON")
+            apply_sidecar_pragmas(
+                db,
+                profile=self._profile,
+                enable_wal=enable_wal,
+                read_only=False,
+                busy_timeout_ms=self.BUSY_TIMEOUT_MS,
+                foreign_keys=True,
+            )
             db.execute("BEGIN IMMEDIATE")
             yield db
-            db.commit()
+            db.execute("COMMIT")
         except BaseException:
-            db.rollback()
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
+
+    @contextmanager
+    def read_db(self):
+        """Open a read-only WAL snapshot without acquiring a write lock."""
+        db = sqlite3.connect(self.path, timeout=self.BUSY_TIMEOUT_MS / 1000.0, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        try:
+            apply_sidecar_pragmas(
+                db,
+                profile=self._profile,
+                enable_wal=False,
+                read_only=True,
+                busy_timeout_ms=self.BUSY_TIMEOUT_MS,
+                foreign_keys=True,
+            )
+            db.execute("BEGIN")
+            yield db
+            if db.in_transaction:
+                db.execute("COMMIT")
+        except BaseException:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
             raise
         finally:
             db.close()
@@ -84,12 +127,12 @@ class ImageStore:
             return self._decode(db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()), True
 
     def get(self, scope: str, operation_id: str) -> dict:
-        with self.db() as db:
+        with self.read_db() as db:
             self._current(db)
             return self._decode(db.execute("SELECT * FROM operations WHERE scope=? AND id=?", (scope, operation_id)).fetchone())
 
     def by_request(self, scope: str, request_id: str) -> dict:
-        with self.db() as db:
+        with self.read_db() as db:
             self._current(db)
             return self._decode(db.execute("SELECT * FROM operations WHERE scope=? AND request_id=?", (scope, request_id)).fetchone())
 
@@ -145,7 +188,7 @@ class ImageStore:
             return self._decode(db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone())
 
     def artifact(self, scope: str, artifact_id: str) -> tuple[dict, bytes]:
-        with self.db() as db:
+        with self.read_db() as db:
             self._current(db)
             row = db.execute("SELECT metadata,data FROM artifacts WHERE scope=? AND id=?", (scope, artifact_id)).fetchone()
             if row is None:

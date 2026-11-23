@@ -66,7 +66,8 @@ def linked_context(application, context, *, at, before=None):
                 AND json_extract(n.context_json, '$.audience.scope.native_scope_id') = ?
                 AND json_extract(n.context_json, '$.role_binding.role.subject_id') = ?)""")
             values.extend(peer[k] for k in ("subject_id", "platform", "bot_id", "account_id", "native_account_id", "role_id"))
-        has_sends = runtime.read_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_native_sends'", ())
+        from companion_v2.storage.runtime import table_exists
+        has_sends = table_exists(runtime, "conversation_native_sends")
         # Without a real send marker, an assistant row is not evidence of delivery.
         joins = " LEFT JOIN conversation_native_sends s USING(observation_id)" if has_sends else ""
         sent_filter = "n.kind = 'input'" if not has_sends else "(n.kind = 'input' OR s.sent_at <= ?)"

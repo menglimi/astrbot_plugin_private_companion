@@ -521,11 +521,8 @@ class LayaDecisionService:
 
     def _observations_available(self) -> bool:
         try:
-            rows = self.runtime.read_all(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'astrbot_core_reply_observations'",
-                (),
-            )
-            return bool(rows)
+            from companion_v2.storage.runtime import table_exists
+            return table_exists(self.runtime, "astrbot_core_reply_observations")
         except Exception:
             return False
 

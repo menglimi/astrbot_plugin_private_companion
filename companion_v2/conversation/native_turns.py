@@ -8,7 +8,11 @@ from datetime import datetime
 import json
 
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, stamp
-from companion_v2.storage.native_conversation_schema import OPEN_TURN_STATES, STATEMENTS
+from companion_v2.storage.native_conversation_schema import (
+    OPEN_TURN_STATES,
+    ensure_native_conversation_schema,
+)
+from companion_v2.storage.runtime import table_exists
 
 from .messages import source_from_document
 from .models import InboundConversationEvent
@@ -19,7 +23,7 @@ TABLE = "conversation_native_turns"
 
 
 def turns_available(runtime):
-    return runtime.read_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (TABLE,)) is not None
+    return table_exists(runtime, TABLE)
 
 
 def project(row):
@@ -129,46 +133,37 @@ def context_rows(runtime, *, kind=None, open_only=False):
 def latest_role_contexts(runtime, *, kind, limit=8):
     """Newest ``context_json`` per distinct role binding of one scope kind.
 
-    Uses a loose index scan over the partial index
-    ``idx_native_turns_group_role_recent`` when ``kind == 'group'`` so group
-    discovery skips private turns entirely and reads ``context_json`` for at
-    most ``limit`` rows without touching large ``role_instruction`` blobs or
-    shadowing ``conversation_native_open_turn_idx``.
+    Uses a loose index scan over the materialized covering index
+    ``idx_native_turns_kind_role_obs(scope_kind, role_binding_key, observed_at)``
+    so group and private discovery never scan table pages or large
+    ``role_instruction`` blobs, and never shadow ``conversation_native_open_turn_idx``.
     """
     if not turns_available(runtime) or limit <= 0:
         return ()
-    if kind == "group":
-        kind_clause = "json_extract(context_json, '$.audience.scope.kind') = 'group'"
-        t_kind_clause = "json_extract(t.context_json, '$.audience.scope.kind') = 'group'"
-        params = (limit,)
-    else:
-        kind_clause = "json_extract(context_json, '$.audience.scope.kind') = ?"
-        t_kind_clause = "json_extract(t.context_json, '$.audience.scope.kind') = ?"
-        params = (kind, kind, kind, kind, limit)
-    return tuple(runtime.read_all(f"""WITH RECURSIVE roles(rb) AS (
-            SELECT MIN(json_extract(context_json, '$.role_binding'))
+    return tuple(runtime.read_all("""WITH RECURSIVE roles(rb) AS (
+            SELECT MIN(role_binding_key)
             FROM conversation_native_turns
-            WHERE {kind_clause}
+            WHERE scope_kind = ? AND role_binding_key > ''
             UNION ALL
             SELECT (
-                SELECT MIN(json_extract(t.context_json, '$.role_binding'))
+                SELECT MIN(t.role_binding_key)
                 FROM conversation_native_turns t
-                WHERE {t_kind_clause}
-                  AND json_extract(t.context_json, '$.role_binding') > roles.rb
+                WHERE t.scope_kind = ?
+                  AND t.role_binding_key > roles.rb
             )
             FROM roles WHERE roles.rb IS NOT NULL
         ),
         top_roles(rid, obs) AS (
             SELECT (
                 SELECT t.rowid FROM conversation_native_turns t
-                WHERE {t_kind_clause}
-                  AND json_extract(t.context_json, '$.role_binding') = roles.rb
+                WHERE t.scope_kind = ?
+                  AND t.role_binding_key = roles.rb
                 ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1
             ) AS rid,
             (
                 SELECT t.observed_at FROM conversation_native_turns t
-                WHERE {t_kind_clause}
-                  AND json_extract(t.context_json, '$.role_binding') = roles.rb
+                WHERE t.scope_kind = ?
+                  AND t.role_binding_key = roles.rb
                 ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1
             ) AS obs
             FROM roles WHERE roles.rb IS NOT NULL
@@ -177,7 +172,7 @@ def latest_role_contexts(runtime, *, kind, limit=8):
         SELECT n.context_json
         FROM top_roles l
         JOIN conversation_native_turns n ON n.rowid = l.rid
-        ORDER BY l.obs DESC, l.rid DESC""", params))
+        ORDER BY l.obs DESC, l.rid DESC""", (kind, kind, kind, kind, limit)))
 
 
 def foreground_busy(runtime, context):
@@ -207,9 +202,7 @@ def input_event(messages, row, at):
 class NativeConversationTurns:
     def __init__(self, runtime):
         self.runtime = runtime
-        with runtime.transaction() as connection:
-            for statement in STATEMENTS:
-                connection.execute(statement)
+        ensure_native_conversation_schema(runtime)
 
     def interrupt_open(self, *, at):
         """Close runs whose host runner disappeared; never retry model or send."""
@@ -220,6 +213,8 @@ class NativeConversationTurns:
 
     def admit(self, context, native_input, turn_id, input_reference):
         at = stamp(native_input.at)
+        scope_kind = context.scope.kind.value
+        role_binding_key = encode(context.role_binding)
         with self.runtime.transaction() as connection:
             existing = connection.execute("SELECT * FROM conversation_native_turns WHERE turn_id = ?", (turn_id,)).fetchone()
             if existing is not None and (existing["context_key"] != context.key
@@ -227,17 +222,20 @@ class NativeConversationTurns:
                 raise TaskError("native_turn_conflict", "the admitted native turn changed")
             connection.execute("""INSERT INTO conversation_native_turns
                 (turn_id, context_key, context_json, role_instruction, input_observation_id,
-                 observed_at, generation_state, phase_at, last_sent_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, NULL)
+                 observed_at, generation_state, phase_at, last_sent_at, scope_kind, role_binding_key)
+                VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, NULL, ?, ?)
                 ON CONFLICT(turn_id) DO UPDATE SET input_observation_id = excluded.input_observation_id""",
                 (turn_id, context.key, encode(context), native_input.instruction,
-                 input_reference.source_id if input_reference is not None else None, at, at))
+                 input_reference.source_id if input_reference is not None else None, at, at,
+                 scope_kind, role_binding_key))
 
     def mark(self, prepared, state, *, at):
         if state not in ("prepared", "running", "completed", "failed"):
             raise ValueError("invalid native generation phase")
         context, turn_id = prepared["context"], prepared["turn_id"]
         observed = getattr(prepared.get("native_input"), "at", at)
+        scope_kind = context.scope.kind.value
+        role_binding_key = encode(context.role_binding)
         with self.runtime.transaction() as connection:
             current = connection.execute("SELECT * FROM conversation_native_turns WHERE turn_id = ?", (turn_id,)).fetchone()
             if current is not None and (current["context_key"] != context.key
@@ -248,10 +246,11 @@ class NativeConversationTurns:
                 return
             connection.execute("""INSERT INTO conversation_native_turns
                 (turn_id, context_key, context_json, role_instruction, input_observation_id,
-                 observed_at, generation_state, phase_at, last_sent_at)
-                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)
+                 observed_at, generation_state, phase_at, last_sent_at, scope_kind, role_binding_key)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(turn_id) DO UPDATE SET generation_state = excluded.generation_state, phase_at = excluded.phase_at""",
-                (turn_id, context.key, encode(context), prepared["instruction"], stamp(observed), state, stamp(at)))
+                (turn_id, context.key, encode(context), prepared["instruction"], stamp(observed), state, stamp(at),
+                 scope_kind, role_binding_key))
 
     def sent(self, turn_id, observed_at, *, observation_id=None):
         with self.runtime.transaction() as connection:

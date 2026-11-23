@@ -15,7 +15,23 @@ import logging
 import statistics
 
 from companion_v2.memory.search import terms
+from companion_v2.storage.semantic import VECTOR_BLOB_MAGIC, batch_semantic_dots, decode_vector_f32
 logger = logging.getLogger(__name__)
+
+
+def _vector_has_dims(raw, dims):
+    if raw is None:
+        return False
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        mv = memoryview(raw)
+        if len(mv) >= 4 and mv[:4].tobytes() == VECTOR_BLOB_MAGIC:
+            return len(mv) == 4 + dims * 2
+    if isinstance(raw, (list, tuple)):
+        return len(raw) == dims
+    decoded = decode_vector_f32(raw)
+    if decoded is None:
+        return False
+    return len(decoded) == dims
 
 
 # V2 defaults: they reproduce ``lexical * 0.25 + max(0, cosine)`` with the
@@ -91,7 +107,18 @@ class CatalogSearch:
                 break
             after = page[-1]["id"]
             eligible = [r for r in page if r["enabled"] and valid(r, context)]
-            missing = [r for r in eligible if model and self.store.vector(r, model) is None]
+            batch_loader = getattr(self.store, "vectors_for_items", None)
+            if model and callable(batch_loader):
+                page_vectors = batch_loader(owner, kind, model, eligible)
+            elif model:
+                page_vectors = {}
+                for r in eligible:
+                    vec = self.store.vector(r, model)
+                    if vec is not None:
+                        page_vectors[r["id"]] = vec
+            else:
+                page_vectors = {}
+            missing = [r for r in eligible if model and r["id"] not in page_vectors]
             for start in range(0, len(missing), cfg["batch_size"]):
                 batch = missing[start:start + cfg["batch_size"]]
                 try:
@@ -100,24 +127,32 @@ class CatalogSearch:
                         raise ValueError("embedding model changed")
                     for item, vector in zip(batch, vectors):
                         if valid(item, context):
-                            self.store.put_vector(item, model, vector)
+                            if self.store.put_vector(item, model, vector):
+                                page_vectors[item["id"]] = vector
                 except Exception as exc:
                     error = getattr(exc, "code", type(exc).__name__)
                     break
+            validated_page = []
+            dot_candidates = []
+            query_dims = len(query_vector) if query_vector else 0
             for item in eligible:
                 if not valid(item, context):
                     continue
                 scanned += 1
-                document = item["payload"]["text"]
-                vector = self.store.vector(item, model) if model else None
-                lexical = len(query_terms.intersection(terms(document))) / max(1, len(query_terms))
-                clusters = tuple(shared_clusters(text, document)) if shared_clusters else ()
-                cosine = None
-                if vector and query_vector and len(vector) == len(query_vector):
+                idx = len(validated_page)
+                validated_page.append(item)
+                raw_vec = page_vectors.get(item["id"]) if model else None
+                if raw_vec is not None and query_vector and _vector_has_dims(raw_vec, query_dims):
                     if embedding_candidate_limit is None or compared < embedding_candidate_limit:
                         compared += 1
-                        embedded += 1
-                        cosine = sum(a*b for a,b in zip(query_vector, vector))
+                        dot_candidates.append((idx, raw_vec))
+            cosines = batch_semantic_dots(query_vector, dot_candidates) if dot_candidates else {}
+            embedded += len(cosines)
+            for idx, item in enumerate(validated_page):
+                document = item["payload"]["text"]
+                lexical = len(query_terms.intersection(terms(document))) / max(1, len(query_terms))
+                clusters = tuple(shared_clusters(text, document)) if shared_clusters else ()
+                cosine = cosines.get(idx)
                 if lexical or clusters or (cosine is not None and cosine >= admission_similarity):
                     scored.append({"item": item, "lexical": lexical, "cosine": cosine, "clusters": clusters})
             # Yield between local pages and allow host shutdown to cancel this work.
@@ -207,11 +242,17 @@ class CatalogSearch:
                     "SELECT DISTINCT model FROM vectors WHERE owner=? AND kind=?", (owner, kind))}
             model = next(iter(models)) if len(models) == 1 else None
         pending, after = [], ""
+        batch_loader = getattr(self.store, "vectors_for_items", None)
         while len(pending) < limit:
             page = self.store.list(owner, kind, after=after)
             if not page:
                 break
             after = page[-1]["id"]
+            existing_vectors = (
+                batch_loader(owner, kind, model, page)
+                if model is not None and callable(batch_loader)
+                else None
+            )
             for item in page:
                 if len(pending) >= limit:
                     break
@@ -226,8 +267,12 @@ class CatalogSearch:
                     except Exception as error:
                         logger.warning("V2 semantic backfill validation failed: %s", type(error).__name__)
                         continue
-                if model is not None and self.store.vector(item, model) is not None:
-                    continue
+                if model is not None:
+                    if existing_vectors is not None:
+                        if item["id"] in existing_vectors:
+                            continue
+                    elif self.store.vector(item, model) is not None:
+                        continue
                 pending.append(item)
         written = 0
         for start in range(0, len(pending), BACKFILL_REQUEST_CHUNK):

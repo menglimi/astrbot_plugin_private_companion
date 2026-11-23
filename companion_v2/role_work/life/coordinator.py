@@ -126,9 +126,9 @@ class RoleLifeCoordinator:
         executor, _ = self._select_sleep_executor(routine, refresh=not self._in_read_snapshot())
         return executor
 
-    def sleep_schedule_status(self, routine, config):
+    def sleep_schedule_status(self, routine, config, *, body_sleep=None, now=None):
         settings = values(config)
-        now = self.app.now()
+        now = now or self.app.now()
         executor, next_at = (
             self._select_sleep_executor(routine, refresh=False, now=now)
             if settings["sleep_enabled"]
@@ -137,11 +137,24 @@ class RoleLifeCoordinator:
         if settings["sleep_enabled"] and next_at is None:
             next_at = next_bedtime(now, routine.owner, settings["sleep_timezone"],
                 time.fromisoformat(settings["sleep_time"]), settings["sleep_variation_minutes"])
-        profile = self.app.role_state.body_clock.profile(routine.context, now=now)
+        active_sleep = (
+            body_sleep
+            if body_sleep is not None
+            else self.app.role_state.body_clock.read(routine.context, now=now)
+        )
+        if active_sleep is not None and "sleep_debt_minutes" in active_sleep and "workload_score" in active_sleep:
+            profile = {
+                "sleep_pressure": active_sleep["sleep_pressure"],
+                "sleep_debt_minutes": active_sleep["sleep_debt_minutes"],
+                "workload_score": active_sleep["workload_score"],
+                "awake_minutes": active_sleep["awake_minutes"],
+                "has_sleep_history": active_sleep["has_sleep_history"],
+            }
+        else:
+            profile = self.app.role_state.body_clock.profile(routine.context, now=now)
         planned_minutes = recommended_sleep_minutes(settings["sleep_minutes"],
             profile["sleep_debt_minutes"], profile["workload_score"])
         next_wake = next_at + timedelta(minutes=planned_minutes) if next_at else None
-        active_sleep = self.app.role_state.body_clock.read(routine.context, now=now)
         rhythm = sleep_rhythm(now, next_at if settings["sleep_enabled"] else None, active_sleep)
         return {"shared": True, "owner": {"installation_id": routine.context.scope.installation_id,
                     "bot_id": routine.context.scope.bot_id, "role_id": routine.context.role_binding.role.subject_id},

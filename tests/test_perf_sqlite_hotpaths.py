@@ -927,7 +927,10 @@ class TickBudgetAndPrivateScopeTests(HostFixture, unittest.IsolatedAsyncioTestCa
             for stmt, params in captured_sql
             if "FROM conversation_batches" in stmt
         ]
-        self.assertTrue(turn_plans and all("idx_native_turns_group_role_recent" in p for p in turn_plans), turn_plans)
+        self.assertTrue(
+            turn_plans and all("COVERING INDEX idx_native_turns_kind_role_obs" in p for p in turn_plans),
+            turn_plans,
+        )
         self.assertTrue(batch_plans and all("idx_conversation_batches_group_role" in p for p in batch_plans), batch_plans)
 
         # scope_family deduplicates repeated context_key rows before TaskContext.restore.

@@ -39,13 +39,34 @@ class SourceRepository:
         """Trusted control-plane evidence check; returns no content or read authority."""
         observed_at = normalize_utc(observed_at, field="observed_at")
         _ensure_runtime_scope(self._runtime, reference.scope)
-        row = self._runtime.read_one(
-            """SELECT source_id, lineage_id, source_revision, owner, installation_id, platform, scope_kind,
-                      native_scope_id, bot_id, account_id, conversation_id, session_id, issued_at, expires_at, state
-               FROM sources WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""", _source_key(reference),
-        )
+        from .dependencies import active_validation_batch, is_unguarded_checked, validate
+        batch = active_validation_batch(self._runtime, observed_at)
+        if batch is not None:
+            ref_cache = batch.extras.get("sources.validated_refs")
+            if ref_cache is not None:
+                cached = ref_cache.get(reference)
+                if cached is not None:
+                    return Outcome.success(cached)
+        src_key = _source_key(reference)
+        if batch is not None:
+            row = self._runtime.read_one(
+                """SELECT source_id, lineage_id, source_revision, owner, installation_id, platform, scope_kind,
+                          native_scope_id, bot_id, account_id, conversation_id, session_id, issued_at, expires_at,
+                          state, recipients_json, content_hash
+                   FROM sources WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""", src_key,
+            )
+        else:
+            row = self._runtime.read_one(
+                """SELECT source_id, lineage_id, source_revision, owner, installation_id, platform, scope_kind,
+                          native_scope_id, bot_id, account_id, conversation_id, session_id, issued_at, expires_at, state
+                   FROM sources WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""", src_key,
+            )
         if row is None:
             return Outcome.failed("source_not_found", "exact evidence version does not exist")
+        if batch is not None and batch.active:
+            batch.extras.setdefault("sources.audience_meta", {})[src_key] = (
+                row["recipients_json"], row["content_hash"],
+            )
         stored = SourceRef(row["source_id"], row["owner"], scope_from_row(row),
                            VersionRef(row["lineage_id"], row["source_revision"]), decode_timestamp(row["issued_at"]),
                            decode_timestamp(row["expires_at"]) if row["expires_at"] else None)
@@ -58,11 +79,12 @@ class SourceRepository:
         if observed_at < stored.issued_at:
             return Outcome.failed("source_not_active", "evidence is not available at this time")
         from companion_v2.execution.models import TaskError
-        from .dependencies import validate
         try:
             validate(self._runtime, reference, observed_at)
         except TaskError as error:
             return Outcome.failed(error.code, str(error))
+        if batch is not None and batch.active and is_unguarded_checked(self._runtime, reference, observed_at):
+            batch.extras.setdefault("sources.validated_refs", {})[reference] = stored
         return Outcome.success(stored)
 
     def validate_reference_for_audience(
@@ -84,22 +106,44 @@ class SourceRepository:
             return Outcome.failed("source_reference_invalid", "source reference must be explicit")
         if not isinstance(recipient, SubjectRef) or recipient.installation_id != reference.scope.installation_id:
             return Outcome.failed("source_audience_denied", "recipient does not belong to the source installation")
+        normalized_at = normalize_utc(observed_at, field="observed_at")
+        from .dependencies import active_validation_batch, is_unguarded_checked
+        batch = active_validation_batch(self._runtime, normalized_at)
+        aud_key = (reference, recipient, expected_content_hash)
+        if batch is not None:
+            aud_cache = batch.extras.get("sources.validated_audience")
+            if aud_cache is not None:
+                cached = aud_cache.get(aud_key)
+                if cached is not None:
+                    return Outcome.success(cached)
         with self._runtime.read_snapshot():
-            current = self.validate_reference(reference, observed_at=observed_at)
+            current = self.validate_reference(reference, observed_at=normalized_at)
             if not current.is_success:
                 return Outcome(failure=current.failure)
-            row = self._runtime.read_one(
-                """SELECT recipients_json, content_hash FROM sources
-                   WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""",
-                _source_key(reference),
-            )
-            if row is None:
-                return Outcome.failed("source_not_found", "exact evidence version does not exist")
-            audience = _decode_audience(reference.scope, row["recipients_json"])
+            src_key = _source_key(reference)
+            aud_meta = None
+            if batch is not None and batch.active:
+                meta_cache = batch.extras.get("sources.audience_meta")
+                if meta_cache is not None:
+                    aud_meta = meta_cache.get(src_key)
+            if aud_meta is not None:
+                recipients_json, content_hash = aud_meta
+            else:
+                row = self._runtime.read_one(
+                    """SELECT recipients_json, content_hash FROM sources
+                       WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""",
+                    src_key,
+                )
+                if row is None:
+                    return Outcome.failed("source_not_found", "exact evidence version does not exist")
+                recipients_json, content_hash = row["recipients_json"], row["content_hash"]
+            audience = _decode_audience(reference.scope, recipients_json)
             if recipient not in audience.recipients:
                 return Outcome.failed("source_audience_denied", "source is not visible to the current subject")
-            if expected_content_hash is not None and row["content_hash"] != expected_content_hash:
+            if expected_content_hash is not None and content_hash != expected_content_hash:
                 return Outcome.failed("source_content_changed", "source no longer matches the recorded content hash")
+            if batch is not None and batch.active and is_unguarded_checked(self._runtime, reference, normalized_at):
+                batch.extras.setdefault("sources.validated_audience", {})[aud_key] = current.unwrap()
             return current
 
     def validate_archived_provenance(
