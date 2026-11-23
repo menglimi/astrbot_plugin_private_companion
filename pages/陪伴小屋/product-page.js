@@ -300,6 +300,7 @@ window.CompanionProduct = (() => {
   let releaseAppearanceContext = null;
   let generation = 0, changed = () => {}, loading = false, notice = "";
   const workspaceFrames = new Map();
+  const pendingWorkspaceFocus = new Map();
   const workspaceDraftRequests = new Map();
   let workspaceDraftSequence = 0;
   function workspaceDirtyDrafts() {
@@ -1392,9 +1393,16 @@ window.CompanionProduct = (() => {
     if(message.kind==="ready"){
       clearTimeout(context.loadTimer);
       setWorkspaceLoadState(owner,"ready");
+      context.ready=true;
       // Display labels never participate in identity checks or request routing.
       sendWorkspaceContext(owner,context);
-      send({kind:"appearance",appearance:{...appearance}});return;
+      send({kind:"appearance",appearance:{...appearance}});
+      const queued=pendingWorkspaceFocus.get(context.kind);
+      if(queued&&Date.now()-queued.at<15000){
+        pendingWorkspaceFocus.delete(context.kind);
+        setTimeout(()=>send({kind:"focus-selector",selector:queued.selector,highlight:queued.highlight!==false}),120);
+      }
+      return;
     }
     if(message.kind==="resize"){if(Number.isFinite(message.height)&&message.height>0)owner.style.height=Math.max(420,Math.min(16000,Math.ceil(message.height)+16))+"px";return;}
     /* 工作区是 opaque origin 的 sandbox iframe，开不出能盖住插件视口的模态层；
@@ -1709,6 +1717,19 @@ window.CompanionProduct = (() => {
      这两件事在界面上要说得不一样。 */
   const lifeActivities = () => Array.isArray(data.life?.activities) ? data.life.activities : null;
   const lifeJournals  = () => Array.isArray(data.life?.journals) ? data.life.journals : null;
+  function focusWorkspace(kind, selector, {highlight = true} = {}) {
+    if (!kind || !selector) return false;
+    for (const [owner, context] of workspaceFrames) {
+      if (owner.isConnected && context.kind === kind && context.ready) {
+        try {
+          owner.contentWindow?.postMessage({channel: "companion-workspace", kind: "focus-selector", selector, highlight}, "*");
+          return true;
+        } catch (_) { /* ignore cross-frame errors */ }
+      }
+    }
+    pendingWorkspaceFocus.set(kind, {selector, highlight, at: Date.now()});
+    return true;
+  }
   const stateValues   = () => data.state?.state?.values || null;
   const stateLabel = value => states[value] || "";
   const unavailableReason = name => unavailable(name);
@@ -1730,7 +1751,7 @@ window.CompanionProduct = (() => {
     accounts:()=>catalog?.accounts||[], personas:()=>catalog?.personas||[],
     targetLabel,subjectLabel,platformLabel,accountLabel,roleLabel,scopeLabel,actorLabel,executorLabel,
     get manifest(){return manifest;},get data(){return data;},stateCard,stateAge,scheduleCard,capabilityCard,growthCard,memoryCard,
-    workspace,workspaceDirtyDrafts,unmountWorkspace,mountWorkspace,workspaceAddress,providerAddress,extensionsMarkup,providersMarkup,capabilitiesMarkup,providerDetail,growthMarkup,
+    workspace,focusWorkspace,workspaceDirtyDrafts,unmountWorkspace,mountWorkspace,workspaceAddress,providerAddress,extensionsMarkup,providersMarkup,capabilitiesMarkup,providerDetail,growthMarkup,
     extension:id=>manifest?.extensions?.find(p=>p.capability_id===id),
     provider:id=>manifest?.providers?.find(p=>p.capability_id===id),
     capability:id=>manifest?.extensions?.find(p=>p.capability_id===id)||manifest?.providers?.find(p=>p.capability_id===id),

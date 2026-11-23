@@ -32,6 +32,7 @@ window.CompanionNativeExtensionPanel = (() => {
   /* 从外面跳到「现实触及」时，先把「本机语音与叫醒」展开再滚动过去；
      只用于一次性定位，不改变面板自己的展开状态。 */
   let audioFocusPending = false;
+  let pendingFieldFocus = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   const secret = name => /token|secret|password|cookie|api_key|access_key|sessdata|auth_code/i.test(name);
@@ -273,6 +274,43 @@ window.CompanionNativeExtensionPanel = (() => {
         }
       }
       this.filter(); this.setBusy(this.busy);
+      if (pendingFieldFocus && pendingFieldFocus.extensionId === this.name) {
+        const targetField = pendingFieldFocus.fieldPath;
+        pendingFieldFocus = null;
+        this.applyFieldFocus(targetField);
+      }
+    }
+    applyFieldFocus(fieldPath) {
+      if (!fieldPath || !this.root) return false;
+      const safe = globalThis.CSS?.escape?.(fieldPath) || String(fieldPath).replace(/["\\]/g, "\\$&");
+      const row = this.root.querySelector(`[data-field="${safe}"]`);
+      if (!row) return false;
+      const groupPanel = row.closest?.("[data-native-group-panel]");
+      if (groupPanel?.dataset?.nativeGroupPanel) {
+        this.group = groupPanel.dataset.nativeGroupPanel;
+        this.root.querySelectorAll("[data-native-group]").forEach(btn => {
+          btn.setAttribute("aria-pressed", String(btn.dataset.nativeGroup === this.group));
+        });
+        this.root.querySelectorAll("[data-native-group-panel]").forEach(panel => {
+          panel.hidden = panel.dataset.nativeGroupPanel !== this.group;
+        });
+      }
+      for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+        if (parent.tagName === "DETAILS") {
+          parent.open = true;
+          if (parent.dataset?.mobileConfigSection) this.mobileOpen.add(parent.dataset.mobileConfigSection);
+        }
+      }
+      row.hidden = false;
+      const focusable = row.querySelector?.("input, select, textarea, button");
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+        || ["low", "off"].includes(document.documentElement?.dataset?.motion);
+      setTimeout(() => {
+        row.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "center"});
+        focusable?.focus?.({preventScroll: true});
+        window.CompanionSearchHighlight?.(row);
+      }, 40);
+      return true;
     }
     mobileConfiguration(key, field, value, parent) {
       const groups = mobileSettingGroups(field);
@@ -798,7 +836,18 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const panel of sessions.values()) panel.stop();
     sessions.clear();
   }
-  return {mount, unmount, prune, refreshStatus, syncRuntime, conditionMet,
+  function focusField(extensionId, fieldPath) {
+    if (!extensionId || !fieldPath) return false;
+    prune();
+    for (const panel of sessions.values()) {
+      if (panel.name === extensionId && panel.record && panel.applyFieldFocus(fieldPath)) {
+        return true;
+      }
+    }
+    pendingFieldFocus = {extensionId, fieldPath};
+    return true;
+  }
+  return {mount, unmount, prune, refreshStatus, syncRuntime, conditionMet, focusField,
     /* 打开「现实触及」设置时把「本机语音与叫醒」展开并滚到视线内。 */
     focusAudio: () => { audioFocusPending = true; }};
 })();

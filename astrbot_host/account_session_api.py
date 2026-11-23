@@ -63,6 +63,11 @@ class AccountSessionWebAPI:
         section = config.get("model", {}) if isinstance(config, dict) else {}
         return str(section.get("provider_id", "")) if isinstance(section, dict) else ""
 
+    def _configured_fallback_provider_id(self):
+        config = getattr(self.controller, "config", {})
+        section = config.get("model", {}) if isinstance(config, dict) else {}
+        return str(section.get("fallback_provider_id", "")) if isinstance(section, dict) else ""
+
     def _model_selection(self):
         context = getattr(self.controller, "context", None)
         expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
@@ -72,6 +77,7 @@ class AccountSessionWebAPI:
 
     def _model_view(self):
         configured = self._configured_provider_id()
+        configured_fallback = self._configured_fallback_provider_id()
         context = getattr(self.controller, "context", None)
         expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
         selection = (resolve_bootstrap_provider(context, expected_type, configured)
@@ -86,7 +92,9 @@ class AccountSessionWebAPI:
             # A saved provider is a reviewed choice; never switch it silently.
             effective_id, source = configured, "unavailable"
         return {"provider_id": effective_id, "provider_source": source,
-                "configured_provider_id": configured, "providers": providers}
+                "configured_provider_id": configured,
+                "fallback_provider_id": configured_fallback,
+                "providers": providers}
 
     def _view(self):
         controller = self.controller
@@ -464,15 +472,25 @@ class AccountSessionWebAPI:
             return self._error("account_group_target_apply_failed", reason)
 
     async def save_model_provider(self):
-        """Persist the bootstrap text provider without requiring a live role runtime."""
+        """Persist the global default text provider (and optional fallback) without requiring a live role runtime."""
         try:
             self._admin()
             body = await self._body()
-            if set(body) != {"provider_id"} or type(body.get("provider_id")) is not str:
-                raise TaskError("account_model_provider_invalid", "choose exactly one shared model provider")
+            has_fallback = "fallback_provider_id" in body
+            if (not body or "provider_id" not in body
+                    or set(body) - {"provider_id", "fallback_provider_id"}
+                    or type(body.get("provider_id")) is not str
+                    or (has_fallback and type(body.get("fallback_provider_id")) is not str)):
+                raise TaskError("account_model_provider_invalid", "choose a valid default model provider")
             provider_id = body["provider_id"].strip()
             if not provider_id or len(provider_id) > 512:
                 raise TaskError("account_model_provider_invalid", "the shared model provider id is invalid")
+            fallback_provider_id = body["fallback_provider_id"].strip() if has_fallback else None
+            if fallback_provider_id is not None and len(fallback_provider_id) > 512:
+                raise TaskError("account_model_provider_invalid", "the fallback model provider id is invalid")
+            if fallback_provider_id and fallback_provider_id == provider_id:
+                raise TaskError("model_fallback_duplicate",
+                                "fallback model provider must differ from the primary provider")
 
             def persist_provider_sync():
                 available = {item["id"] for item in self._model_view()["providers"]}
@@ -485,6 +503,12 @@ class AccountSessionWebAPI:
                         or not supported_text_provider(provider, expected_type)):
                     raise TaskError("host_provider_unavailable",
                                     "choose a loaded AstrBot text provider supported by V2")
+                if fallback_provider_id:
+                    fallback_provider = self.controller.context.get_provider_by_id(fallback_provider_id)
+                    if (fallback_provider_id not in available
+                            or not supported_text_provider(fallback_provider, expected_type)):
+                        raise TaskError("host_provider_unavailable",
+                                        "choose a loaded AstrBot text provider for the fallback model")
                 config = self.controller.config
                 if not isinstance(config, dict):
                     raise TaskError("account_config_persistence_unavailable",
@@ -505,14 +529,17 @@ class AccountSessionWebAPI:
                         profile for profile in profiles
                         if not isinstance(profile, dict) or profile.get("provider_id") != provider_id
                     ]
-                if model_settings.get("fallback_provider_id") == provider_id:
+                if fallback_provider_id is not None:
+                    model_settings["fallback_provider_id"] = fallback_provider_id
+                elif model_settings.get("fallback_provider_id") == provider_id:
                     model_settings["fallback_provider_id"] = ""
                 save(candidate)
                 refresh = getattr(self.controller, "refresh_settings", None)
                 if callable(refresh):
                     refresh()
+                return str(model_settings.get("fallback_provider_id", ""))
 
-            await asyncio.to_thread(persist_provider_sync)
+            saved_fallback = await asyncio.to_thread(persist_provider_sync)
             prepared = False
             initialization_error = None
             restart_required = False
@@ -533,7 +560,7 @@ class AccountSessionWebAPI:
                     initialization_error = getattr(error, "code", "host_initialization_failed")
             view, status = await asyncio.to_thread(lambda: (self._view(), self.controller.status()))
             return {"status": "ok", "data": {**view, "saved": True,
-                "provider_id": provider_id, "prepared": prepared,
+                "provider_id": provider_id, "fallback_provider_id": saved_fallback, "prepared": prepared,
                 "restart_required": restart_required,
                 "initialization_error": initialization_error,
                 "status": status}}

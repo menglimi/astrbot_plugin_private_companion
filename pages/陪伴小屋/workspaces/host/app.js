@@ -60,15 +60,16 @@
     account_config_running: "角色映射正在应用，请稍候再读取状态。",
     account_config_invalid: "绑定配置不完整或会话来源已变化，请重新核对。",
     account_config_save_failed: "保存失败，请检查插件数据目录是否可写后重试。",
-    account_model_provider_invalid: "共享启动模型请求没有通过校验（与角色映射、会话来源无关），请刷新后重试；若仍失败，请到插件配置里设置模型。",
-    account_model_provider_failed: "共享启动模型保存失败，请刷新状态并检查插件配置后重试。",
+    account_model_provider_invalid: "陪伴通用模型（全局默认）请求没有通过校验（与角色映射、会话来源无关），请刷新后重试；若仍失败，请到插件配置里设置模型。",
+    account_model_provider_failed: "陪伴通用模型（全局默认）保存失败，请刷新状态并检查插件配置后重试。",
+    model_fallback_duplicate: "全局备用模型不能与陪伴通用模型（主模型）相同，请选择其他 Provider 或留空。",
     account_session_unavailable: "这个会话已切换或不在当前目录中，请刷新。",
     account_session_persona_pinned: "AstrBot 已固定此会话人格，请在角色映射中调整。",
     account_session_persona_unmapped: "这个人格尚未绑定到当前 Bot，请先添加人格绑定。",
     account_core_window_required: "已确认的核心管理员窗口需要保留。",
     host_must_stop: "当前任务仍在收尾，请稍后保存映射。",
     setup_targets_unavailable: "会话目录暂时不可读取。",
-    host_provider_unavailable: "所选共享启动模型当前不可用，请重新选择。",
+    host_provider_unavailable: "所选陪伴通用模型或备用模型当前不可用，请重新选择。",
     host_control_failed: "角色运行环境准备失败，请查看 AstrBot 日志中的 CompanionV2 异常详情。",
     host_module_unavailable: "插件模块加载失败，请重新加载 V2 插件；若仍失败，请检查安装包并查看 AstrBot 日志。",
     host_native_lookup_timeout: "AstrBot 读取原生状态超时，请刷新状态后重试。",
@@ -1306,80 +1307,105 @@
     return config.providers?.find(item => item.id === providerId)?.name || providerId || "未选择";
   }
   function renderSharedModel() {
-    const select = $("shared-model-provider"), save = $("save-shared-model"), note = $("shared-model-note");
+    const select = $("shared-model-provider"), fallbackSelect = $("shared-model-fallback"),
+      save = $("save-shared-model"), note = $("shared-model-note");
     if (!select || !save || !note) return;
     if (!modelConfig) {
       select.innerHTML = `<option value="">正在读取模型连接…</option>`;
       select.disabled = true; save.disabled = true;
+      if (fallbackSelect) {
+        fallbackSelect.innerHTML = `<option value="">正在读取…</option>`;
+        fallbackSelect.disabled = true;
+      }
       note.textContent = "正在读取已加载的模型连接…";
       note.dataset.kind = "info";
       return;
     }
     const providers = Array.isArray(modelConfig?.providers) ? modelConfig.providers : [];
     const current = String(modelConfig?.provider_id || "");
-    const configured = String(modelConfig?.configured_provider_id || "");
+    const savedFallback = String(modelConfig?.fallback_provider_id || "");
     const source = String(modelConfig?.provider_source || "");
     const previous = select.value;
-    select.innerHTML = `<option value="">请选择已加载的文本模型</option>${providers.map(provider => {
+    const optionMarkup = provider => {
       const name = String(provider.name || "");
       const label = name && name !== provider.id
         ? `${escapeHTML(name)}（${escapeHTML(provider.id)}）` : escapeHTML(provider.id);
       return `<option value="${escapeHTML(provider.id)}">${label}</option>`;
-    }).join("")}`;
+    };
+    select.innerHTML = `<option value="">请选择已加载的文本模型</option>${providers.map(optionMarkup).join("")}`;
     const desired = providers.some(item => item.id === previous) ? previous
       : providers.some(item => item.id === current) ? current : "";
     select.value = desired;
     select.disabled = busy || modelSaving || !providers.length;
+    if (fallbackSelect) {
+      const prevFallback = fallbackSelect.dataset?.touched === "1" ? fallbackSelect.value : savedFallback;
+      const fallbackChoices = providers.filter(item => item.id !== desired);
+      fallbackSelect.innerHTML = `<option value="">不使用备用模型</option>${fallbackChoices.map(optionMarkup).join("")}`;
+      const desiredFallback = fallbackChoices.some(item => item.id === prevFallback) ? prevFallback : "";
+      fallbackSelect.value = desiredFallback;
+      fallbackSelect.disabled = busy || modelSaving || !providers.length;
+    }
     save.disabled = busy || modelSaving || !providers.length || !select.value;
-    save.textContent = source === "auto" ? "固定启动模型" : "保存启动模型";
+    save.textContent = source === "auto" ? "固定陪伴通用模型" : "保存陪伴通用模型";
     if (!providers.length) {
       note.textContent = "AstrBot 没有读取到已加载的文本模型。请先在 AstrBot 模型配置中添加并启用一个 Provider。";
       note.dataset.kind = "error";
     } else if (!current) {
-      note.textContent = "尚未选择插件启动模型。先在这里保存，角色映射才能准备启动；启动后再到「模型与连接」细调任务路由。";
+      note.textContent = "尚未选择陪伴通用模型（全局默认，原称共享启动模型）。先在这里保存，角色映射才能准备启动；启动后再到「模型与连接」细调任务路由。";
       note.dataset.kind = "info";
     } else if (source === "fallback") {
-      note.textContent = "已保存的启动模型不可用，已自动改用 AstrBot 当前模型。";
+      note.textContent = "已保存的陪伴通用模型不可用，已自动改用 AstrBot 当前模型。";
       note.dataset.kind = "info";
     } else if (source === "auto") {
-      note.textContent = "已自动跟随 AstrBot 当前模型；无需手动保存，可直接准备并启动。";
+      note.textContent = savedFallback
+        ? `主模型已自动跟随 AstrBot 当前模型；当前全局备用模型：${modelProviderName(savedFallback)}。`
+        : "已自动跟随 AstrBot 当前模型；无需手动保存，可直接准备并启动。";
       note.dataset.kind = "info";
     } else if (!providers.some(item => item.id === current)) {
-      note.textContent = `已保存的启动模型 ${current} 当前不可用，请重新选择。`;
+      note.textContent = `已保存的陪伴通用模型 ${current} 当前不可用，请重新选择。`;
       note.dataset.kind = "error";
     } else {
       const running = isAccepting() || status?.state === "running";
+      const fallbackText = savedFallback ? ` · 备用：${modelProviderName(savedFallback)}` : "";
       note.textContent = running
-        ? `当前启动模型：${modelProviderName(current)}。宿主已在运行，保存后将在下次启动或重载时生效。`
-        : `当前启动模型：${modelProviderName(current)}。保存角色映射后即可点「准备并启动」。`;
+        ? `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。宿主已在运行，保存后将在下次启动或重载时生效。`
+        : `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。保存角色映射后即可点「准备并启动」。`;
       note.dataset.kind = "info";
     }
   }
   async function saveSharedModel() {
     if (busy || modelSaving) return;
-    const select = $("shared-model-provider"), button = $("save-shared-model");
+    const select = $("shared-model-provider"), fallbackSelect = $("shared-model-fallback"),
+      button = $("save-shared-model");
     const providerId = String(select?.value || "");
     if (!providerId) { notice("请先选择一个已加载的文本模型。", "error"); return; }
+    const savedFallback = String(modelConfig?.fallback_provider_id || "");
+    const fallbackValue = fallbackSelect ? String(fallbackSelect.value || "") : "";
+    const fallbackChanged = Boolean(fallbackSelect && (fallbackSelect.dataset?.touched === "1" || fallbackValue !== savedFallback));
+    const body = fallbackChanged
+      ? {provider_id: providerId, fallback_provider_id: fallbackValue === providerId ? "" : fallbackValue}
+      : {provider_id: providerId};
     modelSaving = true;
     setLoading(button, true);
     setBusy(true);
-    notice("正在保存共享模型连接…", "info");
+    notice("正在保存陪伴通用模型（全局默认）…", "info");
     try {
-      const result = await api("POST", `${accountApi}/model-provider`, {provider_id: providerId}, 60000);
+      const result = await api("POST", `${accountApi}/model-provider`, body, 60000);
       if (result?.model) modelConfig = result.model;
+      if (fallbackSelect?.dataset) delete fallbackSelect.dataset.touched;
       let refreshed = true;
       try { await readStatus(); } catch { refreshed = false; }
       if (!refreshed) {
-        notice("共享模型已保存；运行状态暂未读到，请点「刷新状态」核对后再准备启动。", "info");
+        notice("陪伴通用模型（全局默认）已保存；运行状态暂未读到，请点「刷新状态」核对后再准备启动。", "info");
       } else if (result?.prepared) {
-        notice("共享模型已保存，角色运行环境已准备。现在可以点「准备并启动」。", "success");
+        notice("陪伴通用模型（全局默认）已保存，角色运行环境已准备。现在可以点「准备并启动」。", "success");
       } else if (result?.initialization_error) {
-        notice(`共享模型已保存；角色运行环境尚未就绪：${failureMessage(result.initialization_error)}。请先完成角色映射，再点「准备并启动」。`, "info");
+        notice(`陪伴通用模型（全局默认）已保存；角色运行环境尚未就绪：${failureMessage(result.initialization_error)}。请先完成角色映射，再点「准备并启动」。`, "info");
       } else {
-        notice("共享模型已保存。请点「准备并启动」完成角色准备。", "success");
+        notice("陪伴通用模型（全局默认）已保存。请点「准备并启动」完成角色准备。", "success");
       }
     } catch (error) {
-      notice(`共享模型保存未完成：${publicError(error)}`, "error");
+      notice(`陪伴通用模型保存未完成：${publicError(error)}`, "error");
     } finally {
       modelSaving = false;
       setBusy(false);
@@ -2134,6 +2160,10 @@
   });
   $("start-host")?.addEventListener("click", startHost);
   $("shared-model-provider")?.addEventListener("change", renderSharedModel);
+  $("shared-model-fallback")?.addEventListener("change", event => {
+    if (event.target?.dataset) event.target.dataset.touched = "1";
+    renderSharedModel();
+  });
   $("save-shared-model")?.addEventListener("click", saveSharedModel);
   $("topology-session-prev").addEventListener("click", () => changeTopologySessionPage(-1));
   $("topology-session-next").addEventListener("click", () => changeTopologySessionPage(1));

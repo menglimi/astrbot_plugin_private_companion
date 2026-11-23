@@ -444,6 +444,11 @@ class SetupWebAPI:
             providers.append({"id": selection.provider_id, "name": selection.name or selection.provider_id})
         return providers
 
+    def _configured_fallback_provider_id(self) -> str:
+        config = getattr(self.controller, "config", {})
+        section = config.get("model", {}) if isinstance(config, dict) else {}
+        return str(section.get("fallback_provider_id", "")) if isinstance(section, dict) else ""
+
     def _status_document(self) -> dict:
         state = self.progress.read()
         binding = self._binding()
@@ -473,6 +478,7 @@ class SetupWebAPI:
                 "binding": binding, "binding_confirmed": confirmed, "prepared": prepared,
                 "completed": completed, "skipped": skipped,
                 "model": {"provider_id": selection_id or self._configured_provider_id(),
+                          "fallback_provider_id": self._configured_fallback_provider_id(),
                           "provider_source": (selection.source if selection_id and selection is not None
                                               else "unavailable"),
                           "providers": self._model_catalog()},
@@ -730,11 +736,20 @@ class SetupWebAPI:
             if len(raw) > 4096:
                 raise ValueError("request is too large")
             data = json.loads(raw.decode("utf-8"))
-            if type(data) is not dict or set(data) != {"provider_id"}:
+            has_fallback = isinstance(data, dict) and "fallback_provider_id" in data
+            if (type(data) is not dict or "provider_id" not in data
+                    or set(data) - {"provider_id", "fallback_provider_id"}):
                 raise ValueError("invalid model fields")
             provider_id = data["provider_id"]
             if type(provider_id) is not str or not provider_id.strip() or len(provider_id) > 512:
                 raise ValueError("invalid provider")
+            provider_id = provider_id.strip()
+            fallback_provider_id = None
+            if has_fallback:
+                raw_fallback = data["fallback_provider_id"]
+                if type(raw_fallback) is not str or len(raw_fallback.strip()) > 512:
+                    raise ValueError("invalid fallback provider")
+                fallback_provider_id = raw_fallback.strip()
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
@@ -746,12 +761,21 @@ class SetupWebAPI:
                 status = self._status_document()
                 if status["step"] != "model":
                     raise TaskError("setup_step_order_invalid", "confirm the core administrator window before choosing a model")
+                if fallback_provider_id == provider_id:
+                    raise TaskError("model_fallback_duplicate",
+                                    "fallback model provider must differ from the primary provider")
                 available = {item["id"] for item in status["model"]["providers"]}
                 provider = self.controller.context.get_provider_by_id(provider_id)
                 expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
                 if (provider_id not in available or expected_type is None
                         or not supported_text_provider(provider, expected_type)):
                     raise TaskError("host_provider_unavailable", "choose a loaded AstrBot text provider supported by V2")
+                if fallback_provider_id:
+                    fallback_provider = self.controller.context.get_provider_by_id(fallback_provider_id)
+                    if (fallback_provider_id not in available
+                            or not supported_text_provider(fallback_provider, expected_type)):
+                        raise TaskError("host_provider_unavailable",
+                                        "choose a loaded AstrBot text provider for the fallback model")
                 config = self.controller.config
                 if not isinstance(config, dict):
                     raise TaskError("setup_config_unavailable", "the plugin configuration cannot be edited here")
@@ -769,7 +793,9 @@ class SetupWebAPI:
                         profile for profile in profiles
                         if not isinstance(profile, dict) or profile.get("provider_id") != provider_id
                     ]
-                if model_settings.get("fallback_provider_id") == provider_id:
+                if fallback_provider_id is not None:
+                    model_settings["fallback_provider_id"] = fallback_provider_id
+                elif model_settings.get("fallback_provider_id") == provider_id:
                     model_settings["fallback_provider_id"] = ""
                 stage_box[0] = "config_persistence"
                 save(candidate)
