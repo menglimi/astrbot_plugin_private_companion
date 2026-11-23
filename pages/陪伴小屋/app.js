@@ -1284,6 +1284,7 @@ function mountPanelWorkspaces(){
   guarded('本会话回复诊断',()=>diagnosticsHost
     ?window.CompanionReplyDiagnostics?.mount(diagnosticsHost)
     :window.CompanionReplyDiagnostics?.unmount());
+  if(!$('#setupGuideHost')&&!$('#legacyMigrationWorkspace'))guarded('首次配置引导卸载',()=>unmountSetupGuide());
   const roleStateHost=$('#roleStateWorkspace');
   const roleWeatherHost=$('#perceptionRoleWeatherWorkspace');
   const stateHost=roleWeatherHost||roleStateHost;
@@ -1334,7 +1335,6 @@ function mountPanelWorkspaces(){
     :window.CompanionExpressionSamplesPage?.unmount());
   if($('#setupGuideHost'))guarded('首次配置引导',()=>mountSetupGuide());
   else if($('#legacyMigrationWorkspace'))guarded('旧版资料迁入',()=>window.CompanionSetup?.mountMigration($('#legacyMigrationWorkspace')));
-  else guarded('首次配置引导卸载',()=>unmountSetupGuide());
   /* 备份与还原。它只在「资料与维护」与「治理与维护」两页出现，
      两道 renderData() 各自会插入挂载点，这里按容器是否存在探测，
      不存在就不挂——与上面几行同一个做法。 */
@@ -4127,7 +4127,7 @@ function activateExpressionModule(id,{focus=false}={}){
   /* 旧的「节奏时机」链接仍可打开，但它归入文字页的分段设置，
      页面不再为同一组分段控件保留第二个入口。 */
   if(id==='expression-timing')id='expression-text';
-  const tabs=$$('[data-expression-module]');
+  const tabs=$$('[role="tab"][data-expression-module]');
   const target=tabs.find(tab=>tab.dataset.expressionModule===id);
   const panel=document.getElementById(`expression-panel-${id}`);
   if(!target||!panel)return false;
@@ -6779,7 +6779,7 @@ document.addEventListener('keydown',event=>{
   }
   const expressionTab=event.target.closest?.('[role="tab"][data-expression-module]');
   if(expressionTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
-    const tabs=$$('[data-expression-module]');
+    const tabs=$$('[role="tab"][data-expression-module]');
     const index=tabs.indexOf(expressionTab);
     if(index>=0&&tabs.length){
       event.preventDefault();

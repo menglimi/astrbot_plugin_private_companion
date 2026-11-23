@@ -907,3 +907,47 @@ test("代码卫生：pages/ 目录下全部 JS/CSS 文件无 UTF-8 BOM", () => {
   });
   assert.deepEqual(withBom, [], `存在 UTF-8 BOM 文件：${withBom.join(", ")}`);
 });
+
+test("工作区卸载隔离：首次配置引导卸载不误伤表达/理解/决策/感知与状态工作区，表达页签不污染内容区", () => {
+  const app = read("pages", "陪伴小屋", "app.js");
+  const mountFnStart = app.indexOf("function mountPanelWorkspaces()");
+  const mountFnEnd = app.indexOf("\nfunction notifyAppearanceChanged()", mountFnStart);
+  assert.ok(mountFnStart > 0 && mountFnEnd > mountFnStart, "应能定位 mountPanelWorkspaces");
+  const mountFn = app.slice(mountFnStart, mountFnEnd);
+
+  const setupUnmountPos = mountFn.indexOf("unmountSetupGuide()");
+  const stateMountPos = mountFn.indexOf("CompanionStatePage?.mount");
+  const replyMountPos = mountFn.indexOf("CompanionReplyPage?.mount");
+  assert.ok(setupUnmountPos > 0 && stateMountPos > 0 && replyMountPos > 0);
+  assert.ok(setupUnmountPos < stateMountPos, "首次配置引导卸载必须早于 CompanionStatePage 挂载");
+  assert.ok(setupUnmountPos < replyMountPos, "首次配置引导卸载必须早于 CompanionReplyPage 挂载");
+  assert.equal(mountFn.indexOf("unmountSetupGuide()", replyMountPos), -1, "挂载回复工作区后不得再调用 unmountSetupGuide");
+
+  // 表达页签选择器限定在 [role="tab"]，避免命中 <section id="replyWorkspace">
+  assert.match(app, /function activateExpressionModule[\s\S]{0,220}\$\$\('\[role="tab"\]\[data-expression-module\]'\)/);
+  assert.doesNotMatch(app, /\$\$\('\[data-expression-module\]'\)/);
+
+  // 实际执行 setup-guide.js：未挂载快捷子工作区时 unmount() 绝不卸载外部 CompanionReplyPage / CompanionStatePage
+  let replyUnmounts = 0, stateUnmounts = 0;
+  const setupSrc = read("pages", "陪伴小屋", "setup-guide.js");
+  const setupWin = {
+    CompanionReplyPage: {mount() {}, unmount() { replyUnmounts += 1; }},
+    CompanionStatePage: {mount() {}, unmount() { stateUnmounts += 1; }},
+    CompanionProduct: {hosted: () => false, targets: () => [], role: () => null, target: () => null},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const setupCtx = vm.createContext({
+    window: setupWin,
+    document: {addEventListener() {}, removeEventListener() {}, querySelector() { return null; }},
+    console, setTimeout, clearTimeout, Promise, Object, Array, String, Number, Boolean, Math, Date, Map, Set, URLSearchParams, JSON,
+  });
+  vm.runInContext(setupSrc, setupCtx);
+  assert.equal(typeof setupWin.CompanionSetup?.unmount, "function");
+  setupWin.CompanionSetup.unmount();
+  assert.equal(replyUnmounts, 0, "未持有快捷回复工作区时 CompanionSetup.unmount() 不得误卸载 CompanionReplyPage");
+  assert.equal(stateUnmounts, 0, "未持有快捷状态工作区时 CompanionSetup.unmount() 不得误卸载 CompanionStatePage");
+
+  // 治理与维护页面不使用未打包的 lucide 图标名 image-check
+  const maintSrc = read("pages", "陪伴小屋", "maintenance-page.js");
+  assert.doesNotMatch(maintSrc, /data-lucide="[^"]*image-check|"image-check"/);
+});
