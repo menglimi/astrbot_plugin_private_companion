@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
+from companion_v2.sources.privacy import redact_text
+
 
 VALID_ROOM_MODES = {"call", "watch", "work", "novel"}
+_DATA_URL_PATTERN = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+", re.IGNORECASE)
+_VISUAL_DIGEST_SPACE = re.compile(r"\s+")
 
 
 def normalize_room_mode(value: Any) -> str:
@@ -150,6 +156,10 @@ class RoomSession:
     call_tts_enabled: bool = True
     shared_experience_task: asyncio.Task | None = None
     shared_experience_finalized: bool = False
+    shared_experience_last_fingerprint: str = ""
+    shared_experience_revision: int = 0
+    shared_experience_epoch: int = 0
+    shared_experience_history_offset: int = 0
     shared_experience_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     integration_closed: bool = False
     generation_task: asyncio.Task | None = None
@@ -166,6 +176,10 @@ class RoomSession:
     call_visual_events: list[str] = field(default_factory=list)
     call_visual_last_at: float = 0.0
     call_visual_last_signature: str = ""
+    visual_digest_ring: list[dict[str, Any]] = field(default_factory=list)
+    last_visual_digest: str = ""
+    last_visual_digest_at: float = 0.0
+    last_visual_digest_signature: str = ""
     call_action_token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
     client_local_time: str = ""
     client_timezone: str = ""
@@ -198,6 +212,7 @@ class RoomSession:
             overflow = len(self.history) - max_messages
             self.history = self.history[overflow:]
             self.imported_history_count = max(0, self.imported_history_count - overflow)
+            self.shared_experience_history_offset = max(0, self.shared_experience_history_offset - overflow)
 
     def cancel_generation(self) -> bool:
         task = self.generation_task
@@ -241,6 +256,87 @@ class RoomSession:
         self.call_visual_last_signature = signature
         self.call_visual_last_at = now
 
+    @staticmethod
+    def _sanitize_visual_digest(text: Any, *, max_chars: int = 80) -> str:
+        raw = str(text or "")
+        if not raw.strip():
+            return ""
+        cleaned = _DATA_URL_PATTERN.sub("", raw)
+        cleaned = redact_text(cleaned)
+        cleaned = _VISUAL_DIGEST_SPACE.sub(" ", cleaned).strip()
+        if not cleaned:
+            return ""
+        limit = max(16, int(max_chars or 80))
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _visual_signature(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text).casefold()
+        return "".join(ch for ch in normalized if ch.isalnum())
+
+    def record_visual_digest(
+        self,
+        digest: Any,
+        *,
+        mode: str = "",
+        source: str = "",
+        max_chars: int = 80,
+        max_items: int = 16,
+        min_interval_seconds: float = 12.0,
+    ) -> str:
+        """Store one concise, redacted visual digest in the bounded ring (never raw images)."""
+        summary = self._sanitize_visual_digest(digest, max_chars=max_chars)
+        if not summary:
+            return ""
+        now_mono = time.monotonic()
+        prev_digest_at = float(self.last_visual_digest_at or 0.0)
+        signature = self._visual_signature(summary)
+        self.last_visual_digest = summary
+        self.last_visual_digest_at = now_mono
+        duplicate = (
+            bool(signature)
+            and signature == self.last_visual_digest_signature
+            and prev_digest_at > 0.0
+            and (now_mono - prev_digest_at <= max(0.0, float(min_interval_seconds)))
+        )
+        if duplicate and self.visual_digest_ring:
+            return summary
+        if self.visual_digest_ring:
+            prev_summary = str(self.visual_digest_ring[-1].get("summary") or "")
+            if signature and signature == self._visual_signature(prev_summary):
+                self.last_visual_digest_signature = signature
+                return summary
+            prev_at = float(self.visual_digest_ring[-1].get("mono_at") or 0.0)
+            if (min_interval_seconds > 0 and prev_at > 0
+                    and now_mono - prev_at < float(min_interval_seconds)
+                    and str(self.visual_digest_ring[-1].get("source") or "") == str(source or "")[:40]
+                    and source == "watch_observation"):
+                # Rate-limit bursty passive watch observations while keeping latest summary.
+                self.visual_digest_ring[-1]["summary"] = summary
+                self.visual_digest_ring[-1]["at"] = time.time()
+                self.last_visual_digest_signature = signature
+                return summary
+        self.visual_digest_ring.append({
+            "at": time.time(),
+            "mono_at": now_mono,
+            "mode": normalize_room_mode(mode or self.mode),
+            "source": str(source or "frame")[:40],
+            "summary": summary,
+        })
+        if len(self.visual_digest_ring) > max(4, int(max_items or 16)):
+            self.visual_digest_ring = self.visual_digest_ring[-max(4, int(max_items or 16)):]
+        self.last_visual_digest_signature = signature
+        return summary
+
+    def recent_visual_digest(self, *, max_age_seconds: float = 120.0) -> str:
+        if not self.last_visual_digest or not self.last_visual_digest_at:
+            return ""
+        if time.monotonic() - float(self.last_visual_digest_at) > max(1.0, float(max_age_seconds)):
+            return ""
+        return self.last_visual_digest
+
     def append_watch_event(
         self,
         kind: str,
@@ -278,7 +374,16 @@ class RoomSession:
         self.watch_memory_media_time = 0.0
         self.last_watch_spoken_media_time = -1.0
         self.vision_error_notified = False
+        self.visual_digest_ring.clear()
+        self.last_visual_digest = ""
+        self.last_visual_digest_at = 0.0
+        self.last_visual_digest_signature = ""
         self.watch_epoch += 1
+        self.shared_experience_finalized = False
+        self.shared_experience_last_fingerprint = ""
+        self.shared_experience_revision = 0
+        self.shared_experience_epoch = self.watch_epoch
+        self.shared_experience_history_offset = len(self.history)
 
     def cancel_watch_knowledge(self) -> bool:
         task = self.watch_knowledge_task

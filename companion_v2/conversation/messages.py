@@ -717,12 +717,21 @@ class ConversationMessages:
                     and self.tools is not None):
                 try:
                     actions = {tool.action for tool in self.tools.catalog_for(context, row["batch_id"])}
-                    if "image.edit" in actions:
+                    has_edit = "image.edit" in actions
+                    has_generate = "image.generate" in actions
+                    if has_edit or has_generate:
                         from zoneinfo import ZoneInfo
-                        from companion_v2.references.prompts import image_reference_instruction
+                        from companion_v2.references.prompts import (
+                            image_reference_instruction,
+                            text_wardrobe_instruction,
+                        )
                         local_date = calendar_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
                         material = self.reference_materials.prompt_material(context, local_date=local_date)
-                        instruction = image_reference_instruction(material)
+                        instruction = (
+                            image_reference_instruction(material)
+                            if has_edit
+                            else text_wardrobe_instruction(material)
+                        )
                         if instruction:
                             request = replace(request, instruction=request.instruction + "\n" + instruction)
                 except TaskError:

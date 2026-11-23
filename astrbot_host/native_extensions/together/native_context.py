@@ -23,12 +23,12 @@ class RoomContext:
     context: object
 
 
-def current_room_context(runtime, room):
+def current_room_context(runtime, room, *, allow_closing: bool = False):
     """Local authorization, repeated after awaited host lookups and before writes."""
     controller = runtime.controller
     registry = getattr(controller, "native_extensions", None)
     binding = room.native_v2
-    if (binding is None or room.integration_closed or registry is None
+    if (binding is None or (room.integration_closed and not allow_closing) or registry is None
             or registry.active_service("together") is not runtime
             or any(member.role == "guest" for member in runtime._ensure_room_members(room).values())):
         return None
@@ -47,10 +47,10 @@ def current_room_context(runtime, room):
     return RoomContext(session, application, context)
 
 
-async def resolve_room_context(runtime, room):
+async def resolve_room_context(runtime, room, *, allow_closing: bool = False):
     """A stale room may keep chatting, but cannot read or write another window."""
     try:
-        resolved = current_room_context(runtime, room)
+        resolved = current_room_context(runtime, room, allow_closing=allow_closing)
         if resolved is None:
             return None
         registry = runtime.controller.native_extensions
@@ -59,7 +59,7 @@ async def resolve_room_context(runtime, room):
         if (not isinstance(persona, dict) or any(persona.get(key) != getattr(binding, key)
                 for key in ("persona_id", "prompt", "bot_id", "account_id"))):
             return None
-        current = current_room_context(runtime, room)
+        current = current_room_context(runtime, room, allow_closing=allow_closing)
         return current if current == resolved else None
     except Exception as error:
         logger.debug("[TogetherCompanion] V2 房间背景暂不可用: %s", type(error).__name__)

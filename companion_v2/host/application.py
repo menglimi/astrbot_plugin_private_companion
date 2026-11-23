@@ -352,6 +352,7 @@ class CompanionApplication:
         self.qzone = (QzoneService(runtime, self.qzone_settings, qzone_transport, now=self.now)
                       if qzone_transport is not None else None)
         self.proactive = ProactiveContacts(self.configuration, memory_push=memory_push)
+        self.memory_push = memory_push
         self.role_life = PersistentRoleLifeLedger(runtime, now=self.now)
         self.role_growth = PersistentRoleGrowthLedger(runtime, now=self.now)
         self.relationship_memories = RelationshipMemoryService(runtime, now=self.now)

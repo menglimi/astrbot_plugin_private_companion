@@ -42,6 +42,7 @@ window.CompanionNativePerceptionPage = (() => {
       ["platform_enabled","标明当前平台","bool",""],
       ["model_route_enabled","标明模型路由","bool",""],
       ["configured_modalities_enabled","标明已配置的输入模态","bool","不授予图像、语音或视频权限。"],
+      ["screen_context_enabled","私聊注入近期屏幕摘要","bool","仅在已授权同一主人私聊中注入 15 分钟内最近 1 条脱敏屏幕解读摘要，群聊与其他用户严格隔离。"],
       ["guidance","感知表达偏好","textarea","最多 2 KiB。"],
     ],
     news:[
@@ -113,7 +114,8 @@ window.CompanionNativePerceptionPage = (() => {
         || typeof value.environment.sources.weather_provider === "string")
       && typeof value[section].edit_token === "string"
       && fields[section].every(([name, , type]) =>
-        ((name === "health_enabled" || name === "health_proactive_enabled") && value[section].settings[name] === undefined)
+        ((name === "health_enabled" || name === "health_proactive_enabled" || name === "screen_context_enabled")
+          && value[section].settings[name] === undefined)
         || typeof value[section].settings[name] === (type === "bool" ? "boolean" : type === "number" ? "number" : "string")));
   }
   function publicSnapshot() {
@@ -134,7 +136,8 @@ window.CompanionNativePerceptionPage = (() => {
         healthEnabled:model.health_enabled === true,
         lunarEnabled:model.lunar_enabled === true, solarTermsEnabled:model.automatic_solar_terms_enabled === true,
         almanacEnabled:model.almanac_enabled === true, platformEnabled:model.platform_enabled === true,
-        routeEnabled:model.model_route_enabled === true, modalitiesEnabled:model.configured_modalities_enabled === true},
+        routeEnabled:model.model_route_enabled === true, modalitiesEnabled:model.configured_modalities_enabled === true,
+        screenContextEnabled:model.screen_context_enabled !== false},
       contact:windowSelected?{dateCheckinEnabled:contact.date_checkin_enabled === true,
         dates:typeof contactStatus.dates === "string" ? contactStatus.dates
           : typeof contact.important_dates === "string" ? contact.important_dates : "[]",
@@ -174,6 +177,8 @@ window.CompanionNativePerceptionPage = (() => {
       next.model.settings.health_enabled = false;
     if (next.model?.settings && typeof next.model.settings.health_proactive_enabled !== "boolean")
       next.model.settings.health_proactive_enabled = false;
+    if (next.model?.settings && typeof next.model.settings.screen_context_enabled !== "boolean")
+      next.model.settings.screen_context_enabled = true;
     status = next;
     for (const section of Object.keys(fields)) {
       const current = drafts[section], entry = next[section], latest = values(section, entry);

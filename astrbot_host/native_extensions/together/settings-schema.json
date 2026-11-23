@@ -119,6 +119,12 @@
         "default": false,
         "hint": "开启后把实际收到的用户转写与成功投递的 Bot 文字存入 V2 本地来源，供记忆整理使用。仅限原私聊窗口的单人房间，不保存原始音视频，也不生成 QQ 发送回执。"
       },
+      "record_shared_experiences": {
+        "description": "记录有意义的共同经历",
+        "type": "bool",
+        "default": true,
+        "hint": "单人原私聊房间结束时，将片名/画面简述/剧情笔记与关键对话整理为 1 条脱敏共同经历，仅写入当前私聊主人记忆与在场上下文，绝不保存原图且绝不泄露到群聊。多人邀请房间默认不记录私人背景。"
+      },
       "system_prompt": {
         "description": "共处补充提示词",
         "type": "text",

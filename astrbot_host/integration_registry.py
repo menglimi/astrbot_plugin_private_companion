@@ -54,7 +54,8 @@ class IntegrationRegistry:
             identity = {item.get("plugin_id"), item.get("package_id"), item.get("extension_id")}
             if conflicts.intersection(value for value in identity if value):
                 item.update(integration_state="degraded", execution_issue="capability_descriptor_conflict",
-                    reason="能力声明与保留版本冲突，当前不能在对话中调用。请更新模块版本后重新确认启用。")
+                    reason="能力声明或模块代码校验哈希与同版本已登记记录冲突，当前不能在对话中调用。"
+                           "若刚本地修改或热修了模块文件，请递增插件版本号或更新完整安装包后重载并重新启用。")
         host = dict(host_status or {})
         core = [{**item, "routes": list(item["routes"]), "owner": "companion_v2",
                  "implementation": "included", "runtime_state": getattr(application, "state", "unloaded")}

@@ -5,9 +5,13 @@ from uuid import uuid4
 from .native_context import current_room_context, resolve_room_context
 
 
-def received_input(runtime, room, text, *, turn_id, visual_context_used=False):
-    transcript = {"event_id": "together-room-" + room.room_id + "-" + turn_id,
-                  "user_text": text, "visual_context_used": visual_context_used}
+def received_input(runtime, room, text, *, turn_id, visual_context_used=False, visual_digest=""):
+    transcript = {
+        "event_id": "together-room-" + room.room_id + "-" + turn_id,
+        "user_text": text,
+        "visual_context_used": visual_context_used,
+        "visual_digest": str(visual_digest or "").strip(),
+    }
     if room.native_v2 is not None and runtime.record_visible_turns:
         _schedule(runtime, room, text, kind="input", transcript=transcript)
     return transcript
@@ -19,12 +23,15 @@ def delivered_output(runtime, room, payload, *, transcript=None):
     text = str(payload.get("display_text") or payload.get("text") or "").strip()
     if not text:
         return
+    visual_digest = str((transcript or {}).get("visual_digest") or "").strip()
+    visual_context_used = bool((transcript or {}).get("visual_context_used") or visual_digest)
     if room.native_v2 is None:
         # Compatibility rooms do not have native observations; only the
         # automatic watch comment needs to reach the QQ conversation, and only
         # after the room actually accepted the payload.
         if getattr(runtime, "sync_astrbot_conversation", False) and payload.get("source") == "watch_comment":
-            runtime._create_background_task(runtime._record_astrbot_assistant(room, text))
+            synced_text = f"【画面简述】{visual_digest}\n{text}" if visual_digest else text
+            runtime._create_background_task(runtime._record_astrbot_assistant(room, synced_text))
         return
     runtime._create_background_task(runtime._push_live_subtitle(text, source="together_companion"))
     if runtime.record_visible_turns:
@@ -32,8 +39,13 @@ def delivered_output(runtime, room, payload, *, transcript=None):
     if runtime.sync_astrbot_conversation:
         async def sync():
             if await resolve_room_context(runtime, room) is not None:
-                await runtime._record_astrbot_turns(room, (transcript or {}).get("user_text", ""), text,
-                    visual_context_used=bool((transcript or {}).get("visual_context_used")))
+                await runtime._record_astrbot_turns(
+                    room,
+                    (transcript or {}).get("user_text", ""),
+                    text,
+                    visual_context_used=visual_context_used,
+                    visual_digest=visual_digest,
+                )
         runtime._create_background_task(sync())
 
 
