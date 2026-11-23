@@ -382,7 +382,7 @@ test("learning-hub.css 清理串扰、非法 -var()、双栏独立滚动、对�
 
   // 双栏几何与独立滚动容器
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*grid-template-columns:minmax\(270px,340px\) minmax\(0,1fr\)/);
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*max-height:clamp\(500px,calc\(100dvh - 230px\),780px\)/);
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*max-height:clamp\(420px,calc\(100dvh - 320px\),760px\)/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue,\.learning-review-workspace \.lh-review-detail\{[^}]*display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue-list\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-detail-body\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
@@ -395,16 +395,19 @@ test("learning-hub.css 清理串扰、非法 -var()、双栏独立滚动、对�
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-type\.is-style\{background:var\(--t-warn-quiet\);color:var\(--t-warn-ink\)\}/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-type\.is-self\{background:var\(--t-ok-quiet\);color:var\(--t-ok-ink\)\}/);
 
-  // 学习工作台通用响应式修复：8 页签导航容器响应式 + 5 列看板 auto-fit 防挤压，且断点严格降序防止宽媒体覆盖窄容器
+  // 学习工作台通用响应式修复：外框圆角与内层单行滚动轨解耦 + 窄容器尾部柔和渐隐 + 5 列看板 auto-fit 防挤压
   assert.match(hubCss, /\.learning-hub\{[^}]*container-type:inline-size;container-name:learning-hub/);
-  assert.match(hubCss, /@container learning-hub \(max-width:1040px\)\{[^}]*\.learning-hub-nav\{grid-template-columns:repeat\(4,minmax\(0,1fr\)\)\}/);
+  assert.match(hubCss, /\.learning-hub-nav\{[^}]*border:1px solid var\(--t-line\);border-radius:var\(--r-md\)/);
+  assert.match(hubCss, /\.learning-hub-tabs\{[^}]*display:flex;flex-wrap:nowrap[^}]*overflow-x:auto/);
+  assert.match(hubCss, /\.learning-hub-tab\.is-active,\.learning-hub-tab\.is-active:hover\{[^}]*background:var\(--t-accent-solid\);color:var\(--t-on-solid\)/);
+  assert.match(hubCss, /@container learning-hub \(max-width:740px\)\{[\s\S]*?\.learning-hub-tabs\{[\s\S]*?mask-image:linear-gradient\(to right,black 0,black calc\(100% - 22px\),transparent 100%\)/);
   assert.match(hubCss, /\.lh-overview-lanes\{[^}]*grid-template-columns:repeat\(auto-fit,minmax\(min\(220px,100%\),1fr\)\)/);
   const posMedia1320 = hubCss.indexOf("@media(max-width:1320px)");
-  const posContainer1040 = hubCss.indexOf("@container learning-hub (max-width:1040px)");
-  const posMedia620 = hubCss.indexOf("@media(max-width:620px)");
-  const posContainer560 = hubCss.indexOf("@container learning-hub (max-width:560px)");
+  const posMedia880 = hubCss.indexOf("@media(max-width:880px)");
+  const posContainer740 = hubCss.indexOf("@container learning-hub (max-width:740px)");
+  const posMedia520 = hubCss.indexOf("@media(max-width:520px)");
   assert.ok(
-    posMedia1320 > 0 && posMedia1320 < posContainer1040 && posContainer1040 < posMedia620 && posMedia620 < posContainer560,
-    "学习导航断点必须按 1320 -> 1040 -> 620 -> 560 严格降序排列，避免 @media(max-width:1320px) 反压 @container(max-width:560px)",
+    posMedia1320 > 0 && posMedia1320 < posMedia880 && posMedia880 < posContainer740 && posContainer740 < posMedia520,
+    "学习导航断点必须按 1320 -> 880 -> 740 -> 520 严格降序排列，避免宽断点覆盖窄容器",
   );
 });

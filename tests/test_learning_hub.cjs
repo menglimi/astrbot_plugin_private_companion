@@ -213,3 +213,193 @@ test('学习记录与表情库只跟随小屋的 Bot 和角色，成长记录要
   assert.deepEqual(Array.from(context.learningReviewSources({includeGroups: true}), source => source.target.target_id), ['b-private']);
   assert.equal(context.learningChoices('growth').some(item => item.target.target_id === 'a-private'), false);
 });
+
+test('学习工作台顶部 8 Tab 胶囊导航、总览间距语义色与角色策略政策卡片契约', () => {
+  const app = fs.readFileSync(path.join(PAGE, 'app.js'), 'utf8');
+  const hubCss = fs.readFileSync(path.join(PAGE, 'learning-hub.css'), 'utf8');
+  const pageCss = fs.readFileSync(path.join(PAGE, 'learning-page.css'), 'utf8');
+  const policyCss = fs.readFileSync(path.join(PAGE, 'learning-policy.css'), 'utf8');
+
+  // 1. 顶部 8 Tab 去掉 01..08 编号前缀，外框圆角与内层滚动轨解耦，消除悬停双选中错觉
+  const rendererStart = app.indexOf('function renderLearningPage(){');
+  const rendererEnd = app.indexOf('/* 2026-09-30 接回：', rendererStart);
+  const renderer = app.slice(rendererStart, rendererEnd);
+  assert.doesNotMatch(renderer, /padStart\(2,'0'\)/, '学习工作台顶部 8 Tab 不应再带 01..08 序号前缀');
+  assert.match(renderer, /<nav class="learning-hub-nav"[^>]*><div class="learning-hub-tabs">/);
+  assert.doesNotMatch(hubCss, /\.learning-hub-nav\{[^}]*mask-image/, '不得对带边框圆角的外壳 .learning-hub-nav 直接施以 mask-image');
+  assert.match(hubCss, /\.learning-hub-tabs\{[^}]*display:flex;flex-wrap:nowrap[^}]*overflow-x:auto/);
+  assert.match(hubCss, /\.learning-hub-tabs\{[\s\S]*?mask-image:linear-gradient\(to right,black 0,black calc\(100% - 22px\),transparent 100%\)/);
+  assert.match(hubCss, /\.learning-hub-tab:hover:not\(\.is-active\)\{[^}]*color-mix\(in srgb,var\(--t-accent\) 9%,transparent\)/);
+  assert.doesNotMatch(hubCss, /\.learning-hub-tab:hover\{background:var\(--t-surface\)/);
+  assert.doesNotMatch(pageCss, /\.learning-hub-tab:hover\{background:var\(--t-surface\)/);
+
+  // 2. 总览容器拼写修复与语义状态色
+  assert.doesNotMatch(hubCss, /\.lh-overview-workspace\b/, '必须修复 .lh-overview-workspace 拼写错误');
+  assert.match(hubCss, /\.learning-overview-workspace\{display:flex;flex-direction:column;gap:var\(--sp-3\);min-width:0\}/);
+  assert.match(hubCss, /\.lh-inline-status\.is-ok\{[^}]*background:var\(--t-ok-quiet\);color:var\(--t-ok-ink\)/);
+
+  // 3. 角色策略停用 journal 与 outputConfigView，改用 policy 卡片、静态底栏、双向避让悬浮胶囊与移动端单行 3 等分分段控件
+  assert.doesNotMatch(app, /'role\.growth\.skills':outputConfigView/);
+  assert.doesNotMatch(app, /'expression\.learning':outputConfigView/);
+  assert.match(app, /'role\.growth\.skills':\{[\s\S]*?presentation:'policy'[\s\S]*?listFields:\{custom_skills:\{maxItems:8,maxLength:24/);
+  assert.match(app, /'expression\.learning':\{[\s\S]*?presentation:'policy'/);
+  assert.match(renderer, /id="learningPolicySaveDock" class="learning-policy-dock"/);
+  assert.match(policyCss, /\.learning-policy-workspaces\{[^}]*padding-bottom:96px/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-policy \.wb-field-main\{[^}]*align-items:stretch/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-policy \.wb-field-head\{[^}]*width:100%/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-policy \.wb-label\{[^}]*justify-content:flex-start[^}]*text-align:left/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-actions\{[^}]*position:static/);
+  assert.match(policyCss, /#homeShell\[data-away="true"\] \.learning-policy-workspaces \.wb-actions\{padding-right:0\}/);
+  assert.match(policyCss, /\.learning-policy-dock\{[^}]*--lp-dock-left:[^}]*--lp-dock-right:[^}]*max-width:560px/);
+  assert.match(policyCss, /@media\(min-width:1121px\)\{[\s\S]*?--lp-dock-left:calc\(var\(--shell-rail, 220px\)/);
+  assert.match(policyCss, /@media\(min-width:761px\) and \(max-width:1120px\)\{[\s\S]*?--lp-dock-left:calc\(var\(--shell-rail-collapsed, 68px\)/);
+  assert.match(policyCss, /@media\(max-width:760px\)\{[\s\S]*?\.learning-policy-workspaces \.wb-policy \.wb-card-body\{padding:0\}/);
+  assert.match(policyCss, /@media\(max-width:760px\)\{[\s\S]*?\.learning-policy-workspaces \.wb-policy \.wb-segmented\{[^}]*grid-auto-flow:column;grid-auto-columns:minmax\(0,1fr\)/);
+});
+
+test('角色策略居中悬浮保存胶囊仅在有未保存改动时出现，重复编辑原地复用节点不重播动画，并可联动放弃与保存', async () => {
+  const app = fs.readFileSync(path.join(PAGE, 'app.js'), 'utf8');
+  const start = app.indexOf('let learningPolicyDockCleanup=null;');
+  const end = app.indexOf('function renderConfigEditors(){', start);
+  assert.ok(start >= 0 && end > start);
+
+  let dirtyList = [];
+  let discarded = [];
+  let saved = [];
+  const windowListeners = new Map();
+  const dockListeners = new Map();
+  const classes = new Set();
+
+  function makeNode(tag) {
+    const node = {
+      tagName: tag.toUpperCase(),
+      className: '',
+      type: '',
+      dataset: {},
+      attributes: {},
+      children: [],
+      parentNode: null,
+      hidden: false,
+      disabled: false,
+      isConnected: true,
+      _text: '',
+      get textContent() {
+        return this.children.length ? this.children.map(child => child.textContent).join(' ') : this._text;
+      },
+      set textContent(value) {
+        this._text = String(value ?? '');
+        if (this.children.length) {
+          for (const child of this.children) child.parentNode = null;
+          this.children = [];
+        }
+      },
+      setAttribute(name, value) { this.attributes[name] = String(value); },
+      appendChild(child) {
+        child.parentNode = this;
+        this.children.push(child);
+        return child;
+      },
+      remove() {
+        if (!this.parentNode) return;
+        this.parentNode.children = this.parentNode.children.filter(item => item !== this);
+        this.parentNode = null;
+      },
+      find(predicate) {
+        for (const child of this.children) {
+          if (predicate(child)) return child;
+          const nested = child.find(predicate);
+          if (nested) return nested;
+        }
+        return null;
+      },
+    };
+    return node;
+  }
+
+  const dock = makeNode('div');
+  dock.hidden = true;
+  dock.classList = {
+    add: name => classes.add(name),
+    remove: name => classes.delete(name),
+    toggle: (name, flag) => (flag ? classes.add(name) : classes.delete(name)),
+  };
+  dock.addEventListener = (type, fn) => dockListeners.set(type, fn);
+  dock.removeEventListener = type => dockListeners.delete(type);
+
+  const context = vm.createContext({
+    configEditorMounts: [],
+    roleProfileConfigMount: null,
+    document: {createElement: makeNode},
+    $: selector => (selector === '#learningPolicySaveDock' ? dock : null),
+    escapeHTML: value => String(value ?? ''),
+    window: {
+      CompanionWorkbench: {dirtyEditors: () => dirtyList},
+      addEventListener: (type, fn) => windowListeners.set(type, fn),
+      removeEventListener: type => windowListeners.delete(type),
+    },
+  });
+  vm.runInContext(app.slice(start, end), context);
+  context.mountLearningPolicyDock();
+
+  // 无修改时保持隐藏且不创建内层节点
+  assert.equal(dock.hidden, true);
+  assert.equal(dock.children.length, 0);
+
+  const makeDirty = (group, title, fields) => ({
+    group, title, fields,
+    discard: () => { discarded.push(group); dirtyList = dirtyList.filter(item => item.group !== group); return true; },
+    save: async () => { saved.push(group); dirtyList = dirtyList.filter(item => item.group !== group); return true; },
+  });
+
+  // 首次编辑：挂载一次 .learning-policy-dock-inner
+  dirtyList = [
+    makeDirty('role.growth.skills', '技能与日程影响', ['启用技能域']),
+    makeDirty('unrelated.section', '其他页面', ['字段']),
+  ];
+  windowListeners.get('companion:workbench-state')?.();
+  assert.equal(dock.hidden, false);
+  assert.equal(classes.has('is-visible'), true);
+  const firstInner = dock.find(node => node.className === 'learning-policy-dock-inner');
+  assert.ok(firstInner, '首次进入脏态应创建 .learning-policy-dock-inner');
+  assert.equal(dock.find(node => node.tagName === 'STRONG').textContent, '已修改 1 项');
+  assert.equal(dock.find(node => node.dataset.policyDock === 'save').textContent, '保存更改');
+
+  // 后续继续编辑：重复触发 companion:workbench-state 必须原地复用同一 .learning-policy-dock-inner 节点
+  dirtyList = [
+    makeDirty('role.growth.skills', '技能与日程影响', ['启用技能域', '自定义技能域']),
+    makeDirty('expression.learning', '表达学习策略', ['学习强度']),
+    makeDirty('unrelated.section', '其他页面', ['字段']),
+  ];
+  windowListeners.get('companion:workbench-state')?.();
+  const secondInner = dock.find(node => node.className === 'learning-policy-dock-inner');
+  assert.strictEqual(secondInner, firstInner, '重复编辑必须复用同一 .learning-policy-dock-inner 节点，禁止重播入场动画与丢焦点');
+  assert.equal(dock.find(node => node.tagName === 'STRONG').textContent, '已修改 3 项');
+  assert.match(dock.textContent, /技能与日程影响、表达学习策略/);
+  assert.doesNotMatch(dock.textContent, /其他页面/);
+  assert.equal(dock.find(node => node.dataset.policyDock === 'save').textContent, '保存全部更改');
+
+  // 放弃修改：清掉策略卡草稿并隐藏胶囊
+  await dockListeners.get('click')?.({
+    target: {closest: sel => (sel === '[data-policy-dock]' ? {dataset: {policyDock: 'discard'}} : null)},
+  });
+  assert.deepEqual(discarded, ['role.growth.skills', 'expression.learning']);
+  assert.equal(dock.hidden, true);
+  assert.equal(dock.children.length, 0);
+
+  // 再次修改单卡并保存
+  dirtyList = [makeDirty('role.growth.skills', '技能与日程影响', ['自定义技能域'])];
+  windowListeners.get('companion:workbench-state')?.();
+  assert.equal(dock.hidden, false);
+  assert.equal(dock.find(node => node.tagName === 'STRONG').textContent, '已修改 1 项');
+  assert.equal(dock.find(node => node.dataset.policyDock === 'save').textContent, '保存更改');
+  await dockListeners.get('click')?.({
+    target: {closest: sel => (sel === '[data-policy-dock]' ? {dataset: {policyDock: 'save'}} : null)},
+  });
+  assert.deepEqual(saved, ['role.growth.skills']);
+  assert.equal(dock.hidden, true);
+
+  // 卸载清理事件监听
+  context.unmountConfigEditors();
+  assert.equal(dockListeners.size, 0);
+  assert.equal(windowListeners.size, 0);
+});

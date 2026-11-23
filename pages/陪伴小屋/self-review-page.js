@@ -32,10 +32,24 @@ window.CompanionSelfReviewPage = (() => {
   /* 请求根本没走完与「后端明确拒绝」是两件事：前者没有错误码，不能借用后者的话。 */
   const UNFINISHED = "读取失败：页面与服务之间的请求没有完成。";
   const CODE = /^[a-z][a-z0-9_]{2,60}$/;
+  const INTERNAL_SENTINEL_CODES = new Set(["owner_result", "ok", "succeeded", "completed", "done"]);
+  const FAILURE_STATES = new Set(["failed", "blocked"]);
   const KIND = {try_next_time:"下次尝试", keep:"值得保持", ask_user:"需要先询问", no_change:"无需调整"};
   const REVIEW_STATE = {not_run:"还没运行过", failed:"上次失败", blocked:"来源校验未通过",
     no_reviewable_window:"暂无可复盘窗口", already_attempted:"该窗口已复盘过",
     succeeded:"最近一次已产出", completed:"最近一次已产出"};
+  const REVIEW_FAILURE_REASONS = {
+    self_review_output_invalid:"复盘输出格式不完整",
+    self_review_material_changed:"复盘依据在运行期间发生了变化",
+    self_review_binding_changed:"角色绑定已变化，等待重新同步",
+    self_review_job_unavailable:"原始复盘任务材料暂不可用",
+    self_review_closed:"复盘服务已停止",
+    model_task_unregistered:"复盘模型路由尚未配置",
+    model_estimation_failed:"本地预估没能完成，请结合运行日志排查",
+    host_model_limit_input:"复盘材料超过模型输入上限",
+    host_model_limit_output:"复盘模型输出上限不足",
+    model_output_truncated:"复盘结果被模型输出上限截断",
+  };
   const e = value => String(value ?? "").replace(/[&<>"']/g, c =>
     ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[c]));
   const problem = code => Object.assign(new Error(reason(code)), {code});
@@ -128,11 +142,25 @@ window.CompanionSelfReviewPage = (() => {
     return errors[code] || "服务返回了未收录的状态（" + code + "），请刷新核对。";
   }
   /* 后端把这一角色最近一次复盘的结果随列表一起返回（state + 失败码）；页面此前
-     从未消费它，于是「复盘机制在，但最近一次没跑成」这件事一直看不出来。 */
+     从未消费它，于是「复盘机制在，但最近一次没跑成」这件事一直看不出来。
+     成功态或内部哨兵码（如 owner_result）必须过滤，失败码向用户展示中文说明并将原始码收敛至诊断属性。 */
+  function reviewStatusInfo(status) {
+    if (!status || typeof status !== "object" || typeof status.state !== "string" || !status.state) {
+      return {label: "—", code: ""};
+    }
+    const label = REVIEW_STATE[status.state] || (CODE.test(status.state) ? "状态未收录" : status.state);
+    const rawCode = typeof status.code === "string" ? status.code.trim() : "";
+    if (!rawCode || !FAILURE_STATES.has(status.state) || INTERNAL_SENTINEL_CODES.has(rawCode)) {
+      return {label, code: ""};
+    }
+    const detail = REVIEW_FAILURE_REASONS[rawCode] || errors[rawCode] || (!CODE.test(rawCode) ? rawCode : "");
+    return {
+      label: detail ? `${label}（${detail}）` : label,
+      code: rawCode,
+    };
+  }
   function reviewLabel(status) {
-    if (!status || typeof status !== "object" || typeof status.state !== "string" || !status.state) return "—";
-    const label = REVIEW_STATE[status.state] || "状态未收录";
-    return typeof status.code === "string" && status.code ? `${label}（${status.code}）` : label;
+    return reviewStatusInfo(status).label;
   }
   /* 一条建议的身份是「哪个记录归属 + 哪个 item_id」：同一批数据可能同时出现在
      活动列表与已停止列表里，跨来源的 item_id 也可能撞号。 */
@@ -230,13 +258,14 @@ window.CompanionSelfReviewPage = (() => {
     const metrics=[["自动应用",count(data.items.filter(item=>item.automatic&&!item.unavailable_reason).length),"条"],
       ["生效中",count(valid.length),"条"],["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—",""],
       ["空结果重查",duration(policy.empty_retry_seconds),"后重查"]];
+    const reviewMeta = reviewStatusInfo(data.status);
     const mechanisms=[
-      ["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—"],
-      ["证据门槛",Number.isInteger(policy.minimum_evidence)?`至少 ${policy.minimum_evidence} 条`:"—"],
-      ["空结果重查",duration(policy.empty_retry_seconds)+" 后重查"],
-      ["最近一次复盘状态",reviewLabel(data.status)],
-      ["指导类型","下次尝试 · 保持 · 询问 · 无需调整"],
-      ["生效方式","低风险建议自动应用；询问项进入审阅中心"],
+      ["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—",""],
+      ["证据门槛",Number.isInteger(policy.minimum_evidence)?`至少 ${policy.minimum_evidence} 条`:"—",""],
+      ["空结果重查",duration(policy.empty_retry_seconds)+" 后重查",""],
+      ["最近一次复盘状态",reviewMeta.label,reviewMeta.code],
+      ["指导类型","下次尝试 · 保持 · 询问 · 无需调整",""],
+      ["生效方式","低风险建议自动应用；询问项进入审阅中心",""],
     ];
     /* 读成功且一条都没有，才叫「暂无复盘记录」；读失败不能借这句话收场。 */
     const emptyCopy=data.phase==="loading"?"正在读取…"
@@ -252,7 +281,7 @@ window.CompanionSelfReviewPage = (() => {
       <section class="sr-switch" aria-label="自我复盘开关"><label><input type="checkbox" data-review-enabled ${data.enabled?"checked":""} ${data.writing?"disabled":""}> <strong>启用自我复盘</strong></label>
         <p>关闭后停止生成新的复盘建议，并停止把已采纳建议注入回复；历史记录仍可在下方查看。</p></section>
       ${data.sources.length?`<section class="sr-kpis" aria-label="复盘状态">${metrics.map(([label,value,unit])=>`<article><span>${label}</span><strong>${e(value)}${unit&&typeof value==="number"?` ${unit}`:""}</strong></article>`).join("")}</section>
-        <section class="sr-mechanism"><header><h2>复盘运行机制</h2><span>${data.loading?"":"已连接"}</span></header><div>${mechanisms.map(([label,value])=>`<article><strong>${label}</strong><span>${e(value)}</span></article>`).join("")}</div></section>
+        <section class="sr-mechanism"><header><h2>复盘运行机制</h2><span>${data.loading?"":"已连接"}</span></header><div>${mechanisms.map(([label,value,code])=>`<article><strong>${label}</strong><span${code?` data-status-code="${e(code)}" title="诊断码：${e(code)}"`:""}>${e(value)}</span></article>`).join("")}</div></section>
         <section class="sr-effective"><header><h2>生效中的自我指导</h2><span>${valid.length} 条</span></header>${active}</section>${stopped}`
         :`<div class="sr-empty">${emptyCopy}</div>`}`;
     root.innerHTML=`<div class="sr-toolbar"><span>${data.sources.length} 个记录归属${data.loading?" · 正在读取":""}</span>
