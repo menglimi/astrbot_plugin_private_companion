@@ -11,10 +11,8 @@
   border-radius: var(--r-lg);
   box-shadow: var(--t-shadow-lift);
 }
-/* 遮罩跟着主题走：暗色主题下写死的深灰会和背景糊成一片。 */
+/* 遮罩跟着主题走：暗色主题下写死的深灰会和背景糊成一片；开合双向动效统一由 page-motion.css 驱动。 */
 .confirmation-dialog::backdrop { background: var(--scrim); backdrop-filter: blur(3px); }
-.confirmation-dialog[open] { animation: confirmation-enter .18s cubic-bezier(.2,.8,.2,1) both; }
-.confirmation-dialog[open]::backdrop { animation: confirmation-fade .18s ease-out both; }
 .confirmation-copy { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: var(--sp-4); align-items: start; padding: var(--sp-6); }
 .confirmation-mark { width: 38px; height: 38px; display: grid; place-items: center; color: var(--t-accent-ink); background: var(--t-accent-quiet); border-radius: var(--r-sm); }
 .confirmation-mark svg { width: 20px; height: 20px; }
@@ -34,13 +32,8 @@
 .confirmation-dialog[data-intent="danger"] #confirmationAccept { color: var(--t-text-invert); background: var(--t-risk); border-color: var(--t-risk); }
 .confirmation-dialog[data-intent="danger"] #confirmationAccept:hover { filter: brightness(.94); }
 .confirmation-dialog[data-has-save="true"] #confirmationAccept { color: var(--t-risk-ink); background: transparent; border-color: var(--t-line-firm); }
-@keyframes confirmation-enter { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes confirmation-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 560px) {
   .confirmation-dialog { width: calc(100vw - 24px); }
   .confirmation-copy { gap: var(--sp-3); padding: var(--sp-5); }
   .confirmation-actions { padding: var(--sp-3) var(--sp-5); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .confirmation-dialog[open], .confirmation-dialog[open]::backdrop { animation: none; }
 }

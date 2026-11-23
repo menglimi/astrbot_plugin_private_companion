@@ -1,6 +1,21 @@
 /* Opaque-origin compatible bridge for bundled workspaces. */
 "use strict";
 (() => {
+  const target = globalThis.crypto;
+  if (!target || typeof target.randomUUID === "function") return;
+  const randomUUID = () => {
+    const bytes = new Uint8Array(16);
+    if (typeof target.getRandomValues === "function") target.getRandomValues(bytes);
+    else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+  try { Object.defineProperty(target, "randomUUID", {value: randomUUID, configurable: true}); }
+  catch { target.randomUUID = randomUUID; }
+})();
+(() => {
   const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve,draftHandler=null;
   const DEFAULT_REQUEST_TIMEOUT_MS=18000,MAX_REQUEST_TIMEOUT_MS=300000;
   const ready=new Promise(resolve=>{readyResolve=resolve;});
@@ -57,6 +72,35 @@
     }
     if(message.kind==="navigate-failed"){
       document.dispatchEvent(new CustomEvent("companion-navigate-failed",{detail:message}));return;
+    }
+    if(message.kind==="focus-selector"&&typeof message.selector==="string"&&message.selector){
+      const tryFocus=(attempt=0)=>{
+        let node=null;
+        try{node=document.querySelector(message.selector);}catch(_){return;}
+        if(!node){
+          if(attempt<25){const t=setTimeout(()=>tryFocus(attempt+1),80);t?.unref?.();}
+          return;
+        }
+        for(let p=node.parentElement;p;p=p.parentElement){if(p.tagName==="DETAILS")p.open=true;}
+        const target=node.closest?.(".shared-model-select, .shared-model-panel, section, label")||node;
+        const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+          ||["low","off"].includes(document.documentElement?.dataset?.motion);
+        node.scrollIntoView?.({behavior:reduced?"instant":"smooth",block:"center"});
+        if(node.matches?.("button,input,select,textarea,a"))node.focus?.({preventScroll:true});
+        else if(typeof node.focus==="function"){
+          if(!node.hasAttribute?.("tabindex"))node.tabIndex=-1;
+          node.focus({preventScroll:true});
+        }
+        if(message.highlight!==false&&target?.classList){
+          target.classList.remove("is-search-target");
+          void target.offsetWidth;
+          target.classList.add("is-search-target");
+          const timer=setTimeout(()=>target.classList?.remove?.("is-search-target"),2400);
+          timer?.unref?.();
+        }
+      };
+      tryFocus();
+      return;
     }
     if(message.kind==="confirm-result"&&pendingConfirms.has(message.requestId)){
       const item=pendingConfirms.get(message.requestId);pendingConfirms.delete(message.requestId);

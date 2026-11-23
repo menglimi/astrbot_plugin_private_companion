@@ -597,7 +597,7 @@ def compact_observation_facts(settings, facts):
             }
             for item in topics[:5]
         ]
-    if settings["enable_group_social_context"]:
+    if settings.get("enable_group_social_context"):
         mood = facts.get("mood") or {}
         if mood:
             mood_data = {
@@ -621,7 +621,7 @@ def compact_observation_facts(settings, facts):
         guard = facts.get("joke_guard") or {}
         if guard.get("level") in ("caution", "blocked"):
             result["joke_guard"] = {"level": guard["level"], "objections": guard["objections"]}
-    if settings["enable_group_persona_denoise"]:
+    if settings.get("enable_group_persona_denoise"):
         result["denoise"] = True
     return result
 

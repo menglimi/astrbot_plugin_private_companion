@@ -283,6 +283,69 @@ class BareMentionAndDoubleInjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed["official_knowledge_hits"], (fake_hit,))
         self.assertIs(observed["include_official_knowledge"], True)
 
+    async def test_knowledge_sources_candidates_has_no_shared_document_names_race(self):
+        import sqlite3
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        import threading
+        from unittest.mock import patch
+        from astrbot_host.knowledge_sources import AstrBotKnowledgeSources, KnowledgeSourceReader
+        from companion_v2.knowledge.parsing import KnowledgeChunk, ParseBatch
+
+        with TemporaryDirectory(prefix="kb-doc-names-race-") as tmp:
+            data_root = Path(tmp)
+            kb_dir = data_root / "knowledge_base"
+            kb_dir.mkdir(parents=True)
+            db_path = kb_dir / "kb.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE knowledge_bases (kb_id TEXT, kb_name TEXT)")
+            conn.execute("CREATE TABLE kb_documents (kb_id TEXT, doc_id TEXT, doc_name TEXT)")
+            conn.execute("INSERT INTO knowledge_bases VALUES ('kb-a', '世界书A'), ('kb-b', '世界书B')")
+            conn.execute("INSERT INTO kb_documents VALUES ('kb-a', 'doc-a', '档案A.md'), ('kb-b', 'doc-b', '档案B.md')")
+            conn.commit()
+            conn.close()
+
+            sources = AstrBotKnowledgeSources(NS(kb_manager=NS(kb_db=NS(db_path=str(db_path)))))
+            self.assertFalse(hasattr(sources, "_document_names"))
+
+            barrier = threading.Barrier(2, timeout=5)
+
+            def fake_rows(self_reader, source_id, limit=8):
+                barrier.wait()
+                kb_id = source_id.split(":", 1)[1]
+                doc_id = "doc-a" if kb_id == "kb-a" else "doc-b"
+                return [(kb_id, doc_id)]
+
+            def fake_parse(rows, *, knowledge_base_id):
+                kb_id, doc_id = rows[0]
+                return ParseBatch(
+                    items=(KnowledgeChunk(
+                        text=f"内容-{kb_id}", knowledge_base_id=kb_id, document_id=doc_id,
+                        document_name="", chunk_index=0,
+                    ),),
+                    issues=(),
+                )
+
+            results = {}
+
+            def worker(key, kb_id):
+                results[key] = sources.candidates([f"kb:{kb_id}"])
+
+            with patch("astrbot_host.knowledge_sources.available_source_ids", return_value={"kb:kb-a", "kb:kb-b"}), \
+                    patch.object(KnowledgeSourceReader, "_knowledge_rows", fake_rows), \
+                    patch("astrbot_host.knowledge_sources.parse_knowledge_rows", side_effect=fake_parse):
+                t1 = threading.Thread(target=worker, args=("a", "kb-a"))
+                t2 = threading.Thread(target=worker, args=("b", "kb-b"))
+                t1.start()
+                t2.start()
+                t1.join(5)
+                t2.join(5)
+
+            self.assertEqual(len(results["a"]), 1)
+            self.assertEqual(len(results["b"]), 1)
+            self.assertEqual(results["a"][0].document_name, "档案A.md")
+            self.assertEqual(results["b"][0].document_name, "档案B.md")
+
 
 if __name__ == "__main__":
     unittest.main()

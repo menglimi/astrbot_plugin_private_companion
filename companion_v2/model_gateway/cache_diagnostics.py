@@ -338,7 +338,14 @@ def signature_changes(current: CacheSignature, previous: CacheSignature) -> tupl
         if reset:
             changes.append("context_reset")
         elif current.context_sequence_hash != previous.context_sequence_hash:
-            prefix_stable = (
+            compact_append = (
+                not previous.context_hashes
+                and not current.context_hashes
+                and old_count > 0
+                and new_count > old_count
+                and current.context_bytes >= previous.context_bytes
+            )
+            prefix_stable = compact_append or (
                 old_count <= len(previous.context_hashes)
                 and new_count >= old_count
                 and current.context_hashes[:old_count] == previous.context_hashes

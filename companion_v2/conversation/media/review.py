@@ -336,19 +336,20 @@ class GroupImageReview:
     def applies(context, images, *, enabled):
         return bool(images and enabled and context.scope.kind is ScopeKind.GROUP)
 
-    @staticmethod
-    def review_key(batch_id, part_id):
-        return "group-image-review:" + digest([batch_id, part_id])
-
     # -- ledger --------------------------------------------------------
 
+    _REVIEW_PREFIX = "conversation.image_review.v1:"
+    _REVIEW_PREFIX_END = "conversation.image_review.v1;"
+    _FALLBACK_PREFIX = "conversation.image_review.fallback.v1:"
+    _FALLBACK_PREFIX_END = "conversation.image_review.fallback.v1;"
+
     @staticmethod
     def review_key(batch_id, part_id):
         return "group-image-review:" + digest([batch_id, part_id])
 
-    @staticmethod
-    def _key(review_key):
-        return "conversation.image_review.v1:" + review_key
+    @classmethod
+    def _key(cls, review_key):
+        return cls._REVIEW_PREFIX + review_key
 
     def _value(self, review_key):
         row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
@@ -364,30 +365,32 @@ class GroupImageReview:
         with self.runtime.transaction() as opened:
             opened.execute(statement, (self._key(review_key), encode(value)))
 
+    @staticmethod
+    def _record_from_document(review_key, value):
+        return {"review_key": review_key, "part_id": value["target"]["part_id"],
+                "batch_id": value["target"]["batch_id"], "origin_key": value["origin_key"],
+                "state": value["state"], "review_json": encode(value)}
+
     def row(self, review_key):
         """The review as a plain record, in the shape the delivery path reads."""
         value = self._value(review_key)
         if value is None:
             return None
-        return {"review_key": review_key, "part_id": value["target"]["part_id"],
-                "batch_id": value["target"]["batch_id"], "origin_key": value["origin_key"],
-                "state": value["state"], "review_json": encode(value)}
+        return self._record_from_document(review_key, value)
 
     def row_for_part(self, part_id):
-        for value in self._all():
-            if value["target"]["part_id"] == part_id:
-                return self.row(value["review_key"])
-        return None
-
-    def _all(self, *, limit=256):
-        rows = self.runtime.read_all("""SELECT key, value FROM runtime_metadata
-            WHERE key LIKE 'conversation.image_review.v1:%' ORDER BY key LIMIT ?""", (limit,))
-        values = []
-        for row in rows:
-            value = json.loads(row["value"])
-            value.setdefault("review_key", row["key"].removeprefix("conversation.image_review.v1:"))
-            values.append(value)
-        return tuple(values)
+        row = self.runtime.read_one(
+            """SELECT key, value FROM runtime_metadata
+               WHERE key >= ? AND key < ?
+                 AND json_valid(value)
+                 AND json_extract(value, '$.target.part_id') = ?
+               ORDER BY key LIMIT 1""",
+            (self._REVIEW_PREFIX, self._REVIEW_PREFIX_END, part_id),
+        )
+        if row is None:
+            return None
+        review_key = row["key"].removeprefix(self._REVIEW_PREFIX)
+        return self._record_from_document(review_key, json.loads(row["value"]))
 
     def verdict(self, review_key):
         value = self._value(review_key)
@@ -400,14 +403,46 @@ class GroupImageReview:
         row = self.row_for_part(part["part_id"])
         return row is not None and row["state"] == "pending"
 
-    def pending_requests(self, *, limit=2):
+    def pending_requests(self, *, limit=2, exclude=()):
         """Undecided reviews that no live task has claimed yet."""
-        pending = [value for value in self._all() if value["state"] == "pending"]
-        pending.sort(key=lambda value: (value.get("created_at") or "", value["review_key"]))
-        claimed = {row["task_id"] for row in self.runtime.read_all(
-            "SELECT task_id FROM execution_tasks WHERE kind = ? LIMIT 256", (KIND,))}
-        return tuple({"review_key": value["review_key"]} for value in pending
-                     if value["review_key"] not in claimed)[:limit]
+        if limit <= 0:
+            return ()
+        excluded = frozenset(exclude)
+        prefix_start = len(self._REVIEW_PREFIX) + 1
+        params = [self._REVIEW_PREFIX, self._REVIEW_PREFIX_END, KIND, prefix_start]
+        exclude_clause = ""
+        sql_limit = limit
+        if excluded and len(excluded) <= 256:
+            ordered = tuple(sorted(excluded))
+            placeholders = ",".join("?" for _ in ordered)
+            exclude_clause = f" AND substr(rm.key, ?) NOT IN ({placeholders})"
+            params.extend((prefix_start, *ordered))
+        elif excluded:
+            sql_limit = limit + len(excluded)
+        params.append(sql_limit)
+        rows = self.runtime.read_all(
+            f"""SELECT substr(rm.key, {prefix_start}) AS review_key
+                FROM runtime_metadata AS rm
+                WHERE rm.key >= ? AND rm.key < ?
+                  AND json_valid(rm.value)
+                  AND json_extract(rm.value, '$.state') = 'pending'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM execution_tasks AS t
+                      WHERE t.kind = ? AND t.task_id = substr(rm.key, ?)
+                  ){exclude_clause}
+                ORDER BY COALESCE(json_extract(rm.value, '$.created_at'), '') ASC, rm.key ASC
+                LIMIT ?""",
+            tuple(params),
+        )
+        result = []
+        for row in rows:
+            key = row["review_key"]
+            if key in excluded:
+                continue
+            result.append({"review_key": key})
+            if len(result) >= limit:
+                break
+        return tuple(result)
 
     # -- sealing -------------------------------------------------------
 
@@ -531,13 +566,15 @@ class GroupImageReview:
     def fallback_document(self, part_id, *, delivery_id=None):
         """The installed private fallback for one part, addressed by part or delivery."""
         if delivery_id is not None:
-            rows = self.runtime.read_all("""SELECT value FROM runtime_metadata
-                WHERE key LIKE 'conversation.image_review.fallback.v1:%' ORDER BY key LIMIT 256""", ())
-            for row in rows:
-                value = json.loads(row["value"])
-                if value.get("delivery_id") == delivery_id:
-                    return value
-            return None
+            row = self.runtime.read_one(
+                """SELECT value FROM runtime_metadata
+                   WHERE key >= ? AND key < ?
+                     AND json_valid(value)
+                     AND json_extract(value, '$.delivery_id') = ?
+                   ORDER BY key LIMIT 1""",
+                (self._FALLBACK_PREFIX, self._FALLBACK_PREFIX_END, delivery_id),
+            )
+            return None if row is None else json.loads(row["value"])
         return self._record_value(self._fallback_key(part_id))
 
     def install_fallback(self, part_id, delivery_id, value, *, connection=None):

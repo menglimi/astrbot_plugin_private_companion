@@ -53,6 +53,7 @@ class ScreenPeekService:
         self.screens = None
         self.runner = None
         self.pending: dict[str, dict] = {}
+        self.error_codes: dict[str, str] = {}
         self._workers: dict[str, object] = {}
         self._closed = False
         self.registrations = (TaskRegistration(TaskDefinition(KIND, OWNER, ACTION, Lane.BACKGROUND,
@@ -166,6 +167,7 @@ class ScreenPeekService:
                 continue
             task = self.tasks.read(job["context"], task_id)
             if task.is_success and task.unwrap().state in ("succeeded", "failed", "cancelled", "expired", "uncertain", "dead_letter"):
+                self.pending.pop(task_id, None)
                 continue
             if task.failure is not None:
                 self.pending.pop(task_id, None)
@@ -178,12 +180,20 @@ class ScreenPeekService:
             started += 1
         return started > 0
 
+    def _record_error_code(self, task_id, code):
+        self.error_codes[task_id] = code
+        while len(self.error_codes) > 64:
+            self.error_codes.pop(next(iter(self.error_codes)))
+
     async def _run(self, context, task_id):
         result = await self.runner.run(context, task_id)
         if result.is_success and result.unwrap().failure_code:
             # The supervisor records worker_error; retain the actual device failure
             # for diagnostics without resubmitting the effectful task.
-            self.pending[task_id]["error_code"] = result.unwrap().failure_code
+            code = result.unwrap().failure_code
+            self._record_error_code(task_id, code)
+            if task_id in self.pending:
+                self.pending[task_id]["error_code"] = code
         if result.failure is not None or result.unwrap().task is not None:
             self.notify()
         return result

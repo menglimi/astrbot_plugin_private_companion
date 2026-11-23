@@ -230,10 +230,14 @@ class StateManagement:
             if (current["revision"] if current else 0) != data["expected_revision"]:
                 raise TaskError("record_revision_conflict", "read the current state first")
             with self.app.runtime.transaction() as connection:
+                schedule_key = role_schedule_key(self.context)
                 connection.execute("UPDATE role_state_schedules SET next_at = ?, revision = revision + 1 WHERE context_key = ?",
-                                   (stamp(self.app.now()), role_schedule_key(self.context)))
+                                   (stamp(self.app.now()), schedule_key))
+                connection.execute("DELETE FROM runtime_metadata WHERE key = ?",
+                                   (service._idle_fingerprint_key(self.context),))
             require(operations.transition(op_id, expected_state=OperationState.ACCEPTED,
                 next_state=OperationState.COMPLETED, observed_at=self.app.now()))
+            self.app.notify()
         return {"operation_id": op_id, "replayed": reserved.replayed, "state": "scheduled"}
 
     def _calendar_request(self, operator, data):

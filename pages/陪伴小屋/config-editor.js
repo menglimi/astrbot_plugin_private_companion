@@ -210,7 +210,7 @@ window.CompanionConfigEditors = (() => {
     {id: "switches", title: "状态与动作",
      help: "关闭总闸时下面所有项都不起作用：不再发任何空间请求，也不再为它花模型额度。",
      fields: ["enabled", "like_enabled", "comment_enabled", "publish_enabled",
-              "feed_recent_posts", "comment_recent_posts"]},
+              "feed_recent_posts", "comment_recent_posts", "owner_uin"]},
     {id: "throttle", title: "发布节流",
      help: "总闸与「允许在空间发说说」都打开后才生效。这几项限制的是频率与条数，不放宽任何一项能力开关。",
      fields: ["action_min_interval_minutes", "max_actions_per_tick", "daily_limits_enabled", "publish_max_daily"]},
@@ -232,6 +232,10 @@ window.CompanionConfigEditors = (() => {
   /* 每个主题的 helps 里那串「可选值」是各主题自己的那一份，所以逐主题拼；
      共用一句示例会把「只能用该主题自己的场景」说成另一个主题的场景。 */
   function qzoneAudit(values) {
+    if (typeof values.owner_uin === "string") {
+      const ownerUin = values.owner_uin.trim();
+      if (ownerUin && !/^\d{1,20}$/.test(ownerUin)) return "qzone_owner_uin_invalid";
+    }
     for (const topic of QZONE_TOPIC_SECTIONS) {
       const name = `${topic.prefix}_scenes`;
       const value = values[name];
@@ -579,6 +583,7 @@ window.CompanionConfigEditors = (() => {
         acquaintance_enabled: "启用熟人卡",
         acquaintance_card_chars: "卡片最长字数",
         cross_window_awareness_enabled: "启用跨窗口在场",
+        cross_window_cross_group_enabled: "启用跨群在场汇总",
         cross_window_continuity_enabled: "重复提问自然承接",
         cross_window_continuity_minutes: "承接回看分钟",
         cross_window_private_group_hours: "群活动回看小时",
@@ -600,6 +605,7 @@ window.CompanionConfigEditors = (() => {
         acquaintance_enabled: "熟人卡总开关；关闭后不再读取、记录或更新熟人卡，并一并停用跨窗口在场。",
         acquaintance_card_chars: "卡片过长会挤占上下文，建议只留关键内容。",
         cross_window_awareness_enabled: "关闭后不记录也不注入跨窗口在场；关闭熟人卡会一并关闭。",
+        cross_window_cross_group_enabled: "关闭后群聊不再汇总当前发言者在其他群的近期动态（避免与外接记忆插件在群聊双注入），仍保留私聊往来识别与私聊窗口的跨窗口在场。",
         cross_window_continuity_enabled: "对方刚在群里问过近似问题时，给角色一个自然接续提示；只使用对方本人和角色自己的内容。",
         cross_window_continuity_minutes: "只匹配这个时间内的近期群聊；建议保留 30 分钟。",
         cross_window_private_group_hours: "只回看当前私聊对象本人近期的群发言摘要。",
@@ -614,6 +620,7 @@ window.CompanionConfigEditors = (() => {
         private_group_context_chars: "摘要总字数上限；越长越占上下文，也越容易暴露私密细节。",
       },
       order: ["acquaintance_enabled", "acquaintance_card_chars", "cross_window_awareness_enabled",
+        "cross_window_cross_group_enabled",
         "cross_window_continuity_enabled", "cross_window_continuity_minutes",
         "cross_window_private_group_hours", "cross_window_max_items", "cross_window_attention_minutes",
         "cross_window_attention_wait_seconds", "cross_window_group_identity_enabled",
@@ -1235,6 +1242,7 @@ window.CompanionConfigEditors = (() => {
       title: "群聊参与",
       note: "决定角色在群里怎么旁听、何时接话，以及复读跟读的尺度。话题线只为当前群聊回复提供参考，不会单独唤醒或主动发言。",
       labels: {
+        mention_force_reply_enabled: "被 @ 或命中唤醒词时直接应答",
         enable_group_social_context: "启用群聊氛围参考",
         enable_group_topic_threads: "跟踪群聊话题线",
         group_topic_thread_max: "最多保留的话题线",
@@ -1293,7 +1301,7 @@ window.CompanionConfigEditors = (() => {
         enable_group_behavior_imitation: "允许在群聊真实回复中选择已学互动习惯与群内认证对象自然参与互动；只辅助本轮表达，不单独发起发言。",
         enable_group_behavior_feedback: "依据群成员在实际发送后的真实回应评估互动效果，用于修正后续互动习惯；没有回应不会记作欢迎。",
       },
-      order: ["enable_group_topic_threads", "group_topic_thread_max",
+      order: ["mention_force_reply_enabled", "enable_group_topic_threads", "group_topic_thread_max",
               "enable_group_social_context", "enable_group_mood_detection",
               "enable_group_roleplay_strength", "enable_group_moments",
               "enable_group_moment_portrait", "enable_group_joke_guard",
@@ -1310,6 +1318,7 @@ window.CompanionConfigEditors = (() => {
       /* 三条链各自独立：氛围参考有一层总闸，插话与跟读各有自己的总闸与预算。
          不分组的话，关掉总闸后调下面的数字会毫无反应，看着像坏了。 */
       sections: [
+        {id: "direct_address", title: "明确点名", fields: ["mention_force_reply_enabled"]},
         {id: "behavior", title: "行为模仿", help: "",
          fields: ["enable_group_behavior_learning", "enable_group_behavior_imitation",
                   "enable_group_behavior_feedback", "group_behavior_guidance"]},
@@ -1674,6 +1683,7 @@ window.CompanionConfigEditors = (() => {
         publish_enabled: "允许在空间发说说",
         feed_recent_posts: "每次刷空间读取条数",
         comment_recent_posts: "回复前回看自己的说说条数",
+        owner_uin: "主人 QQ 号",
         action_min_interval_minutes: "两次同类公开动作最短间隔（分钟）",
         max_actions_per_tick: "单轮公开动作上限",
         daily_limits_enabled: "启用每日次数限制",
@@ -1702,6 +1712,7 @@ window.CompanionConfigEditors = (() => {
         publish_enabled: "关闭时不能发说说。发布同样是公开动作，还要受下面的间隔、每日上限与主题条件约束。",
         feed_recent_posts: "刷空间一次最多读多少条，好友动态与我的动态都在这个范围内，1 到 30。",
         comment_recent_posts: "回复前回看自己最近几条说说，用来判断上下文，1 到 20。",
+        owner_uin: "需要查看主人 QQ 空间动态时填写纯数字 QQ 号（不超过 20 位）；留空表示暂不指定。",
         action_min_interval_minutes: "点赞、回复、发说说共用这一条间隔，5 到 1440 分钟；调小只是允许更频繁，不代表会真的更频繁。",
         max_actions_per_tick: "一轮里最多做几个公开动作，1 到 5。调大不会放宽间隔，也不会放宽每日上限。",
         daily_limits_enabled: "开启时同时执行说说总数、各主题和生活说说的每日上限；关闭后每日次数不限，冷却间隔、内容去重和发布授权仍然生效。",
@@ -1925,7 +1936,7 @@ window.CompanionConfigEditors = (() => {
         for (const key of ["title", "note", "scopeNote", "navigationLimit", "segmentedChoices", "onStatus", "presentation", "sectionTabPrefix", "initialSection", "query", "requestSection", "savePath", "resetKey", "normalizeDraft"]) {
           if (Object.hasOwn(view, key)) current = {...current, [key]:view[key]};
         }
-        for (const key of ["labels", "helps", "rows", "inputs", "catalogs"]) {
+        for (const key of ["labels", "helps", "rows", "inputs", "catalogs", "listFields"]) {
           if (view[key]) current = {...current, [key]:{...current[key], ...view[key]}};
         }
       }
@@ -1958,8 +1969,9 @@ window.CompanionConfigEditors = (() => {
       inputs: current.inputs || {},
       catalogs: current.catalogs || {},
       rows: current.rows || {},
-      /* 分段条、词条快选同样由 spec 声明；漏传时内核退回普通文本框。 */
+      /* 分段条、词条限制与词条快选同样由 spec/view 声明；漏传时内核退回默认值或普通文本框。 */
       segmentedChoices: current.segmentedChoices || [],
+      listFields: current.listFields || {},
       chipOptions: current.chipOptions || {},
       audit: current.audit || null,
       onStatus: current.onStatus || null,

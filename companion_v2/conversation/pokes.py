@@ -47,9 +47,10 @@ CONTEXT_STREAM_PROMPT = (
 POKE_BUDGET_SECONDS = 60
 POKE_MARGIN_SECONDS = 15
 POKE_PROVIDER_TIMEOUT_SECONDS = POKE_BUDGET_SECONDS - POKE_MARGIN_SECONDS
+POKE_DEFAULT_OUTPUT_TOKENS = 4096
 
 
-def poke_reply_profile(provider, *, max_output_tokens=1024):
+def poke_reply_profile(provider, *, max_output_tokens=POKE_DEFAULT_OUTPUT_TOKENS):
     return ModelTaskProfile(MODEL_REPLY_KIND, Lane.BACKGROUND, provider,
         "依据已配置角色身份回应当前戳一戳互动。", max_output_tokens=max_output_tokens,
         capabilities=("text",), timeout_seconds=POKE_PROVIDER_TIMEOUT_SECONDS)

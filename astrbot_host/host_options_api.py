@@ -18,7 +18,7 @@ from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.outcome import Outcome
 
-from .management_identity import dashboard_operator
+from .management_identity import current_request_username, require_management_operator
 from .service_balance import (NEWAPI_DEFAULT_DIVISOR, configured_balance_port,
                               configured_balance_source, display_amount,
                               balance_observation_data, balance_failure_data)
@@ -72,8 +72,8 @@ class HostOptionsWebAPI:
                 (PREFIX + "/weather", self.weather, ["POST"], "Save host weather source settings")]
 
     def _operator(self):
-        username = request.username
-        if (type(username) is not str or not username.strip() or username.startswith("api_key:")):
+        username = current_request_username(request)
+        if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if request.query:
             raise TaskError("host_options_request_invalid", "host settings do not accept query overrides")
@@ -82,7 +82,7 @@ class HostOptionsWebAPI:
             raise TaskError("staging_host_terminated", "plugin is stopped")
         if controller.runtime is None:
             raise TaskError("staging_not_initialized", "load the V2 profile first")
-        return dashboard_operator(controller.runtime, username, at=controller.now())
+        return require_management_operator(controller.runtime, username, at=controller.now())
 
     @staticmethod
     def _config_group(config, name):

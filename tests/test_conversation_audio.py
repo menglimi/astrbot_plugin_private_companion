@@ -97,7 +97,7 @@ class ConversationAudioTests(AudioFixture, unittest.IsolatedAsyncioTestCase):
     async def test_voice_only_tool_continuation_keeps_bytes_evidence_and_confirmed_memory(self):
         views = []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             views.append(content)
             evidence = next(m["evidence"] for m in json.loads(content[0]["text"])["materials"] if m["owner"] == "conversation.audio")
             if len(views) == 1:
@@ -223,7 +223,7 @@ class ConversationAudioTests(AudioFixture, unittest.IsolatedAsyncioTestCase):
         original = type(self.native.provider)._prepare_chat_payload
         async def drop(native, **kwargs):
             payload, contexts = await original(native, **kwargs)
-            payload["messages"][2]["content"] = "text only"
+            next(m for m in payload["messages"] if m["role"] == "user")["content"] = "text only"
             return payload, contexts
         with patch.object(type(self.native.provider), "_prepare_chat_payload", drop):
             batch = host.receive(await self.capture(self.audio_event())).unwrap()

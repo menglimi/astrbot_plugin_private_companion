@@ -826,7 +826,7 @@ class OutputRoutingBackend:
         if selected in {"auto", "online_api"}:
             for endpoint in self.config.get("endpoints", []):
                 if endpoint.get("enabled"):
-                    yield OnlineImageBackend(endpoint)
+                    yield OnlineImageBackend(endpoint, self.config.get("network", {}))
         for name in ("comfyui", "sd_webui"):
             if selected in {"auto", name}:
                 try:
@@ -836,12 +836,13 @@ class OutputRoutingBackend:
 
     async def execute(self, invocation, references, before_dispatch):
         if self._closed or not self.config["enabled"]:
-            raise NativeImageError("image_provider_stopped")
+            raise NativeImageError("image_provider_stopped", unconfirmed=False)
         prompt = invocation.envelope.get("image_prompt", {})
         if prompt:
             invocation = replace(invocation, prompt=prompt["positive"], negative_prompt=prompt["negative"])
         routed = rejected = request_invalid = rate_limited = False
         diagnostics: list[dict] = []
+        pre_fence_local_codes: list[str] = []
         rate_budget = RATE_LIMIT_ATTEMPTS
         for backend in self._routes(invocation.operation):
             routed = True
@@ -902,6 +903,8 @@ class OutputRoutingBackend:
                 # A pre-fence, endpoint-local failure never reached the provider;
                 # it may fall through, but it is still recorded so that the final
                 # code cannot claim "no backend is configured".
+                if isinstance(exc, NativeImageError) and isinstance(backend, NativeTransportBackend) and exc.code:
+                    pre_fence_local_codes.append(exc.code)
                 diagnostics.append(_diagnostic(_backend_config(backend), 0, "endpoint_unavailable",
                                                _flatten(exc.code if isinstance(exc, NativeImageError)
                                                         else type(exc).__name__)))
@@ -913,6 +916,9 @@ class OutputRoutingBackend:
             raise NativeImageError("backend_rate_limited", diagnostics=diagnostics,
                                    unconfirmed=False)
         if rejected or diagnostics:
+            if len(diagnostics) == 1 and len(pre_fence_local_codes) == 1:
+                raise NativeImageError(pre_fence_local_codes[0], diagnostics=diagnostics,
+                                       unconfirmed=False)
             raise NativeImageError("native_endpoints_rejected", diagnostics=diagnostics,
                                    unconfirmed=False)
         if not routed:

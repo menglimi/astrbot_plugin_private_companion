@@ -54,7 +54,8 @@ class AstrBotQuoteHostTests(unittest.IsolatedAsyncioTestCase):
         batch = (await self.controller.receive_claimed(self.event())).unwrap()
         await wait_for_batch(self.controller.session, batch)
         self.assertFalse((await self.controller.preview(batch)).unwrap()["sent"])
-        content = self.native.provider.client.state.calls[0][0]["messages"][2]["content"]
+        content = next(m["content"] for m in self.native.provider.client.state.calls[0][0]["messages"]
+                       if m["role"] == "user")
         self.assertEqual(len([p for p in content if p["type"] == "image_url"]), 3)
         materials = json.loads(content[0]["text"])["materials"]
         nodes = [json.loads(m["text"]) for m in materials if m["owner"] == "conversation.forward_node"]
@@ -130,7 +131,8 @@ class AstrBotQuoteHostTests(unittest.IsolatedAsyncioTestCase):
         await wait_for_batch(self.controller.session, batch)
         preview = (await self.controller.preview(batch)).unwrap()
         self.assertFalse(preview["sent"])
-        content = self.native.provider.client.state.calls[0][0]["messages"][2]["content"]
+        content = next(m["content"] for m in self.native.provider.client.state.calls[0][0]["messages"]
+                       if m["role"] == "user")
         self.assertNotIn("伪造的引用正文", content[0]["text"])
         self.assertEqual(content[-1]["type"], "image_url")
         self.assertEqual([a for a, _ in self.api.calls], ["get_friend_msg_history"])

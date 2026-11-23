@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import time as _time
 from uuid import uuid4
 
 from astrbot.api.web import request
@@ -88,8 +89,6 @@ PROACTIVE_TEST_SUGGESTIONS = {
     "contact_delivery_budget": "到「主动联系 → 每日额度」查看实际联系上限；已确认发送计联系次数，待回执发送暂时预占，明确未发送后释放。模型跳过不计联系。",
     "contact_purpose_paused": "检查所选目的的暂停状态和恢复时间。",
     "contact_quiet_hours": "当前处于静默时段；结束后再运行测试。",
-    "delivery_result_unknown": "投递结果未知；先核对核心管理员私聊，不要重放这次尝试。",
-    "delivery_failed": "检查 OneBot 私聊连接、机器人在线状态和平台返回错误。",
     "contact_diagnostic_source_required": "展开技术详情查看本次没有测试机会的原因。关系表达类使用已完成的私聊窗口和用途设置；事件类需要当前有效事件来源。没有候选时不会调用模型。若是首次使用：请用核心管理员账号私聊 bot，完成一次问答后回到这里重试。",
     "contact_weather_unavailable": "检查角色地点与天气观测设置，并确认 Open-Meteo 或已配置的和风凭据可访问；刷新后先在状态页确认出现当前观测。",
     "contact_news_unavailable": "检查当前资讯源的网络抓取结果与条目发布时间；真实测试不会用合成新闻替代。",
@@ -334,6 +333,24 @@ class SetupWebAPI:
         self._test_lock = asyncio.Lock()
         self._test_task = None
 
+    def cancel_background_tasks(self) -> None:
+        task = self._test_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def aclose(self) -> None:
+        task = self._test_task
+        self._test_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:
+                logger.debug("[CompanionV2] 设置测试任务停机清理异常 error_type=%s",
+                             type(error).__name__)
+
     def routes(self):
         return [
             (PREFIX + "/status", self.status, ["GET"], "Read persistent Companion V2 setup progress"),
@@ -427,10 +444,10 @@ class SetupWebAPI:
             providers.append({"id": selection.provider_id, "name": selection.name or selection.provider_id})
         return providers
 
-    def _configured_provider_id(self) -> str:
+    def _configured_fallback_provider_id(self) -> str:
         config = getattr(self.controller, "config", {})
         section = config.get("model", {}) if isinstance(config, dict) else {}
-        return str(section.get("provider_id", "")) if isinstance(section, dict) else ""
+        return str(section.get("fallback_provider_id", "")) if isinstance(section, dict) else ""
 
     def _status_document(self) -> dict:
         state = self.progress.read()
@@ -461,6 +478,7 @@ class SetupWebAPI:
                 "binding": binding, "binding_confirmed": confirmed, "prepared": prepared,
                 "completed": completed, "skipped": skipped,
                 "model": {"provider_id": selection_id or self._configured_provider_id(),
+                          "fallback_provider_id": self._configured_fallback_provider_id(),
                           "provider_source": (selection.source if selection_id and selection is not None
                                               else "unavailable"),
                           "providers": self._model_catalog()},
@@ -468,19 +486,36 @@ class SetupWebAPI:
                 "settings_error": getattr(getattr(self.controller, "settings_error", None), "code", None),
                 "host": status}
 
+    @staticmethod
+    def _call_progress_sync(fn, *args, **kwargs):
+        # Retry transient Windows file-sharing errors when concurrent readers
+        # inspect setup_state.json during atomic replacement.
+        for attempt in range(6):
+            try:
+                return fn(*args, **kwargs)
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                _time.sleep(0.01 * (attempt + 1))
+
     async def _test_progress(self, username: str) -> dict:
-        saved = self.progress.read()
+        saved = await asyncio.to_thread(self._call_progress_sync, self.progress.read)
         receipt = saved["proactive_test"]
         if (receipt and receipt["state"] == "started"
                 and (self._test_task is None or self._test_task.done())):
             async with self._test_lock:
-                saved = self.progress.read()
+                saved = await asyncio.to_thread(self._call_progress_sync, self.progress.read)
                 receipt = saved["proactive_test"]
                 if (receipt and receipt["state"] == "started"
                         and (self._test_task is None or self._test_task.done())):
                     await self._restore_test_contact_permission(username, receipt["attempt_id"])
-                    saved = self.progress.finish_proactive_test(outcome="unknown",
-                        finished_at=datetime.now(timezone.utc).isoformat(), error_code="setup_test_interrupted")
+                    saved = await asyncio.to_thread(
+                        self._call_progress_sync,
+                        self.progress.finish_proactive_test,
+                        outcome="unknown",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        error_code="setup_test_interrupted",
+                    )
         return saved
 
     async def proactive_test_status(self):
@@ -496,7 +531,7 @@ class SetupWebAPI:
     async def status(self):
         try:
             await self._test_progress(self._admin())
-            document = self._status_document()
+            document = await asyncio.to_thread(self._status_document)
             from .upgrade_setup import UpgradeSetup
             try:
                 document["upgrade"], _ = await UpgradeSetup(self.controller).plan()
@@ -537,19 +572,23 @@ class SetupWebAPI:
         try:
             self._admin()
             context = self.controller.context
-            accounts = self.controller.session_topology.accounts()
+            accounts = await asyncio.to_thread(self.controller.session_topology.accounts)
             persona_names = await available_personas(context)
             from .multi_settings import MultiHostSettings
-            try:
-                # The runtime may already share one persona role across Bot
-                # accounts; use the same normalized mapping in the setup picker.
-                parsed = getattr(self.controller, "settings", None)
-                if parsed is None or not hasattr(parsed, "personas"):
-                    parsed = MultiHostSettings.parse(self.controller.config)
-                mapping_rows = [{"bot_id": item.bot_id, "persona_id": item.persona_id,
-                                 "role_id": item.role_id} for item in parsed.personas]
-            except (HostControlError, ValueError):
-                mapping_rows = self.controller.config.get("multi_host", {}).get("personas", [])
+
+            def read_mapping_rows():
+                try:
+                    # The runtime may already share one persona role across Bot
+                    # accounts; use the same normalized mapping in the setup picker.
+                    parsed = getattr(self.controller, "settings", None)
+                    if parsed is None or not hasattr(parsed, "personas"):
+                        parsed = MultiHostSettings.parse(self.controller.config)
+                    return [{"bot_id": item.bot_id, "persona_id": item.persona_id,
+                             "role_id": item.role_id} for item in parsed.personas]
+                except (HostControlError, ValueError):
+                    return self.controller.config.get("multi_host", {}).get("personas", [])
+
+            mapping_rows = await asyncio.to_thread(read_mapping_rows)
             choices = []
             for account in accounts:
                 names = [*persona_names, "[%None]"]
@@ -578,14 +617,16 @@ class SetupWebAPI:
             inventory_roles = {}
             inventory = getattr(getattr(self.controller, "web_api", None), "target_inventory", None)
             if callable(inventory):
-                try:
-                    inventory_roles = {
-                        (target.get("target_id"), role.get("role_id")): role
-                        for target in inventory() for role in target.get("roles", [])
-                        if target.get("target_id") and role.get("role_id")
-                    }
-                except Exception:
-                    inventory_roles = {}
+                def read_inventory_roles():
+                    try:
+                        return {
+                            (target.get("target_id"), role.get("role_id")): role
+                            for target in inventory() for role in target.get("roles", [])
+                            if target.get("target_id") and role.get("role_id")
+                        }
+                    except Exception:
+                        return {}
+                inventory_roles = await asyncio.to_thread(read_inventory_roles)
             for target in targets:
                 scope_kind = target.get("scope_kind")
                 for role in target.get("roles", []):
@@ -634,11 +675,16 @@ class SetupWebAPI:
             confirm = getattr(self.controller, "confirm_binding", None)
             if not callable(confirm):
                 raise TaskError("setup_binding_unavailable", "the active host cannot confirm a private window")
-            result = confirm()
-            if result.get("confirmed") is not True:
-                raise TaskError(result.get("reason", "setup_binding_missing"),
-                                result.get("detail", "send 我会永远陪着你 from the core administrator private window first"))
-            return self._response(Outcome.success({"binding": self._binding(), "confirmed": True}))
+
+            def confirm_sync():
+                result = confirm()
+                if result.get("confirmed") is not True:
+                    raise TaskError(result.get("reason", "setup_binding_missing"),
+                                    result.get("detail", "send 我会永远陪着你 from the core administrator private window first"))
+                return self._binding()
+
+            binding = await asyncio.to_thread(confirm_sync)
+            return self._response(Outcome.success({"binding": binding, "confirmed": True}))
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError):
@@ -667,11 +713,16 @@ class SetupWebAPI:
             if not callable(clear):
                 raise TaskError("setup_binding_unavailable",
                                 "the active host cannot reset a private window")
-            result = clear()
-            if result.get("reset") is not True:
-                raise TaskError(result.get("reason", "setup_binding_missing"),
-                                result.get("detail", "there is no confirmed core administrator window to reset"))
-            return self._response(Outcome.success({"binding": self._binding(), "reset": True}))
+
+            def reset_sync():
+                result = clear()
+                if result.get("reset") is not True:
+                    raise TaskError(result.get("reason", "setup_binding_missing"),
+                                    result.get("detail", "there is no confirmed core administrator window to reset"))
+                return self._binding()
+
+            binding = await asyncio.to_thread(reset_sync)
+            return self._response(Outcome.success({"binding": binding, "reset": True}))
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError):
@@ -685,56 +736,79 @@ class SetupWebAPI:
             if len(raw) > 4096:
                 raise ValueError("request is too large")
             data = json.loads(raw.decode("utf-8"))
-            if type(data) is not dict or set(data) != {"provider_id"}:
+            has_fallback = isinstance(data, dict) and "fallback_provider_id" in data
+            if (type(data) is not dict or "provider_id" not in data
+                    or set(data) - {"provider_id", "fallback_provider_id"}):
                 raise ValueError("invalid model fields")
             provider_id = data["provider_id"]
             if type(provider_id) is not str or not provider_id.strip() or len(provider_id) > 512:
                 raise ValueError("invalid provider")
+            provider_id = provider_id.strip()
+            fallback_provider_id = None
+            if has_fallback:
+                raw_fallback = data["fallback_provider_id"]
+                if type(raw_fallback) is not str or len(raw_fallback.strip()) > 512:
+                    raise ValueError("invalid fallback provider")
+                fallback_provider_id = raw_fallback.strip()
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
             return self._error("setup_model_invalid", "choose a loaded AstrBot text provider and retry")
 
-        stage = "provider_validation"
+        stage_box = ["provider_validation"]
         try:
-            status = self._status_document()
-            if status["step"] != "model":
-                raise TaskError("setup_step_order_invalid", "confirm the core administrator window before choosing a model")
-            available = {item["id"] for item in status["model"]["providers"]}
-            provider = self.controller.context.get_provider_by_id(provider_id)
-            expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
-            if (provider_id not in available or expected_type is None
-                    or not supported_text_provider(provider, expected_type)):
-                raise TaskError("host_provider_unavailable", "choose a loaded AstrBot text provider supported by V2")
-            config = self.controller.config
-            if not isinstance(config, dict):
-                raise TaskError("setup_config_unavailable", "the plugin configuration cannot be edited here")
-            save = getattr(self.controller, "save_plugin_config", None)
-            if not callable(save):
-                raise TaskError("setup_config_save_unavailable", "restart the plugin with Dashboard configuration support")
-            candidate = deepcopy(dict(config))
-            model_settings = candidate.setdefault("model", {})
-            if type(model_settings) is not dict:
-                raise TaskError("setup_config_invalid", "the plugin model settings have an invalid shape")
-            model_settings["provider_id"] = provider_id
-            profiles = model_settings.get("additional_providers")
-            if type(profiles) is list:
-                model_settings["additional_providers"] = [
-                    profile for profile in profiles
-                    if not isinstance(profile, dict) or profile.get("provider_id") != provider_id
-                ]
-            if model_settings.get("fallback_provider_id") == provider_id:
-                model_settings["fallback_provider_id"] = ""
-            stage = "config_persistence"
-            save(candidate)
-            stage = "settings_refresh"
-            refresh = getattr(self.controller, "refresh_settings", None)
-            if callable(refresh):
-                refresh()
-            settings_error = getattr(self.controller, "settings_error", None)
-            if settings_error is not None:
-                raise TaskError(settings_error.code, str(settings_error))
-            stage = "profile_initialization"
+            def save_model_sync():
+                status = self._status_document()
+                if status["step"] != "model":
+                    raise TaskError("setup_step_order_invalid", "confirm the core administrator window before choosing a model")
+                if fallback_provider_id == provider_id:
+                    raise TaskError("model_fallback_duplicate",
+                                    "fallback model provider must differ from the primary provider")
+                available = {item["id"] for item in status["model"]["providers"]}
+                provider = self.controller.context.get_provider_by_id(provider_id)
+                expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
+                if (provider_id not in available or expected_type is None
+                        or not supported_text_provider(provider, expected_type)):
+                    raise TaskError("host_provider_unavailable", "choose a loaded AstrBot text provider supported by V2")
+                if fallback_provider_id:
+                    fallback_provider = self.controller.context.get_provider_by_id(fallback_provider_id)
+                    if (fallback_provider_id not in available
+                            or not supported_text_provider(fallback_provider, expected_type)):
+                        raise TaskError("host_provider_unavailable",
+                                        "choose a loaded AstrBot text provider for the fallback model")
+                config = self.controller.config
+                if not isinstance(config, dict):
+                    raise TaskError("setup_config_unavailable", "the plugin configuration cannot be edited here")
+                save = getattr(self.controller, "save_plugin_config", None)
+                if not callable(save):
+                    raise TaskError("setup_config_save_unavailable", "restart the plugin with Dashboard configuration support")
+                candidate = deepcopy(dict(config))
+                model_settings = candidate.setdefault("model", {})
+                if type(model_settings) is not dict:
+                    raise TaskError("setup_config_invalid", "the plugin model settings have an invalid shape")
+                model_settings["provider_id"] = provider_id
+                profiles = model_settings.get("additional_providers")
+                if type(profiles) is list:
+                    model_settings["additional_providers"] = [
+                        profile for profile in profiles
+                        if not isinstance(profile, dict) or profile.get("provider_id") != provider_id
+                    ]
+                if fallback_provider_id is not None:
+                    model_settings["fallback_provider_id"] = fallback_provider_id
+                elif model_settings.get("fallback_provider_id") == provider_id:
+                    model_settings["fallback_provider_id"] = ""
+                stage_box[0] = "config_persistence"
+                save(candidate)
+                stage_box[0] = "settings_refresh"
+                refresh = getattr(self.controller, "refresh_settings", None)
+                if callable(refresh):
+                    refresh()
+                settings_error = getattr(self.controller, "settings_error", None)
+                if settings_error is not None:
+                    raise TaskError(settings_error.code, str(settings_error))
+
+            await asyncio.to_thread(save_model_sync)
+            stage_box[0] = "profile_initialization"
             initialized = await self.controller.initialize_profile()
             deferred = deferred_initialization(initialized.failure)
             if deferred is not None:
@@ -747,7 +821,8 @@ class SetupWebAPI:
                 logger.info("[CompanionV2] 模型已保存，宿主初始化等待账号连接 code=%s",
                             deferred["init_code"])
                 return self._response(Outcome.success({
-                    "provider_id": provider_id, **deferred, "status": self._status_document()}))
+                    "provider_id": provider_id, **deferred,
+                    "status": await asyncio.to_thread(self._status_document)}))
             if initialized.failure is not None:
                 if initialized.failure.code != "host_must_stop":
                     raise TaskError(initialized.failure.code, initialized.failure.reason)
@@ -756,14 +831,14 @@ class SetupWebAPI:
                 # keeps serving; it will use the new selection after reload.
                 return self._response(Outcome.success({"provider_id": provider_id,
                     "prepared": True, "restart_required": True,
-                    "status": self._status_document()}))
+                    "status": await asyncio.to_thread(self._status_document)}))
             return self._response(Outcome.success({"provider_id": provider_id,
-                "prepared": True, "status": self._status_document()}))
+                "prepared": True, "status": await asyncio.to_thread(self._status_document)}))
         except TaskError as error:
             return self._error(error.code, str(error))
         except Exception as error:
             logger.warning("[CompanionV2] Initial model setup failed stage=%s error_type=%s",
-                           stage, type(error).__name__)
+                           stage_box[0], type(error).__name__)
             return self._error("setup_model_apply_failed",
                                "the selected provider was accepted, but setup could not save or initialize it")
 
@@ -771,22 +846,27 @@ class SetupWebAPI:
         try:
             self._admin()
             await self._body(set())
-            state = self.progress.read()
-            if not state["ready"]:
-                raise TaskError("setup_completion_required", "complete the first-run setup before reconnecting")
-            binding = self._binding()
-            if not binding.get("bound") or binding.get("pending"):
-                raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
-            refresh = getattr(self.controller, "refresh_settings", None)
-            if callable(refresh):
-                refresh()
-            settings_error = getattr(self.controller, "settings_error", None)
-            if settings_error is not None:
-                raise TaskError(settings_error.code, str(settings_error))
+
+            def check_reconnect_sync():
+                state = self.progress.read()
+                if not state["ready"]:
+                    raise TaskError("setup_completion_required", "complete the first-run setup before reconnecting")
+                binding = self._binding()
+                if not binding.get("bound") or binding.get("pending"):
+                    raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
+                refresh = getattr(self.controller, "refresh_settings", None)
+                if callable(refresh):
+                    refresh()
+                settings_error = getattr(self.controller, "settings_error", None)
+                if settings_error is not None:
+                    raise TaskError(settings_error.code, str(settings_error))
+
+            await asyncio.to_thread(check_reconnect_sync)
             result = await self.controller.start()
             if result.failure is not None:
                 raise TaskError(result.failure.code, result.failure.reason)
-            return self._response(Outcome.success({"started": True, "status": self._status_document()}))
+            return self._response(Outcome.success({"started": True,
+                "status": await asyncio.to_thread(self._status_document)}))
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
@@ -796,20 +876,24 @@ class SetupWebAPI:
         try:
             self._admin()
             await self._body(set())
-            refresh = getattr(self.controller, "refresh_settings", None)
-            if callable(refresh):
-                refresh()
-            binding = self._binding()
-            if not binding.get("bound") or binding.get("pending"):
-                raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
-            if getattr(self.controller, "settings_error", None) is not None:
-                error = self.controller.settings_error
-                raise TaskError(error.code, str(error))
+
+            def check_prepare_sync():
+                refresh = getattr(self.controller, "refresh_settings", None)
+                if callable(refresh):
+                    refresh()
+                binding = self._binding()
+                if not binding.get("bound") or binding.get("pending"):
+                    raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
+                if getattr(self.controller, "settings_error", None) is not None:
+                    error = self.controller.settings_error
+                    raise TaskError(error.code, str(error))
+
+            await asyncio.to_thread(check_prepare_sync)
             result = await self.controller.initialize_profile()
             if result.failure is not None:
                 raise TaskError(result.failure.code, result.failure.reason)
             return self._response(Outcome.success({"prepared": True, "profile": result.unwrap(),
-                                                  "status": self._status_document()}))
+                                                  "status": await asyncio.to_thread(self._status_document)}))
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError):
@@ -824,43 +908,48 @@ class SetupWebAPI:
                 raise ValueError("invalid setup step")
             if step == "model" and skipped:
                 raise TaskError("setup_model_required", "choose a V2 text provider before continuing")
-            state = self.progress.read()
-            binding = self._binding()
-            if not binding.get("bound") or binding.get("pending"):
-                raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
-            prepared = bool(getattr(self.controller, "runtime", None)
-                            and (getattr(self.controller, "session", None)
-                                 or getattr(self.controller, "last_session", None)))
-            position = SETUP_STEPS.index(step)
-            if any(name not in state["completed"] + state["skipped"] for name in SETUP_STEPS[:position]):
-                raise TaskError("setup_step_order_invalid", "finish the previous setup section first")
-            if step != "model" and not prepared:
-                refresh = getattr(self.controller, "refresh_settings", None)
-                if callable(refresh):
-                    refresh()
-                settings_error = getattr(self.controller, "settings_error", None)
-                if settings_error is not None:
-                    raise TaskError(settings_error.code, str(settings_error))
+
+            def validate_complete_sync():
+                state = self.progress.read()
+                binding = self._binding()
+                if not binding.get("bound") or binding.get("pending"):
+                    raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
+                prepared = bool(getattr(self.controller, "runtime", None)
+                                and (getattr(self.controller, "session", None)
+                                     or getattr(self.controller, "last_session", None)))
+                position = SETUP_STEPS.index(step)
+                if any(name not in state["completed"] + state["skipped"] for name in SETUP_STEPS[:position]):
+                    raise TaskError("setup_step_order_invalid", "finish the previous setup section first")
+                need_init = False
+                if step != "model" and not prepared:
+                    refresh = getattr(self.controller, "refresh_settings", None)
+                    if callable(refresh):
+                        refresh()
+                    settings_error = getattr(self.controller, "settings_error", None)
+                    if settings_error is not None:
+                        raise TaskError(settings_error.code, str(settings_error))
+                    need_init = True
+                if step == "model":
+                    refresh = getattr(self.controller, "refresh_settings", None)
+                    if callable(refresh):
+                        refresh()
+                    settings_error = getattr(self.controller, "settings_error", None)
+                    if settings_error is not None:
+                        raise TaskError(settings_error.code, str(settings_error))
+                    settings = getattr(self.controller, "settings", None)
+                    model_settings = getattr(settings, "common", settings)
+                    if not getattr(model_settings, "provider_id", ""):
+                        raise TaskError("setup_model_required", "choose a V2 text provider in Model and connections first")
+                    if not prepared:
+                        need_init = True
+                return need_init
+
+            need_init = await asyncio.to_thread(validate_complete_sync)
+            if need_init:
                 result = await self.controller.initialize_profile()
                 if result.failure is not None:
                     raise TaskError(result.failure.code, result.failure.reason)
-                prepared = True
-            if step == "model":
-                refresh = getattr(self.controller, "refresh_settings", None)
-                if callable(refresh):
-                    refresh()
-                settings_error = getattr(self.controller, "settings_error", None)
-                if settings_error is not None:
-                    raise TaskError(settings_error.code, str(settings_error))
-                settings = getattr(self.controller, "settings", None)
-                model_settings = getattr(settings, "common", settings)
-                if not getattr(model_settings, "provider_id", ""):
-                    raise TaskError("setup_model_required", "choose a V2 text provider in Model and connections first")
-                if not prepared:
-                    result = await self.controller.initialize_profile()
-                    if result.failure is not None:
-                        raise TaskError(result.failure.code, result.failure.reason)
-            state = self.progress.complete(step, skipped=skipped)
+            state = await asyncio.to_thread(self.progress.complete, step, skipped=skipped)
             return self._response(Outcome.success({"completed": state["completed"],
                 "skipped": state["skipped"], "step": step, "skipped_this_step": skipped,
                 "prepared": bool(getattr(self.controller, "runtime", None)
@@ -921,7 +1010,7 @@ class SetupWebAPI:
         return True
 
     async def _setup_context_with_target(self):
-        binding = self._binding()
+        binding = await asyncio.to_thread(self._binding)
         if not binding.get("bound") or binding.get("pending"):
             code = binding.get("error") if type(binding.get("error")) is str else None
             if code == "setup_core_window_ambiguous":
@@ -931,7 +1020,7 @@ class SetupWebAPI:
         if session is None:
             raise TaskError("staging_not_initialized", "initialize the selected V2 role first")
         if getattr(self.controller, "_multi_host", False):
-            parked = self.controller._parked_binding()
+            parked = await asyncio.to_thread(self.controller._parked_binding)
             if parked is not None:
                 target = self.controller._core_target(parked)
             elif binding.get("recovered"):
@@ -946,20 +1035,20 @@ class SetupWebAPI:
                     binding.get("platform_id"), binding.get("account_id"), binding.get("participant_id")):
                 raise TaskError("setup_binding_confirmation_required", "the confirmed administrator private window changed")
             context, instruction = await session.synchronize(target)
-            current = self._binding()
+            current = await asyncio.to_thread(self._binding)
             if (not current.get("bound") or current.get("pending")
                     or (target.platform_id, target.account_id, target.participant_id) != (
                         current.get("platform_id"), current.get("account_id"), current.get("participant_id"))):
                 raise TaskError("setup_binding_confirmation_required", "the administrator private window changed during setup")
             if not self._role_matches_binding(current.get("role_id"), context):
                 # 窗口目标没变时，角色漂移只修绑定、不阻断测试。
-                if not self._repair_parked_binding(target, context):
+                if not await asyncio.to_thread(self._repair_parked_binding, target, context):
                     logger.warning("[CompanionV2] 管理员私聊窗口角色与绑定不一致，按当前窗口继续 code=host_persona_binding_changed")
             else:
                 # The role can still match while the persona was renamed
                 # upstream; rewrite the parked persona key once target
                 # resolution has accepted the unique live mapping.
-                self._repair_parked_binding(target, context)
+                await asyncio.to_thread(self._repair_parked_binding, target, context)
             return session, context, instruction, target
         else:
             context = session.profile.target
@@ -990,7 +1079,7 @@ class SetupWebAPI:
                 targets = []
             else:
                 targets = [target] if target is not None else []
-        stored = self.diagnostic_recipient.read()
+        stored = await asyncio.to_thread(self.diagnostic_recipient.read)
         selected = next((t for t in targets if self.diagnostic_recipient.identity(t) == stored), None)
         # A unique live CORE recipient needs no manual configuration, even after
         # removal/revocation of a previously saved recipient.
@@ -1027,7 +1116,9 @@ class SetupWebAPI:
                 target = next((t for t in targets if t.target_id == data["target_id"]), None)
                 if target is None:
                     raise TaskError("proactive_recipient_invalid", "choose a currently authorized core administrator private target")
-                self.diagnostic_recipient.write(self.diagnostic_recipient.identity(target))
+                await asyncio.to_thread(
+                    self.diagnostic_recipient.write, self.diagnostic_recipient.identity(target)
+                )
                 _targets, _selected, document = await self._recipient_document()
                 return self._response(Outcome.success(document))
         except TaskError as error:
@@ -1046,7 +1137,7 @@ class SetupWebAPI:
     async def _proactive_diagnostic_target(self):
         if callable(getattr(self.controller, "proactive_diagnostic_targets", None)):
             return await self._selected_diagnostic_target()
-        binding = self._binding()
+        binding = await asyncio.to_thread(self._binding)
         if binding.get("bound") and not binding.get("pending"):
             return None
         if binding.get("pending"):
@@ -1074,14 +1165,14 @@ class SetupWebAPI:
                 raise TaskError("setup_private_window_required", "the diagnostic recipient must be private")
             return session, context, instruction
         context, instruction = await session.synchronize(fallback_target)
-        binding = self._binding()
+        binding = await asyncio.to_thread(self._binding)
         if (not binding.get("bound") or binding.get("pending")
                 or (binding.get("platform_id"), binding.get("account_id"), binding.get("participant_id")) !=
                 (fallback_target.platform_id, fallback_target.account_id, fallback_target.participant_id)):
             raise TaskError("setup_binding_confirmation_required",
                             "the core administrator binding changed during the diagnostic")
         if not self._role_matches_binding(binding.get("role_id"), context):
-            if not self._repair_parked_binding(fallback_target, context):
+            if not await asyncio.to_thread(self._repair_parked_binding, fallback_target, context):
                 logger.warning("[CompanionV2] 诊断期间管理员角色与绑定不一致，按当前窗口继续 code=host_persona_binding_changed")
         resolver = getattr(self.controller, "proactive_diagnostic_target", None)
         if not callable(resolver) or await resolver() != fallback_target:
@@ -1095,7 +1186,7 @@ class SetupWebAPI:
         if not getattr(self.controller, "_multi_host", False):
             return self.controller
         _session, context, _instruction, target = await self._setup_context_with_target()
-        role_id = self._context_role(context) or self._binding().get("role_id") or ""
+        role_id = self._context_role(context) or (await asyncio.to_thread(self._binding)).get("role_id") or ""
         if not role_id:
             raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
         from .multi_api import TargetControllerView
@@ -1109,13 +1200,17 @@ class SetupWebAPI:
         try:
             username = self._admin()
             _session, context, _instruction = await self._setup_context()
-            from companion_v2.model_gateway.management import ModelManagement
-            manager = ModelManagement(_session.application, context)
-            result = require(manager.status(self._operator(self.controller, username), layer="role"))
-            names = {item["id"]: item["name"] for item in self._model_providers()}
-            for provider in result["providers"]:
-                provider["name"] = names.get(provider["id"], provider["id"])
-            return self._response(Outcome.success(result))
+
+            def read_model_tasks():
+                from companion_v2.model_gateway.management import ModelManagement
+                manager = ModelManagement(_session.application, context)
+                result = require(manager.status(self._operator(self.controller, username), layer="role"))
+                names = {item["id"]: item["name"] for item in self._model_providers()}
+                for provider in result["providers"]:
+                    provider["name"] = names.get(provider["id"], provider["id"])
+                return result
+
+            return self._response(Outcome.success(await asyncio.to_thread(read_model_tasks)))
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
@@ -1126,9 +1221,13 @@ class SetupWebAPI:
             username = self._admin()
             data = await self._body({"kind", "operation_key", "edit_token", "changes", "reset"}, optional={"section"})
             _session, context, _instruction = await self._setup_context()
-            from companion_v2.model_gateway.management import ModelManagement
-            manager = ModelManagement(_session.application, context)
-            saved = require(manager.configure(self._operator(self.controller, username), {**data, "layer": "role"}))
+
+            def save_model_task():
+                from companion_v2.model_gateway.management import ModelManagement
+                manager = ModelManagement(_session.application, context)
+                return require(manager.configure(self._operator(self.controller, username), {**data, "layer": "role"}))
+
+            saved = await asyncio.to_thread(save_model_task)
             return self._response(Outcome.success(saved))
         except TaskError as error:
             return self._error(error.code, str(error))
@@ -1139,12 +1238,16 @@ class SetupWebAPI:
         try:
             username = self._admin()
             session, context, _instruction = await self._setup_context()
-            from companion_v2.configuration.management import RoleProfileManagement, RelationshipProfileManagement
-            operator = self._operator(self.controller, username)
-            return self._response(Outcome.success({
-                "role_profile": require(RoleProfileManagement(session.application, context).status(operator)),
-                "relationship_profile": require(RelationshipProfileManagement(session.application, context).status(operator)),
-            }))
+
+            def read_profile():
+                from companion_v2.configuration.management import RoleProfileManagement, RelationshipProfileManagement
+                operator = self._operator(self.controller, username)
+                return {
+                    "role_profile": require(RoleProfileManagement(session.application, context).status(operator)),
+                    "relationship_profile": require(RelationshipProfileManagement(session.application, context).status(operator)),
+                }
+
+            return self._response(Outcome.success(await asyncio.to_thread(read_profile)))
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
@@ -1171,10 +1274,15 @@ class SetupWebAPI:
                     or len(data["edit_token"]) != 64 or type(changes) is not dict or not changes):
                 raise ValueError("invalid profile patch")
             session, context, _instruction = await self._setup_context()
-            from companion_v2.configuration.management import RoleProfileManagement, RelationshipProfileManagement
-            editor_type = RoleProfileManagement if target == "role_profile" else RelationshipProfileManagement
-            saved = require(editor_type(session.application, context).configure(
-                self._operator(self.controller, username), {key: data[key] for key in ("operation_key", "edit_token", "changes")}))
+
+            def write_profile():
+                from companion_v2.configuration.management import RoleProfileManagement, RelationshipProfileManagement
+                editor_type = RoleProfileManagement if target == "role_profile" else RelationshipProfileManagement
+                return require(editor_type(session.application, context).configure(
+                    self._operator(self.controller, username),
+                    {key: data[key] for key in ("operation_key", "edit_token", "changes")}))
+
+            saved = await asyncio.to_thread(write_profile)
             return self._response(Outcome.success(saved))
         except TaskError as error:
             return self._error(error.code, str(error))
@@ -1188,12 +1296,16 @@ class SetupWebAPI:
                 data = await self._body({"attempt_id"})
                 if type(data["attempt_id"]) is not str or not data["attempt_id"]:
                     raise ValueError("invalid test attempt")
-                binding = self._binding()
+                binding = await asyncio.to_thread(self._binding)
                 if not binding.get("bound") or binding.get("pending"):
                     raise TaskError("setup_binding_confirmation_required", "confirm the core administrator private window first")
                 await self._restore_test_contact_permission(username, data["attempt_id"])
-                state = self.progress.confirm_proactive_test(attempt_id=data["attempt_id"],
-                    confirmed_by=username, confirmed_at=datetime.now(timezone.utc).isoformat())
+                state = await asyncio.to_thread(
+                    self.progress.confirm_proactive_test,
+                    attempt_id=data["attempt_id"],
+                    confirmed_by=username,
+                    confirmed_at=datetime.now(timezone.utc).isoformat(),
+                )
                 return self._response(Outcome.success({"state": state["proactive_test"]["state"],
                     "proactive_test": state["proactive_test"],
                     "ready": state["ready"], "replay_allowed": False}))
@@ -1210,7 +1322,7 @@ class SetupWebAPI:
                 if type(data["enable_proactive"]) is not bool or not data["enable_proactive"]:
                     raise TaskError("setup_proactive_opt_in_required",
                                     "enable private proactive contact before starting its one-time test")
-                saved = self.progress.read()
+                saved = await asyncio.to_thread(self.progress.read)
                 if saved["ready"]:
                     return self._response(Outcome.success({"state": saved["proactive_test"]["state"], "ready": True,
                                                            "replay_allowed": False}))
@@ -1227,7 +1339,9 @@ class SetupWebAPI:
                 started = datetime.now(timezone.utc).isoformat()
                 attempt_id = uuid4().hex
                 try:
-                    self.progress.begin_proactive_test(attempt_id=attempt_id, started_at=started)
+                    await asyncio.to_thread(
+                        self.progress.begin_proactive_test, attempt_id=attempt_id, started_at=started
+                    )
                 except SetupStepsIncomplete as error:
                     # "The guide is not finished" and "this attempt already ran and
                     # cannot be replayed" have nothing in common. Collapsing both
@@ -1286,16 +1400,19 @@ class SetupWebAPI:
                 if context.scope.kind is not ScopeKind.PRIVATE:
                     raise TaskError("setup_private_window_required", "the core administrator target must be private")
 
-                operator = dashboard_operator(self.controller.runtime, username, at=self.controller.now())
-                manager = ContactManagement(session.application, context)
-                status = require(manager.status(operator))
-                purpose_status = status["purposes"].get(purpose)
-                test_policy_override = bool(purpose_status and purpose_status.get("reason") in
-                    ("proactive_disabled", "proactive_paused", "proactive_quiet_hours")
-                    and status.get("settings", {}).get(purpose + ".enabled") is True)
-                if not purpose_status or (not purpose_status["allowed"] and not test_policy_override):
-                    code = purpose_status["reason"] if purpose_status else "contact_purpose_unavailable"
-                    raise TaskError(code, "the selected proactive purpose is not currently authorized")
+                def check_contact_purpose_sync():
+                    operator = dashboard_operator(self.controller.runtime, username, at=self.controller.now())
+                    manager = ContactManagement(session.application, context)
+                    status = require(manager.status(operator))
+                    purpose_status = status["purposes"].get(purpose)
+                    test_policy_override = bool(purpose_status and purpose_status.get("reason") in
+                        ("proactive_disabled", "proactive_paused", "proactive_quiet_hours")
+                        and status.get("settings", {}).get(purpose + ".enabled") is True)
+                    if not purpose_status or (not purpose_status["allowed"] and not test_policy_override):
+                        code = purpose_status["reason"] if purpose_status else "contact_purpose_unavailable"
+                        raise TaskError(code, "the selected proactive purpose is not currently authorized")
+
+                await asyncio.to_thread(check_contact_purpose_sync)
 
                 now = session.application.now()
                 schedule = getattr(session.application, "contact_schedule", None)
@@ -1375,8 +1492,9 @@ class SetupWebAPI:
                     stages.extend(candidate.get("stages", []))
                     stages.append({"stage": "trusted_candidate", "state": "passed"})
                     _settle_failed_stages(stages, failure_stage)
-                    budget_usage = self._diagnostic_attempt_usage(
-                        session, context, failure.code)
+                    budget_usage = await asyncio.to_thread(
+                        self._diagnostic_attempt_usage, session, context, failure.code
+                    )
                     return self._response(Outcome.success(self._diagnostic_failure(
                         purpose, route, failure_stage, failure.code, failure.reason,
                         stages=stages, budget_usage=budget_usage, route=route)))
@@ -1399,23 +1517,36 @@ class SetupWebAPI:
                                {"stage": "receipt", "state": "pending"}))
                 deadline = asyncio.get_running_loop().time() + 150
                 observation = None
+                current_task = None
                 while asyncio.get_running_loop().time() < deadline:
-                    observed = session.application.proactive.observe(context, task.task_id)
+                    observed = await asyncio.to_thread(
+                        session.application.proactive.observe, context, task.task_id
+                    )
                     if observed.failure is not None:
                         return self._response(Outcome.success(self._diagnostic_failure(
                             purpose, route, "delivery", observed.failure.code, observed.failure.reason,
                             stages=stages, task_id=task.task_id, route=route)))
                     observation = observed.unwrap()
-                    current_task = require(session.application.tasks.read(context, task.task_id))
+                    current_task = require(await asyncio.to_thread(
+                        session.application.tasks.read, context, task.task_id
+                    ))
                     if observation["skipped"] or observation["delivery"] in ("delivered", "failed", "cancelled", "partial", "unknown", "accepted"):
                         break
                     if current_task.state in ("failed", "cancelled", "expired", "uncertain"):
                         break
                     await asyncio.sleep(0.2)
 
-                current_task = require(session.application.tasks.read(context, task.task_id))
-                if observation is None:
-                    observation = require(session.application.proactive.observe(context, task.task_id))
+                def finalize_diagnostic_reads():
+                    final_task = require(session.application.tasks.read(context, task.task_id))
+                    final_obs = (observation if observation is not None
+                                 else require(session.application.proactive.observe(context, task.task_id)))
+                    targets = self._diagnostic_delivery_targets(session, context, task.task_id)
+                    usage = self._diagnostic_usage_summary(session, context)
+                    return final_task, final_obs, targets, usage
+
+                current_task, observation, delivery_targets, usage_summary = await asyncio.to_thread(
+                    finalize_diagnostic_reads
+                )
                 skipped = observation["skipped"]
                 delivery = observation["delivery"]
                 judge = observation["judge"]
@@ -1456,7 +1587,7 @@ class SetupWebAPI:
                     "recipient_target": self.diagnostic_recipient.identity(fallback_target)
                         if hasattr(self, "diagnostic_recipient") and hasattr(fallback_target, "target_id") else None,
                     "allow_linked_accounts": allow_linked_accounts,
-                    "delivery_targets": self._diagnostic_delivery_targets(session, context, task.task_id),
+                    "delivery_targets": delivery_targets,
                     "route_rejections": observation.get("route_rejections", []),
                     "attempt_id": attempt_id, "task_id": task.task_id,
                     "task_state": current_task.state, "delivery_state": delivery,
@@ -1469,7 +1600,7 @@ class SetupWebAPI:
                     "decision_confidence": observation.get("decision_confidence"),
                     "silence_threshold": observation.get("silence_threshold"),
                     "stage_metrics": observation.get("stage_metrics"),
-                    "usage_summary": self._diagnostic_usage_summary(session, context),
+                    "usage_summary": usage_summary,
                     "receipt_ref": observation["receipt_ref"], "stage": None if state in ("passed", "skipped") else
                         "delivery" if delivery else "model_generation", "code": code,
                     "error": None if code is None else redact_text(route_failure or (current_task.reason if current_task.state != "succeeded" else None) or code),
@@ -1606,19 +1737,28 @@ class SetupWebAPI:
         try:
             session, context, _instruction = await self._test_context()
             app = session.application
-            operator = dashboard_operator(self.controller.runtime, username, at=self.controller.now())
-            manager = ContactManagement(app, context)
-            current = require(manager.status(operator))
-            enabled_before = current["settings"]["enabled"]
-            self.progress.record_test_contact_permission(attempt_id=attempt_id,
-                                                         enabled_before=enabled_before)
-            if not enabled_before:
-                require(manager.configure(operator, {
-                    "operation_key": "setup-test-" + attempt_id,
-                    "edit_token": current["edit_token"],
-                    "changes": {"enabled": True},
-                }))
-            self.progress.record_proactive_test_progress(attempt_id=attempt_id, stages=stages)
+
+            def prepare_test_permission_sync():
+                operator = dashboard_operator(self.controller.runtime, username, at=self.controller.now())
+                manager = ContactManagement(app, context)
+                current = require(manager.status(operator))
+                enabled_before = current["settings"]["enabled"]
+                self._call_progress_sync(
+                    self.progress.record_test_contact_permission,
+                    attempt_id=attempt_id, enabled_before=enabled_before,
+                )
+                if not enabled_before:
+                    require(manager.configure(operator, {
+                        "operation_key": "setup-test-" + attempt_id,
+                        "edit_token": current["edit_token"],
+                        "changes": {"enabled": True},
+                    }))
+                self._call_progress_sync(
+                    self.progress.record_proactive_test_progress,
+                    attempt_id=attempt_id, stages=stages,
+                )
+
+            await asyncio.to_thread(prepare_test_permission_sync)
             now = self.controller.now()
             schedule = getattr(app, "contact_schedule", None)
             producer = getattr(schedule, "diagnostic_candidate", None)
@@ -1648,7 +1788,11 @@ class SetupWebAPI:
                         await asyncio.sleep(1.0)
             except TaskError:
                 stages.append({"stage": "trusted_candidate", "state": "failed"})
-                self.progress.record_proactive_test_progress(attempt_id=attempt_id, stages=stages)
+                await asyncio.to_thread(
+                    self._call_progress_sync,
+                    self.progress.record_proactive_test_progress,
+                    attempt_id=attempt_id, stages=stages,
+                )
                 raise
             opportunity, intents = candidate["opportunity"], candidate["intents"]
             route = candidate["route"]
@@ -1659,8 +1803,11 @@ class SetupWebAPI:
                            {"stage": "delivery", "state": "pending"},
                            {"stage": "receipt", "state": "pending"}))
             task_id = app.proactive.task_id(context, opportunity, administrator_test=True)
-            self.progress.record_proactive_test_progress(attempt_id=attempt_id, route=route,
-                stages=stages, task_id=task_id)
+            await asyncio.to_thread(
+                self._call_progress_sync,
+                self.progress.record_proactive_test_progress,
+                attempt_id=attempt_id, route=route, stages=stages, task_id=task_id,
+            )
             attempt = (app, context, task_id)
             result = await app.proactive.contact(context, opportunity, intents,
                 role_instruction=candidate["role_instruction"], selection_seed=attempt_id,
@@ -1670,26 +1817,47 @@ class SetupWebAPI:
                 failed_stage = PROACTIVE_TEST_FAILURE_LABELS.get(
                     result.failure.code, ("contact_admission", "主动联系准入检查失败"))[0]
                 _settle_failed_stages(stages, failed_stage)
-                self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                self.progress.finish_proactive_test(outcome="failed",
-                    finished_at=datetime.now(timezone.utc).isoformat(), error_code=result.failure.code,
-                    report=report())
+
+                def finish_admission_failed():
+                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                    self._call_progress_sync(
+                        self.progress.finish_proactive_test,
+                        outcome="failed",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        error_code=result.failure.code,
+                        report=report(),
+                    )
+
+                await asyncio.to_thread(finish_admission_failed)
                 return
             task = result.unwrap().task
             if task is None:
                 _settle_failed_stages(stages, "model_generation")
-                self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                self.progress.finish_proactive_test(outcome="failed",
-                    finished_at=datetime.now(timezone.utc).isoformat(), error_code="setup_contact_not_started",
-                    report=report())
+
+                def finish_not_started():
+                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                    self._call_progress_sync(
+                        self.progress.finish_proactive_test,
+                        outcome="failed",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        error_code="setup_contact_not_started",
+                        report=report(),
+                    )
+
+                await asyncio.to_thread(finish_not_started)
                 return
             deadline = asyncio.get_running_loop().time() + 150
             last_progress = None
             while asyncio.get_running_loop().time() < deadline:
-                receipt = self.progress.read()["proactive_test"]
-                if not receipt or receipt["attempt_id"] != attempt_id or receipt["state"] != "started":
+                def poll_step_sync():
+                    receipt = self._call_progress_sync(self.progress.read)["proactive_test"]
+                    if not receipt or receipt["attempt_id"] != attempt_id or receipt["state"] != "started":
+                        return None, None
+                    return receipt, require(app.proactive.observe(context, task.task_id))
+
+                receipt, observed = await asyncio.to_thread(poll_step_sync)
+                if receipt is None:
                     return
-                observed = require(app.proactive.observe(context, task.task_id))
                 delivery = observed["delivery"]
                 generation = observed.get("generation")
                 stage_state("model_generation", "passed" if generation == "succeeded" else "running")
@@ -1700,108 +1868,166 @@ class SetupWebAPI:
                 if delivery in ("pending", "partial", "dispatched"):
                     stage_state("delivery", "running")
                 if delivery is None and generation in TERMINAL - {"succeeded"}:
-                    current_task = require(app.tasks.read(context, task.task_id))
-                    stage_state("model_generation", "failed")
-                    for item in stages:
-                        if item["stage"] == "model_generation" and current_task.reason:
-                            item["detail"] = redact_text(str(current_task.reason))[:256]
-                    stage_state("persona_review", "skipped")
-                    stage_state("delivery", "skipped")
-                    stage_state("receipt", "skipped")
-                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                    self.progress.finish_proactive_test(
-                        outcome="unknown" if generation == "uncertain" else "failed",
-                        finished_at=datetime.now(timezone.utc).isoformat(),
-                        error_code="setup_contact_generation_failed", report=report())
+                    def finish_generation_failed():
+                        current_task = require(app.tasks.read(context, task.task_id))
+                        stage_state("model_generation", "failed")
+                        for item in stages:
+                            if item["stage"] == "model_generation" and current_task.reason:
+                                item["detail"] = redact_text(str(current_task.reason))[:256]
+                        stage_state("persona_review", "skipped")
+                        stage_state("delivery", "skipped")
+                        stage_state("receipt", "skipped")
+                        self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                        self._call_progress_sync(
+                            self.progress.finish_proactive_test,
+                            outcome="unknown" if generation == "uncertain" else "failed",
+                            finished_at=datetime.now(timezone.utc).isoformat(),
+                            error_code="setup_contact_generation_failed", report=report(),
+                        )
+
+                    await asyncio.to_thread(finish_generation_failed)
                     return
                 progress = (tuple((item["stage"], item["state"], item.get("detail", ""))
                                   for item in stages), delivery, observed.get("receipt_ref"))
                 if progress != last_progress:
-                    self.progress.record_proactive_test_progress(
+                    await asyncio.to_thread(
+                        self._call_progress_sync,
+                        self.progress.record_proactive_test_progress,
                         attempt_id=attempt_id, stages=stages, route=route,
                         task_id=task.task_id, delivery_state=delivery or "",
-                        receipt_ref=observed.get("receipt_ref") or "")
+                        receipt_ref=observed.get("receipt_ref") or "",
+                    )
                     last_progress = progress
                 if delivery == "delivered":
                     stage_state("delivery", "passed")
                     stage_state("receipt", "passed" if observed.get("receipt_ref") else "failed")
-                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                    self.progress.finish_proactive_test(outcome="delivered",
-                        finished_at=datetime.now(timezone.utc).isoformat(),
-                        report=report(delivery, observed.get("receipt_ref") or ""))
+
+                    def finish_delivered():
+                        self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                        self._call_progress_sync(
+                            self.progress.finish_proactive_test,
+                            outcome="delivered",
+                            finished_at=datetime.now(timezone.utc).isoformat(),
+                            report=report(delivery, observed.get("receipt_ref") or ""),
+                        )
+
+                    await asyncio.to_thread(finish_delivered)
                     return
                 if delivery == "failed" or observed["skipped"] or observed["judge"] == "denied":
                     stage_state("persona_review", "failed" if observed["judge"] == "denied" else
                                 "skipped" if observed["skipped"] else stages[-3]["state"])
                     stage_state("delivery", "failed" if delivery == "failed" else "skipped")
                     stage_state("receipt", "failed" if delivery == "failed" else "skipped")
-                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                    self.progress.finish_proactive_test(outcome="failed",
-                        finished_at=datetime.now(timezone.utc).isoformat(),
-                        error_code="setup_contact_not_delivered", report=report(delivery or "skipped"))
+
+                    def finish_not_delivered():
+                        self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                        self._call_progress_sync(
+                            self.progress.finish_proactive_test,
+                            outcome="failed",
+                            finished_at=datetime.now(timezone.utc).isoformat(),
+                            error_code="setup_contact_not_delivered", report=report(delivery or "skipped"),
+                        )
+
+                    await asyncio.to_thread(finish_not_delivered)
                     return
                 if delivery == "unknown" or delivery == "accepted":
                     stage_state("delivery", "failed")
                     stage_state("receipt", "failed")
-                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                    self.progress.finish_proactive_test(outcome="unknown",
-                        finished_at=datetime.now(timezone.utc).isoformat(), error_code="delivery_result_unknown",
-                        report=report(delivery, observed.get("receipt_ref") or ""))
+
+                    def finish_unknown():
+                        self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                        self._call_progress_sync(
+                            self.progress.finish_proactive_test,
+                            outcome="unknown",
+                            finished_at=datetime.now(timezone.utc).isoformat(),
+                            error_code="delivery_result_unknown",
+                            report=report(delivery, observed.get("receipt_ref") or ""),
+                        )
+
+                    await asyncio.to_thread(finish_unknown)
                     return
                 await asyncio.sleep(0.2)
-            self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
             stage_state("delivery", "failed")
             stage_state("receipt", "failed")
-            self.progress.finish_proactive_test(outcome="unknown",
-                finished_at=datetime.now(timezone.utc).isoformat(), error_code="setup_contact_timeout",
-                report=report("unknown"))
+
+            def finish_timeout():
+                self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                self._call_progress_sync(
+                    self.progress.finish_proactive_test,
+                    outcome="unknown",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    error_code="setup_contact_timeout",
+                    report=report("unknown"),
+                )
+
+            await asyncio.to_thread(finish_timeout)
         except asyncio.CancelledError:
             try:
-                if app is not None and context is not None:
-                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                self.progress.finish_proactive_test(outcome="unknown",
-                    finished_at=datetime.now(timezone.utc).isoformat(), error_code="setup_test_interrupted")
+                def finish_cancelled():
+                    if app is not None and context is not None:
+                        self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                    self._call_progress_sync(
+                        self.progress.finish_proactive_test,
+                        outcome="unknown",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        error_code="setup_test_interrupted",
+                    )
+                await asyncio.to_thread(finish_cancelled)
             except (TaskError, ValueError, OSError):
                 pass
             raise
         except Exception as error:
             code = error.code if isinstance(error, TaskError) else "setup_test_failed"
             outcome = "unknown" if attempt is not None else "failed"
-            if app is not None and context is not None:
+
+            def finish_exception():
+                nonlocal code, outcome
+                if app is not None and context is not None:
+                    try:
+                        self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
+                    except Exception:
+                        code = "setup_contact_permission_restore_failed"
+                        outcome = "unknown"
                 try:
-                    self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
-                except Exception:
-                    code = "setup_contact_permission_restore_failed"
-                    outcome = "unknown"
-            try:
-                for item in stages:
-                    if item["state"] == "running":
-                        item["state"] = "failed"
-                self.progress.finish_proactive_test(outcome=outcome,
-                    finished_at=datetime.now(timezone.utc).isoformat(), error_code=code, report=report())
-            except ValueError:
-                pass
+                    for item in stages:
+                        if item["state"] == "running":
+                            item["state"] = "failed"
+                    self._call_progress_sync(
+                        self.progress.finish_proactive_test,
+                        outcome=outcome,
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        error_code=code, report=report(),
+                    )
+                except ValueError:
+                    pass
+
+            await asyncio.to_thread(finish_exception)
 
     async def _restore_test_contact_permission(self, username: str, attempt_id: str) -> None:
-        receipt = self.progress.read()["proactive_test"]
+        receipt = (await asyncio.to_thread(self._call_progress_sync, self.progress.read))["proactive_test"]
         if (not receipt or receipt["attempt_id"] != attempt_id
                 or "contact_enabled_before" not in receipt
                 or receipt.get("contact_permission_restored")):
             return
         if receipt["contact_enabled_before"]:
-            self.progress.mark_test_contact_permission_restored(attempt_id=attempt_id)
+            await asyncio.to_thread(
+                self._call_progress_sync,
+                self.progress.mark_test_contact_permission_restored, attempt_id=attempt_id,
+            )
             return
         if self.controller.session is None and self.controller.last_session is None:
             loaded = await self.controller.load_existing()
             if loaded.failure is not None:
                 raise TaskError(loaded.failure.code, loaded.failure.reason)
         session, context, _instruction = await self._test_context()
-        self._restore_test_contact_permission_with_context(
-            username, attempt_id, session.application, context)
+        await asyncio.to_thread(
+            self._restore_test_contact_permission_with_context,
+            username, attempt_id, session.application, context,
+        )
 
     def _restore_test_contact_permission_with_context(self, username: str, attempt_id: str,
                                                       app, context) -> None:
-        receipt = self.progress.read()["proactive_test"]
+        receipt = self._call_progress_sync(self.progress.read)["proactive_test"]
         if (not receipt or receipt["attempt_id"] != attempt_id
                 or "contact_enabled_before" not in receipt
                 or receipt.get("contact_permission_restored")):
@@ -1822,4 +2048,4 @@ class SetupWebAPI:
                 require(manager.configure(operator, data))
             else:
                 require(manager.restore_temporary_disable(operator, data))
-        self.progress.mark_test_contact_permission_restored(attempt_id=attempt_id)
+        self._call_progress_sync(self.progress.mark_test_contact_permission_restored, attempt_id=attempt_id)

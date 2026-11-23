@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import time
 import traceback
 from uuid import uuid4
 
@@ -212,6 +213,66 @@ class AstrBotMultiController:
         self._settings()
         self._connections_for().refresh()
         return None
+
+    def should_wait_for_initial_platform(self) -> bool:
+        """Whether initial boot should briefly wait for platform adapters before assembling a session."""
+        if self._terminated or self._stopped_by_user or self.session is not None:
+            return False
+        settings = self.settings
+        if settings is None or not getattr(settings, "enabled", False):
+            return False
+        accounts = getattr(settings, "accounts", ())
+        if not accounts:
+            return False
+        lookup = getattr(self.context, "get_platform_inst", None)
+        if not callable(lookup):
+            return False
+        for account in accounts:
+            try:
+                if lookup(account.platform_id) is not None:
+                    return False
+            except Exception:
+                continue
+        return not self._qzone_transport_ready()
+
+    def all_configured_platforms_loaded(self) -> bool:
+        """Whether every configured account's platform adapter is currently instantiated."""
+        settings = self.settings
+        accounts = getattr(settings, "accounts", ()) if settings is not None else ()
+        if not accounts:
+            return True
+        lookup = getattr(self.context, "get_platform_inst", None)
+        if not callable(lookup):
+            return True
+        for account in accounts:
+            try:
+                if lookup(account.platform_id) is None:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _can_hot_refresh_running_session(self, session) -> bool:
+        """Whether a running session can latch newly online accounts without teardown."""
+        if (session is None or not self._accepting
+                or session.application.state != "running"):
+            return False
+        if self._session_missing_ready_qzone(session):
+            return False
+        snapshots = getattr(session, "native_bridge_pairs", ())
+        if len(snapshots) != 2:
+            return False
+        for platforms in snapshots:
+            if not isinstance(platforms, Mapping):
+                return False
+            for platform_id, (platform, client) in platforms.items():
+                try:
+                    current = self.context.get_platform_inst(platform_id)
+                    if current is not platform or current.get_client() is not client:
+                        return False
+                except Exception:
+                    return False
+        return True
 
     async def recover_accounts(self):
         session = self.session
@@ -1062,6 +1123,8 @@ class AstrBotMultiController:
             parked = self._parked_binding()
             core_target = self._core_target(parked) if parked is not None else None
             core_target_id = core_target.target_id if core_target is not None else None
+            if core_target is not None and core_target.participant_id != "*":
+                self.authority.ensure_core_admin_tier(core_target)
             for conversation in conversations.values():
                 target = conversation["target"]
                 for role_id in conversation["role_ids"]:
@@ -1314,6 +1377,8 @@ class AstrBotMultiController:
                     return Outcome.failed("host_manually_stopped", "the operator stopped this host")
                 self._stopped_by_user = False
                 if self.session is not None and self.session.application.state == "running":
+                    if self._can_hot_refresh_running_session(self.session):
+                        self._sync_session_native_bridges(self.session)
                     if self._accepting and self.native_bridges_current():
                         # Refresh and latch any previously waiting account that has now
                         # come online so subsequent client replacements are detected.
@@ -1855,6 +1920,15 @@ class AstrBotMultiController:
     def unregister_routes(self):
         self.web_api.unregister()
 
+    TERMINATION_DRAIN_TIMEOUT_SECONDS = 30.0
+
+    async def _close_native_extensions(self):
+        async with self._control_lock:
+            extensions = self.native_extensions
+            self.native_extensions = None
+        if extensions is not None:
+            await extensions.aclose()
+
     async def terminate(self):
         self._terminated, self._accepting = True, False
         if self._termination_task is not None:
@@ -1867,6 +1941,10 @@ class AstrBotMultiController:
                 state = report.get("state") if isinstance(report, dict) else report.state
             else:
                 state = None
+            try:
+                await self._close_native_extensions()
+            except Exception as error:
+                logger.warning("[CompanionV2] 停机关闭原生扩展失败 error_type=%s", type(error).__name__)
             if state != "stopped" and self.session is not None:
                 logger.warning("[CompanionV2] 工作任务仍在退出，保留存储直到停止证明写入完成")
                 self._termination_task = asyncio.create_task(self._finish_termination(),
@@ -1874,31 +1952,61 @@ class AstrBotMultiController:
             else:
                 await self._release_runtime()
         finally:
+            try:
+                await self._close_native_extensions()
+            except Exception as error:
+                logger.warning("[CompanionV2] 停机兜底关闭原生扩展失败 error_type=%s", type(error).__name__)
+            setup_api = getattr(self, "_setup_api", None) or getattr(self.web_api, "setup", None)
+            if setup_api is not None and callable(getattr(setup_api, "aclose", None)):
+                try:
+                    await setup_api.aclose()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 停机取消设置测试任务失败 error_type=%s", type(error).__name__)
             from .exchange_rate import close_exchange_rate_services
             from .pricing_sources import close_pricing_catalog_services
-            await close_exchange_rate_services(self)
-            await close_pricing_catalog_services(self)
+            try:
+                await close_exchange_rate_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 汇率服务停机清理失败 error_type=%s", type(error).__name__)
+            try:
+                await close_pricing_catalog_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 计价服务停机清理失败 error_type=%s", type(error).__name__)
             self.unregister_routes()
 
     async def _release_runtime(self):
         async with self._control_lock:
-            if self.runtime is not None:
-                self.runtime.close()
-                self.runtime = self.authority = None
-            if self.native_extensions is not None:
-                await self.native_extensions.aclose()
-                self.native_extensions = None
+            runtime = self.runtime
+            self.runtime = self.authority = None
+            extensions = self.native_extensions
+            self.native_extensions = None
+        try:
+            if runtime is not None:
+                runtime.close()
+        finally:
+            if extensions is not None:
+                await extensions.aclose()
 
     async def _finish_termination(self):
+        deadline = time.monotonic() + self.TERMINATION_DRAIN_TIMEOUT_SECONDS
         try:
-            while True:
+            while self.session is not None:
                 report = await self.session.close(grace_seconds=0)
                 if report.state == "stopped":
                     self.last_session, self.session = self.session, None
-                    await self._release_runtime()
                     logger.info("[CompanionV2] 延迟停机完成，工作任务停止证明已保存")
-                    return
+                    break
+                if time.monotonic() >= deadline:
+                    logger.warning("[CompanionV2] 延迟停机排空超时（%.1fs），强制释放存储与扩展资源",
+                                   self.TERMINATION_DRAIN_TIMEOUT_SECONDS)
+                    self.last_session, self.session = self.session, None
+                    break
                 await asyncio.sleep(0.25)
         except Exception as error:
             self._failure(error, operation="terminate_drain")
+        finally:
+            try:
+                await self._release_runtime()
+            except Exception as error:
+                self._failure(error, operation="terminate_release")
             self._termination_task = None

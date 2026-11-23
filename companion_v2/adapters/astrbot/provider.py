@@ -7,6 +7,7 @@ The V2 gateway alone owns tool execution, fallback and durable accounting.
 
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
+from inspect import isawaitable
 from logging import getLogger
 import json
 import re
@@ -305,17 +306,6 @@ def provider_fingerprint(native):
                    sorted(getattr(native, "default_params", {}))])
 
 
-def provider_class_matches(provider, classes):
-    """Class identity that also survives AstrBot re-importing provider modules."""
-    if provider is None:
-        return False
-    if isinstance(provider, classes):
-        return True
-    actual = type(provider)
-    return any(actual.__module__ == expected.__module__
-               and actual.__qualname__ == expected.__qualname__ for expected in classes)
-
-
 def provider_config_drift(expected, provider, auto_resolved=None):
     """Compare captured keys, including host-resolved automatic limits, without exposing values."""
     config = getattr(provider, "provider_config", None)
@@ -481,6 +471,7 @@ class AstrBotTextProvider:
         # the OpenAI-compatible path opts in; the prompt already asks for JSON
         # and the decoder accepts fenced JSON as a fallback.
         self.supports_response_format = self.kind == "openai" and not self.is_anthropic
+        self.supports_gemini_json_mime = self.kind == "gemini"
         self.config = deepcopy(self.native.provider_config) if isinstance(
             getattr(self.native, "provider_config", None), dict) else {}
         self.config_hash = digest(self.config)
@@ -780,9 +771,9 @@ class AstrBotTextProvider:
         """Whether the provider rejected only the optional structured-output field."""
         message = str(error).casefold()
         if isinstance(error, TypeError):
-            return ("response_format" in message or "unexpected keyword" in message
-                    or "unexpected argument" in message)
-        if "response_format" not in message:
+            return ("response_format" in message or "response_mime_type" in message
+                    or "unexpected keyword" in message or "unexpected argument" in message)
+        if not any(token in message for token in ("response_format", "response_mime_type", "json mode")):
             return False
         return extract_error_status_code(error) in (400, 404, 422)
 
@@ -946,6 +937,7 @@ class AstrBotTextProvider:
                 payload = {"model": envelope.model_override or self.model,
                            "messages": deepcopy(_gemini_messages(wire.messages)),
                            "max_tokens": envelope.max_output_tokens}
+            gemini_json_mime = None
             if self.kind == "openai_responses":
                 text_format = responses_text_format(envelope.original)
                 if text_format is not None:
@@ -954,6 +946,26 @@ class AstrBotTextProvider:
                 structured = response_format(envelope.original)
                 if structured is not None and self.supports_response_format:
                     payload["response_format"] = structured
+                elif structured is not None and self.supports_gemini_json_mime and not wire.tools:
+                    # Gemini native SDK reads response_mime_type on GenerateContentConfig;
+                    # it is incompatible with tool declarations, so only enable it when no
+                    # tools are attached to this turn.
+                    gemini_json_mime = "application/json"
+                    payload["response_mime_type"] = gemini_json_mime
+            if gemini_json_mime is not None:
+                prepare_config = getattr(native, "_prepare_query_config", None)
+                if callable(prepare_config):
+                    async def _prepare_query_config_with_json_mime(*args, _orig=prepare_config, **kwargs):
+                        config = _orig(*args, **kwargs)
+                        if isawaitable(config):
+                            config = await config
+                        mime = payload.get("response_mime_type")
+                        if (mime and config is not None
+                                and not getattr(config, "tools", None)
+                                and hasattr(config, "response_mime_type")):
+                            config.response_mime_type = mime
+                        return config
+                    native._prepare_query_config = _prepare_query_config_with_json_mime
             if structured_tool is not None:
                 payload["tool_choice"] = {"type": "tool", "name": structured_tool}
             logger.debug("[CompanionV2][开发者追踪] 实际模型请求 provider=%s model=%s payload=%s",
@@ -1000,6 +1012,11 @@ class AstrBotTextProvider:
                     logger.info("[CompanionV2] 模型协议不接受 response_format，降级重试 provider=%s error_type=%s",
                                 self.provider_id, type(error).__name__)
                     payload.pop("response_format", None)
+                    response = await dispatch_once()
+                elif "response_mime_type" in payload and self._response_format_unsupported(error):
+                    logger.info("[CompanionV2] 模型协议不接受 response_mime_type，降级重试 provider=%s error_type=%s",
+                                self.provider_id, type(error).__name__)
+                    payload.pop("response_mime_type", None)
                     response = await dispatch_once()
                 else:
                     raise

@@ -284,6 +284,18 @@ test("Contract: ALL config search entries resolve to valid routes, subtabs, DOM 
   const interjectLoc = h.run(`resolveSettingTarget({group:"group_participation",section:"interjection",field:"enable_group_interjection"})`);
   assert.equal(interjectLoc.scopeRequirement, "group");
   assert.ok(interjectLoc.scopeHint);
+
+  const replyEntries = h.window.CompanionReplyPage.searchEntries();
+  const replyFields = new Set(replyEntries.filter(e => e.group === "conversation.presentation").map(e => e.field));
+  assert.ok(replyFields.has("private_tool_profile"), "conversation.presentation must index private_tool_profile");
+  assert.ok(replyFields.has("private_tool_groups"), "conversation.presentation must index private_tool_groups");
+  for (const field of ["private_tool_profile", "private_tool_groups"]) {
+    const loc = h.run(`resolveSettingTarget({group:"conversation.presentation",section:"wakeup_direct",field:${JSON.stringify(field)}})`);
+    assert.equal(loc.next, "manage");
+    assert.equal(loc.tab, "decision");
+    assert.equal(loc.decisionView, "response");
+    assert.equal(loc.root, "#decisionReplyWorkspace");
+  }
 });
 
 test("Contract: searchIndex has zero dead links, zero duplicates, valid destinations, and covers all core pages & subtabs", () => {

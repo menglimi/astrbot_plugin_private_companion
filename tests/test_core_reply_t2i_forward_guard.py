@@ -194,16 +194,15 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         respond = RespondStage()
         await respond.initialize(pipeline_context)
 
-        handlers = [
-            NS(handler_module_path="core_test", handler_name="v2_tool_repeat",
-               handler=plugin.suppress_companion_native_tool_repeat),
-        ]
+        handlers = []
         if extra_decorator is not None:
             handlers.append(NS(handler_module_path="core_test", handler_name="extra", handler=extra_decorator))
-        handlers.append(
+        handlers.extend([
             NS(handler_module_path="core_test", handler_name="v2_guard",
                handler=plugin.guard_companion_core_delivery),
-        )
+            NS(handler_module_path="core_test", handler_name="v2_tool_repeat",
+               handler=plugin.suppress_companion_native_tool_repeat),
+        ])
 
         async def after_send(current, *_):
             await plugin.observe_companion_core_reply_sent(current)

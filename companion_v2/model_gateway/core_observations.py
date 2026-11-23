@@ -5,8 +5,16 @@ import json
 import re
 
 from companion_v2.execution.models import digest, encode
-from companion_v2.storage.core_reply_telemetry_schema import STATEMENTS, TABLE
+from companion_v2.storage.core_reply_telemetry_schema import (
+    TABLE,
+    ensure_core_reply_telemetry_schema,
+)
+from companion_v2.storage.native_dedup import resolve_context_json, store_context_json
+from companion_v2.storage.runtime import table_exists
 from .usage import CORE_CHAIN_KIND, USAGE_FIELDS
+
+
+_SCHEMA_KEY = "astrbot_core_reply_observations.v1"
 
 
 def role_key(context):
@@ -16,7 +24,7 @@ def role_key(context):
 
 
 def available(runtime):
-    return runtime.read_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (TABLE,)) is not None
+    return table_exists(runtime, TABLE)
 
 
 def _fingerprints_only(value):
@@ -76,20 +84,34 @@ def _validate_record(record):
             raise ValueError("core tool timing must not include arguments or output")
 
 
+def _ensure_schema(runtime):
+    ensure_core_reply_telemetry_schema(runtime)
+
+
 def record_observation(runtime, context, record):
     """Revision fences let asynchronous snapshots finish in any order."""
     _validate_record(record)
+    _ensure_schema(runtime)
+    raw_ctx = encode(context)
+    scope_kind = context.scope.kind.value
+    role_binding_key = encode(context.role_binding)
     with runtime.transaction() as connection:
-        for statement in STATEMENTS:
-            connection.execute(statement)
+        stored_ctx, ctx_hash = store_context_json(
+            connection,
+            raw_ctx,
+            context_key=context.key,
+            scope_kind=scope_kind,
+            role_binding_key=role_binding_key,
+            created_at=record["received_at"],
+        )
         connection.execute("""INSERT INTO astrbot_core_reply_observations
-            (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json, context_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(turn_id) DO UPDATE SET revision = excluded.revision,
                 observed_at = excluded.observed_at, record_json = excluded.record_json
             WHERE excluded.revision > astrbot_core_reply_observations.revision""",
-            (record["turn_id"], record["revision"], role_key(context), context.key, context.scope.kind.value,
-             encode(context), record["received_at"], record["observed_at"], encode(record)))
+            (record["turn_id"], record["revision"], role_key(context), context.key, scope_kind,
+             stored_ctx, record["received_at"], record["observed_at"], encode(record), ctx_hash))
 
 
 def _parse_utc_timestamp(value):
@@ -141,7 +163,11 @@ def _query_observations(runtime, context, *, start=None, end=None, private_only=
         try:
             record = json.loads(row["record_json"])
             if type(record) is dict and record.get("version") == 1:
-                obs = {**record, "context_key": row["context_key"], "context_json": row["context_json"]}
+                obs = {
+                    **record,
+                    "context_key": row["context_key"],
+                    "context_json": resolve_context_json(runtime, row["context_json"]),
+                }
                 result.append((obs, row["scope_kind"], row_dt))
         except (TypeError, ValueError):
             continue

@@ -18,23 +18,41 @@ def _distinct_role_private_contexts(runtime, context):
     """Collect distinct private TaskContexts for this role, deduplicating before JSON decode."""
     if context.scope.kind is not ScopeKind.PRIVATE:
         return ()
+    from companion_v2.storage.native_dedup import matching_context_hashes, resolve_context_json
+
     scope_filter = """json_extract(context_json, '$.role_binding.role.subject_id') = ?
         AND json_extract(context_json, '$.role_binding.scope.bot_id') = ?
         AND json_extract(context_json, '$.role_binding.scope.installation_id') = ?"""
     parameters = (context.role_binding.role.subject_id, context.scope.bot_id,
                   context.scope.installation_id)
-    queries = (
-        "SELECT origin_key AS ctx_key, context_json FROM conversation_batches WHERE "
-        + scope_filter + " ORDER BY rowid DESC LIMIT 2000",
+    queries = [
+        (
+            "SELECT origin_key AS ctx_key, context_json FROM conversation_batches WHERE "
+            + scope_filter + " ORDER BY rowid DESC LIMIT 2000",
+            parameters,
+        ),
+    ]
+    hashes = matching_context_hashes(runtime, scope_filter, parameters)
+    if hashes:
+        for start in range(0, len(hashes), 400):
+            chunk = hashes[start:start + 400]
+            marks = ",".join("?" for _ in chunk)
+            queries.append((
+                f"SELECT context_key AS ctx_key, context_json FROM conversation_native_observations "
+                f"WHERE kind = 'input' AND context_hash IN ({marks}) ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
+                chunk,
+            ))
+    queries.append((
         "SELECT context_key AS ctx_key, context_json FROM conversation_native_observations WHERE kind = 'input' AND "
         + scope_filter + " ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
-    )
+        parameters,
+    ))
     seen_keys = set()
     seen_raw = set()
     distinct = []
-    for query in queries:
+    for query, query_params in queries:
         try:
-            rows = runtime.read_all(query, parameters)
+            rows = runtime.read_all(query, query_params)
         except Exception:
             continue
         for row in rows:
@@ -49,7 +67,7 @@ def _distinct_role_private_contexts(runtime, context):
                     continue
                 seen_raw.add(raw_json)
             try:
-                candidate = TaskContext.restore(json.loads(raw_json))
+                candidate = TaskContext.restore(json.loads(resolve_context_json(runtime, raw_json)))
             except (TypeError, ValueError, KeyError):
                 continue
             if (candidate.scope.kind is not ScopeKind.PRIVATE
@@ -150,9 +168,10 @@ def current_private_context(runtime, key, role_binding):
                 ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (key,))
         except Exception:
             rows = ()
+    from companion_v2.storage.native_dedup import resolve_context_json
     for row in rows:
         try:
-            candidate = TaskContext.restore(json.loads(row["context_json"]))
+            candidate = TaskContext.restore(json.loads(resolve_context_json(runtime, row["context_json"])))
         except (TypeError, ValueError, KeyError):
             continue
         if (candidate.key == key and candidate.scope.kind is ScopeKind.PRIVATE

@@ -2,6 +2,33 @@
 from __future__ import annotations
 from .common import *
 
+
+def _spawn_managed_task(owner, coro, *, name: str | None = None) -> asyncio.Task:
+    tasks = getattr(owner, '_background_tasks', None)
+    if tasks is None:
+        tasks = set()
+        try:
+            setattr(owner, '_background_tasks', tasks)
+        except AttributeError:
+            pass
+    task = asyncio.create_task(coro, name=name) if name else asyncio.create_task(coro)
+    tasks.add(task)
+
+    def _done(finished: asyncio.Task) -> None:
+        tasks.discard(finished)
+        if finished.cancelled():
+            return
+        try:
+            exc = finished.exception()
+        except BaseException:
+            return
+        if exc is not None:
+            logger.warning('[Live] 后台任务执行异常 task=%s: %s', finished.get_name(), exc)
+
+    task.add_done_callback(_done)
+    return task
+
+
 class LiveActivityMethods:
 
     def _safe_parse_port(self, port_val) -> Optional[int]:
@@ -422,7 +449,11 @@ class LiveActivityMethods:
         if exc:
             logger.warning(f'[B站直播] 弹幕监听任务结束: {exc}')
         if self._bili_session_events:
-            asyncio.create_task(self._write_private_companion_live_summary())
+            _spawn_managed_task(
+                self,
+                self._write_private_companion_live_summary(),
+                name='companion-v2:live-bili-summary',
+            )
 
     async def _on_bili_live_event(self, event: LiveDanmakuEvent) -> None:
         self._bili_events.append(event)

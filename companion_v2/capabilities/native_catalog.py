@@ -48,7 +48,17 @@ def register_native_replacement(runtime, descriptor, *, previous_package_id, obs
             "AND package_id = ? AND package_version = ?",
             (descriptor.extension_id, descriptor.package_id, descriptor.package_version)).fetchone()
         if existing is not None and _descriptor_from_row(existing) != descriptor:
-            return Outcome.failed("capability_descriptor_conflict", "the native catalog version already differs")
+            recorded = _descriptor_from_row(existing)
+            if recorded.artifact_hash != descriptor.artifact_hash:
+                return Outcome.failed(
+                    "capability_descriptor_conflict",
+                    f"模块 {descriptor.extension_id}（版本 {descriptor.package_version}）代码校验哈希与已登记记录不一致；"
+                    "若刚本地热修或替换了模块代码，请递增插件版本号后重载，或通过完整更新包升级",
+                )
+            return Outcome.failed(
+                "capability_descriptor_conflict",
+                f"模块 {descriptor.extension_id}（版本 {descriptor.package_version}）能力声明与已登记记录不一致，请递增版本号后重试",
+            )
         if existing is None:
             connection.execute("INSERT INTO capability_descriptors(extension_id, package_id, package_version, "
                 "publisher_id, artifact_hash, descriptor_json, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?)",

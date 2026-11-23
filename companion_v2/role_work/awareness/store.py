@@ -7,7 +7,7 @@ import json
 from companion_v2.execution.models import encode, stamp
 
 from .models import (MAX_DOCUMENT_CHARS, PREFIX, empty_document, event_record, owner_key, peer_reply_record,
-                     prune, reply_record, role_ref, valid_document, window_of)
+                     prune, reply_record, role_ref, together_record, valid_document, window_of)
 
 
 class RoleAwarenessStore:
@@ -103,6 +103,21 @@ class RoleAwarenessStore:
         attention = dict(document["attention"])
         attention.update(last_reply_window=window_of(context), last_reply_at=stamp(at))
         document = {**document, "events": events, "attention": attention, "updated_at": stamp(at)}
+        self.write(connection, context, document)
+        return document
+
+    def observe_together_experience(self, connection, context, at, text: str, event_key: str = ""):
+        """Record one private-only desensitized Together room summary."""
+        if window_of(context) != "private":
+            return None
+        document = self._load(connection, context) or empty_document(context, at)
+        key = str(event_key or "")[:256]
+        events = list(document["events"])
+        if key and any(item["kind"] == "together_room" and item["event_key"] == key for item in events):
+            return document
+        record = together_record(context, at, text, key)
+        events = prune((*events, record), at)
+        document = {**document, "events": events, "updated_at": stamp(at)}
         self.write(connection, context, document)
         return document
 

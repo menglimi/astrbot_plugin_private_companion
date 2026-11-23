@@ -1,4 +1,4 @@
-﻿"""Local, optional V2 background for AstrBot-owned conversation turns.
+"""Local, optional V2 background for AstrBot-owned conversation turns.
 
 The host keeps its own current conversation history, media and model pipeline.
 This bridge only reads the domain owners' authorized background. It never
@@ -20,6 +20,7 @@ from companion_v2.conversation.location_context import LOCATION_CONTEXT_INSTRUCT
 from companion_v2.conversation.open_items_context import INSTRUCTION as OPEN_ITEMS_INSTRUCTION
 from companion_v2.conversation.phone_context import PHONE_CONTEXT_INSTRUCTION
 from companion_v2.conversation.relationship_context import RELATIONSHIP_INSTRUCTION
+from companion_v2.conversation.screen_context import SCREEN_CONTEXT_INSTRUCTION
 from companion_v2.conversation.self_review_context import SELF_REVIEW_INSTRUCTION
 from companion_v2.conversation.style_context import EXPRESSION_STYLE_INSTRUCTION
 from companion_v2.execution.models import TaskError, digest, encode, require
@@ -33,7 +34,7 @@ from companion_v2.system_prompts.catalog import (
 )
 from companion_v2.system_prompts.context import SystemPromptContext
 from .core_reply_health import health_perception_snapshot
-from .core_reply_mobile import location_scene_snapshot, phone_scene_snapshot
+from .core_reply_mobile import location_scene_snapshot, phone_scene_snapshot, screen_scene_snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -504,6 +505,11 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             if location:
                 perception_data["location_context"] = location
                 instructions.append(LOCATION_CONTEXT_INSTRUCTION)
+            if settings.get("screen_context_enabled") is True:
+                screen = screen_scene_snapshot(application, context, at)
+                if screen:
+                    perception_data["screen_context"] = screen
+                    instructions.append(SCREEN_CONTEXT_INSTRUCTION)
         # Personal birthdays are explicit profile data, so they remain available
         # even when generic calendar labels are disabled. User data is included
         # only for the identified private recipient; role data is safe to share

@@ -98,7 +98,8 @@ def group_input(messages, owner, reference, *, at):
                                     (reference["observation_id"],))
     if row is None or group_reference(row) != reference or row["kind"] != "input":
         raise TaskError("group_memory_evidence_unavailable", "the native group input changed or was withdrawn")
-    original = TaskContext.restore(json.loads(row["context_json"]))
+    from companion_v2.storage.native_dedup import resolve_context_json
+    original = TaskContext.restore(json.loads(resolve_context_json(messages.runtime, row["context_json"])))
     source = source_from_document(json.loads(row["source_json"]))
     if (original.scope.kind is not ScopeKind.GROUP or owner_key(original) != owner
             or original.audience != group_audience(original.scope, original.actor.subject)):

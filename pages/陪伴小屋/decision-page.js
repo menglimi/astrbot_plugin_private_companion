@@ -610,6 +610,24 @@ window.CompanionDecisionPage = (() => {
     return value;
   }
 
+  let harassmentTicket = 0;
+
+  function resetHarassment(nextEndpoint = "") {
+    harassmentTicket += 1;
+    harassment.endpoint = nextEndpoint;
+    harassment.loading = false;
+    harassment.busy = false;
+    harassment.data = null;
+    harassment.draft = null;
+    harassment.notice = "";
+    harassment.bad = false;
+    harassment.missing = false;
+  }
+
+  function guardLive(ticket, endpoint) {
+    return ticket === harassmentTicket && Boolean(root) && root.isConnected !== false && harassment.endpoint === endpoint;
+  }
+
   function guardAdopt(snapshot) {
     harassment.data = snapshot;
     harassment.draft = {...snapshot.settings};
@@ -617,7 +635,9 @@ window.CompanionDecisionPage = (() => {
   }
 
   async function loadHarassment() {
-    if (!harassment.endpoint || harassment.loading || harassment.busy) return;
+    const endpoint = harassment.endpoint;
+    if (!endpoint || harassment.loading || harassment.busy) return;
+    const ticket = ++harassmentTicket;
     harassment.loading = true;
     harassment.notice = "";
     harassment.missing = false;
@@ -625,34 +645,43 @@ window.CompanionDecisionPage = (() => {
     harassment.bad = false;
     renderPanels();
     try {
-      guardAdopt(await guardRequest("GET", ""));
+      const snapshot = await guardRequest("GET", "");
+      if (!guardLive(ticket, endpoint)) return;
+      guardAdopt(snapshot);
       harassment.bad = false;
     } catch (error) {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.bad = true;
       harassment.missing = routeMissing(error);
       harassment.notice = harassment.missing
         ? "该页只对私聊窗口生效，当前插件版本也可能没有提供这组接口。"
         : "读取防骚扰设置失败：" + guardErrorText(error);
     } finally {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.loading = false;
       renderPanels();
     }
   }
 
   async function guardMutate(path, body, done) {
-    if (harassment.busy) return;
+    const endpoint = harassment.endpoint;
+    if (!endpoint || harassment.busy) return;
+    const ticket = harassmentTicket;
     harassment.busy = true;
     harassment.notice = "正在处理…";
     renderPanels();
     try {
       const snapshot = await guardRequest("POST", path, body);
+      if (!guardLive(ticket, endpoint)) return;
       guardAdopt(snapshot);
       harassment.notice = done || "已保存。";
       harassment.bad = false;
     } catch (error) {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.bad = true;
       harassment.notice = "操作失败：" + guardErrorText(error);
     } finally {
+      if (!guardLive(ticket, endpoint)) return;
       harassment.busy = false;
       renderPanels();
     }
@@ -710,15 +739,25 @@ window.CompanionDecisionPage = (() => {
       return;
     }
     if (event.target?.closest?.("[data-guard-export]")) {
+      const endpoint = harassment.endpoint;
+      if (!endpoint || harassment.busy) return;
+      const ticket = harassmentTicket;
       harassment.busy = true;
+      renderPanels();
       void guardRequest("POST", "/export", {scope: ""}).then(document => {
+        if (!guardLive(ticket, endpoint)) return;
         harassment.exported = JSON.stringify(document, null, 2);
         harassment.notice = "已导出到下框。";
         harassment.bad = false;
       }).catch(error => {
+        if (!guardLive(ticket, endpoint)) return;
         harassment.notice = "导出失败：" + guardErrorText(error);
         harassment.bad = true;
-      }).finally(() => { harassment.busy = false; renderPanels(); });
+      }).finally(() => {
+        if (!guardLive(ticket, endpoint)) return;
+        harassment.busy = false;
+        renderPanels();
+      });
       return;
     }
     if (event.target?.closest?.("[data-guard-import]")) {
@@ -731,13 +770,17 @@ window.CompanionDecisionPage = (() => {
 
   function mount(node, options = {}) {
     if (!node) return;
+    const nextScopeKind = typeof options.scopeKind === "string" ? options.scopeKind : "";
+    const nextEndpoint = typeof options.harassmentApi === "string" ? options.harassmentApi : "";
     if (root !== node) {
       unmount();
       root = node;
+    } else if (harassment.endpoint !== nextEndpoint || scopeKind !== nextScopeKind) {
+      resetHarassment(nextEndpoint);
     }
-    scopeKind = typeof options.scopeKind === "string" ? options.scopeKind : "";
+    scopeKind = nextScopeKind;
     /* 挂载方给的是插件相对路径（页面桥只收这种），这里只管在后面拼子路径。 */
-    harassment.endpoint = typeof options.harassmentApi === "string" ? options.harassmentApi : "";
+    harassment.endpoint = nextEndpoint;
     render(options.groupSettingsMarkup || "");
     if (harassment.endpoint && harassmentApplies() && !harassment.data) void loadHarassment();
   }
@@ -773,11 +816,7 @@ window.CompanionDecisionPage = (() => {
     }
     root = null;
     scopeKind = "";
-    harassment.endpoint = "";
-    harassment.data = null;
-    harassment.draft = null;
-    harassment.notice = "";
-    harassment.missing = false;
+    resetHarassment("");
     replyStatus = null;
     roleStatus = null;
     windowStatus = null;

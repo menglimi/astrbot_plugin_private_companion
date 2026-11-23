@@ -488,6 +488,7 @@ window.CompanionStatePage = (() => {
       editor?.open("home");
     }else{
       if(settingsOpen){
+        clearTimeout(settingsCloseTimer);settingsCloseTimer=null;
         const dialog=root.querySelector("#state-home-settings");
         if(dialog?.open)dialog.close();
         settingsOpen=false;settingsReturnFeature=null;settingsReturnFocus=null;
@@ -539,22 +540,48 @@ window.CompanionStatePage = (() => {
     requestAnimationFrame(()=>attempt());
     return true;
   }
+  let settingsCloseTimer=null;
+  function canAnimateSettingsDialog(dialog) {
+    return Boolean(
+      dialog
+      &&typeof requestAnimationFrame==="function"
+      &&typeof window.getComputedStyle==="function"
+      &&!document.body?.classList?.contains("reduce-motion")
+      &&document.documentElement?.dataset?.motion!=="off"
+      &&!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
   function openSettings(trigger) {
-    if(!data?.status||data.loading||section!=="state"||!root?.isConnected||settingsOpen)return;
+    if(!data?.status||data.loading||section!=="state"||!root?.isConnected)return;
+    if(settingsCloseTimer){clearTimeout(settingsCloseTimer);settingsCloseTimer=null;settingsOpen=false;}
+    if(settingsOpen)return;
     if(editor&&!editor.discardIfPristine())return;
     settingsReturnFeature=activeFeature;settingsReturnFocus=trigger||document.activeElement;
     settingsOpen=true;activeFeature=null;
     render();schedule();
   }
   function closeSettings() {
-    if(!settingsOpen)return;
+    if(!settingsOpen||settingsCloseTimer)return;
     if(editor&&!editor.discardIfPristine())return;
     const dialog=root?.querySelector("#state-home-settings");
-    if(dialog?.open)dialog.close();
-    settingsOpen=false;activeFeature=settingsReturnFeature;settingsReturnFeature=null;
-    render();schedule();
-    if(settingsReturnFocus?.isConnected)settingsReturnFocus.focus({preventScroll:true});
-    settingsReturnFocus=null;
+    const myTicket=version;
+    const finalize=()=>{
+      settingsCloseTimer=null;
+      if(!live(myTicket))return;
+      settingsOpen=false;activeFeature=settingsReturnFeature;settingsReturnFeature=null;
+      render();schedule();
+      if(settingsReturnFocus?.isConnected)settingsReturnFocus.focus({preventScroll:true});
+      settingsReturnFocus=null;
+    };
+    if(dialog?.open){
+      dialog.close();
+      if(canAnimateSettingsDialog(dialog)){
+        const delay=document.documentElement?.dataset?.motion==="low"?110:185;
+        settingsCloseTimer=setTimeout(finalize,delay);
+        return;
+      }
+    }
+    finalize();
   }
   function render() {
     if (!root?.isConnected || !data) return;
@@ -593,8 +620,8 @@ window.CompanionStatePage = (() => {
       :"";
     if(oldDialog?.open)oldDialog.close();
     const pending=data.pendingMaintenance,maintenanceOff=status?.settings?.enabled===false;
-    const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy||pending&&!pending.retryable;
-    const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?(pending.retryable?"重试更新":"更新中…")
+    const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy;
+    const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?"重试更新"
       :maintenanceOff?"前往设置":"立即更新";
     const maintainIcon=maintenanceOff?"settings-2":"sparkles";
     const noticeText=data.notice||(maintenanceOff?"状态维护已关闭，启用后才会生成新的状态记录。":"");
@@ -646,6 +673,7 @@ window.CompanionStatePage = (() => {
     data.status=null; data.error=true; data.notice=reason(error?.code);
     if(["dashboard_identity_required","core_access_required","authorization_denied","role_binding_changed","binding_revoked","binding_rebound","staging_host_terminated"].includes(error?.code)) {
       data.catalog=null; data.ready=false; editor?.invalidate(); stopTimer();
+      clearTimeout(settingsCloseTimer);settingsCloseTimer=null;
       settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;
     }
     stateByScope.delete(stateScopeKey);
@@ -731,11 +759,11 @@ window.CompanionStatePage = (() => {
     if(!Number.isInteger(current?.revision)||typeof current?.view_token!=="string"){
       notice("当前状态尚未就绪，请重新读取后再试。",true);render();return;
     }
-    let pending=data.pendingMaintenance;
-    if(pending&&!pending.retryable)return;
-    if(!pending)pending={operation_key:crypto.randomUUID(),expected_revision:current.revision,view_token:current.view_token,
+    const prevPending=data.pendingMaintenance;
+    const pending={operation_key:prevPending?.retryable&&prevPending.operation_key?prevPending.operation_key:crypto.randomUUID(),
+      expected_revision:current.revision,view_token:current.view_token,
       resultSnapshot:JSON.stringify(data.status.maintenance?.result??null),retryable:false};
-    pending.retryable=false;data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
+    data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
     notice("正在安排状态更新…");render();
     try {
       await api("POST",endpoint()+"/command",{action:"maintain",operation_key:pending.operation_key,
@@ -915,7 +943,7 @@ window.CompanionStatePage = (() => {
       setChrome(true);await directory();
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  function unmount() { rememberState();++version;stopTimer();backgroundLoading=false;pendingEditor=null;root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
+  function unmount() { rememberState();++version;stopTimer();clearTimeout(settingsCloseTimer);settingsCloseTimer=null;backgroundLoading=false;pendingEditor=null;root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
   document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!backgroundLoading&&!editor?.interacting)load(data.cursor,{silent:true});});
   window.addEventListener?.("beforeunload",event=>{if(editor?.dirty){event.preventDefault();event.returnValue="";}});
   return {mount,unmount,openSettings,openEditor,openFeature,currentFeature:()=>activeFeature,

@@ -1139,3 +1139,33 @@ select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in s
 @container group-detail (max-width: 520px) {
   .group-detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* 熟人卡与未保存确认弹窗：遮罩淡入淡出 + 卡片柔和上浮微缩放双向过渡。 */
+.member-dialog-host {
+  opacity: 0;
+  transition: opacity var(--motion-dur-exit, 165ms) var(--motion-ease-in, cubic-bezier(0.4, 0, 1, 1));
+}
+.member-dialog-host.is-open {
+  opacity: 1;
+  transition: opacity var(--motion-dur-enter, 220ms) var(--motion-ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.member-dialog-host.is-closing { pointer-events: none; }
+.member-dialog {
+  opacity: 0;
+  transform: translate3d(0, 12px, 0) scale(.975);
+  transition: opacity var(--motion-dur-exit, 165ms) var(--motion-ease-in, cubic-bezier(0.4, 0, 1, 1)),
+    transform var(--motion-dur-exit, 165ms) var(--motion-ease-in, cubic-bezier(0.4, 0, 1, 1));
+}
+.member-dialog-host.is-open .member-dialog {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: opacity var(--motion-dur-enter, 220ms) var(--motion-ease-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform var(--motion-dur-enter, 220ms) var(--motion-ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+:root[data-motion="low"] .member-dialog { transform: none; }
+:root[data-motion="off"] .member-dialog-host,
+:root[data-motion="off"] .member-dialog,
+body.reduce-motion .member-dialog-host,
+body.reduce-motion .member-dialog { transition: none !important; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .member-dialog-host, .member-dialog { transition: none !important; transform: none; }
+}

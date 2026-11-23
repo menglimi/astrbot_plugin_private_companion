@@ -457,21 +457,53 @@ class CoreReplyToolSession:
         from companion_v2.conversation.native_participation import AUTONOMOUS_REASONS, native_participation_turn
         from companion_v2.conversation.reply_settings import GROUP
         call_id = native_call_id(wrapper, "group.participation.choose", arguments)
+        admission = _field(self.prepared, "group_admission", {}) or {}
+        group_trigger = _field(self.prepared, "group_trigger")
+        addressed = self._addressed_group_turn(admission, group_trigger)
         decision = self.state.get("group_participation")
         if decision is not None:
-            if decision["mode"] != arguments["mode"]:
-                raise TaskError("group_participation_fixed", "the original native group choice is already fixed")
-            return {"state": "succeeded", "effect": "none", "payload": dict(decision), "replayed": True}
+            # Issue #836: the latched decision may predate the authenticated
+            # trigger facts (or belong to a batch without the mention).  When
+            # the current facts show an explicit mention/wakeup the cache was
+            # decided without that signal, so discard it and re-decide.
+            if decision["mode"] == "skip" and addressed:
+                self.state.pop("group_participation", None)
+            else:
+                if decision["mode"] != arguments["mode"]:
+                    raise TaskError("group_participation_fixed", "the original native group choice is already fixed")
+                return {"state": "succeeded", "effect": "none", "payload": dict(decision), "replayed": True}
         if arguments["mode"] == "skip":
             if self.state.get("_business_tools_started") or self.state.get("send_attempts", 0):
                 raise TaskError("group_participation_started", "a group turn cannot revoke an operation that already began")
             if not self._skip_is_alone(wrapper):
                 raise TaskError("group_participation_skip_alone", "listening may accompany learning notes, but no business operation")
-        admission = _field(self.prepared, "group_admission", {}) or {}
-        group_trigger = _field(self.prepared, "group_trigger")
-        mentioned = group_trigger["mentioned"] if group_trigger is not None else admission.get("mentioned")
+            # Issue #836: a merged batch may contain an explicit @ or a host
+            # wakeup even when the surrounding conversation is between other
+            # members.  A skip decided on the whole batch would silently drop
+            # that mention.  Refuse the skip unless the reason itself is an
+            # independent conclusion about the mention (e.g. "@我但明说不用理我").
+            if addressed:
+                reason = arguments.get("reason", "")
+                opted_out = (isinstance(reason, str)
+                             and re.search(r"不用|别理|无需回复|不要打扰|不要理|不用理|不理|无需打扰|忙着|稍后|暂时不回复|不要回应", reason))
+                force_reply = self._mention_force_reply_enabled()
+                if not opted_out or force_reply:
+                    # Issue #836: bounded rejection.  Allow the skip once the
+                    # model has already been forced to reconsider and still
+                    # chooses skip, so a stubborn re-judgement cannot loop the
+                    # whole turn.  _latch_group_skip never latches mention
+                    # batches, so a bypassed skip stays non-persistent.
+                    # The mention_force_reply_enabled switch is a hard rule:
+                    # it never uses the bounded bypass, so a mention batch
+                    # cannot be dropped by repeated skip attempts.
+                    rejections = self.state.get("_mention_skip_rejections", 0)
+                    if force_reply or rejections < 1:
+                        self.state["_mention_skip_rejections"] = rejections + 1
+                        raise TaskError("group_participation_mention_skip_rejected",
+                                        "the batch contains an explicit mention of the bot; decide on the mentioned message itself")
+                    logger.warning("Mention skip allowed after bounded reconsideration")
         act, signature = "", ""
-        if arguments["mode"] == "reply" and not mentioned and admission.get("reason") in AUTONOMOUS_REASONS:
+        if arguments["mode"] == "reply" and not addressed and admission.get("reason") in AUTONOMOUS_REASONS:
             try:
                 snapshot = self.application.reply_settings.snapshot(self.context.actor, self.context, self.application.tasks.now())
                 settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
@@ -500,11 +532,36 @@ class CoreReplyToolSession:
                       if _field(call, "name", _field(_field(call, "function"), "name")) not in annotation_names]
         return len(operations) == 1
 
+    def _mention_force_reply_enabled(self):
+        """Whether the window opted in to the mention force-reply hard rule.
+
+        Reads the registered ``conversation.group_participation`` window value.
+        Any read failure keeps the default (off) so the guard stays identical
+        to the pre-switch behaviour.
+        """
+        try:
+            from companion_v2.conversation.participation import group_participation_settings
+            settings = group_participation_settings(self.application.runtime, self.context)
+            return bool(settings["mention_force_reply_enabled"])
+        except Exception:  # noqa: BLE001 - configuration trouble must not change the guard
+            logger.warning("mention_force_reply_enabled read failed; defaulting to off")
+            return False
+
+    def _addressed_group_turn(self, admission, trigger):
+        facts = admission if trigger is None else trigger
+        return (self.context.scope.kind is ScopeKind.GROUP
+                and isinstance(facts, dict)
+                and bool(facts.get("mentioned") or facts.get("native_wakeup")
+                         or admission.get("reason") == "direct_word"))
+
     def _latch_group_skip(self, wrapper, action, arguments):
         reason = arguments.get("reason", "")
+        admission = _field(self.prepared, "group_admission", {}) or {}
+        group_trigger = _field(self.prepared, "group_trigger")
         if (action != "group.participation.choose" or arguments.get("mode") != "skip"
                 or not isinstance(reason, str)
                 or self.context.scope.kind is not ScopeKind.GROUP
+                or self._addressed_group_turn(admission, group_trigger)
                 or self.state.get("group_participation") is not None
                 or self.state.get("_business_tools_started") or self.state.get("send_attempts", 0)):
             return
@@ -900,6 +957,8 @@ def inject_core_reply_tools(event, req, *, application):
     if private_chat and (profile == "full" or "extensions" in custom_groups):
         from .content_access import ensure_content_access
         ensure_content_access(application.runtime, session.context, observed_at=application.tasks.now())
+        from .game_access import ensure_game_access
+        ensure_game_access(application.runtime, session.context, observed_at=application.tasks.now())
     media_enabled = (
         not private_chat or profile == "full" or "media" in custom_groups
     )

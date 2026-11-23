@@ -320,7 +320,7 @@ def _sole_private_participant(runtime, context):
         AND json_extract(context_json, '$.actor.subject.subject_id') IS NOT NULL"""
     subjects = set()
     for table in ("conversation_batches", "conversation_native_turns",
-                  "conversation_native_observations"):
+                  "conversation_native_observations", "conversation_contexts"):
         try:
             rows = runtime.read_all(f"""SELECT DISTINCT json_extract(context_json,
                 '$.actor.subject.subject_id') AS subject FROM {table}

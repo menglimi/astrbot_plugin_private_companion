@@ -263,10 +263,13 @@ class CoreReplyToolExecutor:
                 link(self.runtime, source.reference, response.dependencies, self.tasks.now())
             images = publish_native_images(self.application.messages, invocation.context, source.reference,
                 invocation.descriptor.tool.action, response.images, at=self.tasks.now()) if response.images else []
+            code = (None if response.state == "succeeded" else response.error_code
+                    or ("external_not_started" if response.state == "failed" else "external_result_unknown"))
+            retry_disposition = response.retry_disposition or retry_disposition_for(code, response.state)
             row.update(state=response.state, effect=response.effect,
                 result={"state": response.state, "effect": response.effect, "invocation_id": invocation.invocation_id,
                         "operation_id": response.operation_id, "receipt_ref": response.receipt_ref,
-                        "code": response.error_code, "retry_disposition": response.retry_disposition},
+                        "code": code, "retry_disposition": retry_disposition},
                 source=json.loads(encode(source.reference)) if source is not None else None,
                 source_hash=digest(source) if source is not None else None, images=images)
             self._save(row)
@@ -275,6 +278,9 @@ class CoreReplyToolExecutor:
         provider = self.providers[row["action"]]
         self.external.admit(provider.descriptor, context, self.tasks.now())
         result = dict(row.get("result") or {"state": "unknown", "effect": row["effect"], "invocation_id": row["invocation_id"]})
+        if result.get("state") != "succeeded" and not result.get("code"):
+            result["code"] = ("external_not_started" if result.get("state") == "failed"
+                              else "external_result_unknown")
         if result.get("retry_disposition") is None:
             result["retry_disposition"] = retry_disposition_for(result.get("code"), result["state"])
         result.update(failure_guidance(result.get("code"), result["state"], action=row["action"]))

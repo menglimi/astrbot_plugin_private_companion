@@ -7,8 +7,18 @@ class GameSettingsMethods:
     def _configured_access_base(self) -> str:
         return self.public_base_url or getattr(self, 'external_base_url', '')
 
-    def _register_page_api(self) -> None:
-        pass
+    def _register_page_api(self) -> tuple[str, ...]:
+        from .management import GAME_MANAGEMENT_ACTIONS
+        self._registered_management_actions = tuple(sorted(GAME_MANAGEMENT_ACTIONS))
+        return self._registered_management_actions
+
+    def management_snapshot(self) -> dict[str, Any]:
+        from .management import snapshot
+        return snapshot(self)
+
+    async def management_action(self, action_name: str, payload: dict[str, Any], current) -> dict[str, Any]:
+        from .management import action
+        return await action(self, action_name, payload, current)
 
     async def page_rooms(self) -> dict[str, Any]:
         return {'status': 'ok', 'data': {'rooms': [room.admin_snapshot() for room in self.manager.rooms.values()], 'native_games': self._native_provider.list_web_games() if self._native_provider is not None else [], 'server': {'running': self.room_server.running, 'port': self.room_server.port if self.room_server.running else None, 'public_base_url': self.public_base_url, 'external_base_url': self.external_base_url, 'access_host': self.access_host}, 'tunnel': self.quick_tunnel.status(), 'xiangqi_engine': self.xiangqi_engine.status(), 'limits': {'group': self.manager.max_group_rooms, 'private': self.manager.max_private_rooms}, 'enabled_games': dict(self.manager.enabled_games)}}
@@ -48,7 +58,7 @@ class GameSettingsMethods:
         ticket = str(payload.pop('ticket', '') or '')
         try:
             return {'status': 'ok', 'data': await provider.web_action(ticket, payload)}
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             return {'status': 'error', 'message': str(exc), 'data': {}}
 
     async def page_room_action(self) -> dict[str, Any]:

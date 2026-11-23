@@ -65,18 +65,34 @@ class NewsContactEvents:
         self.runtime = contacts.runtime
         self.guard = bind(self.runtime, SOURCE_OWNER, self._validate_source)
         self._maintenance_workers = {}
+        self._closing_workers = []
         self._feed_locks = {}
+        self._closed = False
 
     def _port(self, preferences, context=None):
         resolver = getattr(self.port, "for_settings", None)
         return resolver(preferences.values, context) if callable(resolver) else self.port
 
     def close(self):
+        self._closed = True
         self.guard.close()
-        for worker in tuple(self._maintenance_workers.values()):
+        workers = tuple(self._maintenance_workers.values())
+        for worker in workers:
             worker.cancel()
+        self._closing_workers.extend(worker for worker in workers if not worker.done())
         self._maintenance_workers.clear()
         self._feed_locks.clear()
+        return workers
+
+    async def aclose(self):
+        self.close()
+        workers = tuple(self._closing_workers)
+        self._closing_workers.clear()
+        if workers:
+            await asyncio.wait(workers, timeout=0.25)
+            for worker in workers:
+                if worker.done() and not worker.cancelled():
+                    worker.exception()
 
     def _maintenance_allowed(self, context, preferences):
         """Whether the source should be kept warm independently of contact delivery.
@@ -217,6 +233,8 @@ class NewsContactEvents:
                          "failure": None, "item_count": len(batch.items), "candidate": False,
                          "items": self._feed_items(batch, port)}
             except Exception as error:
+                if self._closed:
+                    return None
                 try:
                     current = require(self.contacts.preferences.read(context, observed_at=self.contacts.tasks.now()))
                     current_port = self._source(current, context)
@@ -227,6 +245,8 @@ class NewsContactEvents:
                     return None
                 value = dict(previous or {"last_checked_at": None, "item_count": 0, "items": []})
                 value.update(last_attempt_at=stamp(attempted), failure=news_failure(error), candidate=False)
+            if self._closed:
+                return None
             self._save_shared_feed(port, value)
             self._save_diagnostic(context, {
                 "last_attempt_at": value.get("last_attempt_at"),
@@ -247,7 +267,7 @@ class NewsContactEvents:
 
     def maintain(self, context, preferences):
         """Refresh one shared feed without creating a contact opportunity."""
-        if not self._maintenance_allowed(context, preferences):
+        if self._closed or not self._maintenance_allowed(context, preferences):
             return
         try:
             port = self._source(preferences, context)
@@ -272,6 +292,8 @@ class NewsContactEvents:
 
     def maintain_role(self, settings):
         """Warm the public feed from global settings without selecting a window."""
+        if self._closed:
+            return
         preferences = type("RoleNewsPreferences", (), {"values": dict(settings)})()
         try:
             port = self._source(preferences)
@@ -295,20 +317,33 @@ class NewsContactEvents:
             name="companion:news-role-maintenance:" + digest(key))
 
     async def _maintain_role_feed(self, port):
-        attempted = self.contacts.tasks.now()
-        previous = self._shared_feed(port)
-        try:
-            batch = await asyncio.wait_for(port.fetch(), timeout=10)
-            if type(batch) is not ParseBatch:
-                raise ValueError("news port returned an invalid batch")
-            checked = self.contacts.tasks.now()
-            value = {"last_attempt_at": stamp(attempted), "last_checked_at": stamp(checked),
-                     "failure": None, "item_count": len(batch.items), "candidate": False,
-                     "items": self._feed_items(batch, port)}
-        except Exception as error:
-            value = dict(previous or {"last_checked_at": None, "item_count": 0, "items": []})
-            value.update(last_attempt_at=stamp(attempted), failure=news_failure(error), candidate=False)
-        self._save_shared_feed(port, value)
+        if self._closed:
+            return
+        fingerprint = self.source_fingerprint(port)
+        lock = self._feed_locks.setdefault(fingerprint, asyncio.Lock())
+        async with lock:
+            if self._closed:
+                return
+            attempted = self.contacts.tasks.now()
+            previous = self._shared_feed(port)
+            try:
+                batch = await asyncio.wait_for(port.fetch(), timeout=10)
+                if type(batch) is not ParseBatch:
+                    raise ValueError("news port returned an invalid batch")
+                if self._closed:
+                    return
+                checked = self.contacts.tasks.now()
+                value = {"last_attempt_at": stamp(attempted), "last_checked_at": stamp(checked),
+                         "failure": None, "item_count": len(batch.items), "candidate": False,
+                         "items": self._feed_items(batch, port)}
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if self._closed:
+                    return
+                value = dict(previous or {"last_checked_at": None, "item_count": 0, "items": []})
+                value.update(last_attempt_at=stamp(attempted), failure=news_failure(error), candidate=False)
+            self._save_shared_feed(port, value)
 
     async def _maintain(self, context, values):
         preferences = type("NewsMaintenancePreferences", (), {"values": values})()

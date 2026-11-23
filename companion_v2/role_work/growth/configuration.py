@@ -103,9 +103,10 @@ class GrowthConfigurationOwner(SparseConfigurationOwner):
     """Every entry point, including generic configuration patches, updates grants."""
 
     owner_id = OWNER
+    writes_main_runtime = True
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.runtime.transaction(), self.store.transaction():
             if target.scope.kind is not ScopeKind.PRIVATE:
                 raise ConfigurationError("growth_target_changed", "select a private participant")
             route = PersonaDirectory(self.runtime).resolve(target.scope, observed_at=observed_at)

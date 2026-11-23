@@ -27,8 +27,9 @@ class TogetherActivityMethods:
         if self.primary_user_id:
             return self.primary_user_id
         # A native V2 room is always opened from an authenticated private
-        # context. Resolve that exact subject from the active host session;
-        # never ask a legacy plugin facade to guess historical identities.
+        # context. Resolve that exact subject from the active host session
+        # (supporting both single-host and MultiHostSession); never guess
+        # when multiple unrelated private targets are ambiguous.
         controller = self.controller
         session = getattr(controller, 'session', None)
         target = getattr(getattr(session, 'profile', None), 'target', None)
@@ -36,6 +37,18 @@ class TogetherActivityMethods:
         resolved = _single_line(getattr(principal, 'native_account_id', ''), 80)
         if resolved:
             return resolved
+        if controller is not None and getattr(controller, '_multi_host', False):
+            try:
+                from astrbot_host.mobile_together import MobileTogetherBridge
+                bridge = MobileTogetherBridge(controller)
+                core_candidates = bridge.core_pairing_candidates()
+                if len(core_candidates) == 1:
+                    return _single_line(core_candidates[0], 80)
+                candidates = bridge.pairing_candidates()
+                if len(candidates) == 1:
+                    return _single_line(candidates[0], 80)
+            except Exception as exc:
+                logger.debug('[TogetherCompanion] MultiHost 主私聊用户解析降级: %s', _single_line(exc, 120))
         return ''
 
     def work_collaboration_available(self) -> bool:
@@ -358,7 +371,7 @@ class TogetherActivityMethods:
             cache[room.user_id] = (unified_origin, room.astrbot_conversation_id)
         return (manager, unified_origin, room.astrbot_conversation_id)
 
-    async def _record_astrbot_turns(self, room: RoomSession, user_text: str, bot_text: str, *, visual_context_used: bool=False) -> bool:
+    async def _record_astrbot_turns(self, room: RoomSession, user_text: str, bot_text: str, *, visual_context_used: bool=False, visual_digest: str='') -> bool:
         async with room.conversation_lock:
             try:
                 manager, unified_origin, conversation_id = await self._resolve_astrbot_conversation(room)
@@ -367,8 +380,20 @@ class TogetherActivityMethods:
                     logger.debug('[TogetherCompanion] 当前 AstrBot 版本不支持房间对话记录同步')
                     return False
                 recorded_user_text = str(user_text or '').strip()
-                if visual_context_used:
-                    recorded_user_text = f'【视频通话视觉上下文】本轮回答结合了用户主动开启的实时镜头画面；只同步文字语义，不保存画面。\n用户：{recorded_user_text}'
+                clean_digest = RoomSession._sanitize_visual_digest(visual_digest, max_chars=80)
+                if not clean_digest and visual_context_used:
+                    clean_digest = room.recent_visual_digest(max_age_seconds=90.0)
+                if clean_digest:
+                    if recorded_user_text:
+                        recorded_user_text = f'【画面简述】{clean_digest}\n用户：{recorded_user_text}'
+                    else:
+                        recorded_user_text = f'【画面简述】{clean_digest}'
+                elif visual_context_used:
+                    fallback_label = {
+                        'watch': '【共同观影画面上下文】本轮回答结合了双方正在观看的视频画面。',
+                        'work': '【屏幕协作画面上下文】本轮回答结合了已授权的桌面协作画面摘要。',
+                    }.get(room.mode, '【视频通话视觉上下文】本轮回答结合了用户主动开启的实时镜头画面。')
+                    recorded_user_text = f'{fallback_label}\n用户：{recorded_user_text}' if recorded_user_text else fallback_label
                 if room.native_v2 is not None:
                     label = f'【一起房间 · {self._room_activity_label(room)}】\n'
                     recorded_user_text = label + recorded_user_text if recorded_user_text else ''
@@ -421,8 +446,325 @@ class TogetherActivityMethods:
                 logger.warning('[TogetherCompanion] 观影评论同步失败: %s', exc, exc_info=True)
                 return False
 
+    def _is_multi_user_room(self, room: RoomSession) -> bool:
+        members = self._ensure_room_members(room)
+        return any(getattr(member, 'role', '') == 'guest' for member in members.values())
+
+    def _build_shared_experience_summary(self, room: RoomSession) -> tuple[str, str, str]:
+        """Distill one single-user room into redacted (title, summary, short_topic)."""
+        from companion_v2.sources.privacy import redact_text
+
+        mode_label = {
+            'watch': '共同观影',
+            'work': '工作协同',
+            'novel': '一起阅读',
+        }.get(room.mode, '视频通话')
+        subject_title = ''
+        if room.mode == 'watch':
+            subject_title = _single_line(room.media_state.get('title'), 80)
+        elif room.mode == 'novel':
+            subject_title = _single_line(room.novel_state.get('book_title'), 80)
+        elif room.mode == 'work' and isinstance(room.work_context, dict):
+            current = room.work_context.get('current')
+            if isinstance(current, dict):
+                subject_title = _single_line(current.get('resource_label') or current.get('scene'), 80)
+        subject_title = redact_text(subject_title) if subject_title else ''
+
+        digests: list[str] = []
+        for entry in list(getattr(room, 'visual_digest_ring', ()) or ())[-8:]:
+            item = RoomSession._sanitize_visual_digest(
+                entry.get('summary') if isinstance(entry, dict) else entry,
+                max_chars=80,
+            )
+            if item and item not in digests:
+                digests.append(item)
+            if len(digests) >= 6:
+                break
+
+        watch_knowledge = _single_line(redact_text(getattr(room, 'watch_knowledge', '') or ''), 180)
+        watch_memory = _single_line(redact_text(getattr(room, 'watch_memory', '') or ''), 360)
+        call_visuals = [
+            _single_line(redact_text(item), 120)
+            for item in list(getattr(room, 'call_visual_events', ()) or ())[-3:]
+            if _single_line(item, 120)
+        ]
+        work_state = getattr(room, 'work_state', None)
+        work_goal = _single_line(redact_text(work_state.get('goal') or ''), 120) if isinstance(work_state, dict) else ''
+        work_progress = _single_line(redact_text(work_state.get('progress') or ''), 180) if isinstance(work_state, dict) else ''
+
+        imported = max(0, int(getattr(room, 'imported_history_count', 0) or 0))
+        segment_offset = max(imported, int(getattr(room, 'shared_experience_history_offset', 0) or 0))
+        room_turns = list(getattr(room, 'history', ()) or ())[segment_offset:][-6:]
+        dialogue_lines: list[str] = []
+        for turn in room_turns:
+            if not isinstance(turn, dict):
+                continue
+            role = '对方' if turn.get('role') == 'user' else '我'
+            content = _single_line(redact_text(turn.get('content') or ''), 140)
+            if content:
+                dialogue_lines.append(f'{role}：{content}')
+
+        if not any((subject_title, digests, watch_knowledge, watch_memory, call_visuals, work_goal, work_progress, dialogue_lines)):
+            return ('', '', '')
+
+        title = f'一起房间 · {mode_label}《{subject_title}》' if subject_title else f'一起房间 · {mode_label}'
+        title = title[:96]
+        parts: list[str] = [f'刚在私聊一起房间结束了{mode_label}' + (f'（《{subject_title}》）' if subject_title else '') + '。']
+        if watch_knowledge:
+            parts.append(f'背景：{watch_knowledge}')
+        if watch_memory:
+            parts.append(f'剧情笔记：{watch_memory}')
+        if digests:
+            parts.append('看到的画面简述：' + '；'.join(digests))
+        elif call_visuals:
+            parts.append('通话画面互动：' + '；'.join(call_visuals))
+        if work_goal:
+            work_line = f'协作目标：{work_goal}'
+            if work_progress:
+                work_line += f'；进展：{work_progress}'
+            parts.append(work_line)
+        if dialogue_lines:
+            parts.append('关键对话：' + ' / '.join(dialogue_lines))
+
+        summary = redact_text('\n'.join(parts))[:1800].strip()
+        topic_bits = [mode_label + (f'《{subject_title}》' if subject_title else '')]
+        if digests:
+            topic_bits.append(digests[-1])
+        elif watch_memory:
+            topic_bits.append(watch_memory[:60])
+        elif work_goal:
+            topic_bits.append(work_goal[:60])
+        elif dialogue_lines:
+            topic_bits.append(dialogue_lines[-1][:60])
+        short_topic = _single_line('：'.join(bit for bit in topic_bits if bit), 96)
+        return (title, summary, short_topic)
+
+    async def _resolve_shared_experience_v2_context(self, room: RoomSession):
+        """Resolve exact private V2 context for one single-user room before final teardown."""
+        from .native_context import RoomContext, resolve_room_context
+        if room.native_v2 is not None:
+            return await resolve_room_context(self, room, allow_closing=True)
+        controller = getattr(self, 'controller', None)
+        if controller is None or not room.user_id:
+            return None
+        try:
+            from astrbot_host.mobile_together import MobileTogetherBridge
+            resolved = MobileTogetherBridge(controller)._target_context(room.user_id)
+            if resolved is None:
+                return None
+            session, application, context = resolved
+            if (getattr(getattr(context, 'scope', None), 'kind', None) is None
+                    or context.scope.kind.value != 'private'
+                    or getattr(getattr(context.actor, 'principal', None), 'native_account_id', '') != room.user_id):
+                return None
+            return RoomContext(session, application, context)
+        except Exception as exc:
+            logger.debug('[TogetherCompanion] 解析共同经历 V2 上下文降级: %s', _single_line(exc, 140))
+            return None
+
+    @staticmethod
+    def _check_v2_shared_experience_access(resolved, now: datetime) -> bool:
+        """Fail-closed V2 authorization check before any V2 or external memory write."""
+        if resolved is None:
+            return False
+        from companion_v2.execution.models import require
+        from companion_v2.foundation.refs import ScopeKind
+
+        session, application, context = resolved.session, resolved.application, resolved.context
+        if getattr(getattr(context, 'scope', None), 'kind', None) is not ScopeKind.PRIVATE:
+            return False
+        tasks = getattr(application, 'tasks', None)
+        check = getattr(tasks, 'check_context_access', None)
+        if not callable(check):
+            return False
+        try:
+            require(check(context, action='conversation.reply', observed_at=now))
+            authorize = getattr(session, 'authorize', None)
+            if callable(authorize):
+                authorize(context)
+            return True
+        except Exception as exc:
+            logger.debug('[TogetherCompanion] 共同经历 V2 授权未通过，已拦截沉淀: %s', _single_line(exc, 140))
+            return False
+
+    def _persist_v2_shared_experience(
+        self,
+        resolved,
+        room: RoomSession,
+        *,
+        title: str,
+        summary: str,
+        short_topic: str,
+        now: datetime,
+        epoch: int,
+        expected_revision: int,
+    ) -> int:
+        """Persist or update one redacted shared experience in V2 memory_views and private role.awareness."""
+        if resolved is None:
+            return expected_revision
+        from companion_v2.execution.models import digest, require
+        from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
+        from companion_v2.memory.models import Evidence
+        from companion_v2.sources.models import SourceRecord
+
+        application, context = resolved.application, resolved.context
+        if getattr(getattr(context, 'scope', None), 'kind', None) is not ScopeKind.PRIVATE:
+            return expected_revision
+        next_revision = max(0, int(expected_revision)) + 1
+        view_id = ('together-experience-' + digest([room.room_id])
+                   if epoch <= 0 else 'together-experience-' + digest([room.room_id, f'epoch:{epoch}']))
+        event_key = (f'together-room:{room.room_id}:r{next_revision}'
+                     if epoch <= 0 else f'together-room:{room.room_id}:e{epoch}:r{next_revision}')
+        saved_revision = expected_revision
+        memory = getattr(application, 'memory', None)
+        if memory is not None and getattr(memory, 'experiences', None) is not None:
+            try:
+                source_id = f'together-room:{room.room_id}' if epoch <= 0 else f'together-room:{room.room_id}:e{epoch}'
+                lineage_id = room.room_id if epoch <= 0 else f'{room.room_id}-e{epoch}'
+                source_ref = SourceRef(
+                    source_id,
+                    'together.native',
+                    context.scope,
+                    VersionRef(lineage_id, next_revision),
+                    now,
+                )
+                source_record = SourceRecord(source_ref, context.audience, digest(summary), summary)
+                require(memory.writer.sources.publish(source_record, observed_at=now))
+                evidence = Evidence(
+                    source_ref,
+                    source_record.content_hash,
+                    0,
+                    len(summary),
+                    digest(summary),
+                    context.role_binding.role.subject_id,
+                    'observation',
+                )
+                entities = tuple(
+                    item for item in (
+                        'together_room',
+                        room.mode,
+                        _single_line(room.media_state.get('title'), 80) if room.mode == 'watch' else '',
+                    )
+                    if item
+                )
+                receipt = require(memory.experiences.save(
+                    context,
+                    view_id=view_id,
+                    expected_revision=expected_revision,
+                    title=title,
+                    statements=({'text': summary, 'evidence': (evidence,), 'atoms': ()},),
+                    entities=entities,
+                    occurred_at=now,
+                    operation_key=f'together-room-save:{room.room_id}:e{epoch}:r{next_revision}',
+                ))
+                saved_revision = int(receipt.get('revision') or next_revision)
+            except Exception as exc:
+                logger.warning('[TogetherCompanion] 共同经历写入 V2 经历视图降级: room=%s error=%s',
+                               room.room_id[:10], _single_line(exc, 160))
+        awareness = getattr(application, 'cross_window', None) or getattr(getattr(application, 'messages', None), 'cross_window', None)
+        runtime = getattr(application, 'runtime', None)
+        if awareness is not None and runtime is not None and short_topic:
+            try:
+                with runtime.transaction() as connection:
+                    awareness.record_together_experience(
+                        connection,
+                        context,
+                        now,
+                        text=short_topic,
+                        event_key=event_key,
+                    )
+            except Exception as exc:
+                logger.warning('[TogetherCompanion] 共同经历写入 V2 在场摘要降级: room=%s error=%s',
+                               room.room_id[:10], _single_line(exc, 160))
+        return saved_revision
+
+    async def _push_external_shared_experience(
+        self,
+        resolved,
+        room: RoomSession,
+        *,
+        summary: str,
+        now: datetime,
+        epoch: int = 0,
+    ) -> str | None:
+        """Push one private-owner-only shared experience to MemoryCompanion via the one-way push port."""
+        from companion_v2.adapters.astrbot.memory_push import memory_push_provider
+        from companion_v2.capabilities.memory_push import (
+            DEFAULT_MEMORY_PUSH,
+            PUSH_SHARED_EXPERIENCE,
+            MemoryPushRecord,
+            push_memory,
+            push_memory_id,
+        )
+
+        application = resolved.application if resolved is not None else None
+        context = resolved.context if resolved is not None else None
+        port = getattr(application, 'memory_push', None)
+        if port is None or port is DEFAULT_MEMORY_PUSH:
+            port = memory_push_provider(getattr(self, 'context', None))
+        platform = ''
+        session_id = room.user_id
+        bot_id = ''
+        bot_account_id = ''
+        if context is not None:
+            platform = str(getattr(context.scope, 'platform', '') or '')
+            session_id = str(getattr(context.scope, 'session_id', '') or room.user_id)
+            bot_id = str(getattr(context.scope, 'bot_id', '') or '')
+            bot_account_id = str(getattr(context.scope, 'account_id', '') or '')
+        elif room.native_v2 is not None:
+            platform = str(room.native_v2.platform or '')
+            session_id = str(room.native_v2.session_id or room.user_id)
+            bot_id = str(room.native_v2.bot_id or '')
+            bot_account_id = str(room.native_v2.account_id or '')
+        else:
+            platform_ids = self._astrbot_conversation_platform_ids()
+            platform = platform_ids[0] if platform_ids else ''
+        bot_name = ''
+        room_bot_name = getattr(self, '_room_bot_name', None)
+        if callable(room_bot_name):
+            try:
+                bot_name = _single_line(room_bot_name(room), 60)
+            except Exception:
+                bot_name = ''
+        memory_type = {'watch': 'shared_watch', 'call': 'shared_call'}.get(room.mode, 'shared_experience')
+        memory_id = (
+            push_memory_id(PUSH_SHARED_EXPERIENCE, 'together_room', room.room_id)
+            if epoch <= 0
+            else push_memory_id(PUSH_SHARED_EXPERIENCE, 'together_room', room.room_id, f'epoch:{epoch}')
+        )
+        record = MemoryPushRecord(
+            memory_id=memory_id,
+            content=summary,
+            kind=PUSH_SHARED_EXPERIENCE,
+            scope='private',
+            session_id=session_id,
+            platform=platform,
+            occurred_at=now.isoformat(),
+            tags=('shared_experience', room.mode, 'together_room'),
+            visibility='private_owner',
+            metadata=(
+                ('source', 'together_room'),
+                ('visibility', 'private_owner'),
+                ('room_id', room.room_id),
+                ('watch_epoch', epoch),
+                ('mode', room.mode),
+                ('memory_type', memory_type),
+                ('user_id', room.user_id),
+                ('bot_id', bot_id),
+                ('bot_name', bot_name),
+                ('owner_bot_id', bot_account_id or bot_id),
+                ('visual_digest_count', len(getattr(room, 'visual_digest_ring', ()) or ())),
+            ),
+            confidence=0.9,
+            importance=0.72,
+            context=context,
+        )
+        return await push_memory(port, record)
+
     def _schedule_shared_experience_record(self, room: RoomSession, *, delay_seconds: float=0.0) -> None:
-        if room.native_v2 is not None or not self.record_shared_experiences or room.shared_experience_finalized:
+        if (not getattr(self, 'record_shared_experiences', True)
+                or room.shared_experience_finalized
+                or self._is_multi_user_room(room)):
             return
         existing = room.shared_experience_task
         if isinstance(existing, asyncio.Task) and (not existing.done()):
@@ -431,27 +773,73 @@ class TogetherActivityMethods:
         async def run() -> None:
             if delay_seconds > 0:
                 await asyncio.sleep(delay_seconds)
-            await self._record_shared_experience(room)
+            await self._record_shared_experience(room, final=False)
         self._spawn_task(room, run(), attr='shared_experience_task', label='共享经历后台整理失败')
 
-    async def _record_shared_experience(self, room: RoomSession) -> str:
-        if room.native_v2 is not None:
-            return ''
-        if room.shared_experience_finalized:
+    async def _record_shared_experience(self, room: RoomSession, *, final: bool = False) -> str:
+        if not getattr(self, 'record_shared_experiences', True) or room.shared_experience_finalized:
             return ''
         async with room.shared_experience_lock:
             if room.shared_experience_finalized:
                 return ''
-            return await self._record_shared_experience_locked(room)
+            return await self._record_shared_experience_locked(room, final=final)
 
-    async def _record_shared_experience_locked(self, room: RoomSession) -> str:
-        """Leave persistence to the V2 core observation and memory pipeline.
+    async def _record_shared_experience_locked(self, room: RoomSession, *, final: bool = False) -> str:
+        """Distill one single-user private room segment into V2 memory + one-way external push."""
+        from companion_v2.execution.models import digest
 
-        The compatibility room runner has no authorized V2 context to write
-        against, so it must not delegate to another plugin's memory store.
-        """
-        room.shared_experience_finalized = True
-        return ''
+        if self._is_multi_user_room(room) or not room.user_id:
+            if final:
+                room.shared_experience_finalized = True
+            return ''
+        epoch = max(0, int(getattr(room, 'watch_epoch', 0) or 0))
+        title, summary, short_topic = self._build_shared_experience_summary(room)
+        if not summary:
+            if final:
+                room.shared_experience_finalized = True
+            return ''
+        fingerprint = digest([epoch, title, summary, short_topic])
+        if (fingerprint == getattr(room, 'shared_experience_last_fingerprint', '')
+                and epoch == int(getattr(room, 'shared_experience_epoch', 0) or 0)):
+            if final:
+                room.shared_experience_finalized = True
+            return ''
+        resolved = await self._resolve_shared_experience_v2_context(room)
+        if room.native_v2 is not None and resolved is None:
+            logger.debug('[TogetherCompanion] V2 房间授权已失效，跳过共同经历沉淀: room=%s', room.room_id[:10])
+            if final:
+                room.shared_experience_finalized = True
+            return ''
+        now = self.controller.now() if callable(getattr(getattr(self, 'controller', None), 'now', None)) else datetime.now(timezone.utc)
+        if resolved is not None:
+            authorized = await asyncio.to_thread(self._check_v2_shared_experience_access, resolved, now)
+            if not authorized:
+                if final:
+                    room.shared_experience_finalized = True
+                return ''
+            expected_rev = (int(getattr(room, 'shared_experience_revision', 0) or 0)
+                            if epoch == int(getattr(room, 'shared_experience_epoch', 0) or 0) else 0)
+            saved_rev = await asyncio.to_thread(
+                self._persist_v2_shared_experience,
+                resolved,
+                room,
+                title=title,
+                summary=summary,
+                short_topic=short_topic,
+                now=now,
+                epoch=epoch,
+                expected_revision=expected_rev,
+            )
+            room.shared_experience_revision = saved_rev
+        await self._push_external_shared_experience(resolved, room, summary=summary, now=now, epoch=epoch)
+        room.shared_experience_last_fingerprint = fingerprint
+        room.shared_experience_epoch = epoch
+        if final:
+            room.shared_experience_finalized = True
+        logger.info('[TogetherCompanion] 已沉淀私聊共同经历: room=%s mode=%s epoch=%d rev=%d digests=%d v2=%s final=%s',
+                    room.room_id[:10], room.mode, epoch, int(getattr(room, 'shared_experience_revision', 0) or 0),
+                    len(getattr(room, 'visual_digest_ring', ()) or ()), resolved is not None, final)
+        return summary
 
     def _create_background_task(self, operation: Any) -> None:
         task = asyncio.create_task(operation)

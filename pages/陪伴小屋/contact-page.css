@@ -294,9 +294,54 @@
    它们铺满整页宽而不是挤在右栏：24 根柱子需要的是横向空间，
    放在 320px 的栏里每根柱子只剩十来像素，谁也读不出来。
    盘面保持 sticky：下面三块可以很长，滚下去时「此刻」不该滚出视野。 */
-.ct-dial-wrap{display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr);gap:var(--sp-5);align-items:start}
-.ct-dial-stage{position:sticky;top:12px;display:flex;flex-direction:column;align-items:center;gap:var(--sp-3)}
-.ct-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--ct-v-block);align-content:start;min-width:0}
+.ct-dial-wrap{display:grid;grid-template-columns:minmax(256px,316px) minmax(0,1fr);gap:var(--sp-4);align-items:stretch}
+.ct-dial-stage{
+  position:relative;display:flex;flex-direction:column;align-items:center;justify-content:space-between;
+  gap:var(--sp-3);min-width:0;padding:var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  background:var(--t-surface);box-shadow:var(--t-shadow);
+}
+.ct-dial-face{position:relative;width:100%;max-width:280px;margin:auto 0;display:flex;align-items:center;justify-content:center}
+.ct-dial-legend{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2);
+  width:100%;padding-top:var(--sp-3);border-top:1px solid var(--t-line);
+}
+.ct-ring-chip{
+  display:flex;align-items:flex-start;gap:var(--sp-2);min-width:0;
+  padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface-soft);color:var(--t-text-soft);text-align:left;
+  font:inherit;cursor:pointer;
+  transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease;
+}
+.ct-ring-chip:hover{border-color:var(--t-line-firm);background:var(--t-surface-raised)}
+.ct-ring-chip:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.ct-ring-chip > i{
+  flex:none;width:8px;height:8px;margin-top:var(--sp-1);border-radius:50%;
+  background:var(--ring,var(--t-line-firm));opacity:.45;
+}
+.ct-ring-chip.is-on > i{opacity:1}
+.ct-ring-chip.is-ring-quiet{--ring:var(--t-text-faint)}
+.ct-ring-chip.is-ring-curve{--ring:var(--t-accent)}
+.ct-ring-chip.is-ring-tier{--ring:var(--t-warn)}
+.ct-ring-chip.is-ring-greet{--ring:var(--t-ok)}
+.ct-ring-chip > span{display:flex;flex-direction:column;min-width:0}
+.ct-ring-chip strong{
+  font-size:var(--fs-micro);font-weight:650;color:var(--t-text-strong);
+  line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ct-ring-chip small{
+  font-size:var(--fs-micro);color:var(--t-text-faint);line-height:1.35;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ct-controls{display:grid;grid-template-columns:minmax(0,0.86fr) minmax(0,1.14fr);gap:var(--ct-v-block);align-items:stretch;min-width:0}
+.ct-global-summary{
+  display:grid;gap:var(--sp-2);margin:auto 0 0;padding:var(--sp-3);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface-soft);font-variant-numeric:tabular-nums;
+}
+.ct-global-summary > div{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);min-width:0}
+.ct-global-summary dt{font-size:var(--fs-micro);color:var(--t-text-faint);white-space:nowrap}
+.ct-global-summary dd{margin:0;font-size:var(--fs-tiny);font-weight:650;color:var(--t-text-strong);text-align:right;white-space:nowrap}
 /* .ct-rest 与 .ct-dial-wrap 是 .ct-main 的两个相邻子项，间距已由那里的
    flex gap 给出，这里不再加 margin——两处都加会得到双倍行距。 */
 .ct-rest{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--ct-v-block);align-items:start}
@@ -413,7 +458,7 @@
   width:30%;max-width:112px;display:flex;flex-direction:column;align-items:center;
   gap:2px;text-align:center;pointer-events:none;
 }
-.ct-center-title{font-size:var(--fs-tiny);font-weight:650;line-height:1.25}
+.ct-center-title{font-size:var(--fs-tiny);font-weight:650;line-height:1.25;white-space:nowrap}
 .ct-center-detail{font-size:var(--fs-micro);line-height:1.35;color:var(--t-text-faint)}
 .ct-center-action{
   pointer-events:auto;padding:3px var(--sp-1);border:0;border-radius:var(--r-xs);
@@ -1254,6 +1299,10 @@
   .ct-purpose-groups{grid-template-columns:minmax(0,1fr)}
   .ct-bucket.is-wide .ct-purpose-list{grid-template-columns:minmax(0,1fr)}
 }
+@container ct-main (max-width:860px){
+  .ct-dial-wrap{grid-template-columns:minmax(244px,292px) minmax(0,1fr);gap:var(--sp-4)}
+  .ct-controls{grid-template-columns:minmax(0,1fr)}
+}
 @container ct-main (max-width:780px){
   .ct-dial-wrap{grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:var(--sp-4)}
   .ct-controls{grid-template-columns:minmax(0,1fr)}
@@ -1276,12 +1325,8 @@
 }
 
 /* ===== 中屏 =====
-   1460px 以下（含 1280/1440px 桌面嵌套 iframe）右栏放不下两张控制卡，改竖排；盘面仍在左侧。 */
-@media (max-width:1460px){
-  .ct-controls{grid-template-columns:minmax(0,1fr)}
-}
+   主内容已由 @container ct-main 接管双栏/单栏折行，不再按外层视口宽度强压 .ct-controls。 */
 @media (max-width:1180px){
-  .ct-controls{grid-template-columns:minmax(0,1fr)}
   .ct-purpose-tools{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ct-purpose-search,.ct-purpose-results{grid-column:1 / -1}
   .ct-test-tools{grid-template-columns:repeat(2,minmax(0,1fr))}

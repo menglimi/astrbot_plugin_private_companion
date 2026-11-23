@@ -191,24 +191,30 @@ def parse_functional_command(text: object, *, channel: str) -> FunctionalCommand
         # Natural typing often omits the space ("陪伴状态", "陪伴群关闭LLM").
         # Accept it only when the remainder is an exact known alias, so ordinary
         # chat beginning with the root is still not a command.
+        matched = None
         for root in sorted(roots, key=len, reverse=True):
             if not head.startswith(root) or len(head) == len(root):
                 continue
             combined = (head[len(root):] + " " + tail).strip()
             intent, argument = _match_alias(combined, _ALIASES[channel])
             if intent:
-                return FunctionalCommand(channel, intent, argument)
-        # The two original image entry points were top-level command names.
-        if channel == "private" and head in {"陪伴画图", "陪伴合照", "陪伴图任务"}:
-            intent = {"陪伴画图": "image_generate", "陪伴合照": "image_edit", "陪伴图任务": "image_tasks"}[head]
-            return FunctionalCommand(channel, intent, parts[1].strip() if len(parts) > 1 else "")
-        return None
-    intent, argument = _match_alias(tail, _ALIASES[channel])
+                matched = (combined, intent, argument)
+                break
+        if matched is not None:
+            tail, intent, argument = matched
+        else:
+            # The two original image entry points were top-level command names.
+            if channel == "private" and head in {"陪伴画图", "陪伴合照", "陪伴图任务"}:
+                intent = {"陪伴画图": "image_generate", "陪伴合照": "image_edit", "陪伴图任务": "image_tasks"}[head]
+                return FunctionalCommand(channel, intent, parts[1].strip() if len(parts) > 1 else "")
+            return None
+    else:
+        intent, argument = _match_alias(tail, _ALIASES[channel])
     if channel == "private" and intent == "manage_diagnostics" and len(argument.split()) == 1:
-        head = tail.split(maxsplit=1)[0].casefold()
-        if head in {"答疑确认", "应用答疑建议"}:
+        action_head = tail.split(maxsplit=1)[0].casefold()
+        if action_head in {"答疑确认", "应用答疑建议"}:
             intent = "diagnostics_confirm"
-        elif head in {"答疑取消", "取消答疑建议"}:
+        elif action_head in {"答疑取消", "取消答疑建议"}:
             intent = "diagnostics_cancel"
     return FunctionalCommand(channel, intent, argument) if intent else None
 

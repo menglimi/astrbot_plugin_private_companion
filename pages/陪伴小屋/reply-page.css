@@ -1,4 +1,4 @@
-﻿.reply-heading,.reply-diagnostics header{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.reply-heading,.reply-diagnostics header{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
 .reply-heading h2{font-size:var(--fs-head)}.reply-heading p,.reply-preview>p,.reply-diagnostics>p{color:var(--t-text-soft);line-height:1.8;margin:var(--sp-2) 0 var(--sp-4)}
 .reply-notice,.reply-pending{padding:var(--sp-3) var(--sp-4);margin:var(--sp-4) 0;border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);line-height:1.8;overflow-wrap:anywhere}
 .reply-error,.reply-pending{background:var(--t-warn-quiet);color:var(--t-warn-ink)}.reply-pending button{margin-top:var(--sp-2)}

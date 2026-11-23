@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from tests.test_astrbot_staging_host import WebContext, host_config
 from tests.native_adapter_support import FakeEvent, FakeProvider, FakeReverseApi
@@ -46,7 +46,10 @@ class StagingStatusTopologyTests(unittest.IsolatedAsyncioTestCase):
         handler = next(handler for route, handler, _, _ in self.native.registered_web_apis
                        if route.endswith("/staging/status"))
         before = self.files()
-        response = await handler()
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={})), \
+             patch("astrbot_host.web_api.display_names",
+                   return_value=NS(targets=AsyncMock(side_effect=lambda rows: rows))):
+            response = await handler()
         self.assertEqual(response["status"], "ok")
         status = response["data"]
         self.assertEqual(status["mode"], "single")
@@ -67,7 +70,8 @@ class StagingStatusTopologyTests(unittest.IsolatedAsyncioTestCase):
         handler = next(handler for route, handler, _, _ in self.native.registered_web_apis
                        if route.endswith("/staging/status"))
         expected = {".pdf": True, ".docx": False, ".xlsx": True, ".pptx": False}
-        with patch("astrbot_host.controller.parser_availability", return_value=expected):
+        with patch("astrbot_host.controller.parser_availability", return_value=expected), \
+             patch("astrbot_host.web_api.request", NS(username="admin", query={})):
             response = await handler()
         self.assertEqual(response["status"], "ok")
         self.assertEqual(response["data"]["parser_availability"], expected)
@@ -117,7 +121,8 @@ class StagingStatusTopologyTests(unittest.IsolatedAsyncioTestCase):
         self.controller.intent_path.parent.mkdir(parents=True)
         self.controller.intent_path.write_text("{broken pin\n", encoding="utf-8", newline="\n")
         before = self.files()
-        status = await self.controller.web_api.api_status()
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={})):
+            status = await self.controller.web_api.api_status()
         self.assertEqual(status["status"], "ok")
         self.assertFalse(status["data"]["settings_valid"])
         self.assertEqual(status["data"]["settings_error"], "staging_intent_invalid__invalid")

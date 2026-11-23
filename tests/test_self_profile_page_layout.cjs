@@ -2,7 +2,7 @@
  *
  * 锁定以下核心视觉与结构契约：
  *   1. 顶部吸顶章节胶囊栏（.section-chips）：top:0 无顶缝、不透明微磨砂底色、清晰边框、
- *      桌面自动换行 + 完整 scroll-margin-top 避让，绝不压盖/裁切下方 01 / IDENTITY 标题；
+ *      桌面自动换行 + 完整 scroll-margin-top 避让，绝不压盖/裁切下方章节页眉；
  *   2. 「基础资料」卡片：统一标签在上/控件在下网格、姓名与性别首行配对、生日统一 40px 控件条
  *      且空错误节点不占高度、年龄感/职业/种族通栏并采用可自动换行的 .wb-line-grow 控件；
  *   3. 长文本域与阅读体验：156px–204px 起步高度 + field-sizing:content/JS 回退自适应至 360px 上限、
@@ -144,7 +144,7 @@ test("吸顶章节栏零遮挡：top:0 磨砂不透明底、清晰留白、8 章
 
   assert.match(topBodies(".deck-panels"), /--self-sticky-clearance:\s*76px/);
   assert.ok(
-    rules.some(rule => rule.contexts.some(ctx => /@container\s+self-journal\s+\(max-width:\s*1080px\)/.test(ctx))
+    rules.some(rule => rule.contexts.some(ctx => /@container\s+self-journal\s+\(max-width:\s*840px\)/.test(ctx))
       && rule.selector === ".deck-panels"
       && /--self-sticky-clearance:\s*118px/.test(rule.body)),
     "中等宽容器双行换行时应提升 --self-sticky-clearance 至 118px",
@@ -155,20 +155,30 @@ test("吸顶章节栏零遮挡：top:0 磨砂不透明底、清晰留白、8 章
     "大字号模式应进一步提高吸顶避让高度",
   );
 
-  for (const [sectionId, expectedKicker] of [
-    ["identity", "01 / IDENTITY"],
-    ["appearance", "02 / APPEARANCE"],
-    ["personality", "03 / PERSONALITY"],
-    ["voice", "04 / VOICE"],
-    ["motivations", "05 / MOTIVATION"],
-    ["boundaries", "06 / BOUNDARY"],
-    ["world", "07 / WORLD"],
-    ["expression_learning", "08 / EXPRESSION"],
+  assert.match(topBodies("#roleProfileConfigWorkspace .wb-section-panel::before"), /display:\s*none/,
+    "单章节卡片内部不再重复渲染英文伪元素眉标，由统一 #selfChapterIntro 承载");
+  assert.match(topBodies("#roleProfileConfigWorkspace .wb-section-panel>.wb-group:only-child>.wb-group-head"), /display:\s*none/,
+    "单分组章节不再与上方 #selfChapterIntro 重复渲染双标题");
+  assert.doesNotMatch(selfCss, /01 \/ IDENTITY|08 \/ EXPRESSION/, "self-page.css 不得残留生硬英文章节眉标");
+  assert.doesNotMatch(appJs, /01 \/ IDENTITY|08 \/ EXPRESSION/, "app.js 不得残留生硬英文章节眉标");
+  for (const [sectionId, chapterNo, chapterTitle] of [
+    ["identity", "第 01 章", "基础身份"],
+    ["appearance", "第 02 章", "外貌与识别"],
+    ["personality", "第 03 章", "性格与习惯"],
+    ["voice", "第 04 章", "表达口吻"],
+    ["motivations", "第 05 章", "内在动机"],
+    ["boundaries", "第 06 章", "互动边界"],
+    ["world", "第 07 章", "世界与场景"],
+    ["expression_learning", "第 08 章", "表达学习范围"],
   ]) {
-    const body = topBodies(`#roleProfileConfigWorkspace [data-wb-section-panel="${sectionId}"]::before`);
-    assert.ok(body.includes(`content:"${expectedKicker}"`) || body.includes(`content: "${expectedKicker}"`),
-      `章节 ${sectionId} 缺少正确眉标 ${expectedKicker}`);
+    assert.ok(appJs.includes(`${sectionId}:['${chapterNo}','${chapterTitle}'`),
+      `app.js SELF_CHAPTER_COPY 应包含优雅中文眉标 ${chapterNo} ${chapterTitle}`);
   }
+  assert.match(appJs, /document\.getElementById\('selfChapterIntro'\)\|\|document\.getElementById\('roleProfileConfigWorkspace'\)/,
+    "点击章节胶囊应定位到 #selfChapterIntro 而非 #roleProfileConfigWorkspace，杜绝吸顶栏裁切章节横幅");
+  assert.match(topBodies('.self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-control select'), /max-width:\s*380px/);
+  assert.match(topBodies('.self-page .wb-journal [data-wb-section-panel="expression_learning"] .wb-segmented'), /grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(topBodies(".self-page .wb-journal .wb-identity-picker .wb-source-count"), /margin-left:\s*auto/);
   assert.doesNotMatch(selfCss, /platform_names/, "已下线的 platform_names 不应残留在 self-page.css 中");
 });
 

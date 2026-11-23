@@ -1128,20 +1128,38 @@ window.CompanionContactPage = (() => {
     /* 这一帧要闪哪几片盘面。取出来就清空：动效只放一次，
        下一次渲染（哪怕什么都没改）不该重放。 */
     const pulse = data.pulseNow;
+    const curveOn = value("proactive_hour_activity_enabled") === true;
+    const quietSummary = quietOn && span ? `${hm(span.from)}–${hm(span.to)}` : "未开启";
+    const ringLegend = [
+      ["quiet", "外圈 · 免打扰", quietSummary, quietOn],
+      ["curve", "次圈 · 活动曲线", curveOn ? "按小时权重" : "未开启", curveOn],
+      ["tier", "三圈 · 强度档位", tier.label, tier.key !== "off"],
+      ["greet", "内圈 · 问候窗口", greetingsOn ? "每日问候" : "未开启", greetingsOn],
+    ];
     return `<div class="ct-dial-wrap">
-      <div class="ct-dial-stage${pulse.map(part => " is-pulse-" + part).join("")}">${dialSVG()}
-        <div class="ct-center is-${v.tone}">
-          <span class="ct-center-title">${e(v.title)}</span>
-          <span class="ct-center-detail">${e(v.detail)}</span>
-          ${v.automatic ? `<span class="ct-center-flag">${ICON.alert}${e(v.automatic.text)}</span>` : ""}
+      <div class="ct-dial-stage${pulse.map(part => " is-pulse-" + part).join("")}">
+        <div class="ct-dial-face">${dialSVG()}
+          <div class="ct-center is-${v.tone}">
+            <span class="ct-center-title">${e(v.title)}</span>
+            <span class="ct-center-detail">${e(v.detail)}</span>
+            ${v.automatic ? `<span class="ct-center-flag">${ICON.alert}${e(v.automatic.text)}</span>` : ""}
+          </div>
         </div>
         ${data.scanning ? `<div class="ct-scan-hint">时间游标按 ${e(value("quiet_timezone") || "未设时区")} 走</div>` : ""}
+        <div class="ct-dial-legend" role="group" aria-label="节律盘四圈图例">
+          ${ringLegend.map(([ring, label, summary, active]) => `<button type="button" class="ct-ring-chip is-ring-${ring}${active ? " is-on" : ""}" data-ring-jump="${ring}"><i aria-hidden="true"></i><span><strong>${e(label)}</strong><small>${e(summary)}</small></span></button>`).join("")}
+        </div>
       </div>
       <div class="ct-controls">
         ${fieldBlock("全局开关", [
           toggle("enabled", "允许主动联系", "单个用户的开关在私聊用户页调整。"),
           toggle("automatic_enabled", "后台自动联系", "未单独设置的用户跟随此值。"),
-        ])}
+          `<dl class="ct-global-summary" aria-label="当前生效节律速览">
+            <div><dt>当前档位</dt><dd>${e(tier.label)}</dd></div>
+            <div><dt>联系间隔</dt><dd>${effectiveInterval === null ? "—" : e(fmtDuration(effectiveInterval))}</dd></div>
+            <div><dt>对话后等候</dt><dd>${effectiveIdle === null ? "—" : e(fmtDuration(effectiveIdle))}</dd></div>
+          </dl>`,
+        ], "is-global-switch")}
         ${fieldBlock("免打扰 · 外圈", [
           toggle("quiet_enabled", "启用免打扰时段", "免打扰只决定「现在不开口」，不改动已登记的日程。"),
           timeRow("quiet_start", "开始", "quiet_end", "结束", span && span.from > span.to ? "跨午夜：" + hm(span.from) + " 至次日 " + hm(span.to) : "", {muted: !quietOn}),
@@ -2474,6 +2492,40 @@ window.CompanionContactPage = (() => {
     }
     if (next === "tests") void loadRecipients();
   }
+  let testDialogCloseTimer = null;
+  function canAnimateTestDialog(dialog) {
+    return Boolean(
+      dialog
+      && typeof requestAnimationFrame === "function"
+      && typeof window.getComputedStyle === "function"
+      && !document.body?.classList?.contains("reduce-motion")
+      && document.documentElement?.dataset?.motion !== "off"
+      && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
+  function closeTestDialog(afterClose) {
+    if (testDialogCloseTimer && !afterClose) return;
+    clearTimeout(testDialogCloseTimer);
+    testDialogCloseTimer = null;
+    const myTicket = version;
+    const finish = () => {
+      testDialogCloseTimer = null;
+      if (!live(myTicket)) return;
+      if (data) data.confirmTest = "";
+      if (typeof afterClose === "function") afterClose();
+      render();
+    };
+    const dialog = root?.querySelector?.("[data-test-confirm-dialog]");
+    if (dialog && typeof dialog.close === "function" && dialog.open) {
+      dialog.close();
+      if (canAnimateTestDialog(dialog)) {
+        const delay = document.documentElement?.dataset?.motion === "low" ? 110 : 185;
+        testDialogCloseTimer = setTimeout(finish, delay);
+        return;
+      }
+    }
+    finish();
+  }
   function render() {
     if (!root) return;
     /* 取这一帧要闪的盘面部分并立刻清空：动效是「刚刚改了什么」的一次确认，
@@ -2498,7 +2550,15 @@ window.CompanionContactPage = (() => {
     if (screenObservationHost) window.CompanionScreenObservation?.mount(screenObservationHost);
     else window.CompanionScreenObservation?.unmount();
     const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
-    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) testDialog.showModal();
+    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
+      testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+      testDialog.addEventListener("click", event => {
+        if (event.target !== testDialog) return;
+        const box = testDialog.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+      });
+      testDialog.showModal();
+    }
     if (data.scanning && data.ready) {
       data.scanning = false;
       const dial = root.querySelector(".ct-dial");
@@ -2703,22 +2763,25 @@ window.CompanionContactPage = (() => {
     if (event.target.closest("[data-test-recipient-save]")) { void saveRecipient(); return; }
     if (event.target.closest("[data-test-recipient-refresh]")) { void loadRecipients(); return; }
     const testAction = event.target.closest("[data-test-action]")?.dataset.testAction;
-    if (testAction === "cancel") { data.confirmTest = ""; render(); return; }
-    if (testAction === "confirm") { void runProactiveTest(data.confirmTest); return; }
+    if (testAction === "cancel") { closeTestDialog(); return; }
+    if (testAction === "confirm") { clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null; void runProactiveTest(data.confirmTest); return; }
     if (testAction === "unlock") {
-      if (data.testUncertain) { data.confirmTest = TEST_GUARD_RESET; render(); }
+      if (data.testUncertain) { clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null; data.confirmTest = TEST_GUARD_RESET; render(); }
       return;
     }
     if (testAction === "confirm-unlock") {
-      storeProactiveTestGuard(null);
-      data.confirmTest = ""; data.testGuard = null; data.testUncertain = false;
-      data.testResults = {};
-      notice("已解除测试锁。下一轮测试仍可能真实投递到核心管理员私聊。");
-      render(); return;
+      closeTestDialog(() => {
+        storeProactiveTestGuard(null);
+        data.testGuard = null; data.testUncertain = false;
+        data.testResults = {};
+        notice("已解除测试锁。下一轮测试仍可能真实投递到核心管理员私聊。");
+      });
+      return;
     }
     const testRun = event.target.closest("[data-test-run]")?.dataset.testRun;
     if (testRun) {
       if (data.testBusy || data.testUncertain || !recipientReady()) return;
+      clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null;
       data.confirmTest = testRun;
       render(); return;
     }
@@ -2754,6 +2817,17 @@ window.CompanionContactPage = (() => {
          现在由 set() 记进 data.pulse，渲染时变成 .is-pulse-tier。 */
       set("proactive_intensity_preset", tier);
       render(); return;
+    }
+    const ringJump = event.target.closest("[data-ring-jump]")?.dataset.ringJump;
+    if (ringJump && ["quiet", "curve", "tier", "greet"].includes(ringJump)) {
+      const target = root?.querySelector?.(`.ct-block.is-ring-${ringJump}`);
+      if (target) {
+        const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+          || document.documentElement?.dataset?.motion === "off";
+        target.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "center"});
+        highlightTarget(target);
+      }
+      return;
     }
     const anchor = event.target.closest("[data-anchor]")?.dataset.anchor;
     if (anchor) {
@@ -3092,6 +3166,8 @@ window.CompanionContactPage = (() => {
     window.CompanionScreenObservation?.unmount();
     ++version;
     pendingFocus = null;
+    clearTimeout(testDialogCloseTimer);
+    testDialogCloseTimer = null;
     if (autoRecoveryTimer !== null) clearTimeout(autoRecoveryTimer);
     autoRecoveryTimer = null;
     autoRecoveryKey = "";

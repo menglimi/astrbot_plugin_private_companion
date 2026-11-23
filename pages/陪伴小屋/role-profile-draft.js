@@ -182,14 +182,23 @@ window.CompanionRoleProfileDraft = (() => {
       return product.unwrap(response);
     } finally { clearTimeout(timer); }
   }
+  let personaChoicesSeq = 0;
+
   async function loadPersonaChoices(role) {
     const select = $("[data-role-profile-draft-persona]");
     if (!select || !role?.persona_api) return;
+    const seq = ++personaChoicesSeq;
+    const scope = currentScope();
+    const personaApi = role.persona_api;
+    const isStale = () => seq !== personaChoicesSeq || currentScope() !== scope
+      || window.CompanionProduct?.role?.()?.persona_api !== personaApi
+      || (select.isConnected === false);
     select.disabled = true;
     try {
       const product = window.CompanionProduct;
       const bridge = product?.bridgeNow?.() || (product?.bridgeFor ? await product.bridgeFor() : window.AstrBotPluginPage);
-      const value = product.unwrap(await bridge.apiGet(product.relative(role.persona_api), {limit: 1}));
+      const value = product.unwrap(await bridge.apiGet(product.relative(personaApi), {limit: 1}));
+      if (isStale()) return;
       state.personas = Array.isArray(value.personas) ? value.personas : [];
       state.providers = Array.isArray(value.providers) ? value.providers : [];
       state.defaultProviderId = String(value.default_provider_id || "");
@@ -231,9 +240,10 @@ window.CompanionRoleProfileDraft = (() => {
       select.disabled = !!state.pendingApply || state.busy || state.personas.length < 2;
       select.value = state.personaId;
     } catch (error) {
+      if (isStale()) return;
       notice(apiError(error), true);
     } finally {
-      select.disabled = !!state.pendingApply || state.busy || state.personas.length < 2;
+      if (!isStale()) select.disabled = !!state.pendingApply || state.busy || state.personas.length < 2;
     }
   }
   async function readCurrent(role, target = state.target) {
@@ -432,6 +442,7 @@ window.CompanionRoleProfileDraft = (() => {
     updateMeter();
   }
   function closeDialog() {
+    personaChoicesSeq += 1;
     cancelPendingGeneration();
     $("#roleProfileDraftDialog")?.close();
   }

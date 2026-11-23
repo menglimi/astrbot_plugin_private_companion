@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .comfyui_workflows import ancestors
-from .image_native_client import NativeClient
+from .comfyui_workflows import WorkflowError, ancestors
+from .image_native_client import NativeClient, NativeRejected
+from .image_preparation_task import PreparationError
 from .types import (BackendResult, ImageInvocation, NativeImageError, ReferenceImage, document, fingerprint,
                     validate_masked_inputs)
+
+
+_ERROR_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,95}")
 
 
 class GuardedClient(NativeClient):
@@ -21,21 +26,25 @@ class GuardedClient(NativeClient):
             original_request = self.comfy._request
 
             async def guarded_request(method, path, **kwargs):
-                await self._check(method)
+                await self._check(method, path)
                 return await original_request(method, path, **kwargs)
 
             self.comfy._request = guarded_request
 
-    async def _check(self, method):
-        check = getattr(self.fence, "read", self.fence) if method == "GET" else self.fence
+    async def _check(self, method, path=""):
+        # Read checks and ComfyUI input-image staging (/upload/image) happen
+        # before /prompt is submitted; they still enforce live authorization
+        # without marking the operation as dispatched to remote generation.
+        pre_submit = method == "GET" or (self.backend == "comfyui" and path == "/upload/image")
+        check = getattr(self.fence, "read", self.fence) if pre_submit else self.fence
         await check()
 
     async def request(self, method, path, **kwargs):
-        await self._check(method)
+        await self._check(method, path)
         return await super().request(method, path, **kwargs)
 
     async def download_comfy(self, url):
-        await self._check("GET")
+        await self._check("GET", "/view")
         return await super().download_comfy(url)
 
 
@@ -134,15 +143,18 @@ class NativeTransportBackend:
         parameters = {"width": 768, "height": 768, "steps": 24, "cfg_scale": 7,
                       "seed": -1, "batch_size": 1, "denoising_strength": 0.65}
         if tuple(item.reference_id for item in references) != invocation.reference_ids:
-            raise NativeImageError("reference_binding_mismatch")
+            raise NativeImageError("reference_binding_mismatch", unconfirmed=False)
         if invocation.operation == "mask_edit":
             if (len(references) != 2
                     or [item.role for item in references].count("edit_source") != 1
                     or [item.role for item in references].count("edit_mask") != 1):
-                raise NativeImageError("native_mask_bindings_invalid")
+                raise NativeImageError("native_mask_bindings_invalid", unconfirmed=False)
             source = next(item for item in references if item.role == "edit_source")
             mask = next(item for item in references if item.role == "edit_mask")
-            validate_masked_inputs(source.data, mask.data)
+            try:
+                validate_masked_inputs(source.data, mask.data)
+            except NativeImageError as exc:
+                raise NativeImageError(exc.code, unconfirmed=False) from None
         if self.backend == "sd_webui":
             configured = self.config.get("parameters", {})
             operation = "edit" if invocation.operation == "mask_edit" else invocation.operation
@@ -152,14 +164,14 @@ class NativeTransportBackend:
             parameters.update(configured.get(operation, {}))
             parameters.update(invocation.parameters)
             if parameters.keys() - {"width", "height", "steps", "cfg_scale", "seed", "batch_size", "sampler_name", "scheduler", "denoising_strength"}:
-                raise NativeImageError("unsupported_image_parameter")
+                raise NativeImageError("unsupported_image_parameter", unconfirmed=False)
             if invocation.operation == "edit" and len(references) != 1:
-                raise NativeImageError("native_reference_limit")
+                raise NativeImageError("native_reference_limit", unconfirmed=False)
             if invocation.operation == "mask_edit":
                 if (len(references) != 2
                         or [item.role for item in references].count("edit_source") != 1
                         or [item.role for item in references].count("edit_mask") != 1):
-                    raise NativeImageError("native_mask_bindings_invalid")
+                    raise NativeImageError("native_mask_bindings_invalid", unconfirmed=False)
                 source = next(item for item in references if item.role == "edit_source")
                 mask = next(item for item in references if item.role == "edit_mask")
                 return {"operation": invocation.operation, "parameters": parameters,
@@ -172,42 +184,58 @@ class NativeTransportBackend:
                                             "role": item.role} for item in references]}
         route = self.config.get("workflows", {}).get(invocation.operation)
         if not isinstance(route, dict) or set(route) != {"workflow", "mapping"}:
-            raise NativeImageError("native_workflow_unconfigured")
+            raise NativeImageError("native_workflow_unconfigured", unconfirmed=False)
         fields = route["mapping"].get("fields", {})
         images = sorted((key, item) for key, item in fields.items() if item.get("kind") == "image")
         masks = sorted((key, item) for key, item in fields.items() if item.get("kind") == "mask")
         prompts = [item for item in fields.values() if item.get("kind") == "prompt"]
-        if (not prompts or "positive_prompt" not in fields or any(item.get("mode") != "replace" for item in prompts)
-                or any(item.get("mode") != "replace" for _, item in (*images, *masks))):
-            raise NativeImageError("native_workflow_bindings_invalid")
+        valid_prompt_modes = {"replace", "append", "preserve"}
+        if (not prompts or "positive_prompt" not in fields
+                or fields["positive_prompt"].get("mode", "replace") not in {"replace", "append"}
+                or any(item.get("mode", "replace") not in valid_prompt_modes for item in prompts)
+                or any(item.get("mode", "replace") != "replace" for _, item in (*images, *masks))):
+            raise NativeImageError("native_workflow_bindings_invalid", unconfirmed=False)
         if invocation.operation == "mask_edit":
-            self._validate_mask_workflow(route)
+            try:
+                self._validate_mask_workflow(route)
+            except NativeImageError as exc:
+                raise NativeImageError(exc.code, unconfirmed=False) from None
             if (len(references) != 2 or len(images) != 1 or len(masks) != 1
                     or [item.role for item in references].count("edit_source") != 1
                     or [item.role for item in references].count("edit_mask") != 1):
-                raise NativeImageError("native_mask_bindings_invalid")
-        elif invocation.operation == "edit" and (masks or not references or len(images) != len(references)):
-            raise NativeImageError("native_workflow_bindings_invalid")
+                raise NativeImageError("native_mask_bindings_invalid", unconfirmed=False)
+        elif invocation.operation == "edit" and not references:
+            raise NativeImageError("missing_edit_source", unconfirmed=False)
+        elif invocation.operation == "edit" and (masks or len(images) != len(references)):
+            raise NativeImageError("native_workflow_bindings_invalid", unconfirmed=False)
         elif invocation.operation == "generate" and (masks or images or references):
-            raise NativeImageError("native_workflow_bindings_invalid")
-        if invocation.operation == "edit" and not references:
-            raise NativeImageError("native_reference_missing")
+            raise NativeImageError("native_workflow_bindings_invalid", unconfirmed=False)
         covered = {(item["node_id"], item["input_name"]) for _, item in (*images, *masks)}
         if any(node.get("class_type") in {"LoadImage", "ETN_LoadImageBase64"}
                and (key, "image") not in covered for key, node in route["workflow"].items()):
-            raise NativeImageError("native_workflow_unbound_reference")
+            raise NativeImageError("native_workflow_unbound_reference", unconfirmed=False)
         if any(node.get("class_type") == "ETN_LoadMaskBase64" and (key, "mask") not in covered
                for key, node in route["workflow"].items()):
-            raise NativeImageError("native_workflow_unbound_reference")
-        role_by_slot = {name: field.get("role", "edit_source") for name, field in images}
+            raise NativeImageError("native_workflow_unbound_reference", unconfirmed=False)
+        role_by_slot = {}
+        for name, field in images:
+            declared_role = field.get("role", "generic")
+            role_by_slot[name] = "" if declared_role in (None, "", "generic") else str(declared_role)
         role_by_slot.update({name: "edit_mask" for name, _ in masks})
         reference_by_role = {item.role: item for item in references} if invocation.operation == "mask_edit" else None
         if invocation.operation == "mask_edit":
-            bindings = [{"slot": name, "input_id": reference_by_role[role_by_slot[name]].reference_id,
-                         "role": role_by_slot[name]} for name, _ in (*images, *masks)]
+            bindings = []
+            for name, _ in (*images, *masks):
+                slot_role = role_by_slot[name] or "edit_source"
+                if slot_role not in reference_by_role:
+                    raise NativeImageError("native_workflow_reference_role_mismatch", unconfirmed=False)
+                bindings.append({"slot": name, "input_id": reference_by_role[slot_role].reference_id,
+                                 "role": slot_role})
         else:
-            if any(role_by_slot[name] != ref.role for (name, _), ref in zip(images, references)):
-                raise NativeImageError("native_workflow_reference_role_mismatch")
+            for (name, _), ref in zip(images, references):
+                slot_role = role_by_slot[name]
+                if slot_role and slot_role != ref.role:
+                    raise NativeImageError("native_workflow_reference_role_mismatch", unconfirmed=False)
             bindings = [{"slot": name, "input_id": ref.reference_id, "role": ref.role}
                         for (name, _), ref in zip(images, references)]
         plan = {"operation": invocation.operation, **route, "parameters": dict(invocation.parameters),
@@ -224,15 +252,27 @@ class NativeTransportBackend:
         client = GuardedClient(self.backend, self.config, self.directory, before_dispatch)
         prompt = {"positive": invocation.prompt, "negative": invocation.negative_prompt}
         reference_bytes = {item.reference_id: item.data for item in references}
+        submitted = False
         try:
             if self.backend == "sd_webui":
+                submitted = True
                 images, receipt = await client.generate_sd(plan, prompt, reference_bytes)
                 return BackendResult(tuple(images), receipt=receipt)
             workflow = await client.prepare_comfy(plan, prompt, reference_bytes, lambda: None, lambda _: None)
             output_node = plan["mapping"]["output_node"]
+            submitted = True
             task_id = await client.submit_comfy(workflow, output_node)
             locator = {"backend": self.backend, "revision": self.revision, "task_id": task_id, "output_node": output_node}
             return BackendResult(locator=locator, receipt={"backend": self.backend, "task_id": task_id, "submission_confirmed": True})
+        except NativeRejected:
+            code = "comfyui_rejected" if self.backend == "comfyui" else "sd_webui_rejected"
+            raise NativeImageError(code, unconfirmed=False) from None
+        except WorkflowError:
+            raise NativeImageError("native_workflow_mapping_invalid", unconfirmed=False) from None
+        except PreparationError as exc:
+            raw_code = getattr(exc, "code", "")
+            code = raw_code if isinstance(raw_code, str) and _ERROR_CODE_RE.fullmatch(raw_code) else "backend_result_unconfirmed"
+            raise NativeImageError(code, unconfirmed=submitted) from None
         finally:
             await client.close()
 

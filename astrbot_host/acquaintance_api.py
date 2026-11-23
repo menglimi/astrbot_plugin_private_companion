@@ -519,15 +519,27 @@ class AcquaintanceWebAPI:
         result["counts"] = PersonAcquaintanceDirectory._counts(result["persons"])
         return result
 
-    async def _operator(self):
-        """The signed-in-operator, loaded-profile gate both routes must pass.
+    def _uses_default_operator(self) -> bool:
+        return ("_operator" not in getattr(self, "__dict__", {})
+                and getattr(type(self), "_operator", None) is _DEFAULT_OPERATOR)
 
-        Identity comes first on purpose: who is asking is knowable before what
-        they asked for, and an unauthenticated caller must not get a different
-        answer by varying the request shape.
-        """
-        controller = self.controller
+    def _require_username(self):
+        if not self._uses_default_operator():
+            return None
         username = request.username
+        if type(username) is not str or not username.strip() or username.startswith("api_key:"):
+            raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+        return username
+
+    async def _resolve_operator(self, username=None):
+        """Resolve operator off-loop by default, while honoring direct ``_operator`` patches."""
+        if not self._uses_default_operator():
+            return await self._operator()
+        resolved_username = self._require_username() if username is None else username
+        return await asyncio.to_thread(self._operator_sync, resolved_username)
+
+    def _operator_sync(self, username):
+        controller = self.controller
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if controller._terminated:
@@ -540,6 +552,16 @@ class AcquaintanceWebAPI:
                            "page.management"),
             action="memory.manage", observed_at=controller.now()))
         return username, operator
+
+    async def _operator(self):
+        """The signed-in-operator, loaded-profile gate both routes must pass.
+
+        Identity comes first on purpose: who is asking is knowable before what
+        they asked for, and an unauthenticated caller must not get a different
+        answer by varying the request shape.
+        """
+        username = self._require_username()
+        return await asyncio.to_thread(self._operator_sync, username)
 
     def _management(self):
         controller = self.controller
@@ -588,17 +610,26 @@ class AcquaintanceWebAPI:
             stored_only = query.get("read_mode") == "stored"
             if query and not stored_only:
                 raise TaskError("acquaintance_request_invalid", "the directory does not accept query overrides")
-            async with controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
                 username, _ = await self._operator()
+            async with controller._control_lock:
+                if controller._terminated:
+                    raise TaskError("staging_host_terminated", "the plugin has stopped")
                 runtime, settings_snapshot = controller.runtime, controller.settings
+                if runtime is None or settings_snapshot is None:
+                    raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
                 settings = self._settings()
                 group_access = _group_target_access(controller, settings)
                 routes, groups = _directory_routes(settings)
-                # 目录投影是同步 SQLite + 纯 Python 的重活（冷读实测 2–5 秒）。
-                # 它原先跑在事件循环上，期间所有 Dashboard 请求（包括配置保存）
-                # 都发不出去；放进工作线程后，锁仍串行目录请求，但不再占住循环。
-                result = await asyncio.to_thread(
-                    lambda: self._members(PersonAcquaintanceDirectory(runtime).directory(routes), settings))
+
+            def read_directory():
+                if default_op:
+                    self._operator_sync(username)
+                return self._members(PersonAcquaintanceDirectory(runtime).directory(routes), settings)
+
+            result = await asyncio.to_thread(read_directory)
             topology = getattr(controller, "session_topology", None)
             stored_names = (await asyncio.to_thread(topology.stored_group_names)
                             if topology is not None and stored_only else {})
@@ -612,44 +643,48 @@ class AcquaintanceWebAPI:
                     reason += (f"（{type(error).__name__}: {detail[:512]}）" if detail
                                else f"（{type(error).__name__}）")
                     raise TaskError("acquaintance_native_directory_unavailable", reason) from error
-            async with controller._control_lock:
+            if not default_op:
                 await self._operator()
+            async with controller._control_lock:
+                if controller._terminated:
+                    raise TaskError("staging_host_terminated", "the plugin has stopped")
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading native sessions")
 
-                def assemble():
-                    members = {}
-                    known_groups = {_group_route_key(group) for group in groups}
-                    for person in result["persons"]:
-                        for group_id, entry in person["groups"].items():
-                            key = _group_route_key({"platform_id": person["platform"], "bot_id": person["bot_id"],
-                                                    "account_id": person["account_id"], "group_id": group_id})
-                            members.setdefault(key, []).append(person)
-                            if key not in known_groups:
-                                known_groups.add(key)
-                                groups.append({"group_id": group_id, "bot_id": person["bot_id"],
-                                    "platform_id": person["platform"], "account_id": person["account_id"],
-                                    "configured": False, "member_count": 0, "msg_count": 0})
-                    for group in groups:
-                        for person in members.get(_group_route_key(group), ()):
-                            group["member_count"] += 1
-                            group["msg_count"] += person["groups"][group["group_id"]]["msg_count"]
-                    networks = _group_relationship_networks(runtime, settings, result["persons"], groups)
-                    known_groups = {_group_route_key(group) for group in groups}
-                    for network in networks:
-                        key = _group_route_key(network)
+            def assemble():
+                if default_op:
+                    self._operator_sync(username)
+                members = {}
+                known_groups = {_group_route_key(group) for group in groups}
+                for person in result["persons"]:
+                    for group_id, entry in person["groups"].items():
+                        key = _group_route_key({"platform_id": person["platform"], "bot_id": person["bot_id"],
+                                                "account_id": person["account_id"], "group_id": group_id})
+                        members.setdefault(key, []).append(person)
                         if key not in known_groups:
                             known_groups.add(key)
-                            groups.append({"group_id": network["group_id"], "bot_id": network["bot_id"],
-                                           "platform_id": network["platform_id"], "account_id": network["account_id"],
-                                           "configured": network["configured"],
-                                           "member_count": network["member_count"],
-                                           "msg_count": sum(member["group_observation"]["message_count"]
-                                                             for member in network["members"])})
-                    return networks
+                            groups.append({"group_id": group_id, "bot_id": person["bot_id"],
+                                "platform_id": person["platform"], "account_id": person["account_id"],
+                                "configured": False, "member_count": 0, "msg_count": 0})
+                for group in groups:
+                    for person in members.get(_group_route_key(group), ()):
+                        group["member_count"] += 1
+                        group["msg_count"] += person["groups"][group["group_id"]]["msg_count"]
+                networks = _group_relationship_networks(runtime, settings, result["persons"], groups)
+                known_groups = {_group_route_key(group) for group in groups}
+                for network in networks:
+                    key = _group_route_key(network)
+                    if key not in known_groups:
+                        known_groups.add(key)
+                        groups.append({"group_id": network["group_id"], "bot_id": network["bot_id"],
+                                       "platform_id": network["platform_id"], "account_id": network["account_id"],
+                                       "configured": network["configured"],
+                                       "member_count": network["member_count"],
+                                       "msg_count": sum(member["group_observation"]["message_count"]
+                                                         for member in network["members"])})
+                return networks
 
-                # 与上面同理：关系网拼装也要逐人/逐群读库，不能占事件循环。
-                group_networks = await asyncio.to_thread(assemble)
+            group_networks = await asyncio.to_thread(assemble)
             for group in groups:
                 name = stored_names.get((group.get("platform_id"), group.get("account_id"),
                                          str(group.get("group_id") or "")))
@@ -659,22 +694,26 @@ class AcquaintanceWebAPI:
             name_options = {"cached_only": True} if stored_only else {}
             persons, groups = await asyncio.gather(names.persons(result["persons"], **name_options),
                                                   names.targets(groups, **name_options))
+            await self._resolve_operator(username)
             async with controller._control_lock:
-                await self._operator()
+                if controller._terminated:
+                    raise TaskError("staging_host_terminated", "the plugin has stopped")
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading display names")
-                return outcome_response(Outcome.success({
-                    "installation_id": controller.runtime.installation_id,
-                    "profile_id": getattr(controller, "target_id", None) or controller.settings.profile_id,
-                    "operator_name": username, "persons": persons,
-                    "groups": groups, "counts": result["counts"],
-                    "group_access": group_access,
-                    "group_networks": list(group_networks),
-                    "directory_refresh_pending": stored_only,
-                    # The page must not keep its own copy of which capabilities this
-                    # page owns: a second list would drift and start offering a
-                    # control for a capability that cannot be changed here.
-                    "page_managed_capabilities": list(PAGE_MANAGED_CAPABILITIES)}))
+                installation_id = controller.runtime.installation_id
+                profile_id = getattr(controller, "target_id", None) or controller.settings.profile_id
+            return outcome_response(Outcome.success({
+                "installation_id": installation_id,
+                "profile_id": profile_id,
+                "operator_name": username, "persons": persons,
+                "groups": groups, "counts": result["counts"],
+                "group_access": group_access,
+                "group_networks": list(group_networks),
+                "directory_refresh_pending": stored_only,
+                # The page must not keep its own copy of which capabilities this
+                # page owns: a second list would drift and start offering a
+                # control for a capability that cannot be changed here.
+                "page_managed_capabilities": list(PAGE_MANAGED_CAPABILITIES)}))
         except (TaskError, HostControlError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except Exception as error:
@@ -696,19 +735,32 @@ class AcquaintanceWebAPI:
         from .web_api import outcome_response
         controller = self.controller
         try:
-            async with controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
                 await self._operator()
-                rows = controller.runtime.read_all(
-                    "SELECT document_json FROM memory_views WHERE kind = ? "
-                    "ORDER BY updated_at DESC LIMIT ?", (CONTACT_KIND, MAX_STRANGER_ROWS))
-                muted = {row["view_id"] for row in controller.runtime.read_all(
-                    "SELECT view_id FROM memory_views WHERE kind = ?", (BLOCK_KIND,))}
+            async with controller._control_lock:
+                if default_op:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = controller.runtime
                 try:
                     settings = self._settings()
                 except (TaskError, HostControlError):
                     # A broken configuration must not hide the ledger: every row
                     # then reads ``unavailable`` until the account is restored.
                     settings = None
+
+            def read_strangers():
+                if default_op:
+                    self._operator_sync(username)
+                rows = runtime.read_all(
+                    "SELECT document_json FROM memory_views WHERE kind = ? "
+                    "ORDER BY updated_at DESC LIMIT ?", (CONTACT_KIND, MAX_STRANGER_ROWS))
+                muted = {row["view_id"] for row in runtime.read_all(
+                    "SELECT view_id FROM memory_views WHERE kind = ?", (BLOCK_KIND,))}
                 items = []
                 for row in rows:
                     try:
@@ -725,7 +777,10 @@ class AcquaintanceWebAPI:
                     item["target_state"], item["target_id"] = _stranger_target(
                         controller, settings, route)
                     items.append(item)
-                return outcome_response(Outcome.success({"items": items}))
+                return items
+
+            items = await asyncio.to_thread(read_strangers)
+            return outcome_response(Outcome.success({"items": items}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
 
@@ -760,18 +815,33 @@ class AcquaintanceWebAPI:
             if route[2] == "*":
                 raise TaskError("stranger_target_request_invalid",
                                 "the sender must be one concrete account, not a wildcard")
-            candidate = None
-            async with controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
                 await self._operator()
+            async with controller._control_lock:
+                if default_op:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
                 try:
                     settings = self._settings()
                 except (TaskError, HostControlError):
                     raise TaskError("stranger_target_unavailable",
                                     "the plugin configuration cannot be read right now") from None
                 expected = deepcopy(dict(controller.config))
+
+            def prepare_target():
+                if default_op:
+                    self._operator_sync(username)
                 state, target_id = _stranger_target(controller, settings, route)
+                candidate = None
                 if state == "addable":
                     candidate, target_id = _stranger_candidate(expected, settings, route)
+                return state, target_id, candidate
+
+            state, target_id, candidate = await asyncio.to_thread(prepare_target)
             if candidate is None:
                 return outcome_response(Outcome.success(_stranger_receipt(state, target_id)))
             try:
@@ -782,7 +852,8 @@ class AcquaintanceWebAPI:
                 # Another administrator may have saved this very target while
                 # this request was in flight; report the state they produced.
                 async with controller._control_lock:
-                    state, target_id = _stranger_target(controller, self._settings(), route)
+                    current_settings = self._settings()
+                state, target_id = await asyncio.to_thread(_stranger_target, controller, current_settings, route)
                 if state not in ("added", "covered"):
                     raise
                 return outcome_response(Outcome.success(
@@ -823,12 +894,27 @@ class AcquaintanceWebAPI:
                 raise TaskError("stranger_remove_request_invalid",
                                 "the receiving account and sender must be route identifiers") from None
             view_id = "stranger-contact:" + route[0] + ":" + route[1] + ":" + route[2]
-            async with controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
                 await self._operator()
-                with controller.runtime.transaction() as connection:
-                    removed = connection.execute(
+            async with controller._control_lock:
+                if default_op:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = controller.runtime
+
+            def delete_row():
+                if default_op:
+                    self._operator_sync(username)
+                with runtime.transaction() as connection:
+                    return connection.execute(
                         "DELETE FROM memory_views WHERE view_id = ? AND kind = ?",
                         (view_id, CONTACT_KIND)).rowcount
+
+            removed = await asyncio.to_thread(delete_row)
             return outcome_response(Outcome.success({"removed": bool(removed)}))
         except (TaskError, HostControlError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -863,13 +949,26 @@ class AcquaintanceWebAPI:
         code = "stranger_block_request_invalid"
         try:
             platform_id, login, peer = await self._stranger_command(code)
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
+                await self._operator()
             at = controller.now()
             view_id = stranger_block_view_id(platform_id, login, peer)
             document = {"version": 1, "platform_id": platform_id, "login": login, "peer": peer,
                         "blocked_at": stamp(at)}
             async with controller._control_lock:
-                await self._operator()
-                with controller.runtime.transaction() as connection:
+                if default_op:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = controller.runtime
+
+            def block_row():
+                if default_op:
+                    self._operator_sync(username)
+                with runtime.transaction() as connection:
                     row = connection.execute(
                         "SELECT revision FROM memory_views WHERE view_id = ? AND kind = ?",
                         (view_id, BLOCK_KIND)).fetchone()
@@ -879,6 +978,8 @@ class AcquaintanceWebAPI:
                         "document_json = excluded.document_json, updated_at = excluded.updated_at",
                         (view_id, view_id, BLOCK_KIND, (row["revision"] + 1) if row else 1,
                          encode(document), encode({"owner": "relationship.stranger_block"}), stamp(at)))
+
+            await asyncio.to_thread(block_row)
             return outcome_response(Outcome.success({"blocked": True}))
         except (TaskError, HostControlError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -891,13 +992,28 @@ class AcquaintanceWebAPI:
         code = "stranger_unblock_request_invalid"
         try:
             platform_id, login, peer = await self._stranger_command(code)
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
+                await self._operator()
             view_id = stranger_block_view_id(platform_id, login, peer)
             async with controller._control_lock:
-                await self._operator()
-                with controller.runtime.transaction() as connection:
-                    removed = connection.execute(
+                if default_op:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = controller.runtime
+
+            def unblock_row():
+                if default_op:
+                    self._operator_sync(username)
+                with runtime.transaction() as connection:
+                    return connection.execute(
                         "DELETE FROM memory_views WHERE view_id = ? AND kind = ?",
                         (view_id, BLOCK_KIND)).rowcount
+
+            removed = await asyncio.to_thread(unblock_row)
             return outcome_response(Outcome.success({"blocked": False, "removed": bool(removed)}))
         except (TaskError, HostControlError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -907,12 +1023,25 @@ class AcquaintanceWebAPI:
         from .web_api import outcome_response
         controller = self.controller
         try:
-            async with controller._control_lock:
-                _, operator = await self._operator()
-                query = self._query(("subject_id", *PERSON_ROUTE_KEYS), required=("subject_id",))
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if default_op:
+                async with controller._control_lock:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+            _, operator = await self._resolve_operator(username)
+            query = self._query(("subject_id", *PERSON_ROUTE_KEYS), required=("subject_id",))
+            subject_id = query["subject_id"]
+            route = self._route_query(query)
+
+            def read_status():
                 manager = self._management()
-                return outcome_response(manager.status(operator, query["subject_id"],
-                    route=self._route_query(query), observed_at=controller.now()))
+                return manager.status(operator, subject_id, route=route, observed_at=controller.now())
+
+            result = await asyncio.to_thread(read_status)
+            return outcome_response(result)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
 
@@ -936,19 +1065,33 @@ class AcquaintanceWebAPI:
             command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
             if type(command) is not dict:
                 raise TaskError("authorization_command_invalid", "an explicit authorization command is required")
-            async with controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if default_op:
+                async with controller._control_lock:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                operator = None
+            else:
                 _, operator = await self._operator()
+
+            def configure_auth():
+                resolved_op = self._operator_sync(username)[1] if default_op else operator
                 manager = self._management()
-                result = manager.configure(operator, command, observed_at=controller.now())
-                if result.is_success and not result.unwrap()["replayed"]:
-                    # Every later request re-reads the current rows, so no in-memory
-                    # cache has to be invalidated here; the session only needs to know
-                    # that authority moved so an already-assembled turn rechecks it.
-                    session = (None if controller._terminated
-                               else controller.session or controller.last_session)
-                    if session is not None:
-                        session.application.notify()
-                return outcome_response(result)
+                return manager.configure(resolved_op, command, observed_at=controller.now())
+
+            result = await asyncio.to_thread(configure_auth)
+            if result.is_success and not result.unwrap()["replayed"]:
+                # Every later request re-reads the current rows, so no in-memory
+                # cache has to be invalidated here; the session only needs to know
+                # that authority moved so an already-assembled turn rechecks it.
+                session = (None if controller._terminated
+                           else controller.session or controller.last_session)
+                if session is not None:
+                    session.application.notify()
+            return outcome_response(result)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, UnicodeError, RecursionError):
@@ -979,15 +1122,32 @@ class AcquaintanceWebAPI:
                     or type(command.get("expected_revision")) is not int
                     or type(command.get("admin_nickname")) is not str):
                 raise TaskError("person_nickname_command_invalid", "the name command does not match its contract")
-            async with controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
                 _, operator = await self._operator()
+            else:
+                operator = None
+            async with controller._control_lock:
+                if default_op:
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if controller.runtime is None or controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = controller.runtime
                 routes, _ = _directory_routes(self._settings())
-                manager = PersonAcquaintanceNameManagement(controller.runtime)
-                return outcome_response(manager.set_nickname(operator, routes=routes, observed_at=controller.now(),
+
+            def save_name():
+                resolved_op = self._operator_sync(username)[1] if default_op else operator
+                manager = PersonAcquaintanceNameManagement(runtime)
+                return manager.set_nickname(resolved_op, routes=routes, observed_at=controller.now(),
                     subject_id=command["subject_id"], platform=command["platform"], bot_id=command["bot_id"],
                     account_id=command["account_id"], role_id=command["role_id"],
                     native_account_id=command["native_account_id"], nickname=command["admin_nickname"],
-                    expected_revision=command["expected_revision"], operation_key=command["operation_key"]))
+                    expected_revision=command["expected_revision"], operation_key=command["operation_key"])
+
+            result = await asyncio.to_thread(save_name)
+            return outcome_response(result)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, UnicodeError, RecursionError):
@@ -1013,14 +1173,23 @@ class AcquaintanceWebAPI:
     async def set_identity(self):
         from .web_api import outcome_response
         try:
-            async with self.controller._control_lock:
-                _, operator = await self._operator()
-                command = await self._command(expected={"operation_key", "subject_id", "route", "tier", "expected_revision"})
-                result = self._management().set_identity(operator, command, observed_at=self.controller.now())
-                session = self.controller.session or self.controller.last_session
-                if result.is_success and session:
-                    session.application.notify()
-                return outcome_response(result)
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if default_op:
+                async with self.controller._control_lock:
+                    if self.controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if self.controller.runtime is None or self.controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+            _, operator = await self._resolve_operator(username)
+            command = await self._command(expected={"operation_key", "subject_id", "route", "tier", "expected_revision"})
+            result = await asyncio.to_thread(
+                lambda: self._management().set_identity(operator, command, observed_at=self.controller.now())
+            )
+            session = self.controller.session or self.controller.last_session
+            if result.is_success and session:
+                session.application.notify()
+            return outcome_response(result)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, UnicodeError, RecursionError):
@@ -1031,26 +1200,40 @@ class AcquaintanceWebAPI:
         started_at = perf_counter()
         lock_acquired_at = None
         try:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
             async with self.controller._control_lock:
                 lock_acquired_at = perf_counter()
-                _, operator = await self._operator()
-                if write:
-                    command = await self._command(expected={"operation_key", "subject_id", "route", "sections"})
-                    subject_id, route = command["subject_id"], command["route"]
-                else:
-                    query = self._query(("subject_id", *PERSON_ROUTE_KEYS), required=("subject_id", *PERSON_ROUTE_KEYS))
-                    subject_id, route = query["subject_id"], self._route_query(query)
-                context = self._context(subject_id, route)
+                if default_op:
+                    if self.controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if self.controller.runtime is None or self.controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+            _, operator = await self._resolve_operator(username)
+            if write:
+                command = await self._command(expected={"operation_key", "subject_id", "route", "sections"})
+                subject_id, route = command["subject_id"], command["route"]
+            else:
+                query = self._query(("subject_id", *PERSON_ROUTE_KEYS), required=("subject_id", *PERSON_ROUTE_KEYS))
+                subject_id, route = query["subject_id"], self._route_query(query)
+                command = None
+            async with self.controller._control_lock:
                 session = self.controller.session or self.controller.last_session
                 if session is None:
                     raise TaskError("staging_not_initialized", "load the private session first")
+
+            def run_member_settings():
+                context = self._context(subject_id, route)
                 editor = PrivateMemberSettings(session.application, context)
                 result = (editor.configure(operator, {key: command[key] for key in ("operation_key", "sections")})
                           if write else editor.status(operator))
                 if not write and result.is_success and isinstance(result.value, dict):
                     from .voice import tts_provider_catalog
                     result.value["tts"] = tts_provider_catalog(self.controller.context)
-                return outcome_response(result)
+                return result
+
+            result = await asyncio.to_thread(run_member_settings)
+            return outcome_response(result)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, UnicodeError, RecursionError):
@@ -1077,15 +1260,31 @@ class AcquaintanceWebAPI:
             if state not in ("all", "active", "completed"):
                 raise TaskError("acquaintance_request_invalid", "unsupported open-loop state")
             cursor = MemoCursor(**json.loads(query["after"])) if query.get("after") else None
-            async with self.controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            route = {key: query[key] for key in PERSON_ROUTE_KEYS}
+            subject_id = query["subject_id"]
+            if not default_op:
                 _, operator = await self._operator()
-                context = self._context(query["subject_id"], {key: query[key] for key in PERSON_ROUTE_KEYS})
+            else:
+                operator = None
+            async with self.controller._control_lock:
+                if default_op:
+                    if self.controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if self.controller.runtime is None or self.controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = self.controller.runtime
+
+            def read_open_loops():
+                resolved_op = self._operator_sync(username)[1] if default_op else operator
+                context = self._context(subject_id, route)
                 target = AgendaTarget(context.scope, context.role_binding.role, context.actor.subject)
-                result = AgendaService(self.controller.runtime).list_memos(
-                    operator, target=target, observed_at=self.controller.now(), limit=100,
+                result = AgendaService(runtime).list_memos(
+                    resolved_op, target=target, observed_at=self.controller.now(), limit=100,
                     after=cursor, state=state, purpose="open_loop", include_expired=True)
                 if result.failure is not None:
-                    return outcome_response(result)
+                    return result
                 memos = result.unwrap()
                 active, expired, completed = [], [], []
                 for memo in memos:
@@ -1100,7 +1299,9 @@ class AcquaintanceWebAPI:
                 page = {"active": active, "expired": expired, "completed": completed,
                         "next_cursor": None if len(memos) < 100 else {"pinned": memos[-1].pinned,
                                                                        "memo_id": memos[-1].memo_id}}
-                return outcome_response(Outcome.success(page))
+                return Outcome.success(page)
+
+            return outcome_response(await asyncio.to_thread(read_open_loops))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -1119,25 +1320,43 @@ class AcquaintanceWebAPI:
             if (type(command["expected_revision"]) is not int or type(command["memo_id"]) is not str
                     or type(command["operation_key"]) is not str or not command["operation_key"]):
                 raise TaskError("open_loop_request_invalid", "open-loop operation fields are invalid")
-            async with self.controller._control_lock:
+            default_op = self._uses_default_operator()
+            username = self._require_username() if default_op else None
+            if not default_op:
                 _, operator = await self._operator()
+            else:
+                operator = None
+            async with self.controller._control_lock:
+                if default_op:
+                    if self.controller._terminated:
+                        raise TaskError("staging_host_terminated", "the plugin has stopped")
+                    if self.controller.runtime is None or self.controller.settings is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile before reading the directory")
+                runtime = self.controller.runtime
+
+            def update_open_loop():
+                resolved_op = self._operator_sync(username)[1] if default_op else operator
                 context = self._context(command["subject_id"], route)
                 target = AgendaTarget(context.scope, context.role_binding.role, context.actor.subject)
-                service = AgendaService(self.controller.runtime)
-                current = service.read_memo(operator, target=target, memo_id=command["memo_id"],
+                service = AgendaService(runtime)
+                current = service.read_memo(resolved_op, target=target, memo_id=command["memo_id"],
                                             observed_at=self.controller.now(), include_expired=True)
                 if current.failure is not None:
-                    return outcome_response(current)
+                    return current
                 if current.unwrap().purpose != "open_loop":
                     raise TaskError("open_loop_not_found", "selected item is not an open conversation thread")
                 operation = OperationRef(command["operation_key"], "agenda", context.scope,
                                          VersionRef(command["operation_key"], 1), command["operation_key"])
-                result = service.change_memo(operator, target=target, memo_id=command["memo_id"],
+                return service.change_memo(resolved_op, target=target, memo_id=command["memo_id"],
                     action=command["action"], expected_revision=command["expected_revision"],
                     expected_role_revision=context.role_binding.revision, operation=operation,
                     observed_at=self.controller.now())
-                return outcome_response(result)
+
+            return outcome_response(await asyncio.to_thread(update_open_loop))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("open_loop_request_invalid", "invalid open-loop operation"))
+
+
+_DEFAULT_OPERATOR = AcquaintanceWebAPI._operator

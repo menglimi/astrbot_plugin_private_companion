@@ -27,6 +27,9 @@ class NativeExtensionWebAPI(PerceptionWebAPI):
         elif name == "live":
             from .native_extensions.live.management import snapshot
             data["management"] = snapshot(service)
+        elif name == "game":
+            from .native_extensions.game.management import snapshot
+            data["management"] = snapshot(service)
         return data
 
     async def status(self):
@@ -81,7 +84,7 @@ class NativeExtensionWebAPI(PerceptionWebAPI):
                 raise ValueError("bounded action body required")
             data = json.loads(raw)
             if (type(data) is not dict or set(data) != {"extension_id", "action", "payload"}
-                    or data['extension_id'] not in {'reality', 'live'}
+                    or data['extension_id'] not in {'reality', 'live', 'game'}
                     or type(data['action']) is not str or type(data['payload']) is not dict):
                 raise ValueError("invalid native management action")
             name = data['extension_id']
@@ -101,6 +104,9 @@ class NativeExtensionWebAPI(PerceptionWebAPI):
             # Device I/O must not hold the host's conversation control lock.
             if name == 'live':
                 from .native_extensions.live.management import action
+                result = await action(service, data['action'], data['payload'], current)
+            elif name == 'game':
+                from .native_extensions.game.management import action
                 result = await action(service, data['action'], data['payload'], current)
             else:
                 allowed = {'mihome_start_login', 'mihome_login_status', 'mihome_sync_devices',

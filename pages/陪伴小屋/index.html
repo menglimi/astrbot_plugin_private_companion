@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=dc710168e9b2c927">
+    <link rel="stylesheet" href="bundle.css?v=203e986873876c42">
 
 
 
@@ -177,7 +177,8 @@
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
     <script defer src="phone-setup.js?v=20261121"></script>
-    <script defer src="app.js?v=phone-setup-20261121"></script>
+    <script defer src="search-engine.js?v=fuzzy-search-20261123"></script>
+    <script defer src="app.js?v=fuzzy-search-20261123"></script>
     <script defer src="role-card.js?v=role-card-20261118"></script>
     <script defer src="room-editor.js?v=room-theme-persist-20261120"></script>
     <script defer src="memory-page.js?v=memory-discard-20261112"></script>
@@ -202,12 +203,14 @@
     <script defer src="output-page.js?v=image-save-20261112"></script>
     <script defer src="role-profile-draft.js?v=7.1.0"></script>
     <script defer src="role-profile-migration.js?v=migration-ui-20261015"></script>
+    <script defer src="role-profile-transfer.js?v=role-profile-transfer-20261123"></script>
     <script defer src="decision-page.js?v=decision-tempo-sections-20261111"></script>
     <script defer src="expression-page.js?v=expression-completion-20261008"></script>
     <script defer src="pricing-workbench.js?v=pricing-v2-20261121"></script>
     <script defer src="models-page.js?v=pricing-v2-20261121"></script>
     <script defer src="image-materials-page.js?v=daily-outfit-photo-20261121-2"></script>
     <script defer src="maintenance-page.js?v=maintenance-config-relative-20261120"></script>
+    <script defer src="reply-diagnostics.js?v=reply-diagnostics-20261123"></script>
     <script defer src="appearance-page.js?v=account-display-preferences-20261028"></script>
     <script defer src="backup-page.js?v=data-subpages-20261008-r2"></script>
     <script defer src="storage-page.js?v=storage-layout-20261120"></script>
@@ -421,7 +424,7 @@
     <div class="confirmation-actions"><button id="confirmationCancel" class="button small" type="button">取消</button><button id="confirmationAccept" class="button primary small" type="button">确认</button><button id="confirmationSave" class="button primary small" type="button" hidden>保存并切换</button></div>
   </dialog>
   <dialog id="searchDialog" class="search-dialog" aria-label="搜索功能与设置">
-    <div class="search-field"><i data-lucide="search" aria-hidden="true"></i><input id="globalSearch" type="search" placeholder="搜索设置名称、用途或字段键…" aria-label="搜索功能与设置" aria-controls="searchResults" aria-autocomplete="list" autocomplete="off"><button class="button small search-clear" type="button" data-clear-search aria-label="清除搜索" hidden>清空</button><button class="icon-button" type="button" data-close-search aria-label="关闭搜索"><i data-lucide="x"></i></button></div>
+    <div class="search-field"><i data-lucide="search" aria-hidden="true"></i><input id="globalSearch" type="search" placeholder="搜索设置名称、别名、拼音或字段键…" aria-label="搜索功能与设置" aria-controls="searchResults" aria-autocomplete="list" autocomplete="off"><button class="button small search-clear" type="button" data-clear-search aria-label="清除搜索" hidden>清空</button><button class="icon-button" type="button" data-close-search aria-label="关闭搜索"><i data-lucide="x"></i></button></div>
     <div class="search-controls"><div id="searchScope" class="search-scope" role="group" aria-label="搜索范围"><button type="button" data-search-filter="all" aria-pressed="true">全部<span data-search-filter-count></span></button><button type="button" data-search-filter="settings" aria-pressed="false">配置项<span data-search-filter-count></span></button><button type="button" data-search-filter="pages" aria-pressed="false">页面<span data-search-filter-count></span></button></div><span id="searchCount" class="search-count" role="status" aria-live="polite"></span></div>
     <div id="searchResults" class="search-results" role="listbox" aria-label="搜索结果"></div><div class="search-hint"><span>↑ ↓ 选择 · Enter 打开</span><span class="search-hint-esc"><kbd>Esc</kbd> 关闭</span></div>
   </dialog>

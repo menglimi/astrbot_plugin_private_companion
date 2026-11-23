@@ -44,7 +44,14 @@ class NativeGroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         from astrbot.api.message_components import At, Plain
         from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
         from astrbot.core.platform.message_type import MessageType
-        from astrbot.core.pipeline.waking_check.stage import build_unique_session_id
+        try:
+            from astrbot.core.pipeline.waking_check.stage import build_unique_session_id
+        except ImportError:
+            from astrbot.core.event_bus import UNIQUE_SESSION_ID_BUILDERS
+
+            def build_unique_session_id(event):
+                builder = UNIQUE_SESSION_ID_BUILDERS.get(event.get_platform_name())
+                return builder(event) if builder else event.session_id
         configured = self.controller.settings.target(target)
         platform = self.native.platforms[configured.platform_id]
         message = AstrBotMessage()
@@ -112,9 +119,9 @@ class NativeGroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
                 configured = self.controller.settings.target(target)
                 frames = [frame for frame in self.sockets[configured.platform_id][configured.account_id].frames
                           if frame["action"] == "send_group_msg"]
-                self.assertEqual(len(frames), 1)
-                self.assertEqual([segment["type"] for segment in frames[0]["params"]["message"]],
-                    ["text", "record"])
+                self.assertEqual(len(frames), 2)
+                self.assertEqual([[segment["type"] for segment in frame["params"]["message"]] for frame in frames],
+                                 [["text"], ["record"]])
         self.assertEqual(selected, ["qq-main:GroupMessage:777_300", "qq-second:GroupMessage:777_300"])
 
     async def test_native_failed_and_missing_ack_remain_unknown_without_retry(self):

@@ -585,6 +585,50 @@ class StateMaintenanceIdleSkipGateTests(StateFixture, unittest.IsolatedAsyncioTe
         await self.until(lambda: state_calls() == 3)
         self.assertEqual(state_calls(), 3)
 
+    async def test_idle_skip_gate_detects_calendar_occurrence_that_ended_since_last_settlement(self):
+        host, app, context, _ = await self.ready()
+
+        async def _model(env):
+            if env.original.output_format == "role_state":
+                return answered(encode(state_data(hunger="不饿", energy=80)))
+            return answered("好呀。")
+
+        self.model_behavior = _model
+
+        def state_calls():
+            return sum(1 for item in self.called if item.original.output_format == "role_state")
+
+        # Schedule a 10-minute occurrence starting 5 min after initial settlement and ending 15 min after.
+        settled_at = self.clock.now()
+        occ_start = settled_at + timedelta(minutes=5)
+        occ_end = settled_at + timedelta(minutes=15)
+
+        def fake_occurrences(_ctx, *, start, end, **_kwargs):
+            items = []
+            if occ_start < end and occ_end > start:
+                items.append({
+                    "id": "cal-short-1",
+                    "title": "短会",
+                    "start": stamp(occ_start),
+                    "end": stamp(occ_end),
+                    "state": "active",
+                })
+            return {"items": items}
+
+        with patch.object(app.calendar, "occurrences", side_effect=fake_occurrences):
+            first = await app.state_maintenance.run(context, "原角色人格提示", "cal-initial")
+            self.assertEqual(first["state"], "succeeded", first)
+            self.assertEqual(state_calls(), 1)
+
+            # Advance 30 minutes: the occurrence BOTH started and ended strictly inside (settled_at, now].
+            # Querying from settled_at must detect the crossed transition and trigger maintenance!
+            self.clock.advance(timedelta(minutes=30))
+            with self.runtime.transaction() as connection:
+                connection.execute("UPDATE role_state_schedules SET next_at = ?", (stamp(self.clock.now()),))
+            app.state_maintenance.advance()
+            await self.until(lambda: state_calls() == 2)
+            self.assertEqual(state_calls(), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

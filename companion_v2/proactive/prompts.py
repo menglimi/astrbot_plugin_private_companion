@@ -30,16 +30,16 @@ from .prompt_templates import (EXPRESSION_INSTRUCTION, LENGTH_INSTRUCTION, NEWS_
                                NEWS_SHARING_INSTRUCTION, effective_template)
 
 
-def local_time_fields(at, timezone_name, annual_calendars=()):
+def local_time_fields(at, timezone_name, annual_calendars=(), *, holiday_country="CN"):
     """Project one instant into the configured zone, in the shared prompt vocabulary.
 
     Compose and judge both publish a contact's own local time, so the projection
     exists once: a second copy would drift, and a drift here reads to the user as
     a wrong weekday or a greeting for the wrong part of the day.
 
-    When the role has an annual calendar, its holiday and makeup-workday entries
-    replace the weekday fallback so a Saturday shift or a Wednesday holiday is
-    not misread as a normal weekend/workday.
+    Holiday and makeup-workday entries from either the role's annual calendar or
+    the built-in calendar replace the weekday fallback so a Saturday shift or a
+    Wednesday holiday is not misread as a normal weekend/workday.
     """
     local_now = at.astimezone(ZoneInfo(timezone_name))
     fields = {
@@ -51,19 +51,20 @@ def local_time_fields(at, timezone_name, annual_calendars=()):
         "period": period_label(local_now.hour),
         "timezone": local_now.tzinfo.key,
     }
-    if annual_calendars:
-        try:
-            projected = project_local_date(at, timezone_name, tuple(annual_calendars),
-                                           lunar_enabled=False, automatic_solar_terms_enabled=False,
-                                           almanac_enabled=False)
-            holiday = projected.get("holiday") if isinstance(projected, dict) else None
-            if isinstance(holiday, dict) and holiday.get("status") == "available":
-                kind = holiday.get("kind")
-                fields["holiday"] = holiday.get("label") or ""
-                fields["is_workday"] = kind in ("workday", "makeup_workday")
-                fields["is_weekend"] = not fields["is_workday"]
-        except (TypeError, ValueError):
-            pass
+    try:
+        projected = project_local_date(
+            at, timezone_name, tuple(annual_calendars) if annual_calendars else None,
+            holiday_country=holiday_country,
+            lunar_enabled=False, automatic_solar_terms_enabled=False, almanac_enabled=False)
+        holiday = projected.get("holiday") if isinstance(projected, dict) else None
+        if isinstance(holiday, dict) and holiday.get("status") == "available":
+            kind = holiday.get("kind")
+            if kind in ("holiday", "makeup_workday") and holiday.get("label"):
+                fields["holiday"] = holiday["label"]
+            fields["is_workday"] = kind in ("workday", "makeup_workday")
+            fields["is_weekend"] = not fields["is_workday"]
+    except (TypeError, ValueError):
+        pass
     return fields
 
 

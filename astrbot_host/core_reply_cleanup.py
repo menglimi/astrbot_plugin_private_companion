@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import re
 
+from companion_v2.conversation.segment_control import LLM_SEGMENT_MARKER, _TOKENS as _SPLIT_MARKER_TOKENS
+
 _PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
 # 只有明确在说「格式错了 → 重来」的整行才算元话语；裸“重来”可能只是台词。
 _META_RETRY = re.compile(
@@ -20,6 +22,10 @@ _META_RETRY = re.compile(
     r"(?:重来|重新来|重发)[。.!！]?$")
 _MIN_HALF_CHARS = 6
 _MIN_NON_ADJACENT_CHARS = 24
+
+
+def _is_protocol_marker(stripped):
+    return bool(stripped) and (stripped == LLM_SEGMENT_MARKER or _SPLIT_MARKER_TOKENS.fullmatch(stripped) is not None)
 
 
 def _halved(text):
@@ -33,7 +39,7 @@ def _halved(text):
 
 
 def _dedupe_paragraph_lines(paragraph):
-    """清理单段内完全一致的长重复行（保留短句与正常语气重复）。"""
+    """清理单段内完全一致的长重复行（保留短句、正常语气重复与分段控制标记）。"""
     lines = paragraph.split("\n")
     if len(lines) <= 1:
         return paragraph, 0
@@ -42,7 +48,7 @@ def _dedupe_paragraph_lines(paragraph):
     removed = 0
     for line in lines:
         stripped = line.strip()
-        if len(stripped) >= _MIN_NON_ADJACENT_CHARS:
+        if len(stripped) >= _MIN_NON_ADJACENT_CHARS and not _is_protocol_marker(stripped):
             if stripped in seen_substantial:
                 removed += 1
                 continue
@@ -76,6 +82,9 @@ def clean_reply_text(text):
         paragraph, line_removed = _dedupe_paragraph_lines(paragraph)
         removed += line_removed
         stripped = paragraph.strip()
+        if _is_protocol_marker(stripped):
+            result.append(paragraph)
+            continue
         if result and stripped and stripped == result[-1].strip():
             removed += 1
             continue

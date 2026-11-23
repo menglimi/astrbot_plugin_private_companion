@@ -250,15 +250,15 @@ class GameActivityMethods:
             return 'image' in normalized or 'vision' in normalized
         return True
 
-    def _task_vision_provider(self, room: GameRoom) -> Any | None:
-        """Follow the panel's screen-interpretation route for the canvas image."""
+    def _task_vision_provider_for_user(self, user_id: str) -> Any | None:
+        """Follow the panel's screen-interpretation route for the given user."""
         integration = getattr(getattr(self, 'controller', None), 'integration', None)
         resolver = getattr(integration, 'task_model_route', None)
-        user_id = str(getattr(room, 'creator_qq', '') or getattr(room, 'player_qq', '') or '').strip()
-        if not user_id or not callable(resolver):
+        cleaned_user = str(user_id or '').strip()
+        if not cleaned_user or not callable(resolver):
             return None
         try:
-            route = resolver(user_id, 'screen.interpretation') or {}
+            route = resolver(cleaned_user, 'screen.interpretation') or {}
         except Exception:
             return None
         getter = getattr(self.context, 'get_provider_by_id', None)
@@ -277,15 +277,159 @@ class GameActivityMethods:
                 return provider
         return None
 
-    async def _guess_drawing(self, room: GameRoom, game: DrawGuessGame, image_data_url: str) -> str:
-        provider = self._task_vision_provider(room)
-        if self.draw_guess_vision_provider_id:
+    def _task_vision_provider(self, room: GameRoom) -> Any | None:
+        """Follow the panel's screen-interpretation route for the canvas image."""
+        user_id = str(getattr(room, 'creator_qq', '') or getattr(room, 'player_qq', '') or '').strip()
+        return self._task_vision_provider_for_user(user_id)
+
+    def _resolve_vision_provider(self, *, user_id: str = '', session_id: str = '') -> Any | None:
+        provider = self._task_vision_provider_for_user(user_id)
+        if provider is None and self.draw_guess_vision_provider_id:
             getter = getattr(self.context, 'get_provider_by_id', None)
             if callable(getter):
                 provider = getter(self.draw_guess_vision_provider_id)
             if provider is None:
                 raise RuntimeError('你画我猜配置的视觉模型 Provider 不存在')
-        else:
+        if provider is None and hasattr(self, 'context') and self.context is not None:
+            using_getter = getattr(self.context, 'get_using_provider', None)
+            if callable(using_getter):
+                try:
+                    candidate = using_getter(session_id) if session_id else using_getter()
+                except TypeError:
+                    candidate = using_getter()
+                except Exception:
+                    candidate = None
+                if (candidate is not None and callable(getattr(candidate, 'text_chat', None))
+                        and self._game_image_capable(candidate)):
+                    provider = candidate
+        return provider
+
+    def _resolve_native_text_provider(self, session_id: str = '') -> Any | None:
+        context = getattr(self, 'context', None)
+        if context is None:
+            return None
+        using_getter = getattr(context, 'get_using_provider', None)
+        if callable(using_getter):
+            try:
+                provider = using_getter(session_id) if session_id else using_getter()
+            except TypeError:
+                try:
+                    provider = using_getter()
+                except Exception:
+                    provider = None
+            except Exception:
+                provider = None
+            if provider is not None and callable(getattr(provider, 'text_chat', None)):
+                return provider
+        all_getter = getattr(context, 'get_all_providers', None)
+        if callable(all_getter):
+            try:
+                for candidate in list(all_getter() or ()):
+                    if candidate is not None and callable(getattr(candidate, 'text_chat', None)):
+                        return candidate
+            except Exception:
+                pass
+        return None
+
+    async def generate_native_turtle_soup_puzzle(
+        self,
+        *,
+        difficulty: Difficulty = 'normal',
+        content_level: str = 'normal',
+        recent_signatures: list[str] | None = None,
+        session_id: str = '',
+    ) -> Any | None:
+        """Generate and validate a fresh Turtle Soup puzzle via the host LLM; return None on fallback."""
+        provider = self._resolve_native_text_provider(session_id)
+        if provider is None:
+            return None
+        level = normalize_content_level(content_level)
+        recent = list(recent_signatures or [])
+        recent_set = set(recent)
+        for attempt in range(1, 3):
+            try:
+                system_prompt, prompt = generation_prompt(
+                    difficulty=difficulty,
+                    content_level=level,
+                    recent_signatures=recent,
+                )
+                response = await tracked_text_chat(
+                    self,
+                    provider,
+                    task='game_room_model',
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    timeout=25,
+                )
+                raw = str(getattr(response, 'completion_text', '') or '').strip()
+                data = extract_json_object(raw)
+                if data is None:
+                    raise ValueError('出题结果不是有效 JSON')
+                puzzle = puzzle_from_mapping(data, content_level=level)
+                if puzzle.signature in recent_set:
+                    raise ValueError('题目与本会话近期主题重复')
+                check_system, check_prompt = validation_prompt(puzzle)
+                check_response = await tracked_text_chat(
+                    self,
+                    provider,
+                    task='game_room_model',
+                    prompt=check_prompt,
+                    system_prompt=check_system,
+                    timeout=20,
+                )
+                check_raw = str(getattr(check_response, 'completion_text', '') or '').strip()
+                if not validation_passed(check_raw):
+                    raise ValueError('题目未通过独立自洽性校验')
+                return puzzle
+            except Exception as exc:
+                logger.info('[GameCompanion] V2 海龟汤第 %s 次动态出题未采用，将尝试重试或回落题库: %s', attempt, exc)
+        return None
+
+    async def native_guess_drawing(
+        self,
+        game: DrawGuessGame,
+        image_data_url: str,
+        *,
+        user_id: str = '',
+        session_id: str = '',
+    ) -> str:
+        """Ask the configured vision provider to guess the native web canvas drawing."""
+        safe_image = self._validated_drawing_image(image_data_url)
+        provider = self._resolve_vision_provider(user_id=user_id, session_id=session_id)
+        if provider is None or not callable(getattr(provider, 'text_chat', None)):
+            raise RuntimeError('当前未配置可用的视觉模型，可将画作发到聊天让陪伴者猜，或在模型路线中配置视觉模型')
+        previous = '、'.join((str(item.get('guess') or '') for item in game.guesses if item.get('guess'))) or '暂无'
+        prompt = f'看画布上的简笔画，给出你认为最可能的一个中文答案。看不清时选最接近的猜测，不列候选，也不解释。此前猜错的答案：{previous}。请换一个判断。'
+        system_prompt = '你是本局“你画我猜”的猜图玩家。只依据画面中实际可见的线索，不补充隐藏答案或其他信息。回答一个简短中文名词或成语。'
+        try:
+            response = await tracked_text_chat(
+                self,
+                provider,
+                task='game_draw_guess',
+                prompt=prompt,
+                system_prompt=system_prompt,
+                image_urls=[safe_image],
+                timeout=45,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError('视觉模型看图超时，请稍后再试') from exc
+        except Exception as exc:
+            raise RuntimeError('视觉模型无法读取画布；请检查当前模型是否支持图片，或在模型路线中配置视觉模型') from exc
+        raw = str(getattr(response, 'completion_text', response) or '').strip()
+        guess = self._clean_draw_guess(raw)
+        if not guess:
+            raise RuntimeError('视觉模型没有给出有效猜测')
+        return guess
+
+    async def _guess_drawing(self, room: GameRoom, game: DrawGuessGame, image_data_url: str) -> str:
+        provider = self._task_vision_provider(room)
+        if provider is None and self.draw_guess_vision_provider_id:
+            getter = getattr(self.context, 'get_provider_by_id', None)
+            if callable(getter):
+                provider = getter(self.draw_guess_vision_provider_id)
+            if provider is None:
+                raise RuntimeError('你画我猜配置的视觉模型 Provider 不存在')
+        if provider is None:
             provider = self.context.get_using_provider(room.session_id)
         if provider is None or not callable(getattr(provider, 'text_chat', None)):
             raise RuntimeError('当前会话没有可用的视觉模型')

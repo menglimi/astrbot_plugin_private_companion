@@ -1,4 +1,4 @@
-﻿"""One sealed outbound plan: what a delivered message carries beyond its text.
+"""One sealed outbound plan: what a delivered message carries beyond its text.
 
 Two different kinds of fact live here, and they are deliberately kept apart:
 

@@ -684,6 +684,42 @@ class TickBudgetAndPrivateScopeTests(HostFixture, unittest.IsolatedAsyncioTestCa
             after_wm = service._empty_prepare_watermark(context, review_policy, self.clock.now())
             self.assertNotEqual(before_wm, after_wm)
 
+            # Even when sample_review_enabled=False, rejecting or restoring a sample
+            # changes eligible() results and must invalidate the empty-prepare watermark.
+            no_review_policy = type(
+                "NoReviewPolicy",
+                (),
+                {
+                    "private_learning_enabled": True,
+                    "group_learning_enabled": False,
+                    "window_hours": 720,
+                    "sample_limit": 25,
+                    "min_samples": 2,
+                    "group_min_samples": 20,
+                    "sample_chars": 300,
+                    "sample_review_enabled": False,
+                    "group_new_messages": 20,
+                    "group_member_mode": "all",
+                    "group_member_ids": "",
+                },
+            )()
+            wm_before_reject = service._empty_prepare_watermark(context, no_review_policy, self.clock.now())
+            self.assertIsNotNone(wm_before_reject)
+            self.clock.advance(timedelta(seconds=5))
+            reviews.write(
+                context,
+                {
+                    **sample_low,
+                    "state": "rejected",
+                    "revision": 3,
+                    "decided_at": encode_timestamp(self.clock.now()),
+                    "decided_by": "operator",
+                    "decision_key": "dec-low-reject",
+                },
+            )
+            wm_after_reject = service._empty_prepare_watermark(context, no_review_policy, self.clock.now())
+            self.assertNotEqual(wm_before_reject, wm_after_reject)
+
     async def test_expression_style_advance_async_offloads_scan_off_event_loop(self):
         host = self.host()
         app = host.application
@@ -739,6 +775,72 @@ class TickBudgetAndPrivateScopeTests(HostFixture, unittest.IsolatedAsyncioTestCa
         self.assertNotEqual(scan_thread_ids[0], main_thread_id)
         self.assertIn(service._work_key(context), service.workers)
         await asyncio.gather(*tuple(service.workers.values()), return_exceptions=True)
+
+    async def test_application_and_expression_close_drain_inflight_threads_before_closing_runtime(self):
+        host = self.host()
+        app = host.application
+        app.state = "running"
+        app.owns_runtime = True
+        context = TaskContext(
+            self.important,
+            self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+            AudienceRef(SCOPE, (self.important.subject,)),
+        )
+        app.state_maintenance.bindings[context.key] = (context, "role prompt", None)
+        service = app.expression_style
+        service.gateway = type("G", (), {"router": type("R", (), {"profiles": {EXPRESSION_LEARN_KIND: object()}})()})()
+
+        events = []
+        expr_entered = threading.Event()
+        expr_release = threading.Event()
+        reclaim_entered = threading.Event()
+        reclaim_release = threading.Event()
+
+        def blocking_expr_scan(bindings, at, *, defer_launch=False):
+            expr_entered.set()
+            expr_release.wait(5)
+            events.append("expr_done")
+            return ()
+
+        def blocking_reclaim(tasks):
+            reclaim_entered.set()
+            reclaim_release.wait(5)
+            events.append("reclaim_done")
+
+        orig_close = app.runtime.close
+
+        def tracked_runtime_close():
+            events.append("runtime_closed")
+            return orig_close()
+
+        with patch.object(service, "_discover_and_scan_sync", side_effect=blocking_expr_scan), \
+                patch.object(app.gateway.ledger, "reclaim_expired", side_effect=blocking_reclaim), \
+                patch.object(app.runtime, "close", side_effect=tracked_runtime_close):
+            service._next_discovery_at = None
+            t_expr = asyncio.create_task(service.advance_async())
+            t_reclaim = asyncio.create_task(app._reclaim_expired_reservations())
+            self.assertTrue(await asyncio.to_thread(expr_entered.wait, 5))
+            self.assertTrue(await asyncio.to_thread(reclaim_entered.wait, 5))
+
+            # Cancel callers (simulating _driver cancellation) and immediately call app.close().
+            t_expr.cancel()
+            t_reclaim.cancel()
+            await asyncio.gather(t_expr, t_reclaim, return_exceptions=True)
+
+            close_task = asyncio.create_task(app.close())
+            await asyncio.sleep(0.03)
+            self.assertFalse(close_task.done(), "app.close() must wait for in-flight worker threads")
+            self.assertNotIn("runtime_closed", events)
+
+            expr_release.set()
+            reclaim_release.set()
+            await asyncio.wait_for(close_task, timeout=5.0)
+
+        self.assertIn("expr_done", events)
+        self.assertIn("reclaim_done", events)
+        self.assertIn("runtime_closed", events)
+        self.assertLess(events.index("expr_done"), events.index("runtime_closed"))
+        self.assertLess(events.index("reclaim_done"), events.index("runtime_closed"))
 
     async def test_group_candidates_uses_partial_group_indexes_and_scope_family_deduplicates_keys(self):
         host = self.host()
@@ -825,7 +927,10 @@ class TickBudgetAndPrivateScopeTests(HostFixture, unittest.IsolatedAsyncioTestCa
             for stmt, params in captured_sql
             if "FROM conversation_batches" in stmt
         ]
-        self.assertTrue(turn_plans and all("idx_native_turns_group_role_recent" in p for p in turn_plans), turn_plans)
+        self.assertTrue(
+            turn_plans and all("COVERING INDEX idx_native_turns_kind_role_obs" in p for p in turn_plans),
+            turn_plans,
+        )
         self.assertTrue(batch_plans and all("idx_conversation_batches_group_role" in p for p in batch_plans), batch_plans)
 
         # scope_family deduplicates repeated context_key rows before TaskContext.restore.

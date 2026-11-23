@@ -107,8 +107,186 @@ class ImageReferenceLease:
                 }
                 self._tickets.append(ticket)
                 self._by_handle[handle] = ticket
+        if invocation.descriptor.tool.action == "image.edit" and not self._tickets:
+            arguments = json.loads(invocation.arguments_json)
+            if (not arguments.get("artifact_id") and not arguments.get("reference_ids")
+                    and "reference_indices" not in arguments):
+                self._add_recent_conversation_image()
         if invocation.descriptor.tool.action in {"image.edit", "image.mask_edit"}:
             self._add_role_references()
+
+    def _recent_native_conversation_image(self, at):
+        runtime = getattr(self.registry, "runtime", None)
+        if runtime is None:
+            return None
+        external = getattr(getattr(self.registry.application, "tools", None), "external", None)
+        if external is None:
+            return None
+        from companion_v2.conversation.external_tools import _SourceAccess
+        from companion_v2.conversation.messages import source_from_document
+        from companion_v2.conversation.native_tool_media import _view as _native_image_view, read_native_images
+        from companion_v2.conversation.native_tool_results import PREFIX, PREFIX_END, operation_row
+        from companion_v2.sources.models import GovernanceState
+
+        context = self.invocation.context
+        actions = tuple(sorted(IMAGE_ACTIONS))
+        try:
+            rows = runtime.read_all(
+                """SELECT json_extract(m.value, '$.invocation_id') AS invocation_id, t.created_at
+                   FROM runtime_metadata m
+                   JOIN execution_tasks t ON t.task_id = json_extract(m.value, '$.task_id')
+                   WHERE m.key >= ? AND m.key < ?
+                     AND json_extract(m.value, '$.origin_key') = ?
+                     AND json_extract(m.value, '$.action') IN (?,?,?)
+                     AND json_extract(m.value, '$.state') = 'succeeded'
+                     AND t.state = 'succeeded'
+                     AND json_extract(m.value, '$.invocation_id') != ?
+                   ORDER BY t.created_at DESC, invocation_id DESC
+                   LIMIT 16""",
+                (PREFIX, PREFIX_END, context.key, *actions, self.invocation.invocation_id),
+            )
+        except Exception:
+            return None
+        for selected in rows:
+            invocation_id = selected["invocation_id"]
+            if not isinstance(invocation_id, str) or not invocation_id:
+                continue
+            try:
+                row = operation_row(runtime, invocation_id)
+                if (row is None or row.get("origin_key") != context.key
+                        or row.get("state") != "succeeded"
+                        or row.get("action") not in IMAGE_ACTIONS
+                        or not row.get("images") or not row.get("result_source_json")):
+                    continue
+                provider = external.providers.get(row["action"])
+                if provider is None:
+                    continue
+                parent = source_from_document(json.loads(row["result_source_json"]))
+                if parent.scope != context.scope:
+                    continue
+                capability = provider.descriptor.binding.capability
+                authorizer = _SourceAccess(external, provider.descriptor, context)
+                parent_source = require(self.messages.sources.read(
+                    parent, resolved=context.actor, capability=capability,
+                    observed_at=at, authorizer=authorizer))
+                if (parent_source.state is not GovernanceState.ACTIVE
+                        or parent_source.audience != context.audience
+                        or digest(parent_source) != row.get("result_hash")):
+                    continue
+                captured_images = read_native_images(
+                    self.messages, context, parent, row["action"], row["images"],
+                    capability=capability, authorizer=authorizer, at=at)
+                if not captured_images:
+                    continue
+                captured = captured_images[0]
+                view = _native_image_view(context, parent, row["action"])
+                reference, asset = self.messages.images.references(view, captured.descriptor)
+                if reference.scope != context.scope:
+                    continue
+                return (str(selected["created_at"]), invocation_id, {
+                    "fallback_kind": "native",
+                    "fallback_action": row["action"],
+                    "fallback_source_hash": row.get("result_hash"),
+                    "descriptor": captured.descriptor,
+                    "reference": reference,
+                    "asset": asset,
+                    "parent": parent,
+                    "image": captured,
+                })
+            except Exception:
+                continue
+        return None
+
+    def _recent_batch_conversation_image(self, at):
+        runtime = getattr(self.registry, "runtime", None)
+        generated_images = getattr(self.messages, "generated_images", None)
+        if runtime is None or generated_images is None:
+            return None
+        context = self.invocation.context
+        actions = tuple(sorted(IMAGE_ACTIONS))
+        try:
+            rows = runtime.read_all(
+                """SELECT i.*
+                   FROM extension_tool_invocations i
+                   JOIN conversation_batches b ON b.batch_id = i.batch_id
+                   WHERE b.origin_key = ? AND b.state = 'ready'
+                     AND i.action IN (?,?,?) AND i.state = 'succeeded'
+                     AND i.invocation_id != ?
+                   ORDER BY i.created_at DESC, i.invocation_id DESC
+                   LIMIT 16""",
+                (context.key, *actions, self.invocation.invocation_id),
+            )
+        except Exception:
+            return None
+        for row in rows:
+            try:
+                if generated_images.rejected(row) is not None:
+                    continue
+                batch_images = generated_images.read_batch(row["batch_id"], context, at)
+                parent = generated_images.reference(row, context)
+                matching = [item for item in batch_images if item.parent.source_id == parent.source_id]
+                if not matching:
+                    continue
+                selected = matching[0]
+                if selected.source.scope != context.scope or selected.parent.scope != context.scope:
+                    continue
+                raw = base64.b64decode(selected.data_base64, validate=True)
+                captured = CapturedImage(selected.descriptor, raw)
+                view = generated_images._view(selected.parent, context, selected.manifest_payload)
+                reference, asset = self.messages.images.references(view, selected.descriptor)
+                if reference != selected.source:
+                    continue
+                return (str(row["created_at"]), str(row["invocation_id"]), {
+                    "fallback_kind": "batch",
+                    "fallback_action": row["action"],
+                    "fallback_source_hash": digest(selected.manifest_payload),
+                    "descriptor": selected.descriptor,
+                    "reference": reference,
+                    "asset": asset,
+                    "parent": selected.parent,
+                    "image": captured,
+                })
+            except Exception:
+                continue
+        return None
+
+    def _add_recent_conversation_image(self):
+        at = self.registry.now()
+        candidates = [item for item in (
+            self._recent_native_conversation_image(at),
+            self._recent_batch_conversation_image(at),
+        ) if item is not None]
+        if not candidates:
+            return
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        _, _, chosen = candidates[0]
+        position = len(self._tickets)
+        if position >= MAX_REFERENCE_IMAGES:
+            return
+        handle = uuid4().hex
+        reference = chosen["reference"]
+        reference_id = "recent-image-" + digest([self.invocation.invocation_id, reference, position])[:40]
+        ticket = {
+            "reference_handle": handle,
+            "reference_id": reference_id,
+            "source_key": reference.source_id,
+            "content_hash": chosen["descriptor"].content_hash,
+            "position": position,
+            "event": None,
+            "descriptor": chosen["descriptor"],
+            "reference": reference,
+            "asset": chosen["asset"],
+            "parent": chosen["parent"],
+            "image": chosen["image"],
+            "used": False,
+            "role": None,
+            "fallback_generated": True,
+            "fallback_kind": chosen["fallback_kind"],
+            "fallback_action": chosen["fallback_action"],
+            "fallback_source_hash": chosen["fallback_source_hash"],
+        }
+        self._tickets.append(ticket)
+        self._by_handle[handle] = ticket
 
     def _add_role_references(self):
         invocation = self.invocation
@@ -189,6 +367,61 @@ class ImageReferenceLease:
                     or current.content_hash != registered.content_hash or payload != ticket["image"].content
                     or ticket["role"] not in roles):
                 raise TaskError("reference_asset_changed", "the saved role reference changed during image editing")
+            return
+        if ticket.get("fallback_generated"):
+            from companion_v2.sources.models import GovernanceState
+            if ticket["fallback_kind"] == "native":
+                external = getattr(getattr(self.registry.application, "tools", None), "external", None)
+                provider = external.providers.get(ticket["fallback_action"]) if external is not None else None
+                if external is None or provider is None:
+                    raise TaskError("tool_owner_unavailable", "the recent generated image provider is unavailable")
+                from companion_v2.conversation.external_tools import _SourceAccess
+                from companion_v2.conversation.native_tool_media import _view as _native_image_view
+                capability = provider.descriptor.binding.capability
+                authorizer = _SourceAccess(external, provider.descriptor, context)
+                parent = require(messages.sources.read(
+                    ticket["parent"], resolved=context.actor, capability=capability,
+                    observed_at=at, authorizer=authorizer))
+                if (parent.state is not GovernanceState.ACTIVE
+                        or parent.audience != context.audience
+                        or digest(parent) != ticket["fallback_source_hash"]):
+                    raise TaskError("message_input_changed", "the recent generated image source has changed")
+                view = _native_image_view(context, ticket["parent"], ticket["fallback_action"])
+                image_record = require(messages.sources.read(
+                    ticket["reference"], resolved=context.actor, capability=capability,
+                    observed_at=at, authorizer=authorizer))
+                payload = messages.images.metadata(view, ticket["descriptor"])
+                if image_record.payload != payload or image_record.content_hash != digest(payload):
+                    raise TaskError("image_content_changed", "the recent generated image manifest has changed")
+                asset_record = require(messages.images.assets.read(
+                    ticket["asset"], resolved=context.actor, capability=capability,
+                    observed_at=at, authorizer=authorizer))
+            else:
+                parent = messages._read_source(ticket["parent"], context, "text", at)
+                if parent.state is not GovernanceState.ACTIVE or parent.audience != context.audience:
+                    raise TaskError("message_input_changed", "the recent generated image source has changed")
+                view = messages.generated_images._view(ticket["parent"], context, parent.payload)
+                image_record = messages._read_source(ticket["reference"], context, "text", at)
+                payload = messages.images.metadata(view, ticket["descriptor"])
+                if image_record.payload != payload or image_record.content_hash != digest(payload):
+                    raise TaskError("image_content_changed", "the recent generated image manifest has changed")
+                asset_record = require(messages.images.assets.read(
+                    ticket["asset"], resolved=context.actor, capability="text",
+                    observed_at=at, authorizer=messages.tasks.identity))
+            if not set(context.audience.recipients).issubset(asset_record.audience.recipients):
+                raise TaskError("image_audience_denied", "the recent generated image is no longer available to this audience")
+            stored = messages.runtime.read_one(
+                """SELECT * FROM conversation_image_payloads
+                   WHERE parent_id=? AND parent_lineage=? AND parent_revision=? AND position=?""",
+                (ticket["parent"].source_id, ticket["parent"].version.lineage_id,
+                 ticket["parent"].version.revision, ticket["descriptor"].position))
+            if (stored is None or stored["source_id"] != ticket["reference"].source_id
+                    or stored["source_lineage"] != ticket["reference"].version.lineage_id
+                    or stored["source_revision"] != ticket["reference"].version.revision
+                    or stored["descriptor_json"] != encode(ticket["descriptor"])
+                    or hashlib.sha256(load_image(messages.runtime.data_root, stored["content"])).hexdigest()
+                    != ticket["content_hash"]):
+                raise TaskError("image_content_changed", "the recent generated image bytes have changed")
             return
         if self.native:
             from companion_v2.conversation.native_tool_sources import native_input_images, native_invocation
@@ -297,7 +530,7 @@ def _protect_masked_output(source, mask, output):
     return stream.getvalue()
 
 
-def image_result_handler(invocation, native_result, *, observed_at=None, input_references=()):
+def image_result_handler(invocation, native_result, *, observed_at=None, input_references=(), error_code=None):
     """Keep the original receipt; only declared image actions can offer images."""
     images = []
     action = invocation.descriptor.tool.action
@@ -349,9 +582,13 @@ def image_result_handler(invocation, native_result, *, observed_at=None, input_r
             invocation.context.scope, VersionRef(invocation.invocation_id, 1),
             observed_at or datetime.now(timezone.utc))
         source = SourceRecord(reference, invocation.context.audience, digest(payload), payload)
+    resolved_error = None
+    if native_result.state != "succeeded":
+        resolved_error = error_code or ("native_operation_failed" if native_result.state == "failed" else "native_result_unknown")
     return ExternalToolResponse(invocation.invocation_id, invocation.context.key, invocation.arguments_hash,
         invocation.descriptor.binding, native_result.state, native_result.effect, source=source,
-        operation_id=native_result.operation_id, receipt_ref=native_result.receipt_ref, images=tuple(images),
+        operation_id=native_result.operation_id, receipt_ref=native_result.receipt_ref, error_code=resolved_error,
+        images=tuple(images),
         dependencies=tuple(dict.fromkeys(reference for item in used
             for reference in (item.get("reference"), item.get("parent"))
             if isinstance(reference, SourceRef))))

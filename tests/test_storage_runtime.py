@@ -62,9 +62,13 @@ class StorageRuntimeTests(unittest.TestCase):
                 with StorageRuntime.open(data_root=Path(temporary), installation_id=INSTALLATION_ID) as runtime:
                     run_worker(runtime)
                     run_worker(runtime)
+                    # Bounded shared reader pool reuses the idle connection across sequential workers
+                    # rather than churning connections per thread, and closes all pooled readers on close().
                     self.assertEqual(len(connections), 2)
-                    with self.assertRaises(sqlite3.ProgrammingError):
-                        connections[0].execute("SELECT 1")
+                    self.assertIs(connections[0], connections[1])
+                    self.assertEqual(len(runtime._all_readers), 1)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[0].execute("SELECT 1")
                 with self.assertRaises(sqlite3.ProgrammingError):
                     connections[1].execute("SELECT 1")
             finally:

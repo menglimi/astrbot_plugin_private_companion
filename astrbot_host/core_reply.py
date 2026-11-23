@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import is_dataclass
 from inspect import isawaitable
 import json
+import time
 from typing import Any
 
 from companion_v2.execution.models import TaskContext, TaskError, encode, require
@@ -19,6 +20,10 @@ CORE_REPLY_CONTEXT_EXTRA = "_companion_v2_core_reply_context"
 # cleanly at the send boundary avoids bubbling unhandled TaskError tracebacks
 # into AstrBot's RespondStage.
 SILENT_SEND_DENIAL_CODES = frozenset({"message_withdrawn"})
+_QQ_PACE_PLATFORMS = frozenset({"aiocqhttp", "qq_official", "qq_official_webhook"})
+# Inter-part pause around QQ Record sends (across both single-send splits and
+# separate RespondStage event.send() calls) to avoid 0ms anti-flood rejections.
+QQ_RECORD_PART_PACE_SECONDS = 0.65
 
 
 def _is_silent_send_denial(error: BaseException) -> bool:
@@ -309,6 +314,26 @@ def prepare_core_reply_event(
                                                   should_drop_core_reply_duplicate)
             result = None
             outbound_parts = native_reply_messages(event, message)
+            from astrbot.core.message.components import Record
+            platform_getter = getattr(event, "get_platform_name", None)
+            is_qq_platform = callable(platform_getter) and platform_getter() in _QQ_PACE_PLATFORMS
+
+            async def _pace_qq_send(*, current_has_record: bool) -> None:
+                if not is_qq_platform or QQ_RECORD_PART_PACE_SECONDS <= 0:
+                    return
+                last_at = state.get("_qq_last_send_monotonic")
+                last_had_record = bool(state.get("_qq_last_send_had_record", False))
+                if last_at is None or not (last_had_record or current_has_record):
+                    return
+                remaining = QQ_RECORD_PART_PACE_SECONDS - (time.monotonic() - last_at)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+
+            def _record_qq_send(*, had_record: bool) -> None:
+                if is_qq_platform:
+                    state["_qq_last_send_monotonic"] = time.monotonic()
+                    state["_qq_last_send_had_record"] = had_record
+
             for part in outbound_parts:
                 # A repeat right after an accepted body is the same delivery twice.
                 # Only this guarded native loop is compared: send_streaming paths
@@ -317,6 +342,8 @@ def prepare_core_reply_event(
                 # notification and no behavior record for a body that never leaves.
                 if should_drop_core_reply_duplicate(event, part):
                     continue
+                current_has_record = any(isinstance(component, Record) for component in getattr(part, "chain", ()))
+                await _pace_qq_send(current_has_record=current_has_record)
                 try:
                     await authorize_delivery()
                     wire = await native_wire_message(event, part)
@@ -345,10 +372,10 @@ def prepare_core_reply_event(
                     observe_core_behavior_delivery(event, part, "failed")
                     raise TaskError("core_reply_platform_unavailable", "the platform did not accept this reply")
                 result = send_result
+                _record_qq_send(had_record=current_has_record)
                 state["send_returns"] += 1
                 record_core_reply_delivery(event, part)
-                from astrbot.core.message.components import Record
-                if any(isinstance(component, Record) for component in getattr(part, "chain", ())):
+                if current_has_record:
                     commit_pending_voice_claim(event)
                 notify_delivery("returned")
                 observe_core_behavior_delivery(event, part, "returned")
@@ -368,6 +395,10 @@ def prepare_core_reply_event(
                     event, authorize=authorize_delivery)
                 if attachment is not None:
                     part = attachment
+                    attachment_has_record = any(
+                        isinstance(component, Record) for component in getattr(part, "chain", ())
+                    )
+                    await _pace_qq_send(current_has_record=attachment_has_record)
                     try:
                         await authorize_delivery()
                         wire = await native_wire_message(event, part)
@@ -392,6 +423,7 @@ def prepare_core_reply_event(
                         notify_delivery("failed")
                         observe_core_behavior_delivery(event, part, "failed")
                         raise TaskError("core_reply_platform_unavailable", "the platform did not accept this reply")
+                    _record_qq_send(had_record=attachment_has_record)
                     state["send_returns"] += 1
                     record_core_reply_delivery(event, part)
                     notify_delivery("returned")

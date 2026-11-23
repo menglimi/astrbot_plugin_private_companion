@@ -16,7 +16,6 @@ class GameRuntime(NativeService, GameSettingsMethods, GameRoomsMethods, GameMedi
     def __init__(self, context: Context, config: AstrBotConfig, data_root, controller) -> None:
         self.context = context
         self.controller = controller
-        self.context = context
         self.config = config or {}
         self.plugin_root = Path(__file__).resolve().parent
         self.data_dir = Path(data_root)
@@ -25,17 +24,26 @@ class GameRuntime(NativeService, GameSettingsMethods, GameRoomsMethods, GameMedi
                                              source='game', display_name='游戏棋桌')
         self._model_usage_tasks = set()
         self.server_enabled = self._cfg_bool('server.enabled', True)
-        self.native_v2_tictactoe_enabled = self._cfg_bool('native_v2.tictactoe_enabled', False)
-        self.native_v2_gomoku_enabled = self._cfg_bool('native_v2.gomoku_enabled', False)
-        self.native_v2_pig_dice_enabled = self._cfg_bool('native_v2.pig_dice_enabled', False)
-        self.native_v2_blackjack_enabled = self._cfg_bool('native_v2.blackjack_enabled', False)
-        self.native_v2_xiangqi_enabled = self._cfg_bool('native_v2.xiangqi_enabled', False)
-        self.native_v2_turtle_soup_enabled = self._cfg_bool('native_v2.turtle_soup_enabled', False)
-        self.native_v2_turtle_soup_max_hints = self._cfg_int('native_v2.turtle_soup_max_hints', 3, minimum=0, maximum=8)
-        self.native_v2_turtle_soup_content_level = normalize_content_level(self._cfg('native_v2.turtle_soup_content_level', 'normal'))
-        self.native_v2_draw_guess_enabled = self._cfg_bool('native_v2.draw_guess_enabled', False)
-        self.native_v2_draw_guess_max_guesses = self._cfg_int('native_v2.draw_guess_max_guesses', 5, minimum=1, maximum=10)
-        self.native_v2_draw_guess_duration_seconds = self._cfg_int('native_v2.draw_guess_duration_seconds', 120, minimum=10, maximum=600)
+        self.native_v2_tictactoe_enabled = self._cfg_bool('native_v2.tictactoe_enabled', True)
+        self.native_v2_gomoku_enabled = self._cfg_bool('native_v2.gomoku_enabled', True)
+        self.native_v2_pig_dice_enabled = self._cfg_bool('native_v2.pig_dice_enabled', True)
+        self.pig_dice_target_score = self._cfg_int('pig_dice.target_score', 50, minimum=20, maximum=200)
+        self.native_v2_pig_dice_target_score = self._cfg_int(
+            'native_v2.pig_dice_target_score', self.pig_dice_target_score, minimum=20, maximum=200
+        )
+        self.pig_dice_target_score = self.native_v2_pig_dice_target_score
+        self.native_v2_blackjack_enabled = self._cfg_bool('native_v2.blackjack_enabled', True)
+        self.native_v2_xiangqi_enabled = self._cfg_bool('native_v2.xiangqi_enabled', True)
+        self.native_v2_turtle_soup_enabled = self._cfg_bool('native_v2.turtle_soup_enabled', True)
+        legacy_hints = self._cfg_int('turtle_soup.max_hints', 3, minimum=0, maximum=8)
+        self.native_v2_turtle_soup_max_hints = self._cfg_int('native_v2.turtle_soup_max_hints', legacy_hints, minimum=0, maximum=8)
+        legacy_level = normalize_content_level(self._cfg('turtle_soup.content_level', 'normal'))
+        self.native_v2_turtle_soup_content_level = normalize_content_level(self._cfg('native_v2.turtle_soup_content_level', legacy_level))
+        self.native_v2_draw_guess_enabled = self._cfg_bool('native_v2.draw_guess_enabled', True)
+        legacy_guesses = self._cfg_int('draw_guess.max_guesses', 5, minimum=1, maximum=10)
+        self.native_v2_draw_guess_max_guesses = self._cfg_int('native_v2.draw_guess_max_guesses', legacy_guesses, minimum=1, maximum=10)
+        legacy_duration = self._cfg_int('draw_guess.duration_seconds', 120, minimum=10, maximum=600)
+        self.native_v2_draw_guess_duration_seconds = self._cfg_int('native_v2.draw_guess_duration_seconds', legacy_duration, minimum=10, maximum=600)
         self.server_host = self._cfg_str('server.host', '127.0.0.1') or '127.0.0.1'
         self.access_host = self._cfg_str('server.access_host', '')
         self.server_port = self._cfg_int('server.port', 6331, minimum=1, maximum=65535)
@@ -65,13 +73,12 @@ class GameRuntime(NativeService, GameSettingsMethods, GameRoomsMethods, GameMedi
         self.recent_game_result_ttl_seconds = self._cfg_int('context.recent_game_result_ttl_minutes', 30, minimum=0, maximum=24 * 60) * 60
         self.commentary_cooldown = self._cfg_int('game.commentary_cooldown_seconds', 45, minimum=10, maximum=600)
         self.enabled_games: dict[GameType, bool] = {game_type: self._cfg_bool(f'{game_type}.enabled', True) for game_type in SUPPORTED_GAMES}
-        self.turtle_soup_max_hints = self._cfg_int('turtle_soup.max_hints', 3, minimum=0, maximum=8)
-        self.turtle_soup_content_level = normalize_content_level(self._cfg('turtle_soup.content_level', 'normal'))
+        self.turtle_soup_max_hints = self.native_v2_turtle_soup_max_hints
+        self.turtle_soup_content_level = self.native_v2_turtle_soup_content_level
         self.turtle_soup_max_players = self._cfg_non_negative('turtle_soup.max_players', 6)
         self.draw_guess_vision_provider_id = self._cfg_str('draw_guess.vision_provider_id', '')
-        self.draw_guess_max_guesses = self._cfg_int('draw_guess.max_guesses', 5, minimum=1, maximum=10)
-        self.draw_guess_duration_seconds = self._cfg_int('draw_guess.duration_seconds', 120, minimum=10, maximum=600)
-        self.pig_dice_target_score = self._cfg_int('pig_dice.target_score', 50, minimum=20, maximum=200)
+        self.draw_guess_max_guesses = self.native_v2_draw_guess_max_guesses
+        self.draw_guess_duration_seconds = self.native_v2_draw_guess_duration_seconds
         self.blackjack_max_players = self._cfg_int('blackjack.max_players', 1, minimum=1, maximum=6)
         self.multiplayer_turn_timeout = self._cfg_non_negative('multiplayer.turn_timeout_seconds', 60)
         self.swap_request_cooldown = self._cfg_non_negative('multiplayer.swap_request_cooldown_seconds', 30)
@@ -89,7 +96,7 @@ class GameRuntime(NativeService, GameSettingsMethods, GameRoomsMethods, GameMedi
         self._settings_lock = asyncio.Lock()
         self._native_provider = None
         self.extension_api = GameCompanionExtensionAPI(self)
-        pass
+        self._register_page_api()
 
     async def terminate(self) -> None:
         """Invalidate every room and stop only plugin-owned resources."""

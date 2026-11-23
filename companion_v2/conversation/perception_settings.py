@@ -15,6 +15,7 @@ DEFAULTS = {
     "calendar_timezone": "Asia/Shanghai",
     "health_enabled": False,
     "health_proactive_enabled": False,
+    "screen_context_enabled": True,
     "holiday_enabled": True,
     "holiday_country": "CN",
     "lunar_enabled": True,
@@ -41,7 +42,8 @@ def validate(values):
     if type(values) is not dict or set(values) != set(DEFAULTS):
         raise ConfigurationError("perception_configuration_invalid", "provide the declared perception settings")
     if any(type(values[name]) is not bool for name in (
-            "calendar_enabled", "health_enabled", "health_proactive_enabled", "holiday_enabled", "lunar_enabled",
+            "calendar_enabled", "health_enabled", "health_proactive_enabled", "screen_context_enabled",
+            "holiday_enabled", "lunar_enabled",
             "automatic_solar_terms_enabled", "almanac_enabled",
             "platform_enabled", "model_route_enabled", "configured_modalities_enabled")):
         raise ConfigurationError("perception_configuration_invalid", "perception switches must be boolean")
@@ -93,7 +95,7 @@ class PerceptionConfigurationOwner(RoleSharedSettingsOwner):
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.store.transaction():
             result = super().write(target, fields, changes=changes, reset=reset,
                                    expected_revision=expected_revision, observed_at=observed_at)
             validate({key.removeprefix(GROUP + "."): item.value
@@ -114,3 +116,30 @@ class PerceptionSettings:
         settings = validate({key.removeprefix(GROUP + "."): value
                              for key, value in snapshot.values.items()})
         return {"settings": settings, "configuration_token": snapshot.resolution_token}
+
+
+def read_perception_values(app, context, at=None, *, role_only=False):
+    """Read validated perception settings for trusted internal date projections."""
+    service = getattr(app, "perception_settings", None)
+    if service is None or context is None:
+        return dict(DEFAULTS)
+    if not role_only and at is not None and callable(getattr(service, "capture", None)):
+        try:
+            captured = service.capture(context, at)
+            if isinstance(captured, dict) and isinstance(captured.get("settings"), dict):
+                return validate_snapshot(captured["settings"])
+        except Exception:
+            pass
+    configuration = getattr(service, "configuration", None)
+    if configuration is not None:
+        try:
+            target = role_target_for(context) if role_only else target_for(context)
+            with configuration.store.read_snapshot():
+                definitions = configuration.registry.group(GROUP)
+                owner = configuration._owners[definitions[0].owner_id]
+                snapshot = owner.read(target, definitions)
+            return validate({key.removeprefix(GROUP + "."): field.value
+                             for key, field in snapshot.fields.items()})
+        except Exception:
+            pass
+    return dict(DEFAULTS)

@@ -269,6 +269,9 @@ def render_model_state(state: str) -> str:
                 address += "本群不开启未点名答疑和自主插话。"
             elif policy.get("question_enabled") is False:
                 address += "本群未点名答疑关闭。"
+        if policy.get("mention_force_reply_enabled") is True and (
+                facts.get("mentioned") or facts.get("native_wakeup") or facts.get("candidate_reason") == "direct_word"):
+            address = "本群已开启被@强制应答。被明确 @ 或命中唤醒词时，直接回应点名的消息。"
         model["address_context"] = address
         if reason:
             model["candidate_reason"] = str(reason)
@@ -278,7 +281,8 @@ def render_model_state(state: str) -> str:
                 "enabled", "used_turns", "pending_turns", "max_turns", "seconds", "limit_reached") if key in continuation}
         if policy:
             model["group_participation_policy"] = {key: policy[key] for key in (
-                "question_enabled", "interjection_enabled", "question_threshold", "cooldown_seconds") if key in policy}
+                "question_enabled", "interjection_enabled", "mention_force_reply_enabled",
+                "question_threshold", "cooldown_seconds") if key in policy}
         reference = facts.get("question_reference") or {}
         if reference:
             model["question_reference"] = f"求助评分 {reference.get('score', 0)}，阈值 {policy.get('question_threshold', 65)}；达到阈值仍非必答。"

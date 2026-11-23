@@ -1,6 +1,7 @@
 """Authenticated page directory; the host supplies every target and API path."""
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,7 @@ from .browser_preferences import (
 from .display_names import display_names
 from .group_remarks import GroupRemarks
 from .identity_derivation import role_display_name
+from .search_catalog import build_search_catalog
 from .settings import HostControlError
 
 
@@ -74,7 +76,30 @@ class PageWebAPI:
                 (PREFIX + "/page/browser-preferences", self.browser_preferences, ["GET"],
                  "Read this browser's Companion role and card preferences"),
                 (PREFIX + "/page/browser-preferences", self.save_browser_preferences, ["POST"],
-                 "Save Companion role and card preferences in this browser's cookies")]
+                 "Save Companion role and card preferences in this browser's cookies"),
+                (PREFIX + "/search/catalog", self.search_catalog, ["GET"],
+                 "Read searchable model tasks, plugin schema and native extension metadata")]
+
+    async def search_catalog(self):
+        """Return non-secret searchable metadata for global search and all-features overview."""
+        from .web_api import outcome_response
+
+        try:
+            username = request.username
+            if (
+                type(username) is not str
+                or not username.strip()
+                or username.startswith("api_key:")
+            ):
+                raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+            if request.query:
+                raise TaskError("page_request_invalid", "search catalog does not accept query overrides")
+            if getattr(self.controller, "_terminated", False):
+                raise TaskError("staging_host_terminated", "plugin is stopped")
+            catalog = await asyncio.to_thread(build_search_catalog, self.controller)
+            return outcome_response(Outcome.success(catalog))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def workspace_entry(self):
         """Refresh the current page's short-lived resource token through AstrBot.
@@ -342,13 +367,29 @@ class PageWebAPI:
                 observed_at = controller.now()
                 inventory = getattr(controller.web_api, "target_inventory", None)
 
+            def _accepts_refresh_routes(fn):
+                try:
+                    sig = inspect.signature(fn)
+                except (TypeError, ValueError):
+                    return False
+                param = sig.parameters.get("refresh_routes")
+                if param is not None and param.kind in (
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                ):
+                    return True
+                return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
             def prepare_targets():
                 operator = dashboard_operator(runtime, username, at=observed_at)
                 require(ObjectAccessPolicy(runtime).feature_access(operator,
                     scope=ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, "page.management"),
                     action="memory.manage", observed_at=observed_at))
+                raw_targets = None
                 if callable(inventory):
-                    targets = inventory()
+                    targets = (inventory(refresh_routes=False)
+                               if _accepts_refresh_routes(inventory) else inventory())
+                    raw_targets = targets
                 else:
                     settings = controller.resolved_settings()
                     targets = [{"target_id": settings.profile_id, "scope_kind": "private",
@@ -384,15 +425,18 @@ class PageWebAPI:
                                      "config", "perception_native", "reality_access", "screen_access", "game_access", "persona", "legacy",
                                      "qzone_extension", "image_material")}}
                                  for role in target["roles"]]} for target in targets]
-                return operator, GroupRemarks(runtime).apply(public)
+                return operator, GroupRemarks(runtime).apply(public), raw_targets
 
-            operator, remarked = await asyncio.to_thread(prepare_targets)
+            operator, remarked, raw_targets = await asyncio.to_thread(prepare_targets)
             public = await display_names(controller).targets(remarked)
             async with controller._control_lock:
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading display names")
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
+                ensure_routes = getattr(controller.web_api, "_ensure_role_routes", None)
+                if callable(ensure_routes) and raw_targets is not None:
+                    ensure_routes(raw_targets)
                 recheck_at = controller.now()
 
             def recheck_access():

@@ -640,10 +640,12 @@ class CoreReplyFollowUpGuardTests(unittest.IsolatedAsyncioTestCase):
 class EndToEndPluginFollowUpTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end tests with PrivateCompanionV2StagingPlugin and real AstrBot follow_up."""
 
-    def _build_plugin(self, *, channel: str, admission_store=None):
+    def _build_plugin(self, *, channel: str, admission_store=None, host_serializes_media: bool | None = False):
         from tests.test_main_no_reply import ENTRY
 
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        if host_serializes_media is not None:
+            plugin._core_followup_guard = CoreReplyFollowUpGuard(host_serializes_media=host_serializes_media)
         target = NS(key=f"{channel}-target-key", target_id=f"{channel}-target")
         phase_calls = []
 
@@ -1407,13 +1409,186 @@ class EndToEndPluginFollowUpTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(t2, timeout=1.0)
 
         self.assertIsNone(plugin._private_reply_followups().active_for("private-target"))
-        self.assertFalse(ev2.call_llm)
+        self.assertTrue(ev2.call_llm, "guard close must suppress AstrBot bare LLM fallback")
+        self.assertFalse(ev2.is_wake)
+        self.assertFalse(ev2.is_at_or_wake_command)
         self.assertIn(("pc-2", "failed"), phases)
         self.assertIs(ev2.send, ev2._original_send_ref)
 
         run1_release.set()
         await t1
         self.assertEqual(plugin._core_reply_followup_guard()._keys, {})
+
+    async def test_e2e_host_serializes_media_auto_bypasses_wait_and_runs_capture_cleanup(self):
+        from astrbot.core.pipeline.process_stage import follow_up
+
+        has_native_media_order = (
+            callable(getattr(follow_up, "extract_plain_steering_text", None))
+            and hasattr(follow_up, "_FOLLOW_UP_ORDER_STATE")
+        )
+        plugin, _admission, phases = self._build_plugin(
+            channel="private",
+            host_serializes_media=None if has_native_media_order else True,
+        )
+        umo = "onebot_qq:FriendMessage:e2e-host-native"
+        ev1 = _stub_event(
+            umo=umo, sender_id="u-native", text="第一句",
+            components=[NS(type="Plain", text="第一句")], channel="private", message_id="hn-1",
+        )
+        ev2 = _stub_event(
+            umo=umo, sender_id="u-native", text="配图",
+            components=[NS(type="Plain", text="配图"), NS(type="Image", file="a.png")],
+            channel="private", message_id="hn-2",
+        )
+        release = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def run1():
+            out = await plugin._enter_core_reply_followup_guard(
+                ev1, event_ref="hn-1", channel="private", prepared={"event_id": "hn-1"},
+            )
+            self.assertEqual(out["reason"], "host_serialized")
+            entered.set()
+            await release.wait()
+
+        t1 = asyncio.create_task(run1())
+        await entered.wait()
+
+        async def run2():
+            out = await plugin._enter_core_reply_followup_guard(
+                ev2, event_ref="hn-2", channel="private", prepared={"event_id": "hn-2"},
+            )
+            self.assertEqual(out["reason"], "host_serialized")
+            self.assertFalse(out["waited"])
+            ev2.set_extra("_follow_up_captured", {"target_run_id": "run-native"})
+
+        t2 = asyncio.create_task(run2())
+        await asyncio.wait_for(t2, timeout=0.5)
+        await asyncio.sleep(0)
+        self.assertIn(("hn-2", "completed"), phases)
+        self.assertEqual(plugin._core_reply_followup_guard()._keys, {})
+
+        release.set()
+        await t1
+
+    async def test_e2e_agent_done_and_after_sent_release_guard_immediately_and_preserve_done_cleanup(self):
+        plugin, _admission, phases = self._build_plugin(channel="private", host_serializes_media=False)
+        umo = "onebot_qq:FriendMessage:e2e-early-release"
+        ev1 = _stub_event(
+            umo=umo, sender_id="u-rel", text="第一句",
+            components=[NS(type="Plain", text="第一句")], channel="private", message_id="rel-1",
+        )
+        ev2 = _stub_event(
+            umo=umo, sender_id="u-rel", text="配图",
+            components=[NS(type="Plain", text="配图"), NS(type="Image", file="a.png")],
+            channel="private", message_id="rel-2",
+        )
+        ev1_ready = asyncio.Event()
+        ev1_hold = asyncio.Event()
+
+        async def run1():
+            await plugin.receive_companion_message(ev1)
+            plugin._private_reply_followups().finish_event(ev1)
+            ev1_ready.set()
+            await ev1_hold.wait()
+
+        t1 = asyncio.create_task(run1())
+        await ev1_ready.wait()
+
+        t2 = asyncio.create_task(plugin.receive_companion_message(ev2))
+        await asyncio.sleep(0.02)
+        self.assertFalse(t2.done(), "ev2 should wait while ev1 is active")
+
+        # Calling on_agent_done releases the guard slot even before run1's outer task exits.
+        await plugin.observe_companion_core_agent_done(ev1, None, NS(role="assistant"))
+        await asyncio.wait_for(t2, timeout=0.5)
+
+        # Calling after_message_sent also releases ev2 immediately.
+        await plugin.observe_companion_core_reply_sent(ev2)
+        self.assertEqual(plugin._core_reply_followup_guard()._keys, {})
+
+        ev1_hold.set()
+        await t1
+
+    async def test_timeout_does_not_register_active_turn_or_trigger_domino_cascade(self):
+        guard = CoreReplyFollowUpGuard(
+            wait_timeout_seconds=0.03,
+            active_runners_getter=lambda: {},
+            host_serializes_media=False,
+        )
+        umo = "onebot_qq:GroupMessage:domino"
+        ev1 = _stub_event(umo=umo, sender_id="u1", text="stuck", components=[NS(type="Plain", text="stuck")])
+        ev2 = _stub_event(umo=umo, sender_id="u1", components=[NS(type="Image", file="a.png")])
+        ev3 = _stub_event(umo=umo, sender_id="u1", text="next", components=[NS(type="Plain", text="next")])
+        ready = asyncio.Event()
+        release = asyncio.Event()
+        done_callbacks = []
+
+        async def run_stuck():
+            await guard.enter(ev1, event_ref="e1", channel="group")
+            ready.set()
+            await release.wait()
+
+        t1 = asyncio.create_task(run_stuck())
+        await ready.wait()
+
+        async def run_timed_out():
+            out2 = await guard.enter(
+                ev2, event_ref="e2", channel="group",
+                on_turn_done=lambda ev, task: done_callbacks.append(ev),
+            )
+            self.assertEqual(out2["reason"], "timeout")
+            # ev2 must NOT sit in active_turns as an unstarted media barrier.
+            out3 = await asyncio.wait_for(guard.enter(ev3, event_ref="e3", channel="group"), timeout=0.5)
+            self.assertFalse(out3["waited"])
+            self.assertEqual(out3["reason"], "immediate")
+
+        t2 = asyncio.create_task(run_timed_out())
+        await asyncio.wait_for(t2, timeout=1.0)
+        await asyncio.sleep(0)
+        self.assertEqual(done_callbacks, [ev2])
+
+        release.set()
+        await t1
+        guard.finish_turn(ev3)
+        self.assertEqual(guard._keys, {})
+
+    async def test_e2e_passthrough_guard_close_suppresses_bare_llm(self):
+        plugin, _admission, _phases = self._build_plugin(channel="private", host_serializes_media=False)
+        umo = "onebot_qq:FriendMessage:e2e-pass-close"
+        ev1 = _stub_event(
+            umo=umo, sender_id="u-pc", text="第一句",
+            components=[NS(type="Plain", text="第一句")], channel="private", message_id="pass-1",
+        )
+        ev2 = _stub_event(
+            umo=umo, sender_id="u-pc", text="图",
+            components=[NS(type="Image", file="p.png")], channel="private", message_id="pass-2",
+        )
+        ev2.is_at_or_wake_command = True
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def run1():
+            await plugin.receive_companion_message(ev1)
+            plugin._private_reply_followups().finish_event(ev1)
+            entered.set()
+            await release.wait()
+
+        t1 = asyncio.create_task(run1())
+        await entered.wait()
+
+        t2 = asyncio.create_task(
+            plugin._guard_passthrough_core_reply(ev2, event_ref="pass-2", channel="private")
+        )
+        await asyncio.sleep(0.02)
+        self.assertFalse(t2.done())
+
+        plugin._core_reply_followup_guard().close()
+        await asyncio.wait_for(t2, timeout=1.0)
+        self.assertTrue(ev2.call_llm, "passthrough guard close must suppress bare LLM fallback")
+
+        release.set()
+        await t1
 
 
 if __name__ == "__main__":

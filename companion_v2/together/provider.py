@@ -89,9 +89,20 @@ def _user_id(context: dict[str, Any]) -> str:
 
 
 def _package_hash() -> str:
+    """Compute the deterministic source digest over ``companion_v2/together/*.py``.
+
+    The V2 capability catalog binds each ``(extension_id, package_id, package_version)``
+    to this digest. Modifying files in ``companion_v2/together/`` without bumping the
+    plugin version triggers ``capability_descriptor_conflict`` until the version is
+    incremented or the catalog entry is updated.
+    """
+    package_dir = Path(__file__).parent
     digest = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        digest.update(path.name.encode("utf-8") + b"\0" + path.read_bytes() + b"\0")
+    try:
+        for path in sorted(package_dir.glob("*.py")):
+            digest.update(path.name.encode("utf-8") + b"\0" + path.read_bytes() + b"\0")
+    except OSError as exc:
+        raise NativeTogetherError("together_package_hash_unreadable") from exc
     return digest.hexdigest()
 
 
@@ -150,28 +161,51 @@ class OperationStore:
             except FileNotFoundError:
                 pass
 
+    @staticmethod
+    def _is_reclaimable_failure(operation: Any) -> bool:
+        """A confirmed non-committed failure has no side effects and may be retried."""
+        return (isinstance(operation, dict)
+                and operation.get("state") == "failed"
+                and operation.get("effect") == "not_committed")
+
     def begin(self, scope: str, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         identity = _operation_identity(request)
+        invocation_id = request["invocation_id"]
         with self._lock:
+            stale_foreign: list[tuple[str, str]] = []
             for existing_scope, operations in self._data["operations"].items():
-                if existing_scope != scope and any(
-                    item.get("invocation_id") == request["invocation_id"] for item in operations.values()
-                ):
-                    raise NativeTogetherError("native_original_invocation_mismatch")
-            bucket = self._data["operations"].setdefault(scope, {})
-            for operation in bucket.values():
-                if operation.get("invocation_id") == request["invocation_id"]:
-                    if operation.get("identity") != identity:
+                if existing_scope == scope:
+                    continue
+                for op_id, item in operations.items():
+                    if item.get("invocation_id") != invocation_id:
+                        continue
+                    if self._is_reclaimable_failure(item):
+                        stale_foreign.append((existing_scope, op_id))
+                    else:
                         raise NativeTogetherError("native_original_invocation_mismatch")
-                    return copy.deepcopy(operation), False
+            bucket = self._data["operations"].setdefault(scope, {})
+            stale_local: list[str] = []
+            for op_id, operation in bucket.items():
+                if operation.get("invocation_id") != invocation_id:
+                    continue
+                if self._is_reclaimable_failure(operation):
+                    stale_local.append(op_id)
+                    continue
+                if operation.get("identity") != identity:
+                    raise NativeTogetherError("native_original_invocation_mismatch")
+                return copy.deepcopy(operation), False
+            for existing_scope, op_id in stale_foreign:
+                self._data["operations"].get(existing_scope, {}).pop(op_id, None)
+            for op_id in stale_local:
+                bucket.pop(op_id, None)
             operation = {
                 "id": "together-op-" + uuid.uuid4().hex,
                 "scope": scope,
                 "identity": identity,
-                "invocation_id": request["invocation_id"],
+                "invocation_id": invocation_id,
                 "action": request["action"],
                 "request": {
-                    "schema": request["schema"], "invocation_id": request["invocation_id"],
+                    "schema": request["schema"], "invocation_id": invocation_id,
                     "parent_task_id": request["parent_task_id"], "tool_call_id": request["tool_call_id"],
                     "action": request["action"], "origin_key": request["origin_key"],
                     "context": _normalized_context(request["context"]),

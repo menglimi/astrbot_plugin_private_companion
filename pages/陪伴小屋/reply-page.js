@@ -1,4 +1,4 @@
-﻿/* 回复设置适配器：表达页保留离线预览，决策页只挂载群聊判断分区。
+/* 回复设置适配器：表达页保留离线预览，决策页只挂载群聊判断分区。
    此前这里自带一整套字段渲染、草稿存储、幂等重试与版本冲突处理；设置部分现在
    归 workbench-page.js，本文件保留工作台不做的离线分段预览。
 
@@ -1148,9 +1148,58 @@ window.CompanionReplyPage = (() => {
       + `<p>${e(message)}</p></div>`;
   }
 
-  function previewModalMarkup() {
+  let previewModalCloseTimer = null;
+  function previewModalCanAnimate(node) {
+    return Boolean(
+      node
+      && typeof requestAnimationFrame === "function"
+      && typeof window.getComputedStyle === "function"
+      && !document.body?.classList?.contains("reduce-motion")
+      && document.documentElement?.dataset?.motion !== "off"
+      && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
+  function openPreviewModal() {
+    const wasClosing = Boolean(previewModalCloseTimer);
+    clearTimeout(previewModalCloseTimer);
+    previewModalCloseTimer = null;
+    const wasOpen = state.previewConfigOpen;
+    state.previewConfigOpen = true;
+    renderPreview({animateModalEnter: !wasOpen || wasClosing});
+    root?.querySelector?.('[data-reply-action="preview-modal-close"]')?.focus?.();
+  }
+  function closePreviewModal() {
+    if (!state.previewConfigOpen || previewModalCloseTimer) return;
+    const modal = root?.querySelector?.("[data-reply-preview-modal]");
+    const myVersion = version;
+    const finish = () => {
+      previewModalCloseTimer = null;
+      if (!live(myVersion)) return;
+      state.previewConfigOpen = false;
+      renderPreview();
+      if (root?.isConnected) root.querySelector?.('[data-reply-action="preview-config"]')?.focus?.({preventScroll: true});
+    };
+    if (!previewModalCanAnimate(modal) || modal.hidden) {
+      finish();
+      return;
+    }
+    if (modal.contains?.(document.activeElement)) document.activeElement?.blur?.();
+    modal.setAttribute?.("inert", "");
+    modal.classList.remove("is-open");
+    modal.classList.add("is-closing");
+    const delay = document.documentElement?.dataset?.motion === "low" ? 110 : 185;
+    previewModalCloseTimer = setTimeout(finish, delay);
+  }
+  function onKeyDown(event) {
+    if (event.key === "Escape" && state.previewConfigOpen) {
+      event.preventDefault?.();
+      closePreviewModal();
+    }
+  }
+  function previewModalMarkup(animateEnter = false) {
     const option = (key, name, value, options) => `<label class="reply-preview-option"><span>${name}</span><select data-reply-preview-option="${key}">${options.map(([optionKey, label]) => `<option value="${optionKey}"${value === optionKey ? " selected" : ""}>${label}</option>`).join("")}</select></label>`;
-    return `<div class="reply-preview-modal" data-reply-preview-modal${state.previewConfigOpen ? "" : " hidden"} role="dialog" aria-modal="true" aria-labelledby="reply-preview-modal-title">`
+    const openClass = state.previewConfigOpen && !animateEnter ? " is-open" : "";
+    return `<div class="reply-preview-modal${openClass}" data-reply-preview-modal${state.previewConfigOpen ? "" : " hidden"} role="dialog" aria-modal="true" aria-labelledby="reply-preview-modal-title">`
       + `<div class="reply-preview-modal-scrim" data-reply-action="preview-modal-close"></div><div class="reply-preview-modal-card">`
       + `<header><h3 id="reply-preview-modal-title">预览配置</h3><button type="button" class="icon-button" data-reply-action="preview-modal-close" aria-label="关闭预览配置">${icon("x")}</button></header>`
       + `<div class="reply-preview-modal-body"><fieldset><legend>示例预设</legend><div class="reply-preview-modal-segmented">${["simple","complex","custom"].map(key => `<button type="button" class="${state.examplePreset === key ? "is-selected" : ""}" data-reply-example="${key}">${key === "simple" ? "简单示例" : key === "complex" ? "复杂示例" : "自定义"}</button>`).join("")}</div></fieldset>`
@@ -1159,7 +1208,7 @@ window.CompanionReplyPage = (() => {
       + `<p class="reply-preview-modal-lock">${icon("lock-keyhole")} 引用位置由回复分段设置决定</p><label class="reply-preview-modal-switch"><input type="checkbox" data-reply-preview-protection ${state.previewProtection ? "checked" : ""}><span>高亮保护范围</span></label>`
       + `</div></div></div>`;
   }
-  function renderPreview() {
+  function renderPreview({animateModalEnter = false} = {}) {
     const host = anchor("preview");
     if (!host) return;
     if (!previewEnabled()) {
@@ -1170,6 +1219,8 @@ window.CompanionReplyPage = (() => {
     const locked = state.loading || state.denied || !state.status;
     const module = root?.dataset?.expressionModule || "expression-text";
     const title = module === "expression-voice" ? "朗读位置预览" : module === "expression-platform" ? "组件顺序预览" : "分段效果预览";
+    const shouldAnimateEnter = animateModalEnter && state.previewConfigOpen
+      && typeof requestAnimationFrame === "function" && typeof window.getComputedStyle === "function";
     host.innerHTML = `<section class="reply-preview" aria-labelledby="reply-preview-title">`
       + `<header class="reply-preview-head"><h3 id="reply-preview-title">${title}<span class="reply-preview-live">实时</span></h3><div class="reply-preview-head-actions"><button type="button" class="button small" data-reply-action="preview-config">${icon("sliders-horizontal")}预览配置</button><button type="button" class="button small" data-reply-action="preview" ${locked || state.busy ? "disabled" : ""}>立即预览</button></div></header>`
       + `<div class="reply-preview-state-grid"><article class="reply-preview-state${state.busy ? " is-active" : ""}"><strong>${icon("loader-circle")}计算中</strong></article><article class="reply-preview-state${state.preview && !state.previewError && !state.busy ? " is-active is-ok" : ""}"><strong>${icon("check-circle-2")}已更新</strong></article><article class="reply-preview-state${state.previewError ? " is-active is-error" : ""}"><strong>${icon("triangle-alert")}预览失败</strong></article></div>`
@@ -1184,7 +1235,11 @@ window.CompanionReplyPage = (() => {
       + `<p class="reply-preview-status" id="reply-preview-status" role="status" aria-live="polite">${state.busy ? "正在计算预览…" : state.previewError ? e(state.previewError) : "等待预览"}</p>`
       + `<div id="reply-preview-result" class="reply-preview-result" aria-live="polite">`
       + (state.preview ? previewMarkup(state.preview) : '<p class="reply-muted">等待首次预览</p>')
-      + `</div></div></div></section>${previewModalMarkup()}`;
+      + `</div></div></div></section>${previewModalMarkup(shouldAnimateEnter)}`;
+    if (shouldAnimateEnter) {
+      const modal = host.querySelector?.("[data-reply-preview-modal]");
+      if (modal) requestAnimationFrame(() => { if (state.previewConfigOpen && !previewModalCloseTimer) modal.classList?.add?.("is-open"); });
+    }
   }
 
   function previewStatus(message) {
@@ -1360,14 +1415,11 @@ window.CompanionReplyPage = (() => {
       return;
     }
     if (previewAction === "preview-config") {
-      state.previewConfigOpen = true;
-      renderPreview();
-      root?.querySelector?.('[data-reply-action="preview-modal-close"]')?.focus?.();
+      openPreviewModal();
       return;
     }
     if (previewAction === "preview-modal-close") {
-      state.previewConfigOpen = false;
-      renderPreview();
+      closePreviewModal();
       return;
     }
     const target = event.target.closest("[data-wb-word-add], [data-wb-word-remove], [data-wb-replacement-add], [data-wb-replacement-remove], [data-wb-order-start], [data-wb-order-move], [data-wb-order-remove], [data-wb-order-add], [data-wb-order-natural], [data-wb-reset]");
@@ -1382,13 +1434,17 @@ window.CompanionReplyPage = (() => {
     previewTicket++;
     clearTimeout(previewTimer);
     previewTimer = null;
+    clearTimeout(previewModalCloseTimer);
+    previewModalCloseTimer = null;
     if (instance) instance.unmount();
     if (root) {
       root.removeEventListener("input", onInput);
       root.removeEventListener("change", onInput);
       root.removeEventListener("click", onClick);
+      root.removeEventListener("keydown", onKeyDown);
       root.textContent = "";
     }
+    if (typeof window !== "undefined") window.removeEventListener?.("keydown", onKeyDown);
     instance = null; root = null; route = null; activeSections = spec.sections;
     initialSection=null;
     statusListener=null;
@@ -1563,6 +1619,8 @@ window.CompanionReplyPage = (() => {
     root.addEventListener("input", onInput);
     root.addEventListener("change", onInput);
     root.addEventListener("click", onClick);
+    root.addEventListener("keydown", onKeyDown);
+    if (typeof window !== "undefined") window.addEventListener?.("keydown", onKeyDown);
     instance = window.CompanionWorkbench.create({
       group: GROUP,
       title: options.expressionModule ? moduleTitle : pageSpec.title,

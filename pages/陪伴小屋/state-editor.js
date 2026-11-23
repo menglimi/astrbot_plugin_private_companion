@@ -396,7 +396,7 @@ window.CompanionStateEditor = (() => {
       const alignReady=maintenance?.canAlign(status);
       const alignAction=feature==="cycle"&&draft?.kind!=="align"
         ?`<section class="state-config-calibration"><div><h4>校准当前周期</h4><p>按实际周期日重建定位，会清除旧周期感受；“交回角色判断”在下次维护采纳。</p></div><button type="button" class="memory-button" data-state-edit="align" ${busy||loading||pending||!alignReady?"disabled":""} ${alignReady?"":"title=\"请先开启生理期模拟并读取角色状态\""}>校准当前周期</button></section>`:"";
-      const sharedForm=editing?form({after:details+related+alignAction,grouped:true}):`<p class="state-feature-scope">${e(scopes)} · ${e(summary)}</p>
+      const sharedForm=editing?form({after:details+related+alignAction,grouped:true}):`<p class="state-feature-scope">${e(scopes)} · ${summary}</p>
         ${displayed}<button type="button" class="memory-button" data-state-edit="${action}" ${busy||loading||pending||unavailable||calendarEditor?.interacting?"disabled":""}>${feature==="home"?"配置状态与首页展示":feature==="energy"?"调整能量表达":"配置"+title}</button>`;
       const feedbackVisible=feature==="home"
         ?category==="home"
@@ -412,8 +412,13 @@ window.CompanionStateEditor = (() => {
       return `<section class="panel state-edit-panel state-feature-editor">${currentFeedback}${sharedForm}${!editing?details+related+alignAction:""}</section>`;
     }
     function feedbackMarkup() {
+      const pendingDetail=pending
+        ?(["configure","configure_role"].includes(pending.action)
+          ?Object.entries(pending.changes||{}).map(([key,value])=>`${maintenance?.label(key)||key}：${typeof value==="boolean"?(value?"开启":"关闭"):String(value??"").slice(0,100)}`).join("；")
+          :maintenance?.pendingText(pending)||"状态设置")
+        :"";
       return `${message?`<p class="memory-notice ${error?"error":""}" role="status" aria-live="polite">${e(message)}</p>`:""}
-        ${pending?`<div class="state-pending" role="status"><strong>${busy?"请求处理中":"有一笔保存尚待核对"}</strong><p>${["configure","configure_role"].includes(pending.action)?Object.entries(pending.changes).map(([key,value])=>`${maintenance?.label(key)||key}：${typeof value==="boolean"?(value?"开启":"关闭"):String(value).slice(0,100)}`).join("；"):maintenance?.pendingText(pending)||"状态设置"}</p><div class="state-edit-actions">
+        ${pending?`<div class="state-pending" role="status"><strong>${busy?"请求处理中":"有一笔保存尚待核对"}</strong><p>${e(pendingDetail)}</p><div class="state-edit-actions">
           <button type="button" class="memory-button" data-state-edit="recover" ${busy||loading?"disabled":""}>用原请求核对</button>
           <button type="button" class="memory-button" data-state-edit="dismiss" ${busy?"disabled":""}>结束核对</button></div></div>`:""}`;
     }
@@ -421,7 +426,7 @@ window.CompanionStateEditor = (() => {
       const unavailable=typeof status.role_edit_token!=="string"
         ||!maintenance?.fields("weather")?.every(key=>maintenance.validField(key,status.settings?.[key]));
       return `<section class="state-weather-config" aria-label="角色天气设置">${category==="weather"?feedbackMarkup():""}
-        ${draft?.kind==="weather"?form():`<div class="state-weather-config-summary"><div><span>角色天气</span><strong>${e(maintenance.actionSummary("weather",status,e))}</strong>
+        ${draft?.kind==="weather"?form():`<div class="state-weather-config-summary"><div><span>角色天气</span><strong>${maintenance.actionSummary("weather",status,e)}</strong>
           <p>按角色所在地读取实况；地点和观测时效随当前人格保存。天气凭据由宿主管理。</p></div>
           <button type="button" class="memory-button" data-state-edit="weather" ${busy||loading||pending||unavailable?"disabled":""}>编辑地点与感知</button></div>`}
       </section>`;

@@ -417,3 +417,56 @@ test("表达学习成功后显示中文状态而不是机器码",async()=>{
   assert.match(html,/上次 11\/1 20:57/);
   context.window.CompanionLearningOverviewPage.unmount();
 });
+
+test("总览空成长提示不渲染空状态条，正常状态走草绿语义色并彻底净化 owner_result 与英文下划线码",async()=>{
+  const page=harness({apiGet:async route=>{
+    const data=route.endsWith("/style")?{items:[]}
+      :route.endsWith("/self-review")?{items:[],
+        status:{state:"succeeded",code:"owner_result",last_run_at:"2026-11-23T01:12:00+08:00"}}
+      :route.endsWith("/expression")?expression({learning:{state:"already_attempted",code:"owner_result",
+        last_run_at:"2026-11-22T15:53:00+08:00",rules_per_turn:2}})
+      :route==="semantic"?{settings:{learning_interval_seconds:21600}}
+      :{items:[],access:{settings:{read_enabled:true,proposals_enabled:true},
+        effective:{read_enabled:{allowed:true},proposals_enabled:{allowed:true}}}};
+    return {status:"ok",data};
+  }},{semantic:{global:true}});
+  page.mount();
+  await page.settle();
+  const html=page.root.innerHTML;
+  const statusRows=[...html.matchAll(/<p class="lh-inline-status([^"]*)"[^>]*>([\s\S]*?)<\/p>/g)];
+  assert.equal(statusRows.length,2,"成长提案已开启时绝不渲染第 3 条空状态条");
+  for(const [,cls,inner] of statusRows){
+    assert.match(cls,/\bis-ok\b/,"正常健康状态应使用柔和草绿 is-ok 语义色，而非警告黄");
+    const visible=inner.replace(/<[^>]+>/g,"").trim();
+    assert.ok(visible.length>0,"禁止渲染空 .lh-inline-status");
+    assert.doesNotMatch(visible,/[a-z]+_[a-z0-9_]+/,"可见文案不得裸露内部下划线英文码");
+  }
+  assert.doesNotMatch(html,/owner_result/,"owner_result 内部哨兵码必须彻底剥离");
+  page.page.unmount();
+});
+
+test("总览成长权限未开启与复盘失败时显示中文原因，可见文本不裸露内部英文码",async()=>{
+  const page=harness({apiGet:async route=>{
+    const data=route.endsWith("/style")?{items:[]}
+      :route.endsWith("/self-review")?{items:[],
+        status:{state:"failed",code:"self_review_output_invalid",
+          last_run_at:"2026-11-22T01:00:00+08:00",next_check_at:"2026-11-22T07:00:00+08:00"}}
+      :route.endsWith("/expression")?expression({learning:{state:"insufficient_samples",
+        available:1,required:2,rules_per_turn:2}})
+      :route==="semantic"?{settings:{learning_interval_seconds:21600}}
+      :{items:[],access:{settings:{read_enabled:true,proposals_enabled:false},
+        effective:{read_enabled:{allowed:true},proposals_enabled:{allowed:false,reason:"authorization_missing"}}}};
+    return {status:"ok",data};
+  }},{semantic:{global:true}});
+  page.mount();
+  await page.settle();
+  const html=page.root.innerHTML;
+  const visible=html.replace(/<[^>]+>/g," ");
+  assert.match(html,/lh-inline-status is-neutral/,"样本不足等常规待机态使用中性温润表面");
+  assert.match(html,/lh-inline-status is-error/,"复盘失败使用错误语义色");
+  assert.match(html,/lh-inline-status is-warn/,"权限未开启使用提醒语义色");
+  assert.match(visible,/复盘输出格式不完整/);
+  assert.match(visible,/未授权/);
+  assert.doesNotMatch(visible,/authorization_missing|self_review_output_invalid|owner_result/);
+  page.page.unmount();
+});

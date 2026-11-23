@@ -114,7 +114,8 @@ class AstrBotForwardHostTests(unittest.IsolatedAsyncioTestCase):
         batch = (await self.controller.receive_claimed(event)).unwrap()
         await wait_for_batch(self.controller.session, batch)
         self.assertFalse((await self.controller.preview(batch)).unwrap()["sent"])
-        content = self.native.provider.client.state.calls[0][0]["messages"][2]["content"]
+        content = next(m["content"] for m in self.native.provider.client.state.calls[0][0]["messages"]
+                       if m["role"] == "user")
         self.assertEqual(len([p for p in content if p["type"] == "image_url"]), 2)
         materials = json.loads(content[0]["text"])["materials"]
         nodes = [json.loads(m["text"]) for m in materials if m["owner"] == "conversation.forward_node"]

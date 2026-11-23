@@ -79,8 +79,17 @@ def authoring_prompt(action: str, brief: str, materials: Mapping[str, str] | Non
     extension = ""
     if action == "continue":
         extension = f"本次续写基于已经固定的版本 {base_version.strip()}；只在此基础上续写，不重写已发布部分。\n"
-    output = ("新建时给出自然贴切的作品标题和简洁作品类型，并完成完整正文。\n"
-              if action == "draft" else "只给出接续固定版本的新正文，不重复已有章节。\n")
+    output = (
+        "新建时给出自然贴切的作品标题和简洁作品类型，并完成完整正文。"
+        '仅输出单个 JSON 对象，必须且只能包含三个非空字符串字段 "title"、"work_type"、"body"'
+        '（不要增加其它字段，也不要包在额外外层键里），例如：'
+        '{"title": "作品标题", "work_type": "短篇小说", "body": "完整正文"}。\n'
+        if action == "draft" else
+        "只给出接续固定版本的新正文，不重复已有章节。"
+        '仅输出单个 JSON 对象，必须且只能包含一个非空字符串字段 "body"'
+        '（不要输出 title、work_type 或其它字段），例如：'
+        '{"body": "接续正文"}。\n'
+    )
     genre_section = f"体裁提示：{genre_guidance}\n" if genre_guidance else ""
     return (
         "请根据创作要求完成作品。宿主会将新作正文保存到原生 Content；"
@@ -91,7 +100,7 @@ def authoring_prompt(action: str, brief: str, materials: Mapping[str, str] | Non
         "尊重角色身份、既有人物关系、叙事视角和用户给出的设定；明确提纲与人工修订优先于自行补全。"
         "续写前核对上文最后的时间、地点、在场人物、动作和未完成冲突，按其自然接续；让情节或人物状态有所推进，避免复述已有内容、避免重复意象和套话堆叠；结尾顺着作品停下，不强加总结或升华。"
         "输出前在内部检查时间线、人物关系、因果和重复问题并自行修正；不要输出检查清单。"
-        f"{genre_section}只输出符合 JSON Schema 的 JSON，不输出推理过程。\n"
+        f"{genre_section}只输出符合要求的 JSON 对象，不要输出推理过程、前言或额外说明。\n"
         f"{output}"
         f"action: {action}\n{extension}要求:\n{brief.strip()}\n可引用素材:\n{rendered or '（无）'}"
     )

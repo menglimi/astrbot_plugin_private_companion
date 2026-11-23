@@ -327,11 +327,11 @@ test("self identity chapter header follows the selected chapter", () => {
   const h = harness();
   const intro = h.anchor("selfChapterIntro");
   h.run("selectSelfProfileSection('identity')");
-  assert.match(intro.innerHTML, /01 \/ IDENTITY/);
-  assert.match(intro.innerHTML, /身份/);
+  assert.match(intro.innerHTML, /第 01 章/);
+  assert.match(intro.innerHTML, /基础身份/);
   h.run("selectSelfProfileSection('appearance')");
-  assert.match(intro.innerHTML, /02 \/ APPEARANCE/);
-  assert.match(intro.innerHTML, /外貌/);
+  assert.match(intro.innerHTML, /第 02 章/);
+  assert.match(intro.innerHTML, /外貌与识别/);
 });
 
 test("self subpages survive copied links and a second address synchronization", () => {

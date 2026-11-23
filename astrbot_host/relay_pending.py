@@ -99,6 +99,7 @@ def claim_group(runtime, group_id, target_user_id, now=None):
                     and task.get("group_id") == group_id
                     and task.get("target_user_id") == target_user_id
                     and task.get("expires_at", 0) > now):
+                task["requeue_state"] = "waiting"
                 task["state"] = "sending"
                 claimed.append(dict(task))
         _write(connection, data)
@@ -108,7 +109,7 @@ def claim_group(runtime, group_id, target_user_id, now=None):
 def claim_private_receipts(runtime, target_user_id, now=None, *, permission=False):
     now = time() if now is None else now
     wanted = "waiting_permission" if permission else "waiting_reply"
-    next_state = "reporting" if permission else "reporting"
+    next_state = "reporting"
     claimed = []
     with runtime.transaction() as connection:
         data = _read(runtime)
@@ -118,6 +119,7 @@ def claim_private_receipts(runtime, target_user_id, now=None, *, permission=Fals
             if (task.get("kind") == "private_receipt" and task.get("state") == wanted
                     and task.get("target_user_id") == target_user_id
                     and task.get("expires_at", 0) > now):
+                task["requeue_state"] = wanted
                 task["state"] = next_state
                 claimed.append(dict(task))
                 break
@@ -153,6 +155,7 @@ def finish(runtime, task_id, state):
         data = _read(runtime)
         task = data["tasks"].get(task_id)
         if isinstance(task, dict):
+            task.pop("requeue_state", None)
             task["state"] = state
         _write(connection, data)
 
@@ -162,17 +165,27 @@ def mark_waiting_permission(runtime, task_id, reply_text):
         data = _read(runtime)
         task = data["tasks"].get(task_id)
         if isinstance(task, dict):
+            task.pop("requeue_state", None)
             task["state"] = "waiting_permission"
             task["reply_text"] = reply_text
         _write(connection, data)
 
 
-def requeue(runtime, task_id):
+def requeue(runtime, task_id, state=None):
     with runtime.transaction() as connection:
         data = _read(runtime)
         task = data["tasks"].get(task_id)
         if isinstance(task, dict) and task.get("state") in {"sending", "reporting"}:
-            task["state"] = "waiting" if task.get("kind") == "group_wait" else "waiting_reply"
+            target = state or task.pop("requeue_state", None)
+            if target not in {"waiting", "waiting_reply", "waiting_permission"}:
+                if task.get("kind") == "group_wait":
+                    target = "waiting"
+                elif task.get("reply_text"):
+                    target = "waiting_permission"
+                else:
+                    target = "waiting_reply"
+            task.pop("requeue_state", None)
+            task["state"] = target
         _write(connection, data)
 
 

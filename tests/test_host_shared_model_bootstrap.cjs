@@ -96,7 +96,43 @@ test("saving the shared model calls the bootstrap endpoint and reports readiness
   await h.sandbox.saveSharedModel();
   assert.equal(JSON.stringify(h.calls.api[0]), JSON.stringify({method: "POST", endpoint: "accounts/model-provider", body: {provider_id: "p1"}}));
   assert.equal(h.calls.reads, 1);
-  assert.match(h.calls.notices.at(-1).message, /共享模型已保存/);
+  assert.match(h.calls.notices.at(-1).message, /陪伴通用模型（全局默认）已保存/);
   assert.equal(h.sandbox.pageState().busy, false);
   assert.equal(h.sandbox.pageState().modelSaving, false);
+});
+
+test("shared model panel renders optional fallback provider excluding primary and saves both", async () => {
+  const model = {
+    provider_id: "p1",
+    fallback_provider_id: "p2",
+    providers: [
+      {id: "p1", name: "Primary"},
+      {id: "p2", name: "Backup"},
+      {id: "p3", name: "Third"},
+    ],
+  };
+  const h = harness(model, {model: {...model, fallback_provider_id: "p3"}, prepared: true});
+  h.sandbox.renderSharedModel();
+  const fallbackHtml = h.nodes.get("shared-model-fallback").innerHTML;
+  assert.doesNotMatch(fallbackHtml, /value="p1"/, "fallback select must exclude currently chosen primary provider");
+  assert.match(fallbackHtml, /value="p2"/);
+  assert.match(fallbackHtml, /value="p3"/);
+  assert.equal(h.nodes.get("shared-model-fallback").value, "p2");
+
+  h.nodes.get("shared-model-fallback").value = "p3";
+  await h.sandbox.saveSharedModel();
+  assert.equal(JSON.stringify(h.calls.api[0]), JSON.stringify({
+    method: "POST",
+    endpoint: "accounts/model-provider",
+    body: {provider_id: "p1", fallback_provider_id: "p3"},
+  }));
+
+  // Clearing fallback sends empty string so backend removes fallback_provider_id
+  h.nodes.get("shared-model-fallback").value = "";
+  await h.sandbox.saveSharedModel();
+  assert.equal(JSON.stringify(h.calls.api[1]), JSON.stringify({
+    method: "POST",
+    endpoint: "accounts/model-provider",
+    body: {provider_id: "p1", fallback_provider_id: ""},
+  }));
 });

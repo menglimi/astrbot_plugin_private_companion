@@ -25,13 +25,17 @@ def baseline(name):
 class ConverterTests(TestCase):
     def test_portable_game_preference_and_together_timing_are_kept(self):
         game = convert_native_extension_configuration(
-            "game", {"server": {"enabled": True},
+            "game", {"server": {"enabled": False},
+                     "pig_dice": {"target_score": 60},
                      "native_v2": {"gomoku_enabled": False}}, **baseline("game"))
         together = convert_native_extension_configuration(
             "together", {"conversation": {"history_turns": 20,
                                                  "chat_provider_id": "old-provider"},
                          "speech": {"tts_provider_id": "old-tts"}}, **baseline("together"))
-        self.assertEqual(game.changes, {"native_v2.gomoku_enabled": False})
+        self.assertEqual(game.changes, {
+            "native_v2.gomoku_enabled": False,
+            "native_v2.pig_dice_target_score": 60,
+        })
         self.assertEqual(together.changes, {"conversation.history_turns": 20,
                                             "speech.tts_provider_id": "old-tts"})
         self.assertNotIn("conversation.chat_provider_id", together.changes,
@@ -224,7 +228,7 @@ class HostApplyTests(IsolatedAsyncioTestCase):
             prepared = api._prepare_native_extension_config_intent(intent, [], [], tokens)
             self.assertEqual(prepared.changes, {"native_v2.xiangqi_enabled": False})
             # An unrelated page edit does not invalidate this narrowly scoped plan.
-            config.update_fields({"rooms": {"max_group_rooms": 2}})
+            config.update_fields({"context": {"recent_game_result_ttl_minutes": 45}})
             result = await api._apply_native_extension_config_intent(
                 prepared, tokens["native_extension_states"]["game"])
             self.assertEqual(result, ["game.native_v2.xiangqi_enabled"])
@@ -232,4 +236,4 @@ class HostApplyTests(IsolatedAsyncioTestCase):
             saved = json.loads(config.path.read_text(encoding="utf-8"))
             self.assertFalse(saved["native_v2"]["gomoku_enabled"])
             self.assertFalse(saved["native_v2"]["xiangqi_enabled"])
-            self.assertEqual(saved["rooms"]["max_group_rooms"], 2)
+            self.assertEqual(saved["context"]["recent_game_result_ttl_minutes"], 45)
