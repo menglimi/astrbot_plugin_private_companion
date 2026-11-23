@@ -3645,4 +3645,11 @@ test('models-page.css pins narrow-screen routing row edit button to top-right an
   const advRule = css.match(/\.model-adv\s*\{[^}]*\}/);
   assert.ok(advRule, 'missing .model-adv rule');
   assert.doesNotMatch(advRule[0], /overflow:\s*hidden/, '.model-adv must not clip expanded textarea');
+  assert.match(css, /\.model-drawer\s*\{[^}]*translate3d\(100%,\s*0,\s*0\)[^}]*visibility:\s*hidden[^}]*pointer-events:\s*none/);
+  assert.match(css, /\.model-drawer\.on\s*\{[^}]*translate3d\(0,\s*0,\s*0\)[^}]*cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\)/);
+  assert.match(css, /:root\[data-motion="off"\]\s+\.model-mask/);
+  assert.match(css, /\.model-rrow-fb\s*\{[^}]*inline-flex[^}]*white-space:\s*nowrap/);
+  assert.match(css, /\.model-cur-item\s+\.model-cur\s*\{[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
+  assert.match(css, /\.model-sc-rf\s+\.r\s+b\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(css, /\.model-insp-top\s*\{[^}]*flex-wrap:\s*nowrap/);
 });

@@ -109,6 +109,7 @@ window.CompanionModelsPage = (() => {
   }
   let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true, onTabChange = null;
   let deferChangeRender = false, deferredRenderPending = false, pointerResetTimer = null;
+  let wsShell = null, wsMain = null, wsMask = null, wsDrawer = null, overlayCloseTimer = null, overlayWasOpen = false;
   const current = (ticket, s) => ticket === version && state === s && root?.isConnected;
   const taskOf = (s, kind) => s.status?.tasks.find(task => task.kind === kind) || null;
   const configSource = source => ({ default: "插件默认", host_conversation: "AstrBot 会话", installation: "全局默认", role: "角色默认", window: "会话设置" }[source] || "上级配置");
@@ -713,7 +714,7 @@ window.CompanionModelsPage = (() => {
     const stateBadge = inherited
       ? `<span class="model-field-state" data-field-state="${esc(name)}" data-inherited="true">跟随上级</span>`
       : `<button type="button" class="model-inh-btn" data-model-inherit-reset="${esc(name)}" data-model-kind="${esc(kind)}" ${fieldLocked ? "disabled" : ""} title="清除本层覆写并改回跟随上级">↺ 恢复继承</button>`;
-    return `<div class="model-cap"><label class="model-cap-main" for="${esc(controlId)}"><b>${esc(label)}</b>${hint ? ` <em>${esc(hint)}</em>` : ""}</label>${stateBadge}</div>`;
+    return `<div class="model-cap-wrap"><div class="model-cap"><label class="model-cap-main" for="${esc(controlId)}"><b>${esc(label)}</b></label>${stateBadge}</div>${hint ? `<span class="model-cap-hint">${esc(hint)}</span>` : ""}</div>`;
   }
   const scopeLabelText = scope => ({ plugin: "仅插件调用", conversation: "仅普通对话模型", all: "全部生效" }[scope] || "全部生效");
   function taskDiffChips(s, task, draft) {
@@ -760,7 +761,7 @@ window.CompanionModelsPage = (() => {
       </button>
       <div class="model-rrow-route">${isCore
         ? '<span class="model-tag g">AstrBot 核心</span><span class="model-rrow-core-note">当前会话模型 · 附加提示与策略</span>'
-        : `${providerPill(main, "未设置", s.hoverProvider)}<span class="model-rrow-arrow" aria-hidden="true">→</span>${providerPill(fb, "无回退", s.hoverProvider)}`}</div>
+        : `${providerPill(main, "未设置", s.hoverProvider)}<span class="model-rrow-fb"><span class="model-rrow-arrow" aria-hidden="true">→</span>${providerPill(fb, "无回退", s.hoverProvider)}</span>`}</div>
       <div class="model-diff-chips">${chips.join("")}</div>
       <button type="button" class="model-rrow-edit" data-model-open="${esc(task.kind)}" aria-label="精调 ${esc(info.label)}">精调 ›</button>
     </li>`;
@@ -807,15 +808,18 @@ window.CompanionModelsPage = (() => {
     const stepText = idx >= 0 ? `${idx + 1} / ${list.length}` : "";
     return `<header class="model-insp-head">
       <div class="model-insp-top">
-        <span class="model-eb">${draft.layer === "role" ? "角色默认" : windowLabel(s)} · ${esc(info.group)}</span>
-        ${badgeMarkup}
-        <span class="model-grow"></span>
-        <div class="model-insp-nav" role="group" aria-label="切换上下任务">
-          <button type="button" class="model-insp-step" data-inspector-step="-1" ${prevDisabled ? "disabled" : ""} title="上一个任务 (↑)" aria-label="上一个任务">‹</button>
-          ${stepText ? `<span class="model-insp-pos">${stepText}</span>` : ""}
-          <button type="button" class="model-insp-step" data-inspector-step="1" ${nextDisabled ? "disabled" : ""} title="下一个任务 (↓)" aria-label="下一个任务">›</button>
+        <div class="model-insp-crumb">
+          <span class="model-eb">${draft.layer === "role" ? "角色默认" : windowLabel(s)} · ${esc(info.group)}</span>
+          ${badgeMarkup}
         </div>
-        <button type="button" class="x" data-inspector-close title="${dirty(task, draft) && !draft.pending ? "收起抽屉（未保存草稿会保留）" : "关闭抽屉 (Esc)"}" aria-label="关闭任务配置抽屉">×</button>
+        <div class="model-insp-controls">
+          <div class="model-insp-nav" role="group" aria-label="切换上下任务">
+            <button type="button" class="model-insp-step" data-inspector-step="-1" ${prevDisabled ? "disabled" : ""} title="上一个任务 (↑)" aria-label="上一个任务">‹</button>
+            ${stepText ? `<span class="model-insp-pos">${stepText}</span>` : ""}
+            <button type="button" class="model-insp-step" data-inspector-step="1" ${nextDisabled ? "disabled" : ""} title="下一个任务 (↓)" aria-label="下一个任务">›</button>
+          </div>
+          <button type="button" class="x" data-inspector-close title="${dirty(task, draft) && !draft.pending ? "收起抽屉（未保存草稿会保留）" : "关闭抽屉 (Esc)"}" aria-label="关闭任务配置抽屉">×</button>
+        </div>
       </div>
       <div class="model-insp-title">${icon(coreReply(task) ? ICONS.reply : groupIcon(info.group))}<h3>${esc(info.label)}</h3><span class="model-tag ${task.lane === "foreground" ? "g" : "n"}">${task.lane === "foreground" ? "前台" : "后台"}</span></div>
       <p class="model-insp-desc">${esc(coreReply(task) ? (task.routing_note || "普通回复采用 AstrBot 当前会话模型。") : info.description)}</p>
@@ -825,16 +829,20 @@ window.CompanionModelsPage = (() => {
       </div>
     </header>`;
   }
-  function coreReplyInspector(s, task) {
+  function coreReplyInspectorSpec(s, task) {
     const info = taskName(task.kind), draft = s.drafts.get(task.kind), locked = s.loading || s.busy || s.denied;
     const fieldLocked = locked || !!draft.pending;
     const waiting = dirty(task, draft) && !draft.pending;
     const promptValue = effective(task, draft, "prompt") || "";
     const rules = ruleOf(s, task.kind).length;
     const badge = '<span class="model-tag g">AstrBot 核心</span>';
-    return `<div class="model-mask on" data-inspector-close></div>
-      <aside class="model-drawer model-inspector on" role="dialog" aria-modal="true" aria-label="配置 ${esc(info.label)}">
-        <article class="model-fncard open model-inspector-card${waiting ? " dirty" : ""}" data-fncard="${esc(task.kind)}">
+    return {
+      mode: "inspector",
+      kind: task.kind,
+      label: `配置 ${info.label}`,
+      closeAttr: "data-inspector-close",
+      extraClass: "model-inspector",
+      html: `<article class="model-fncard open model-inspector-card${waiting ? " dirty" : ""}" data-fncard="${esc(task.kind)}">
           ${inspectorHeader(s, task, info, draft, badge)}
           <div class="model-insp-body">
             ${conflictNotice(task, draft)}
@@ -859,16 +867,16 @@ window.CompanionModelsPage = (() => {
             ${draft.stale && !draft.pending ? `<button type="button" class="button small" data-model-action="rebase" data-model-kind="${esc(task.kind)}">已核对，保留草稿</button>` : ""}
             <span class="wb-save-context"><button type="button" class="button small primary" data-model-action="save-one" data-model-kind="${esc(task.kind)}" ${locked || (!draft.pending && (draft.stale || !dirty(task, draft))) ? "disabled" : ""}>${draft.pending ? "核对保存" : "保存"}</button>${modelScopeHint(s, task, draft)}</span>
           </footer>
-        </article>
-      </aside>`;
+        </article>`,
+    };
   }
-  function taskInspector(s) {
-    if (!s.expanded || !s.status) return "";
+  function taskInspectorSpec(s) {
+    if (!s.expanded || !s.status) return null;
     const task = taskOf(s, s.expanded);
-    if (!task) return "";
-    if (coreReply(task)) return coreReplyInspector(s, task);
+    if (!task) return null;
+    if (coreReply(task)) return coreReplyInspectorSpec(s, task);
     const info = taskName(task.kind), draft = s.drafts.get(task.kind), locked = s.loading || s.busy || s.denied;
-    if (!draft) return "";
+    if (!draft) return null;
     const fieldLocked = locked || !!draft.pending;
     const picked = s.selection.includes(task.kind), waiting = dirty(task, draft) && !draft.pending;
     const limit = limitFor(s, task, draft), limitMessage = limitHint(s, task, draft);
@@ -886,9 +894,13 @@ window.CompanionModelsPage = (() => {
     const badge = waiting ? '<span class="model-tag a">待保存</span>'
       : own ? '<span class="model-tag">单独设置</span>'
       : '<span class="model-tag n">跟随上级</span>';
-    return `<div class="model-mask on" data-inspector-close></div>
-      <aside class="model-drawer model-inspector on" role="dialog" aria-modal="true" aria-label="配置 ${esc(info.label)}">
-        <article class="model-fncard open model-inspector-card${waiting ? " dirty" : ""}${picked ? " picked" : ""}" data-fncard="${esc(task.kind)}">
+    return {
+      mode: "inspector",
+      kind: task.kind,
+      label: `配置 ${info.label}`,
+      closeAttr: "data-inspector-close",
+      extraClass: "model-inspector",
+      html: `<article class="model-fncard open model-inspector-card${waiting ? " dirty" : ""}${picked ? " picked" : ""}" data-fncard="${esc(task.kind)}">
           ${inspectorHeader(s, task, info, draft, badge)}
           <div class="model-insp-body">
             ${conflictNotice(task, draft)}
@@ -940,8 +952,8 @@ window.CompanionModelsPage = (() => {
             ${draft.stale && !draft.pending ? `<button type="button" class="button small" data-model-action="rebase" data-model-kind="${esc(task.kind)}">已核对，保留草稿</button>` : ""}
             <span class="wb-save-context"><button type="button" class="button small primary" data-model-action="save-one" data-model-kind="${esc(task.kind)}" ${locked || (!draft.pending && (draft.stale || !dirty(task, draft))) ? "disabled" : ""}>${draft.pending ? "核对保存" : "保存"}</button>${modelScopeHint(s, task, draft)}</span>
           </footer>
-        </article>
-      </aside>`;
+        </article>`,
+    };
   }
   function providerView(s) { const providers = s.status?.providers || []; if (!providers.length) return '<p class="model-empty">尚未读取到模型提供方。</p>';
     const tasks = visible(s).filter(task => !coreReply(task)), filtered = !!(s.query || s.custom || s.lane !== "all" || s.providerFilter);
@@ -2861,6 +2873,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       const sameMain = curMain.length && curMain.every(v => v && v === curMain[0]) ? curMain[0] : "";
       const curFb = kinds.map(k => { const t = taskOf(s, k), d = s.drafts.get(k); return t && d ? rowFallback(t, d) : ""; });
       const nonEmptyFb = curFb.filter(Boolean);
+      const distinctFb = [...new Set(nonEmptyFb)];
       const sameFb = nonEmptyFb.length === curFb.length && curFb.every(v => v === curFb[0]) ? curFb[0] : "";
       const allNoFb = nonEmptyFb.length === 0;
       const own = kinds.filter(k => { const d = s.drafts.get(k); return d && fields.some(name => !d.inherited[name]); }).length;
@@ -2880,8 +2893,8 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         </div>
         <div class="model-sc-bd">
           <div class="model-cur-grid">
-            <div class="model-cur-item"><span>当前主路由</span><div class="model-cur${sameMain ? "" : " miss"}">${esc(sameMain || (distinctMain.length > 1 ? `混合（${distinctMain.length} 个模型）` : "跟随上级"))}</div></div>
-            <div class="model-cur-item"><span>当前备用路由</span><div class="model-cur${sameFb ? "" : " miss"}">${esc(sameFb || (allNoFb ? "均无备用" : "混合 / 部分无备用"))}</div></div>
+            <div class="model-cur-item"><span>当前主路由</span><div class="model-cur${sameMain ? "" : " miss"}" title="${esc(sameMain || (distinctMain.length > 1 ? distinctMain.join("、") : "跟随上级"))}">${esc(sameMain || (distinctMain.length > 1 ? `混合（${distinctMain.length} 个模型）` : "跟随上级"))}</div></div>
+            <div class="model-cur-item"><span>当前备用路由</span><div class="model-cur${sameFb ? "" : " miss"}" title="${esc(sameFb || (allNoFb ? "均无备用" : distinctFb.filter(Boolean).join("、") || "混合 / 部分无备用"))}">${esc(sameFb || (allNoFb ? "均无备用" : "混合 / 部分无备用"))}</div></div>
           </div>
           <label class="model-fd"><span class="model-cap">统一指派主模型 <em>选「保持不变」时不动各任务主模型</em></span>
             <select data-model-slot="${esc(g)}" aria-label="${esc(g)} 统一指派主模型" ${s.busy || s.loading || s.denied ? "disabled" : ""}>${primaryOpts(slot.provider)}</select></label>
@@ -3280,27 +3293,157 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function fnPane(s) { const sub = s.sub === "pol" ? replacementPolicy(s) : cfgPane(s);
     return `${topbar(s)}${subtabBar(s)}${sub}`; }
   function pane(s) { if (s.tab !== "fn" && !path) return `<p class="model-empty">当前角色只有群聊模型入口，此处的模型连接服务暂不可用。功能模型仍可设置角色默认与本群覆盖。</p>`; if (s.tab === "voice") return voicePane(s); if (s.tab === "image") return imagePane(s); if (s.tab === "search") return searchPane(s); if (s.tab === "laya") return layaPane(s); if (s.tab === "pricing") return pricingWorkbench()?.renderPane?.(pricingCtx(s)) || '<p class="model-empty">计价模块未加载。</p>'; return fnPane(s); }
-  function drawer(s) { const id = s.drawer; if (!id) return "";
-    const provider = s.status?.providers.find(p => p.id === id); if (!provider) return "";
+  function providerDrawerSpec(s) { const id = s.drawer; if (!id) return null;
+    const provider = s.status?.providers.find(p => p.id === id); if (!provider) return null;
     const tasks = snapshot(s), asMain = tasks.filter(t => providerFor(t, s.drafts.get(t.kind)) === id);
     const asFb = tasks.filter(t => rowFallback(t, s.drafts.get(t.kind)) === id);
-    return `<div class="model-mask on" data-drawer-close></div><aside class="model-drawer on" role="dialog" aria-modal="true" aria-label="模型提供方 ${esc(id)}">
-      <div class="dh"><div><h3>${esc(id)}</h3><p>${esc(provider.capabilities.map(capabilityLabel).join(" · ") || "无能力声明")}</p></div>
+    return {
+      mode: "provider",
+      kind: id,
+      label: `模型提供方 ${id}`,
+      closeAttr: "data-drawer-close",
+      extraClass: "",
+      html: `<div class="dh"><div><h3>${esc(id)}</h3><p>${esc(provider.capabilities.map(capabilityLabel).join(" · ") || "无能力声明")}</p></div>
         <button type="button" class="x" data-drawer-close aria-label="关闭">×</button></div>
       <dl class="model-kv"><dt>单次输出上限</dt><dd>${provider.max_output_tokens}</dd>
         <dt>承担任务</dt><dd>${asMain.length} 项主路由 · ${asFb.length} 项备用</dd></dl>
       <div class="model-sec"><h4>作为主模型 · ${asMain.length} 项</h4>${asMain.map(t => `<div class="li"><button type="button" class="model-lk" data-model-open="${esc(t.kind)}">${esc(taskName(t.kind).label)}</button><span>${esc(taskName(t.kind).description)}</span></div>`).join("") || '<span class="model-mono">无</span>'}</div>
       <div class="model-sec"><h4>作为备用 · ${asFb.length} 项</h4>${asFb.map(t => `<div class="li"><button type="button" class="model-lk" data-model-open="${esc(t.kind)}">${esc(taskName(t.kind).label)}</button><span>${esc(taskName(t.kind).description)}</span></div>`).join("") || '<span class="model-mono">无</span>'}</div>
-      <div class="model-sec"><button type="button" class="button primary" style="width:100%" data-drawer-goto="${esc(id)}">在任务路由中筛选此提供方</button></div></aside>`; }
+      <div class="model-sec"><button type="button" class="button primary" style="width:100%" data-drawer-goto="${esc(id)}">在任务路由中筛选此提供方</button></div>`,
+    }; }
+  function activeOverlaySpec(s) {
+    const providerSpec = providerDrawerSpec(s);
+    if (providerSpec) return providerSpec;
+    if (s.tab === "fn" && s.sub !== "pol") return taskInspectorSpec(s);
+    return null;
+  }
+  function overlayMarkup(spec) {
+    if (!spec) return "";
+    const cls = spec.extraClass ? `model-drawer ${spec.extraClass} on` : "model-drawer on";
+    return `<div class="model-mask on" ${spec.closeAttr}></div><aside class="${cls}" role="dialog" aria-modal="true" aria-label="${esc(spec.label)}">${spec.html}</aside>`;
+  }
+  function isReducedMotion() {
+    if (typeof document === "undefined") return true;
+    const motion = document.documentElement?.dataset?.motion;
+    if (motion === "off") return true;
+    if (motion !== "low" && document.body?.classList?.contains?.("reduce-motion")) return true;
+    return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function clearClosedDrawerContent() {
+    if (overlayCloseTimer) { clearTimeout(overlayCloseTimer); overlayCloseTimer = null; }
+    if (!overlayWasOpen && wsDrawer && !wsDrawer.classList.contains("on")) {
+      wsDrawer.innerHTML = "";
+      wsDrawer.className = "model-drawer";
+      wsDrawer.removeAttribute("aria-label");
+    }
+  }
+  function handleDrawerTransitionEnd(event) {
+    if (event.target !== wsDrawer) return;
+    if (event.propertyName === "transform" || event.propertyName === "opacity") {
+      clearClosedDrawerContent();
+    }
+  }
+  const useLiveDom = () => Boolean(root && typeof document !== "undefined" && typeof document.createElement === "function" && typeof root.appendChild === "function");
+  function ensureLiveShell() {
+    if (wsShell && wsShell.parentNode === root && wsMain && wsMask && wsDrawer) return;
+    if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
+    root.innerHTML = "";
+    wsShell = document.createElement("div");
+    wsShell.className = "model-workspace";
+    wsMain = document.createElement("div");
+    wsMain.className = "model-workspace-main";
+    wsMask = document.createElement("div");
+    wsMask.className = "model-mask";
+    wsMask.setAttribute("aria-hidden", "true");
+    wsDrawer = document.createElement("aside");
+    wsDrawer.className = "model-drawer";
+    wsDrawer.setAttribute("role", "dialog");
+    wsDrawer.setAttribute("aria-modal", "true");
+    wsDrawer.setAttribute("aria-hidden", "true");
+    wsDrawer.inert = true;
+    wsDrawer.addEventListener("transitionend", handleDrawerTransitionEnd);
+    wsShell.appendChild(wsMain);
+    wsShell.appendChild(wsMask);
+    wsShell.appendChild(wsDrawer);
+    root.appendChild(wsShell);
+    overlayWasOpen = false;
+  }
+  function syncLiveOverlay(spec) {
+    if (!wsMask || !wsDrawer) return;
+    if (spec) {
+      if (overlayCloseTimer) { clearTimeout(overlayCloseTimer); overlayCloseTimer = null; }
+      const prevCard = wsDrawer.querySelector?.("[data-fncard]");
+      const prevKind = prevCard?.dataset?.fncard || prevCard?.getAttribute?.("data-fncard") || "";
+      const prevInspScroll = prevKind ? (wsDrawer.querySelector?.(".model-insp-body")?.scrollTop || 0) : 0;
+      if (spec.closeAttr === "data-drawer-close") {
+        wsMask.setAttribute("data-drawer-close", "");
+        wsMask.removeAttribute("data-inspector-close");
+      } else {
+        wsMask.setAttribute("data-inspector-close", "");
+        wsMask.removeAttribute("data-drawer-close");
+      }
+      const wasOpen = overlayWasOpen && wsDrawer.classList.contains("on");
+      const targetClass = spec.extraClass ? `model-drawer ${spec.extraClass}` : "model-drawer";
+      if (!wasOpen) {
+        wsDrawer.className = targetClass;
+        wsDrawer.setAttribute("aria-label", spec.label);
+        wsDrawer.innerHTML = spec.html;
+        wsDrawer.setAttribute("aria-hidden", "false");
+        wsDrawer.inert = false;
+        wsMask.setAttribute("aria-hidden", "false");
+        void wsDrawer.offsetWidth;
+        wsMask.classList.add("on");
+        wsDrawer.classList.add("on");
+      } else {
+        wsDrawer.className = `${targetClass} on`;
+        wsDrawer.setAttribute("aria-label", spec.label);
+        wsDrawer.innerHTML = spec.html;
+        wsDrawer.setAttribute("aria-hidden", "false");
+        wsDrawer.inert = false;
+        wsMask.classList.add("on");
+        wsMask.setAttribute("aria-hidden", "false");
+        if (spec.mode === "inspector" && prevKind === spec.kind && prevInspScroll > 0) {
+          const nextBody = wsDrawer.querySelector?.(".model-insp-body");
+          if (nextBody) nextBody.scrollTop = prevInspScroll;
+        }
+      }
+      overlayWasOpen = true;
+      return;
+    }
+    if (overlayWasOpen || wsDrawer.classList.contains("on") || wsMask.classList.contains("on")) {
+      overlayWasOpen = false;
+      if (typeof document !== "undefined" && wsDrawer.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch { }
+      }
+      wsMask.classList.remove("on");
+      wsMask.setAttribute("aria-hidden", "true");
+      wsDrawer.classList.remove("on");
+      wsDrawer.setAttribute("aria-hidden", "true");
+      wsDrawer.inert = true;
+      if (overlayCloseTimer) clearTimeout(overlayCloseTimer);
+      if (isReducedMotion()) {
+        clearClosedDrawerContent();
+      } else {
+        overlayCloseTimer = setTimeout(clearClosedDrawerContent, 300);
+      }
+    }
+  }
   function render() { if (!root || !state) return; const s = state;
-    const prevCard = root.querySelector?.("[data-fncard]");
-    const prevKind = prevCard?.dataset?.fncard || prevCard?.getAttribute?.("data-fncard") || "";
-    const prevInspScroll = prevKind ? (root.querySelector?.(".model-insp-body")?.scrollTop || 0) : 0;
-    const overlay = s.tab === "fn" && s.sub !== "pol" ? (drawer(s) || taskInspector(s)) : drawer(s);
-    root.innerHTML = `<div class="model-workspace">${s.tab === "fn" ? semanticBanner() : ""}${tabBar(s)}${(s.bad || s.denied) ? notice(s) : ""}${pane(s)}${overlay}</div>`;
-    if (s.tab === "fn" && s.sub !== "pol" && !s.drawer && s.expanded && prevKind === s.expanded && prevInspScroll > 0) {
-      const nextBody = root.querySelector?.(".model-insp-body");
-      if (nextBody) nextBody.scrollTop = prevInspScroll;
+    const spec = activeOverlaySpec(s);
+    const mainHtml = `${s.tab === "fn" ? semanticBanner() : ""}${tabBar(s)}${(s.bad || s.denied) ? notice(s) : ""}${pane(s)}`;
+    if (useLiveDom()) {
+      ensureLiveShell();
+      wsMain.innerHTML = mainHtml;
+      syncLiveOverlay(spec);
+    } else {
+      const prevCard = root.querySelector?.("[data-fncard]");
+      const prevKind = prevCard?.dataset?.fncard || prevCard?.getAttribute?.("data-fncard") || "";
+      const prevInspScroll = prevKind ? (root.querySelector?.(".model-insp-body")?.scrollTop || 0) : 0;
+      root.innerHTML = `<div class="model-workspace">${mainHtml}${overlayMarkup(spec)}</div>`;
+      if (spec?.mode === "inspector" && prevKind === spec.kind && prevInspScroll > 0) {
+        const nextBody = root.querySelector?.(".model-insp-body");
+        if (nextBody) nextBody.scrollTop = prevInspScroll;
+      }
     }
     window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}}); }
   function handleKeydown(event) {
@@ -3399,6 +3542,9 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   /* ---------- lifecycle ---------- */
   function unmount() { version++;
     if (pointerResetTimer) { clearTimeout(pointerResetTimer); pointerResetTimer = null; }
+    if (overlayCloseTimer) { clearTimeout(overlayCloseTimer); overlayCloseTimer = null; }
+    if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
+    wsShell = wsMain = wsMask = wsDrawer = null; overlayWasOpen = false;
     deferChangeRender = false; deferredRenderPending = false;
     if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerdown", handlePointerDown); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") { document.removeEventListener("keydown", handleKeydown); document.removeEventListener("pointerup", handlePointerUp); document.removeEventListener("pointercancel", handlePointerUp); }
