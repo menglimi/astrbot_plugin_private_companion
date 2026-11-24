@@ -34,6 +34,10 @@ from astrbot_host.quota_adapters import (
     default_registry,
     detect_station,
     exchange_newapi_login_for_token,
+    extract_html_icon_links,
+    http_request_public_bytes,
+    sanitize_safe_svg,
+    sniff_safe_logo,
     sniff_safe_raster_image,
     validate_target_url,
 )
@@ -315,12 +319,13 @@ class SecurityAndLogoTests(unittest.TestCase):
             self.assertTrue(ver)
             self.assertEqual(err, "")
             self.assertTrue(cache.get("st1").data_url().startswith("data:image/x-icon;base64,"))
-            self.assertEqual(len(calls), 2)
+            calls_after_first = len(calls)
+            self.assertGreaterEqual(calls_after_first, 2)
 
             # Second call within 24h hits cache (0 new requests)
             ver2, _ = await cache.refresh("st1", "https://relay.example.test", "/brand.png", session_factory=factory)
             self.assertEqual(ver2, ver)
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), calls_after_first)
 
             # Broken logo negative cache prevents retry within 1h
             bad_factory, bad_calls = _mock_factory({
@@ -727,6 +732,277 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             res_regen = await exchange_newapi_login_for_token("https://login.example.test", "alice", "pw-1", session_factory=f_regen)
             self.assertEqual(res_regen["access_token"], "minted-tok-42")
             self.assertTrue(res_regen["regenerated"])
+
+        asyncio.run(run())
+
+    def test_newapi_four_mode_currency_multipliers_and_override_isolation(self):
+        async def run():
+            reg = default_registry()
+            adapter = reg.get("newapi")
+
+            # 1) CUSTOM mode with custom_currency_exchange_rate=10 (e.g. cookie credits + recharge ref)
+            f_custom10, _ = _mock_factory({
+                ("GET", "https://cookie.example.test/api/status"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "quota_display_type": "CUSTOM",
+                            "quota_per_unit": 500000,
+                            "custom_currency_symbol": "🍪",
+                            "custom_currency_exchange_rate": 10,
+                            "usd_exchange_rate": 1,
+                            "price": 1,
+                        },
+                    },
+                ),
+                ("GET", "https://cookie.example.test/api/user/self"): _FakeResponse(
+                    200,
+                    {"success": True, "data": {"quota": 36649000, "used_quota": 130736000, "group": "default"}},
+                ),
+                ("GET", "https://cookie.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(
+                    200,
+                    {"success": True, "data": {"items": [{"created_at": 1794193299, "model_name": "gpt-5", "quota": 2500}]}},
+                ),
+            })
+            spec_c10 = QuotaStationSpec(id="c10", name="饼干站", adapter_id="newapi", base_url="https://cookie.example.test")
+            snap_c10 = await adapter.probe(spec_c10, AdapterProbeContext(base_url=spec_c10.base_url, auth_token="tok-1", session_factory=f_custom10))
+            self.assertTrue(snap_c10.ok)
+            self.assertEqual(snap_c10.display_type, "CREDIT")
+            self.assertEqual(snap_c10.symbol, "🍪")
+            self.assertAlmostEqual(snap_c10.remaining, 732.98, places=4)
+            self.assertAlmostEqual(snap_c10.used, 2614.72, places=4)
+            self.assertAlmostEqual(snap_c10.total, 3347.70, places=4)
+            self.assertAlmostEqual(snap_c10.last_used_cost, 0.05, places=6)
+            self.assertIn("10 🍪", snap_c10.extra)
+            self.assertIn("¥73.30", snap_c10.extra)
+            summary = summarize_quota_portfolio([spec_c10], {"c10": snap_c10}, display_currency="CNY", usd_cny_rate=7.2)
+            self.assertEqual(summary["fiat_remaining"], 0.0)
+            self.assertEqual(summary["non_fiat_station_count"], 1)
+
+            # 2) CUSTOM mode with usd_exchange_rate=10, custom_currency_exchange_rate=1 must use 1 (never usd_rate)
+            f_custom1, _ = _mock_factory({
+                ("GET", "https://diamond.example.test/api/status"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "quota_display_type": "CUSTOM",
+                            "quota_per_unit": 500000,
+                            "custom_currency_symbol": "◆",
+                            "usd_exchange_rate": 10,
+                            "custom_currency_exchange_rate": 1,
+                        },
+                    },
+                ),
+                ("GET", "https://diamond.example.test/api/user/self"): _FakeResponse(
+                    200, {"success": True, "data": {"quota": 5000000, "used_quota": 1000000}}
+                ),
+                ("GET", "https://diamond.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(200, {"success": True, "data": {"items": []}}),
+            })
+            spec_c1 = QuotaStationSpec(id="c1", name="星桥", adapter_id="newapi", base_url="https://diamond.example.test")
+            snap_c1 = await adapter.probe(spec_c1, AdapterProbeContext(base_url=spec_c1.base_url, auth_token="tok-1", session_factory=f_custom1))
+            self.assertAlmostEqual(snap_c1.remaining, 10.0, places=4)
+            self.assertAlmostEqual(snap_c1.used, 2.0, places=4)
+            self.assertEqual(snap_c1.symbol, "◆")
+
+            # 3) Manual override spec.display_type="CNY" on a CUSTOM site must NOT crosstalk usd_exchange_rate or custom symbol
+            snap_override = await adapter.probe(
+                spec_c1,
+                AdapterProbeContext(base_url=spec_c1.base_url, auth_token="tok-1", display_type="CNY", session_factory=f_custom1),
+            )
+            self.assertEqual(snap_override.display_type, "CNY")
+            self.assertEqual(snap_override.symbol, "¥")
+            self.assertAlmostEqual(snap_override.remaining, 10.0, places=4)
+            self.assertEqual(snap_override.extra, "")
+
+            # 4) CNY mode with usd_exchange_rate=7.3 multiplies balance and last_used_cost by 7.3
+            f_cny73, _ = _mock_factory({
+                ("GET", "https://cny73.example.test/api/status"): _FakeResponse(
+                    200,
+                    {"success": True, "data": {"quota_display_type": "CNY", "quota_per_unit": 500000, "usd_exchange_rate": 7.3}},
+                ),
+                ("GET", "https://cny73.example.test/api/user/self"): _FakeResponse(
+                    200, {"success": True, "data": {"quota": 1000000, "used_quota": 500000}}
+                ),
+                ("GET", "https://cny73.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(
+                    200, {"success": True, "data": {"items": [{"created_at": 1794193299, "model_name": "deepseek", "quota": 50000}]}}
+                ),
+            })
+            spec_cny = QuotaStationSpec(id="cny73", name="汇率CNY站", adapter_id="newapi", base_url="https://cny73.example.test")
+            snap_cny = await adapter.probe(spec_cny, AdapterProbeContext(base_url=spec_cny.base_url, auth_token="tok-1", session_factory=f_cny73))
+            self.assertEqual(snap_cny.display_type, "CNY")
+            self.assertEqual(snap_cny.symbol, "¥")
+            self.assertAlmostEqual(snap_cny.remaining, 14.6, places=4)
+            self.assertAlmostEqual(snap_cny.used, 7.3, places=4)
+            self.assertAlmostEqual(snap_cny.last_used_cost, 0.73, places=6)
+
+            # 5) CNY mode with usd_exchange_rate=1 stays 1x
+            f_cny1, _ = _mock_factory({
+                ("GET", "https://cny1.example.test/api/status"): _FakeResponse(
+                    200, {"success": True, "data": {"quota_display_type": "CNY", "quota_per_unit": 500000, "usd_exchange_rate": 1}}
+                ),
+                ("GET", "https://cny1.example.test/api/user/self"): _FakeResponse(
+                    200, {"success": True, "data": {"quota": 31805000, "used_quota": 0}}
+                ),
+                ("GET", "https://cny1.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(200, {"success": True, "data": {"items": []}}),
+            })
+            snap_cny1 = await adapter.probe(
+                QuotaStationSpec(id="cny1", name="原币CNY站", adapter_id="newapi", base_url="https://cny1.example.test"),
+                AdapterProbeContext(base_url="https://cny1.example.test", auth_token="tok-1", session_factory=f_cny1),
+            )
+            self.assertAlmostEqual(snap_cny1.remaining, 63.61, places=4)
+
+            # 6) TOKENS mode (display_in_currency=False with empty quota_display_type) keeps raw quota for balance AND log
+            f_tok, _ = _mock_factory({
+                ("GET", "https://tok.example.test/api/status"): _FakeResponse(
+                    200, {"success": True, "data": {"system_name": "Token站", "quota_display_type": "", "display_in_currency": False, "quota_per_unit": 500000}}
+                ),
+                ("GET", "https://tok.example.test/api/user/self"): _FakeResponse(
+                    200, {"success": True, "data": {"quota": 123456, "used_quota": 6544}}
+                ),
+                ("GET", "https://tok.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(
+                    200, {"success": True, "data": {"items": [{"created_at": 1794193299, "model_name": "gpt-4o", "quota": 2500}]}}
+                ),
+            })
+            det_tok = await detect_station("https://tok.example.test", session_factory=f_tok)
+            self.assertEqual(det_tok.display_type, "TOKENS")
+            snap_tok = await adapter.probe(
+                QuotaStationSpec(id="tok", name="Token站", adapter_id="newapi", base_url="https://tok.example.test"),
+                AdapterProbeContext(base_url="https://tok.example.test", auth_token="tok-1", session_factory=f_tok),
+            )
+            self.assertEqual(snap_tok.display_type, "TOKENS")
+            self.assertAlmostEqual(snap_tok.remaining, 123456.0, places=4)
+            self.assertAlmostEqual(snap_tok.used, 6544.0, places=4)
+            self.assertAlmostEqual(snap_tok.last_used_cost, 2500.0, places=4)
+
+        asyncio.run(run())
+
+    def test_logo_1mb_png_safe_svg_sanitizer_redirects_and_discovery(self):
+        async def run():
+            # 1) 310 KiB PNG accepted (<= 1 MiB); > 1 MiB rejected
+            large_valid_png = b"\x89PNG\r\n\x1a\n" + (b"\x00" * (310 * 1024))
+            oversized_png = b"\x89PNG\r\n\x1a\n" + (b"\x00" * (1100 * 1024))
+            cache = StationLogoCache()
+            f_png, _ = _mock_factory({
+                ("GET", "https://wiki.syuan.org/logo.png"): _FakeResponse(200, large_valid_png, {"Content-Type": "image/png"}),
+                ("GET", "https://huge.example.test/logo.png"): _FakeResponse(200, oversized_png, {"Content-Type": "image/png"}),
+            })
+            ver_310, err_310 = await cache.refresh("syuan", "https://aiapi.syuan.org", "https://wiki.syuan.org/logo.png", session_factory=f_png)
+            self.assertTrue(ver_310)
+            self.assertEqual(err_310, "")
+            self.assertTrue(cache.get("syuan").data_url().startswith("data:image/png;base64,"))
+
+            ver_huge, err_huge = await cache.refresh("huge", "https://huge.example.test", "/logo.png", session_factory=f_png)
+            self.assertEqual(ver_huge, "")
+            self.assertTrue(err_huge)
+
+            # 2) Safe static pixel-cat SVG accepted; malicious SVGs rejected
+            cat_svg = (
+                b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+                b'<defs><linearGradient id="fur"><stop offset="0%" stop-color="#8ecae6"/></linearGradient></defs>'
+                b'<rect x="2" y="2" width="12" height="12" fill="url(#fur)"/>'
+                b'<use href="#fur"/><path d="M4 6h8" stroke="#111"/></svg>'
+            )
+            mime_svg, clean_svg = sniff_safe_logo(cat_svg)
+            self.assertEqual(mime_svg, "image/svg+xml")
+            self.assertIn(b"<svg", clean_svg)
+
+            malicious_svgs = [
+                b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><body><iframe src="x"/></body></foreignObject></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="10" height="10"/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><animate attributeName="x" to="1"/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><set attributeName="fill" to="red"/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><rect/></a></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="https://evil.test/x.svg#a"/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><use href="data:image/svg+xml;base64,PHN2Zz4="/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://evil.test/g#a)"/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><rect style="background:url(http://evil.test/leak)"/></svg>',
+                b'<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:\\75rl(http://evil.test/x)"/></svg>',
+                b'<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg>&xxe;</svg>',
+            ]
+            for bad in malicious_svgs:
+                with self.subTest(bad=bad[:60]):
+                    self.assertIsNone(sanitize_safe_svg(bad))
+
+            # 3) Homepage <link rel="icon"> discovery works even on >64 KiB HTML pages (prefix read)
+            big_html = (
+                b'<!doctype html><html><head><link rel="icon" type="image/svg+xml" href="/brand/cat.svg"></head><body>'
+                + (b"x" * (90 * 1024))
+                + b"</body></html>"
+            )
+            self.assertEqual(
+                extract_html_icon_links(big_html, "https://icon-demo.example.test/"),
+                ["https://icon-demo.example.test/brand/cat.svg"],
+            )
+            f_cat, _ = _mock_factory({
+                ("GET", "https://icon-demo.example.test/"): _FakeResponse(200, big_html, {"Content-Type": "text/html"}),
+                ("GET", "https://icon-demo.example.test/brand/cat.svg"): _FakeResponse(200, cat_svg, {"Content-Type": "image/svg+xml"}),
+            })
+            ver_cat, err_cat = await cache.refresh("icon_demo", "https://icon-demo.example.test", "", session_factory=f_cat)
+            self.assertTrue(ver_cat)
+            self.assertEqual(err_cat, "")
+            self.assertTrue(cache.get("icon_demo").data_url().startswith("data:image/svg+xml;base64,"))
+
+            # 4) Public redirects: 2 safe HTTPS hops pass; redirect to metadata/loopback/LAN or >2 hops blocked; auth stripped
+            f_redir, redir_calls = _mock_factory({
+                ("GET", "https://deepseek.com/favicon.ico"): _FakeResponse(301, b"", {"Location": "https://www.deepseek.com/favicon.ico"}),
+                ("GET", "https://www.deepseek.com/favicon.ico"): _FakeResponse(302, b"", {"Location": "/static/icon.ico"}),
+                ("GET", "https://www.deepseek.com/static/icon.ico"): _FakeResponse(200, ICO_BYTES, {"Content-Type": "image/x-icon"}),
+                ("GET", "https://evil.example.test/meta"): _FakeResponse(302, b"", {"Location": "http://169.254.169.254/latest/meta-data"}),
+                ("GET", "https://evil.example.test/loop"): _FakeResponse(302, b"", {"Location": "https://127.0.0.1/secret"}),
+                ("GET", "https://loop3.example.test/a"): _FakeResponse(302, b"", {"Location": "/b"}),
+                ("GET", "https://loop3.example.test/b"): _FakeResponse(302, b"", {"Location": "/c"}),
+                ("GET", "https://loop3.example.test/c"): _FakeResponse(302, b"", {"Location": "/d"}),
+            })
+            st, _hdrs, body, final_url = await http_request_public_bytes(
+                "https://deepseek.com/favicon.ico",
+                headers={"Authorization": "Bearer must-not-send", "Cookie": "sid=bad", "Accept": "*/*"},
+                session_factory=f_redir,
+            )
+            self.assertEqual(st, 200)
+            self.assertEqual(body, ICO_BYTES)
+            self.assertEqual(final_url, "https://www.deepseek.com/static/icon.ico")
+            for _m, _u, kw in redir_calls[:3]:
+                lower_keys = {k.lower() for k in kw.get("headers", {})}
+                self.assertNotIn("authorization", lower_keys)
+                self.assertNotIn("cookie", lower_keys)
+
+            with self.assertRaises(QuotaHttpError) as ctx_meta:
+                await http_request_public_bytes("https://evil.example.test/meta", session_factory=f_redir)
+            self.assertEqual(ctx_meta.exception.code, "ssrf_blocked")
+
+            with self.assertRaises(QuotaHttpError) as ctx_loop:
+                await http_request_public_bytes("https://evil.example.test/loop", session_factory=f_redir)
+            self.assertEqual(ctx_loop.exception.code, "ssrf_blocked")
+
+            with self.assertRaises(QuotaHttpError) as ctx_max:
+                await http_request_public_bytes("https://loop3.example.test/a", max_redirects=2, session_factory=f_redir)
+            self.assertEqual(ctx_max.exception.code, "too_many_redirects")
+
+            # 5) Official DeepSeek & generic api.* host fallback
+            f_api, _ = _mock_factory({
+                ("GET", "https://api.deepseek.com/user/balance"): _FakeResponse(
+                    200, {"is_available": True, "balance_infos": [{"currency": "CNY", "total_balance": "10.00"}]}
+                ),
+                ("GET", "https://fe-static.deepseek.com/chat/icon-180.png"): _FakeResponse(200, PNG_BYTES, {"Content-Type": "image/png"}),
+                ("GET", "https://api.customrelay.test/"): _FakeResponse(401, b"unauthorized"),
+                ("GET", "https://www.customrelay.test/"): _FakeResponse(404, b""),
+                ("GET", "https://www.customrelay.test/favicon.ico"): _FakeResponse(200, ICO_BYTES, {"Content-Type": "image/x-icon"}),
+            })
+            ds_snap = await default_registry().get("deepseek").probe(
+                QuotaStationSpec(id="ds-logo", name="DeepSeek", adapter_id="deepseek", base_url="https://api.deepseek.com"),
+                AdapterProbeContext(base_url="https://api.deepseek.com", astrbot_api_key="ds-tok", session_factory=f_api, logo_cache=cache),
+            )
+            self.assertTrue(ds_snap.ok)
+            self.assertTrue(ds_snap.logo_version)
+            self.assertTrue(cache.get("ds-logo").data_url().startswith("data:image/png;base64,"))
+
+            ver_fb, err_fb = await cache.refresh("api-fb", "https://api.customrelay.test", "", session_factory=f_api)
+            self.assertTrue(ver_fb)
+            self.assertEqual(err_fb, "")
+            self.assertTrue(cache.get("api-fb").data_url().startswith("data:image/x-icon;base64,"))
 
         asyncio.run(run())
 

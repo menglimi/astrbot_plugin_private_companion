@@ -11,7 +11,7 @@ import json
 import math
 import time
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
@@ -129,19 +129,18 @@ def validate_target_url(url: str, *, allow_http: bool = False) -> str:
         raise QuotaHttpError("invalid_url", "目标地址包含非法空白或控制字符")
     parsed = urlsplit(cleaned)
     scheme = parsed.scheme.lower()
-    allowed_schemes = ("https", "http") if allow_http else ("https",)
-    if scheme not in allowed_schemes:
-        if scheme == "http" and not allow_http:
-            raise QuotaHttpError(
-                "http_not_allowed",
-                "默认仅允许 HTTPS 站点；如为内网自建中转站，请在高级选项勾选「允许局域网 HTTP」",
-            )
+    if scheme not in ("https", "http"):
         raise QuotaHttpError("invalid_url", "仅支持 HTTP(S) 站点地址")
     hostname = (parsed.hostname or "").strip().lower()
     if not hostname or parsed.username is not None or parsed.password is not None or parsed.fragment:
         raise QuotaHttpError("invalid_url", "目标地址不能内嵌账号密码或片段")
     if _is_metadata_or_link_local_host(hostname):
         raise QuotaHttpError("ssrf_blocked", "安全策略禁止访问云元数据或链路本地地址")
+    if scheme == "http" and not allow_http:
+        raise QuotaHttpError(
+            "http_not_allowed",
+            "默认仅允许 HTTPS 站点；如为内网自建中转站，请在高级选项勾选「允许局域网 HTTP」",
+        )
     if not allow_http and _is_private_or_local_host(hostname):
         raise QuotaHttpError(
             "ssrf_blocked",
@@ -236,6 +235,32 @@ def _build_session(
     return aiohttp.ClientSession(**kwargs), request_proxy
 
 
+async def _read_stream_prefix(response: Any, *, max_bytes: int, chunk_size: int = 16384) -> bytes:
+    """Read at most ``max_bytes`` from a streaming HTTP response without failing on larger bodies."""
+    content = getattr(response, "content", None)
+    if content is not None and hasattr(content, "iter_chunked"):
+        buf = bytearray()
+        async for chunk in content.iter_chunked(chunk_size):
+            if not chunk:
+                continue
+            if not isinstance(chunk, (bytes, bytearray)):
+                raise ValueError("response stream yielded non-bytes chunk")
+            remaining = max_bytes - len(buf)
+            if remaining <= 0:
+                break
+            buf.extend(chunk[:remaining])
+            if len(buf) >= max_bytes:
+                break
+        return bytes(buf)
+    if content is not None and hasattr(content, "read"):
+        raw = await content.read(max_bytes)
+    else:
+        raw = await response.read()
+    if not isinstance(raw, (bytes, bytearray)):
+        raise ValueError("response body is not bytes")
+    return bytes(raw[:max_bytes])
+
+
 async def http_request_bytes(
     method: str,
     url: str,
@@ -246,6 +271,7 @@ async def http_request_bytes(
     proxy_url: str = "",
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_bytes: int = MAX_JSON_RESPONSE_BYTES,
+    truncate_at_max_bytes: bool = False,
     secrets: tuple[str, ...] = (),
     session_factory: Callable[..., Any] | None = None,
     cookie_jar: aiohttp.AbstractCookieJar | None = None,
@@ -278,10 +304,13 @@ async def http_request_bytes(
             async with session.request(method, safe_url, **req_kwargs) as response:
                 status = int(getattr(response, "status", 0))
                 resp_headers = {str(k).lower(): str(v) for k, v in getattr(response, "headers", {}).items()}
-                content_length = getattr(response, "content_length", None)
-                if content_length is not None and content_length > max_bytes:
-                    raise QuotaHttpError("response_too_large", "上游响应体积超过安全上限", status=status)
-                raw = await read_bounded_stream(response, max_bytes=max_bytes)
+                if truncate_at_max_bytes:
+                    raw = await _read_stream_prefix(response, max_bytes=max_bytes)
+                else:
+                    content_length = getattr(response, "content_length", None)
+                    if content_length is not None and content_length > max_bytes:
+                        raise QuotaHttpError("response_too_large", "上游响应体积超过安全上限", status=status)
+                    raw = await read_bounded_stream(response, max_bytes=max_bytes)
                 return status, resp_headers, raw
     except QuotaHttpError:
         raise
@@ -298,6 +327,77 @@ async def http_request_bytes(
     except OSError as exc:
         detail = redact_quota_text(str(exc), redact_pool, max_len=120)
         raise QuotaHttpError("network_error", f"网络异常：{detail or exc.__class__.__name__}") from exc
+
+
+_SENSITIVE_HEADER_NAMES = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+    "api-key",
+    "new-api-user",
+    "rix-api-user",
+    "veloera-user",
+})
+
+
+async def http_request_public_bytes(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    allow_http: bool = False,
+    origin_url: str = "",
+    proxy_url: str = "",
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    max_bytes: int = MAX_JSON_RESPONSE_BYTES,
+    truncate_at_max_bytes: bool = False,
+    max_redirects: int = 2,
+    session_factory: Callable[..., Any] | None = None,
+) -> tuple[int, dict[str, str], bytes, str]:
+    """Credential-free GET with bounded, SSRF-revalidated redirect following.
+
+    Returns ``(status, resp_headers, body_bytes, final_url)``.
+    Every redirect hop is re-validated via ``validate_target_url`` and NEVER inherits
+    ``allow_http=True`` across origins or carries auth/cookie headers.
+    """
+    clean_headers: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        if str(key).strip().lower() in _SENSITIVE_HEADER_NAMES:
+            continue
+        clean_headers[str(key)] = str(value)
+
+    base_origin = origin_url or url
+    current_url = url
+    hops = max(0, min(int(max_redirects), 3))
+
+    for hop in range(hops + 1):
+        hop_allow_http = bool(allow_http) and same_origin(base_origin, current_url)
+        safe_url = validate_target_url(current_url, allow_http=hop_allow_http)
+        status, resp_headers, raw = await http_request_bytes(
+            "GET",
+            safe_url,
+            headers=clean_headers,
+            allow_http=hop_allow_http,
+            proxy_url=proxy_url,
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes,
+            truncate_at_max_bytes=truncate_at_max_bytes,
+            session_factory=session_factory,
+        )
+        if status in (301, 302, 303, 307, 308):
+            location = (resp_headers.get("location") or "").strip()
+            if not location:
+                return status, resp_headers, raw, safe_url
+            if hop >= hops:
+                raise QuotaHttpError("too_many_redirects", "重定向次数超过安全上限", status=status)
+            next_url = urljoin(safe_url, location)
+            next_allow_http = bool(allow_http) and same_origin(base_origin, next_url)
+            validate_target_url(next_url, allow_http=next_allow_http)
+            current_url = next_url
+            continue
+        return status, resp_headers, raw, safe_url
+
+    raise QuotaHttpError("too_many_redirects", "重定向次数超过安全上限")
 
 
 async def http_request_json(

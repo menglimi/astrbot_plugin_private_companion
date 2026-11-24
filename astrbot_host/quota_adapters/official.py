@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from companion_v2.model_gateway.quota import QuotaSnapshot, QuotaStationSpec
 
@@ -49,13 +50,56 @@ def _missing_key_snapshot(spec: QuotaStationSpec, ctx: AdapterProbeContext, star
     )
 
 
-async def _fetch_logo_if_enabled(spec: QuotaStationSpec, root: str, ctx: AdapterProbeContext) -> tuple[str, str]:
+_OFFICIAL_LOGO_HINTS: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
+    "deepseek": (
+        ("deepseek.com",),
+        "https://fe-static.deepseek.com/chat/icon-180.png",
+        ("https://www.deepseek.com",),
+    ),
+    "openrouter": (
+        ("openrouter.ai",),
+        "",
+        ("https://openrouter.ai",),
+    ),
+    "siliconflow": (
+        ("siliconflow.cn", "siliconflow.com"),
+        "",
+        ("https://www.siliconflow.cn", "https://siliconflow.cn"),
+    ),
+    "moonshot": (
+        ("moonshot.cn", "moonshot.ai"),
+        "",
+        ("https://www.moonshot.cn", "https://platform.moonshot.cn"),
+    ),
+}
+
+
+def _official_logo_hints(adapter_id: str, root: str) -> tuple[str, tuple[str, ...]]:
+    entry = _OFFICIAL_LOGO_HINTS.get(adapter_id)
+    if entry is None:
+        return "", ()
+    domains, published_logo, extra_roots = entry
+    hostname = (urlsplit(root).hostname or "").strip().lower()
+    if any(hostname == dom or hostname.endswith("." + dom) for dom in domains):
+        return published_logo, extra_roots
+    return "", ()
+
+
+async def _fetch_logo_if_enabled(
+    spec: QuotaStationSpec,
+    root: str,
+    ctx: AdapterProbeContext,
+    *,
+    adapter_id: str = "",
+) -> tuple[str, str]:
     if ctx.logo_cache is None or not root:
         return "", ""
+    published_logo, extra_roots = _official_logo_hints(adapter_id or spec.adapter_id, root)
     return await ctx.logo_cache.refresh(
         spec.id,
         root,
-        "",
+        published_logo,
+        extra_roots=extra_roots,
         allow_http=ctx.allow_http,
         proxy_url=ctx.proxy_url,
         session_factory=ctx.session_factory,

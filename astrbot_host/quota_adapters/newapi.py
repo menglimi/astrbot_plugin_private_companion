@@ -10,7 +10,9 @@ Incorporates lessons from quota-watch (by mofei-114):
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 import re
 import time
 from typing import Any
@@ -55,6 +57,123 @@ def normalize_newapi_display_type(raw_display_type: object) -> str:
     if raw in ("CUSTOM", "POINTS", "POINT"):
         return "CREDIT"
     return ""
+
+
+@dataclass(frozen=True)
+class NewApiDisplayParams:
+    """Resolved display mode, divisor, multiplier, and symbol for a NewAPI-family station."""
+
+    display_type: str
+    per_unit: float
+    display_multiplier: float
+    symbol: str
+    site_raw_display_type: str = ""
+    custom_rate: float | None = None
+    site_price: float | None = None
+
+
+def resolve_newapi_display_params(
+    site_status: dict[str, Any] | None,
+    *,
+    override_display_type: str = "",
+    override_per_unit: float = 0.0,
+) -> NewApiDisplayParams:
+    """Resolve NewAPI 4-mode conversion parameters with strict anti-crosstalk rules.
+
+    Truth table on ``base_units = raw_quota / quota_per_unit``:
+    - ``USD``: ``base_units * 1.0``
+    - ``CNY``: ``base_units * usd_exchange_rate`` (ONLY when site itself reports CNY)
+    - ``CUSTOM`` / ``POINTS`` -> ``CREDIT``: ``base_units * custom_currency_exchange_rate``
+      (NEVER reads ``usd_exchange_rate``)
+    - ``TOKENS`` (or ``display_in_currency=false`` without explicit display type): ``raw_quota``
+    """
+    status = site_status if isinstance(site_status, dict) else {}
+    raw_site_dt = str(status.get("quota_display_type") or "").strip().upper()
+    if raw_site_dt:
+        site_dt = normalize_newapi_display_type(raw_site_dt)
+    elif status.get("display_in_currency") is False:
+        site_dt = "TOKENS"
+    else:
+        site_dt = ""
+
+    override_dt = normalize_newapi_display_type(override_display_type)
+    display_type = override_dt or site_dt or "USD"
+
+    per_unit = (
+        float(override_per_unit)
+        if (isinstance(override_per_unit, (int, float)) and not isinstance(override_per_unit, bool) and math.isfinite(override_per_unit) and override_per_unit > 0)
+        else 0.0
+    )
+    if per_unit <= 0:
+        spu = safe_number(status.get("quota_per_unit"))
+        per_unit = spu if (spu is not None and spu > 0) else DEFAULT_NEWAPI_PER_UNIT
+
+    usd_rate = safe_number(status.get("usd_exchange_rate"))
+    if usd_rate is not None and usd_rate <= 0:
+        usd_rate = None
+    custom_rate = safe_number(status.get("custom_currency_exchange_rate"))
+    if custom_rate is not None and custom_rate <= 0:
+        custom_rate = None
+    site_price = safe_number(status.get("price"))
+    if site_price is not None and site_price <= 0:
+        site_price = None
+
+    if display_type in ("USD", "TOKENS"):
+        display_multiplier = 1.0
+    elif display_type == "CNY":
+        display_multiplier = usd_rate if (site_dt == "CNY" and usd_rate is not None) else 1.0
+    elif display_type == "CREDIT":
+        display_multiplier = custom_rate if (site_dt == "CREDIT" and custom_rate is not None) else 1.0
+    else:
+        display_multiplier = 1.0
+
+    raw_symbol = str(status.get("custom_currency_symbol") or "") if display_type == "CREDIT" else ""
+    symbol = normalize_currency_symbol(display_type, raw_symbol)
+
+    return NewApiDisplayParams(
+        display_type=display_type,
+        per_unit=per_unit,
+        display_multiplier=display_multiplier,
+        symbol=symbol,
+        site_raw_display_type=raw_site_dt,
+        custom_rate=custom_rate,
+        site_price=site_price,
+    )
+
+
+def convert_newapi_quota(
+    raw_quota: float | None,
+    *,
+    per_unit: float,
+    display_type: str,
+    display_multiplier: float = 1.0,
+) -> float | None:
+    """Convert raw NewAPI integer quota into display units consistently for balance and logs."""
+    if raw_quota is None:
+        return None
+    if display_type == "TOKENS":
+        return max(0.0, float(raw_quota))
+    if per_unit <= 0:
+        return None
+    mult = float(display_multiplier) if (math.isfinite(display_multiplier) and display_multiplier > 0) else 1.0
+    return max(0.0, (float(raw_quota) / float(per_unit)) * mult)
+
+
+def _format_newapi_custom_extra(params: NewApiDisplayParams, quota_raw: float) -> str:
+    """Build subtle conversion reference metadata for non-fiat CUSTOM currency stations."""
+    if params.display_type != "CREDIT":
+        return ""
+    if params.site_raw_display_type not in ("CUSTOM", "POINTS", "POINT", "CREDIT"):
+        return ""
+    parts: list[str] = []
+    unit_label = params.symbol or "积分"
+    if params.custom_rate is not None and params.custom_rate > 0 and params.custom_rate != 1.0:
+        rate_txt = str(int(params.custom_rate)) if params.custom_rate.is_integer() else f"{params.custom_rate:g}"
+        parts.append(f"站内换算 {rate_txt} {unit_label} = 1 基准单位")
+    if params.site_price is not None and params.site_price > 0 and params.per_unit > 0:
+        ref_recharge = max(0.0, (float(quota_raw) / float(params.per_unit)) * params.site_price)
+        parts.append(f"参考充值约 ¥{ref_recharge:,.2f}")
+    return " · ".join(parts)
 
 
 def _safe_user_id_header(header_name: object) -> str:
@@ -160,6 +279,8 @@ async def _fetch_last_consumption(
     user_id: str,
     user_id_header: str,
     per_unit: float,
+    display_type: str = "USD",
+    display_multiplier: float = 1.0,
     allow_http: bool,
     proxy_url: str,
     timeout_seconds: float,
@@ -223,7 +344,12 @@ async def _fetch_last_consumption(
     used_at = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
     model_name = str(item.get("model_name") or "").strip()
     raw_quota = safe_number(item.get("quota"))
-    cost = (raw_quota / per_unit) if (raw_quota is not None and per_unit > 0) else None
+    cost = convert_newapi_quota(
+        raw_quota,
+        per_unit=per_unit,
+        display_type=display_type,
+        display_multiplier=display_multiplier,
+    )
     return used_at, model_name, cost, ""
 
 
@@ -371,10 +497,8 @@ class _BaseNewApiAdapter(QuotaAdapter):
                 latency_ms=ctx.elapsed_ms(started),
             )
 
-        # Step 1: Public /api/status (populates currency, divisor, logo even before auth!)
-        display_type = ctx.display_type
-        per_unit = ctx.quota_per_unit
-        site_symbol = ""
+        # Step 1: Public /api/status (populates currency, divisor, multiplier, logo even before auth!)
+        site_status_found: dict[str, Any] | None = None
         published_logo = ""
         active_root = root
 
@@ -388,23 +512,19 @@ class _BaseNewApiAdapter(QuotaAdapter):
             )
             if site_status is not None:
                 active_root = candidate_root
-                if not display_type:
-                    normalized_dt = normalize_newapi_display_type(site_status.get("quota_display_type"))
-                    if normalized_dt:
-                        display_type = normalized_dt
-                if per_unit <= 0:
-                    spu = safe_number(site_status.get("quota_per_unit"))
-                    if spu is not None and spu > 0:
-                        per_unit = spu
-                site_symbol = str(site_status.get("custom_currency_symbol") or "")
+                site_status_found = site_status
                 published_logo = str(site_status.get("logo") or "")
                 break
 
-        if not display_type:
-            display_type = "USD"
-        if per_unit <= 0:
-            per_unit = DEFAULT_NEWAPI_PER_UNIT
-        symbol = normalize_currency_symbol(display_type, site_symbol)
+        params = resolve_newapi_display_params(
+            site_status_found,
+            override_display_type=ctx.display_type,
+            override_per_unit=ctx.quota_per_unit,
+        )
+        display_type = params.display_type
+        per_unit = params.per_unit
+        display_multiplier = params.display_multiplier
+        symbol = params.symbol
 
         logo_version, logo_error = "", ""
         if ctx.logo_cache is not None:
@@ -510,6 +630,8 @@ class _BaseNewApiAdapter(QuotaAdapter):
                 user_id=user_id,
                 user_id_header=user_id_header,
                 per_unit=per_unit,
+                display_type=display_type,
+                display_multiplier=display_multiplier,
                 allow_http=ctx.allow_http,
                 proxy_url=ctx.proxy_url,
                 timeout_seconds=ctx.timeout_seconds,
@@ -570,12 +692,23 @@ class _BaseNewApiAdapter(QuotaAdapter):
                 logo_error=logo_error,
             )
 
-        divisor = 1.0 if display_type == "TOKENS" else per_unit
-        remaining = max(0.0, quota_raw / divisor)
-        used = max(0.0, used_raw / divisor) if used_raw is not None else None
+        remaining = convert_newapi_quota(
+            quota_raw,
+            per_unit=per_unit,
+            display_type=display_type,
+            display_multiplier=display_multiplier,
+        )
+        assert remaining is not None
+        used = convert_newapi_quota(
+            used_raw,
+            per_unit=per_unit,
+            display_type=display_type,
+            display_multiplier=display_multiplier,
+        )
         total = (remaining + used) if used is not None else None
         account_name = str(user_data.get("display_name") or user_data.get("username") or "").strip()
         group_name = str(user_data.get("group") or "").strip()
+        extra = _format_newapi_custom_extra(params, quota_raw)
 
         return QuotaSnapshot(
             station_id=spec.id,
@@ -588,6 +721,7 @@ class _BaseNewApiAdapter(QuotaAdapter):
             quota_per_unit=per_unit,
             account_name=account_name,
             group_name=group_name,
+            extra=extra,
             checked_at=checked_at,
             latency_ms=ctx.elapsed_ms(started),
             last_used_at=last_at,
