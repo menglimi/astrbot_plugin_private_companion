@@ -169,6 +169,7 @@ window.CompanionPricingWorkbench = (() => {
       syncingRates: false,
       syncingCatalog: false,
       togglingSource: "",
+      updatingSourceCurrency: "",
       detectingProvider: "",
       selectingKey: "",
       validatingKey: "",
@@ -421,7 +422,7 @@ window.CompanionPricingWorkbench = (() => {
     if (mode === "tiered_expr") {
       return {
         mode: "tiered_expr",
-        currency: "USD",
+        currency: rule.currency === "CNY" ? "CNY" : "USD",
         expr: rule.expr == null ? "" : String(rule.expr),
         tiers: (Array.isArray(rule.tiers) ? rule.tiers : []).map((t, idx) => ({
           name: String(t.name || `tier_${idx + 1}`),
@@ -568,7 +569,7 @@ window.CompanionPricingWorkbench = (() => {
         }));
       const out = {
         mode: "tiered_expr",
-        currency: "USD",
+        currency: draftRule.currency === "CNY" ? "CNY" : "USD",
         expr: exprText || null,
         tiers,
         default_expr: defaultText || null,
@@ -704,7 +705,7 @@ window.CompanionPricingWorkbench = (() => {
 
   function isBusy(p) {
     return Boolean(p && (
-      p.busy || p.syncingRates || p.syncingCatalog || p.togglingSource
+      p.busy || p.syncingRates || p.syncingCatalog || p.togglingSource || p.updatingSourceCurrency
       || p.detectingProvider || p.selectingKey || p.resetting || p.clearingResidue
     ));
   }
@@ -933,7 +934,7 @@ window.CompanionPricingWorkbench = (() => {
     }
     if (mode === "tiered_expr") {
       const n = (rule.tiers || []).length;
-      return n ? `表达式 (${n} 档)` : "表达式公式";
+      return n ? `${sym} 表达式 (${n} 档)` : `${sym} 表达式公式`;
     }
     if (mode === "per_turn") {
       return `${sym}${formatRateNumber(rule.price)} / 次调用`;
@@ -1246,6 +1247,40 @@ window.CompanionPricingWorkbench = (() => {
     }
   }
 
+  async function updateSourceCurrency(ctx, sourceId, currencyOverride) {
+    const {p, path, api, render, isCurrent, ticket, fail} = ctx;
+    if (!p.data || p.loading || isBusy(p)) return;
+    const source = (p.data.sources || []).find(item => item.source_id === sourceId);
+    if (!source) return;
+    const nextOverride = currencyOverride === "CNY" || currencyOverride === "USD" ? currencyOverride : "auto";
+    const t = ticket();
+    p.updatingSourceCurrency = sourceId;
+    p.syncNotice = `正在更新 ${source.label} 的结算币种并重新同步…`;
+    render();
+    try {
+      const result = await api("POST", path + "/pricing/sources/currency", {
+        source_id: sourceId,
+        currency_override: nextOverride,
+        sync: true,
+        revision: p.data.revision,
+      }, 45000);
+      if (!isCurrent(t)) return;
+      syncDataPreserveDraft(p, result);
+      const labelText = nextOverride === "CNY" ? "人民币 CNY (¥)" : nextOverride === "USD" ? "美元 USD ($)" : "自动识别";
+      p.bad = false;
+      p.syncNotice = result?.sync?.error_count
+        ? `${source.label} 币种已设为 ${labelText}，但重新同步出现异常。`
+        : `${source.label} 结算币种已切换为 ${labelText} 并完成重新同步。`;
+    } catch (err) {
+      if (!isCurrent(t)) return;
+      p.bad = true;
+      p.syncNotice = fail(err, "更新价格源币种失败。");
+    } finally {
+      p.updatingSourceCurrency = "";
+      if (isCurrent(t)) render();
+    }
+  }
+
   async function detectNewApi(ctx, providerId) {
     const {p, path, api, render, isCurrent, ticket, fail} = ctx;
     if (!p.data || p.loading || isBusy(p)) return;
@@ -1262,10 +1297,26 @@ window.CompanionPricingWorkbench = (() => {
       const det = result?.detection || {};
       syncDataPreserveDraft(p, result);
       if (det.ok) {
+        const displayName = det.site_name || det.source_id;
+        let curNote = "";
+        if (det.quota_display_type === "CUSTOM") {
+          const sym = det.custom_currency_symbol ? ` ${det.custom_currency_symbol}` : "";
+          curNote = ` · 自定义单位${sym}`;
+        } else if (det.currency === "CNY") {
+          curNote = " · 人民币 CNY";
+        } else if (det.currency === "USD") {
+          curNote = " · 美元 USD";
+        }
         const dedupNote = det.deduplicated ? "（已复用同域名价格源）" : "";
+        const groupNote = det.detected_group && det.detected_group_ratio != null
+          ? ` · 推荐分组 ${det.detected_group} (${formatRateNumber(det.detected_group_ratio)}×)`
+          : "";
+        const skipNote = Number(det.skipped_expr_count) > 0
+          ? ` · 跳过 ${Number(det.skipped_expr_count)} 个特殊私有公式`
+          : "";
         const keyNote = det.needs_key ? " · 返回 0 条模型，可能需要网关密钥或配置可见价格" : "";
         p.bad = false;
-        p.syncNotice = `探测成功：已接入 ${det.source_id}（${Number(det.models) || 0} 个模型）${dedupNote}${keyNote}。`;
+        p.syncNotice = `探测成功：已接入 ${displayName}（${Number(det.models) || 0} 个模型${curNote}）${dedupNote}${groupNote}${skipNote}${keyNote}。`;
       } else {
         p.bad = true;
         p.syncNotice = det.error || "未探测到兼容的 New API /api/pricing 接口。";
@@ -1346,11 +1397,12 @@ window.CompanionPricingWorkbench = (() => {
       return;
     }
     const canon = canonicalizeRule(activeRule);
-    // Strict API contract: POST /pricing/expr/validate ONLY allows expr, tiers, default_expr, cluster_multiplier, sample!
+    // Strict API contract: POST /pricing/expr/validate ONLY allows expr, tiers, default_expr, cluster_multiplier, currency, sample!
     const body = {};
     if (canon.expr) body.expr = canon.expr;
     if (canon.tiers && canon.tiers.length) body.tiers = canon.tiers;
     if (canon.default_expr) body.default_expr = canon.default_expr;
+    if (canon.currency === "CNY" || canon.currency === "USD") body.currency = canon.currency;
     const clusterMult = Number(p.draft.pricing_multipliers?.[item.cluster_id] ?? item.cluster_multiplier ?? 1);
     if (Number.isFinite(clusterMult) && clusterMult !== 1) body.cluster_multiplier = clusterMult;
 
@@ -1521,7 +1573,7 @@ window.CompanionPricingWorkbench = (() => {
       const existingExpr = baseRule?.mode === "tiered_expr" ? cloneRuleForDraft(baseRule) : null;
       p.draft.pricing_rules[targetKey] = existingExpr || {
         mode: "tiered_expr",
-        currency: "USD",
+        currency: prevCurrency,
         expr: "",
         tiers: [],
         default_expr: "",
@@ -1728,15 +1780,26 @@ window.CompanionPricingWorkbench = (() => {
         `状态：${meta.label}`,
         `模型数：${formatTokensFull(src.model_count)}`,
       ];
+      if (src.kind === "newapi") {
+        const smeta = src.site_meta && typeof src.site_meta === "object" ? src.site_meta : {};
+        const curStr = src.currency === "CNY" ? "CNY (¥)" : "USD ($)";
+        const qdt = smeta.quota_display_type || "";
+        tipParts.push(`结算币种：${curStr}${src.currency_override && src.currency_override !== "auto" ? "（手动覆盖）" : qdt === "CUSTOM" ? `（站内自定义单位 ${smeta.custom_currency_symbol || ""}）` : ""}`);
+        if (smeta.recharge_price != null) tipParts.push(`站内参考充值价：1 单位 = ¥${formatRateNumber(smeta.recharge_price)}`);
+      }
       if (src.last_ok_at) tipParts.push(`最近成功：${formatShortTime(src.last_ok_at)}`);
       if (src.last_sync_at && src.last_sync_at !== src.last_ok_at) tipParts.push(`最近尝试：${formatShortTime(src.last_sync_at)}`);
       if (src.error) tipParts.push(`错误：${src.error}`);
       if (src.needs_key) tipParts.push("提示：该网关返回 0 条模型，可能需要鉴权密钥");
       tipParts.push("点击切换启用/停用");
+      const curBadgeHtml = src.kind === "newapi" && src.currency
+        ? `<span class="pw-source-cur">${esc(src.currency === "CNY" ? "¥" : "$")}</span>`
+        : "";
       return `<button type="button" class="pw-source-chip ${meta.cls}${src.enabled ? " is-enabled" : ""}" data-pricing-source-toggle="${esc(src.source_id)}" title="${esc(tipParts.join("\n"))}" ${locked ? "disabled" : ""}>
         <span class="pw-source-dot" aria-hidden="true"></span>
         <span class="pw-source-status">${esc(busyThis ? "切换中" : meta.label)}</span>
         <span class="pw-source-label">${esc(src.label)}</span>
+        ${curBadgeHtml}
         <span class="pw-source-count">${formatTokensFull(src.model_count)}</span>
       </button>`;
     }).join("");
@@ -1804,7 +1867,7 @@ window.CompanionPricingWorkbench = (() => {
   function renderNestedOverrideEditor(pid, idx, overrideRule, locked) {
     const rule = overrideRule || cloneRuleForDraft({mode: "per_token", currency: "USD"});
     const mode = rule.mode || "per_token";
-    const cur = mode === "tiered_expr" ? "USD" : (rule.currency === "CNY" ? "CNY" : "USD");
+    const cur = rule.currency === "CNY" ? "CNY" : "USD";
     const sym = currencySymbol(cur);
     let body = "";
     if (mode === "per_token") {
@@ -1826,8 +1889,8 @@ window.CompanionPricingWorkbench = (() => {
       </div>`;
     } else if (mode === "tiered_expr") {
       body = `<div class="pw-field">
-        <span class="pw-label">覆盖表达式 (USD 微美元口径)</span>
-        <textarea rows="2" class="pw-mono-input" spellcheck="false" data-pricing-sched-ovr-expr data-pid="${esc(pid)}" data-idx="${idx}" placeholder="例如：v1: p * 1.5 + c * 6" ${locked ? "disabled" : ""}>${esc(rule.expr || "")}</textarea>
+        <span class="pw-label">覆盖表达式 (${cur} 微单位口径)</span>
+        <textarea rows="2" class="pw-mono-input" spellcheck="false" data-pricing-sched-ovr-expr data-pid="${esc(pid)}" data-idx="${idx}" placeholder="例如：tier(&quot;standard&quot;, p * 0.75 + cr * 0.075 + c * 3.75)" ${locked ? "disabled" : ""}>${esc(rule.expr || "")}</textarea>
       </div>`;
     } else {
       body = `<div class="pw-field">
@@ -1845,7 +1908,7 @@ window.CompanionPricingWorkbench = (() => {
         </div>
         <div class="pw-field">
           <span class="pw-label">单价币种</span>
-          <select data-pricing-sched-ovr-currency data-pid="${esc(pid)}" data-idx="${idx}" ${locked || mode === "tiered_expr" ? "disabled" : ""}>
+          <select data-pricing-sched-ovr-currency data-pid="${esc(pid)}" data-idx="${idx}" ${locked ? "disabled" : ""}>
             <option value="USD" ${cur === "USD" ? "selected" : ""}>USD ($)</option>
             <option value="CNY" ${cur === "CNY" ? "selected" : ""}>CNY (¥)</option>
           </select>
@@ -1999,7 +2062,7 @@ window.CompanionPricingWorkbench = (() => {
   function renderModeEditor(p, item, model, activeRule, ruleKey, locked) {
     const pid = item.id;
     const mode = activeRule.mode || "per_token";
-    const cur = mode === "tiered_expr" ? "USD" : (activeRule.currency === "CNY" ? "CNY" : "USD");
+    const cur = activeRule.currency === "CNY" ? "CNY" : "USD";
     const sym = currencySymbol(cur);
 
     if (mode === "per_token") {
@@ -2121,8 +2184,8 @@ window.CompanionPricingWorkbench = (() => {
           ${EXPR_VARIABLES.map(([v, desc]) => `<span class="pw-var-chip"><code>${v}</code>${desc}</span>`).join("")}
         </div>
         <div class="pw-field">
-          <span class="pw-label">计价表达式（兼容 New API <code>v1:</code> 语法，始终按 USD 微美元口径结算）</span>
-          <textarea rows="3" class="pw-mono-input" spellcheck="false" data-pricing-expr-field="expr" data-pid="${esc(pid)}" placeholder="例如：v1: len > 200000 ? (p * 4 + cr * 0.4 + c * 18) : (p * 2 + cr * 0.2 + c * 12)" ${locked ? "disabled" : ""}>${esc(activeRule.expr || "")}</textarea>
+          <span class="pw-label">计价表达式（兼容 New API <code>billing_expr</code> / <code>tier()</code> / <code>v1:</code> 语法，按所选 ${cur} 微单位口径结算）</span>
+          <textarea rows="3" class="pw-mono-input" spellcheck="false" data-pricing-expr-field="expr" data-pid="${esc(pid)}" placeholder="例如：len &lt;= 200000 ? tier(&quot;standard&quot;, p * 2 + cr * 0.2 + c * 12) : tier(&quot;long_context&quot;, p * 4 + cr * 0.4 + c * 18)" ${locked ? "disabled" : ""}>${esc(activeRule.expr || "")}</textarea>
         </div>
         <div class="pw-subblock">
           <div class="pw-subblock-head">
@@ -2137,7 +2200,7 @@ window.CompanionPricingWorkbench = (() => {
         </div>
         <div class="pw-expr-actions">
           <button type="button" class="button small primary" data-pricing-expr-validate="${esc(pid)}" ${locked || validating ? "disabled" : ""}>${validating ? "试算中…" : "验证并试算"}</button>
-          <span class="pw-muted">表达式结果 ÷ 1,000,000 × 聚类倍率 = 美元费用；表达式模式下币种固定为 USD。</span>
+          <span class="pw-muted">表达式结果 ÷ 1,000,000 × 聚类倍率 = 单次 ${cur === "CNY" ? "人民币 (¥)" : "美元 ($)"} 费用；可在上方单价币种处切换 USD / CNY。</span>
         </div>
         ${previewHtml}
       </div>`;
@@ -2198,7 +2261,7 @@ window.CompanionPricingWorkbench = (() => {
           }
       );
       const activeMode = displayRule.mode || "per_token";
-      const cur = activeMode === "tiered_expr" ? "USD" : (displayRule.currency === "CNY" ? "CNY" : "USD");
+      const cur = displayRule.currency === "CNY" ? "CNY" : "USD";
       const candModels = Array.isArray(item.candidates) && item.candidates.length ? item.candidates : (model ? [model] : []);
       const dirtyAny = isDirty(p);
 
@@ -2212,7 +2275,7 @@ window.CompanionPricingWorkbench = (() => {
           <div class="pw-toolbar-left">
             <div class="pw-inline-field">
               <span class="pw-label">单价币种</span>
-              <select data-pricing-rule-currency="${esc(pid)}" ${locked || activeMode === "tiered_expr" ? "disabled" : ""} title="${activeMode === "tiered_expr" ? "表达式模式固定按 USD 微美元结算" : "选择单价录入币种"}">
+              <select data-pricing-rule-currency="${esc(pid)}" ${locked ? "disabled" : ""} title="选择单价录入币种">
                 <option value="USD" ${cur === "USD" ? "selected" : ""}>USD ($)</option>
                 <option value="CNY" ${cur === "CNY" ? "selected" : ""}>CNY (¥)</option>
               </select>
@@ -2341,7 +2404,76 @@ window.CompanionPricingWorkbench = (() => {
         ? p.clusterMultDraft[cid]
         : String(Number.isFinite(mult) ? mult : 1);
       const probeTarget = (selected.providers || []).find(item => item.has_api_base) || null;
-      const linkedNewApi = (selected.providers || []).find(item => item.newapi_source_id)?.newapi_source_id || null;
+      const linkedNewApi = selected.newapi_source_id
+        || (selected.providers || []).find(item => item.newapi_source_id)?.newapi_source_id
+        || null;
+      const linkedSrc = linkedNewApi
+        ? (data.sources || []).find(s => s.source_id === linkedNewApi) || null
+        : null;
+      const linkedMeta = (linkedSrc && linkedSrc.site_meta && typeof linkedSrc.site_meta === "object")
+        ? linkedSrc.site_meta
+        : null;
+      const groupRatioMap = (linkedMeta && linkedMeta.group_ratio && typeof linkedMeta.group_ratio === "object")
+        ? linkedMeta.group_ratio
+        : {};
+      const groupEntries = Object.entries(groupRatioMap)
+        .filter(([, r]) => Number.isFinite(Number(r)))
+        .sort((a, b) => Number(a[1]) - Number(b[1]) || a[0].localeCompare(b[0]));
+      const groupHint = selected.newapi_group_hint && typeof selected.newapi_group_hint === "object"
+        ? selected.newapi_group_hint
+        : null;
+      const linkedCur = linkedSrc?.currency === "CNY" ? "CNY" : "USD";
+      const linkedCurOvr = linkedSrc?.currency_override === "CNY" || linkedSrc?.currency_override === "USD"
+        ? linkedSrc.currency_override
+        : "auto";
+      const linkedQdt = String(linkedMeta?.quota_display_type || "").toUpperCase();
+      const linkedCustomSym = String(linkedMeta?.custom_currency_symbol || "").trim();
+      const linkedRechargePrice = linkedMeta?.recharge_price;
+      const linkedSourceBadge = linkedSrc
+        ? `${linkedSrc.label} · ${linkedCur === "CNY" ? "CNY ¥" : linkedQdt === "CUSTOM" && linkedCurOvr === "auto" ? `自定义${linkedCustomSym ? " " + linkedCustomSym : ""}` : "USD $"}`
+        : "New API 源";
+
+      let newApiBarHtml = "";
+      if (linkedSrc && (groupEntries.length > 0 || groupHint || linkedQdt === "CUSTOM" || linkedMeta)) {
+        const autoCurDesc = linkedQdt === "CNY"
+          ? "CNY ¥"
+          : linkedQdt === "CUSTOM"
+            ? `自定义${linkedCustomSym ? " " + linkedCustomSym : ""}`
+            : "USD $";
+        const hintRatio = groupHint && Number.isFinite(Number(groupHint.ratio)) ? Number(groupHint.ratio) : null;
+        const showApplyHint = Boolean(groupHint?.group && hintRatio !== null && Math.abs(hintRatio - mult) > 1e-6);
+        const customNoticeHtml = linkedQdt === "CUSTOM" && linkedCurOvr === "auto"
+          ? `<span class="pw-newapi-hint is-warn">该站使用自定义代币${linkedCustomSym ? ` ${esc(linkedCustomSym)}` : ""}${linkedRechargePrice != null ? `（站内充值参考：1 单位 = ¥${formatRateNumber(linkedRechargePrice)}）` : ""}，如按人民币结算请在此一键切换为 CNY。</span>`
+          : "";
+        const customRulesWarnHtml = showApplyHint && selected.has_custom_rules
+          ? '<span class="pw-newapi-hint">提示：聚类倍率会同时作用于该供应商下的已自定义模型规则。</span>'
+          : "";
+        newApiBarHtml = `<div class="pw-newapi-bar" aria-label="New API 网关分组与币种辅助">
+          <div class="pw-newapi-bar-row">
+            ${groupHint?.group && hintRatio !== null ? `<div class="pw-newapi-chip-group">
+              <span class="pw-badge is-accent">识别分组 · ${esc(groupHint.group)} (${formatRateNumber(hintRatio)}×)</span>
+              ${showApplyHint ? `<button type="button" class="button small" data-pricing-apply-group-mult="${esc(cid)}" data-ratio="${esc(hintRatio)}" ${locked ? "disabled" : ""}>一键应用 ${formatRateNumber(hintRatio)}×</button>` : '<span class="pw-muted">当前倍率已匹配</span>'}
+            </div>` : ""}
+            ${groupEntries.length > 0 ? `<div class="pw-inline-field">
+              <span class="pw-label">站点分组倍率</span>
+              <select data-pricing-group-select="${esc(cid)}" aria-label="按站点分组填入聚类倍率" ${locked ? "disabled" : ""}>
+                <option value="">选择分组填入倍率…</option>
+                ${groupEntries.map(([g, r]) => `<option value="${esc(r)}">${esc(g)} (${formatRateNumber(r)}×)</option>`).join("")}
+              </select>
+            </div>` : ""}
+            <div class="pw-inline-field">
+              <span class="pw-label">价格源币种</span>
+              <select data-pricing-source-currency="${esc(linkedSrc.source_id)}" aria-label="New API 价格源结算币种" ${locked ? "disabled" : ""}>
+                <option value="auto" ${linkedCurOvr === "auto" ? "selected" : ""}>自动识别 (${esc(autoCurDesc)})</option>
+                <option value="CNY" ${linkedCurOvr === "CNY" ? "selected" : ""}>CNY (¥ 人民币)</option>
+                <option value="USD" ${linkedCurOvr === "USD" ? "selected" : ""}>USD ($ 美元)</option>
+              </select>
+            </div>
+          </div>
+          ${customNoticeHtml}${customRulesWarnHtml}
+        </div>`;
+      }
+
       const activeItems = selected.providers.filter(item => item.bound || (Number(item.total_tokens) || 0) > 0);
       const unusedItems = selected.providers.filter(item => !(item.bound || (Number(item.total_tokens) || 0) > 0));
 
@@ -2351,7 +2483,7 @@ window.CompanionPricingWorkbench = (() => {
             <h4>${esc(selected.name)}</h4>
             <span class="pw-badge is-muted">${selected.providers.length} 个模型</span>
             <span class="pw-badge ${mult !== 1 ? "is-accent" : "is-muted"}">当前 ${formatRateNumber(mult)}×</span>
-            ${linkedNewApi ? `<span class="pw-badge is-ok">已接 New API 源</span>` : ""}
+            ${linkedNewApi ? `<span class="pw-badge is-ok" title="${esc(linkedNewApi)}">已接 ${esc(linkedSourceBadge)}</span>` : ""}
           </div>
           <span class="pw-cluster-sub">累计 ${formatTokensFull(selected.cluster_total_tokens)} token · ${selected.active_count} 个在用</span>
         </div>
@@ -2365,6 +2497,7 @@ window.CompanionPricingWorkbench = (() => {
           ${probeTarget ? `<button type="button" class="button small" data-pricing-detect-newapi="${esc(probeTarget.id)}" ${locked ? "disabled" : ""}>${p.detectingProvider === probeTarget.id ? "探测中…" : (linkedNewApi ? "重新探测 New API 价格源" : "探测并启用 New API 价格源")}</button>` : ""}
         </div>
       </div>
+      ${newApiBarHtml}
       <div class="pw-cards">
         ${activeItems.map(item => renderProviderCard(p, item)).join("")}
         ${activeItems.length && unusedItems.length ? '<div class="pw-list-divider">已配置 · 暂未产生调用</div>' : ""}
@@ -2538,13 +2671,31 @@ window.CompanionPricingWorkbench = (() => {
       return;
     }
 
-    // Rule currency select
+    const groupSelectCid = t.dataset?.pricingGroupSelect;
+    if (groupSelectCid) {
+      if (t.value !== "") {
+        p.clusterMultDraft[groupSelectCid] = t.value;
+        p.bad = false;
+        p.notice = `已将所选分组倍率 ${formatRateNumber(Number(t.value))}× 填入输入框，点击「应用」生效。`;
+        render();
+      }
+      return;
+    }
+
+    const srcCurId = t.dataset?.pricingSourceCurrency;
+    if (srcCurId) {
+      void updateSourceCurrency(ctx, srcCurId, t.value);
+      return;
+    }
+
+    // Rule currency select (enabled for all 5 modes including tiered_expr)
     const curPid = t.dataset?.pricingRuleCurrency;
     if (curPid) {
       const item = findProvider(p.data, curPid);
       if (!item) return;
-      const {rule} = ensureDraftRule(p, item, activeModelFor(p, item));
-      if (rule.mode !== "tiered_expr") rule.currency = t.value === "CNY" ? "CNY" : "USD";
+      const {key, rule} = ensureDraftRule(p, item, activeModelFor(p, item));
+      rule.currency = t.value === "CNY" ? "CNY" : "USD";
+      delete p.exprResults[key];
       p.bad = false; p.notice = "";
       render();
       return;
@@ -2750,7 +2901,7 @@ window.CompanionPricingWorkbench = (() => {
       const prevCur = period.override?.currency === "CNY" ? "CNY" : "USD";
       period.override = cloneRuleForDraft(
         nextMode === "per_tier" ? {mode: "per_tier", currency: prevCur, base: {input: 0, output: 0}, context_tiers: [], service_tiers: []}
-          : nextMode === "tiered_expr" ? {mode: "tiered_expr", currency: "USD", expr: ""}
+          : nextMode === "tiered_expr" ? {mode: "tiered_expr", currency: prevCur, expr: ""}
           : nextMode === "per_turn" || nextMode === "per_request" ? {mode: nextMode, currency: prevCur, price: 0}
           : {mode: "per_token", currency: prevCur},
       );
@@ -2759,7 +2910,7 @@ window.CompanionPricingWorkbench = (() => {
     }
     if (t.matches("[data-pricing-sched-ovr-currency]")) {
       period.override ||= cloneRuleForDraft({mode: "per_token", currency: "USD"});
-      if (period.override.mode !== "tiered_expr") period.override.currency = t.value === "CNY" ? "CNY" : "USD";
+      period.override.currency = t.value === "CNY" ? "CNY" : "USD";
       render();
       return;
     }
@@ -2876,6 +3027,16 @@ window.CompanionPricingWorkbench = (() => {
     const multReset = t.closest("[data-pricing-cluster-mult-reset]");
     if (multReset) {
       void applyClusterMultiplier(ctx, multReset.dataset.pricingClusterMultReset, 1);
+      return;
+    }
+
+    const applyGroupBtn = t.closest("[data-pricing-apply-group-mult]");
+    if (applyGroupBtn) {
+      const cid = applyGroupBtn.dataset.pricingApplyGroupMult;
+      const ratio = applyGroupBtn.dataset.ratio;
+      if (cid && ratio != null && ratio !== "") {
+        void applyClusterMultiplier(ctx, cid, ratio);
+      }
       return;
     }
 

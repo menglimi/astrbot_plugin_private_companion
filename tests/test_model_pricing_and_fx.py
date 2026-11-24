@@ -264,6 +264,11 @@ class PricingV2EngineAndStoreTests(unittest.TestCase):
                         "mode": "tiered_expr",
                         "expr": "v1:len > 200000 ? p * 4 + c * 16 : p * 2 + c * 8",
                     },
+                    "p-expr-cny|gemini-3.6-flash": {
+                        "mode": "tiered_expr",
+                        "currency": "CNY",
+                        "expr": "v1:tier('标准', p * 0.75 + cr * 0.075 + c * 3.75)",
+                    },
                     "p-turn": {"mode": "per_turn", "currency": "USD", "price": 0.01},
                     "p-req": {"mode": "per_request", "currency": "USD", "price": 0.05},
                 },
@@ -332,6 +337,19 @@ class PricingV2EngineAndStoreTests(unittest.TestCase):
             )
             eff_expr_free = resolve_effective_pricing("p-expr", "custom", settings, catalog=catalog, cluster_id="cluster-free")
             self.assertEqual(evaluate_call_cost_microusd(eff_expr_free, input_tokens=100_000, output_tokens=10_000), 0)
+
+            # 3B) tiered_expr in CNY divides by usd_cny_rate (never overcounts by FX rate!)
+            eff_expr_cny = resolve_effective_pricing(
+                "p-expr-cny", "gemini-3.6-flash", settings, catalog=catalog, cluster_id="cluster-half",
+            )
+            self.assertEqual(eff_expr_cny.rule["currency"], "CNY")
+            # Raw CNY for 1M uncached input + 1M output = 0.75 + 3.75 = 4.50 CNY; * 0.5 cluster = 2.25 CNY; / 7.2 = $0.3125 = 312_500 microUSD
+            self.assertEqual(
+                evaluate_call_cost_microusd(
+                    eff_expr_cny, usd_cny_rate=7.2, input_tokens=1_000_000, output_tokens=1_000_000,
+                ),
+                312_500,
+            )
 
             settings_chained = settings_store.update(settings["revision"], {
                 "pricing_multipliers": {"cluster-half": 0.5, "cluster-free": 0.0, "cluster-x20": 20.0},
@@ -661,6 +679,7 @@ class PricingV2InventorySortingAndApiRoutesTests(unittest.IsolatedAsyncioTestCas
             (PREFIX + "/pricing/sync", "POST"),
             (PREFIX + "/pricing/sources/toggle", "POST"),
             (PREFIX + "/pricing/sources/detect", "POST"),
+            (PREFIX + "/pricing/sources/currency", "POST"),
             (PREFIX + "/pricing/select", "POST"),
             (PREFIX + "/pricing/select/reset", "POST"),
             (PREFIX + "/pricing/expr/validate", "POST"),
@@ -849,6 +868,37 @@ class PricingV2InventorySortingAndApiRoutesTests(unittest.IsolatedAsyncioTestCas
         self.assertTrue(det_dup["data"]["detection"]["deduplicated"])
         self.assertEqual(det_dup["data"]["detection"]["source_id"], "newapi:high-tok-a")
 
+        # 6B) POST /pricing/sources/currency (override CNY, reset auto, reject invalid currency & public source)
+        cur_cny = await self.call(PREFIX + "/pricing/sources/currency", method="POST", payload={
+            "source_id": "newapi:high-tok-a",
+            "currency_override": "CNY",
+        })
+        self.assertEqual(cur_cny["status"], "ok", cur_cny)
+        newapi_src = next(s for s in cur_cny["data"]["sources"] if s["source_id"] == "newapi:high-tok-a")
+        self.assertEqual(newapi_src["currency"], "CNY")
+        self.assertEqual(newapi_src["currency_override"], "CNY")
+
+        cur_auto = await self.call(PREFIX + "/pricing/sources/currency", method="POST", payload={
+            "source_id": "newapi:high-tok-a",
+            "currency_override": "auto",
+        })
+        self.assertEqual(cur_auto["status"], "ok", cur_auto)
+        newapi_src_auto = next(s for s in cur_auto["data"]["sources"] if s["source_id"] == "newapi:high-tok-a")
+        self.assertEqual(newapi_src_auto["currency_override"], "auto")
+        self.assertEqual(newapi_src_auto["currency"], "USD")
+        self.assertNotIn("currency_override", PricingSettingsStore(runtime.data_root).read()["price_sources"]["newapi:high-tok-a"])
+
+        cur_bad = await self.call(PREFIX + "/pricing/sources/currency", method="POST", payload={
+            "source_id": "newapi:high-tok-a",
+            "currency_override": "EUR",
+        })
+        self.assertEqual(cur_bad["status"], "error")
+        cur_pub = await self.call(PREFIX + "/pricing/sources/currency", method="POST", payload={
+            "source_id": "modelsdev",
+            "currency_override": "CNY",
+        })
+        self.assertEqual(cur_pub["status"], "error")
+
         # 7) POST /pricing/select & 8) POST /pricing/select/reset
         selected = await self.call(PREFIX + "/pricing/select", method="POST", payload={
             "provider_id": "high-tok-a", "model": "gpt-4o", "price_key": "litellm:gpt-4o",
@@ -871,6 +921,24 @@ class PricingV2InventorySortingAndApiRoutesTests(unittest.IsolatedAsyncioTestCas
         self.assertTrue(val_ok["data"]["valid"])
         self.assertEqual(val_ok["data"]["usd_cny_rate"], 7.31)
         self.assertAlmostEqual(val_ok["data"]["samples"][0]["cost_usd"], 0.28, places=6)
+
+        val_cny = await self.call(PREFIX + "/pricing/expr/validate", method="POST", payload={
+            "expr": "v1:tier('标准', p * 0.75 + cr * 0.075 + c * 3.75)",
+            "currency": "CNY",
+            "sample": {"p": 1_000_000, "c": 1_000_000},
+        })
+        self.assertEqual(val_cny["status"], "ok", val_cny)
+        self.assertTrue(val_cny["data"]["valid"])
+        self.assertEqual(val_cny["data"]["currency"], "CNY")
+        self.assertEqual(val_cny["data"]["samples"][0]["matched_tier"], "标准")
+        self.assertAlmostEqual(val_cny["data"]["samples"][0]["cost_cny"], 4.5, places=6)
+        self.assertAlmostEqual(val_cny["data"]["samples"][0]["cost_usd"], 4.5 / 7.31, places=5)
+
+        val_bad_cur = await self.call(PREFIX + "/pricing/expr/validate", method="POST", payload={
+            "expr": "v1:p * 2 + c * 8",
+            "currency": "JPY",
+        })
+        self.assertEqual(val_bad_cur["status"], "error")
 
         val_bad = await self.call(PREFIX + "/pricing/expr/validate", method="POST", payload={
             "expr": "().__class__.__mro__",

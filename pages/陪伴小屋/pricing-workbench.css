@@ -850,6 +850,59 @@
   flex-wrap: wrap;
 }
 
+.pw-source-cur {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--t-accent-quiet);
+  color: var(--t-accent-ink);
+  font-family: var(--numeric-font);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.pw-newapi-bar {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--t-line);
+  border-radius: var(--r-sm);
+  background: var(--t-surface);
+  min-width: 0;
+}
+
+.pw-newapi-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pw-newapi-bar select {
+  max-width: 240px;
+  min-width: 0;
+}
+
+.pw-newapi-chip-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.pw-newapi-hint {
+  font-size: var(--fs-micro);
+  color: var(--t-text-faint);
+  line-height: 1.5;
+}
+
+.pw-newapi-hint.is-warn {
+  color: var(--t-warn-ink);
+}
+
 .pw-cards {
   display: grid;
   gap: var(--sp-2);

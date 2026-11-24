@@ -542,6 +542,7 @@ class ModelWebAPI:
             (PREFIX + "/pricing/sync-rates", self.pricing_sync_rates, ["POST"], "Refresh live USD to CNY exchange rate"),
             (PREFIX + "/pricing/sync", self.pricing_sync_catalog, ["POST"], "Sync enabled online and New API price catalog sources"),
             (PREFIX + "/pricing/sources/toggle", self.pricing_source_toggle, ["POST"], "Toggle a price catalog source"),
+            (PREFIX + "/pricing/sources/currency", self.pricing_source_currency, ["POST"], "Override New API price source currency and resync"),
             (PREFIX + "/pricing/sources/detect", self.pricing_source_detect, ["POST"], "Probe a provider for New API /api/pricing"),
             (PREFIX + "/pricing/select", self.pricing_select, ["POST"], "Persist a catalog candidate selection for a provider model"),
             (PREFIX + "/pricing/select/reset", self.pricing_select_reset, ["POST"], "Clear persisted catalog candidate selection"),
@@ -1205,6 +1206,58 @@ class ModelWebAPI:
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return self._response(Outcome.failed("pricing_source_invalid", "价格源切换请求无效"))
 
+    async def pricing_source_currency(self):
+        try:
+            data = _document_optional(
+                await request.body(),
+                {"source_id", "currency_override"},
+                optional=("sync", "revision"),
+                limit=4096,
+            )
+            source_id = data["source_id"]
+            currency_override = data["currency_override"]
+            do_sync = data.get("sync", True)
+            revision = data.get("revision")
+            if (
+                type(source_id) is not str or not source_id.strip()
+                or type(currency_override) is not str
+                or currency_override not in ("auto", "CNY", "USD")
+                or type(do_sync) is not bool
+            ):
+                raise ValueError("invalid source currency override")
+            if revision is not None and type(revision) is not str:
+                raise ValueError("invalid revision")
+            sid = source_id.strip()
+            session, operator, manager, _status = await self._authorize_pricing()
+            runtime = getattr(getattr(session, "application", None), "runtime", None) or self.controller.runtime
+            updated = await asyncio.to_thread(
+                self._pricing_store(runtime).set_source_currency_override,
+                sid,
+                currency_override,
+                revision=revision,
+            )
+            sync_result = None
+            if do_sync:
+                _p, _s, connections = await asyncio.to_thread(collect_provider_inventory, self.controller, session)
+                catalog_service = self._pricing_catalog_service(runtime.data_root, session)
+                sync_result = await catalog_service.sync_sources(
+                    source_ids=[sid], connections=connections
+                )
+                updated = await asyncio.to_thread(self._pricing_store(runtime).read)
+            payload = await self._build_pricing_response(session, operator, manager, runtime, updated)
+            return self._response(Outcome.success({
+                **payload,
+                "source_id": sid,
+                "currency_override": currency_override,
+                "sync": sync_result,
+            }))
+        except TaskError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except PricingSettingsError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return self._response(Outcome.failed("pricing_source_invalid", "价格源币种设置请求无效"))
+
     async def pricing_source_detect(self):
         try:
             data = _document_optional(
@@ -1227,12 +1280,14 @@ class ModelWebAPI:
             if not conn or not conn.get("api_base"):
                 return self._response(Outcome.failed("pricing_detect_unavailable", "该供应商未配置可探测的接口地址"))
             catalog_service = self._pricing_catalog_service(runtime.data_root, session)
+            prov_info = providers_by_id.get(pid) or {}
             detection = await catalog_service.detect_newapi_source(
                 provider_id=pid,
                 api_base=conn["api_base"],
                 api_key=conn.get("api_key", ""),
                 proxy=conn.get("proxy", ""),
-                supplier_label=conn.get("supplier_name") or (providers_by_id.get(pid) or {}).get("supplier_name") or pid,
+                supplier_label=conn.get("supplier_name") or prov_info.get("supplier_name") or pid,
+                cluster_id=conn.get("cluster_id") or prov_info.get("cluster_id") or pid,
                 enable=enable,
             )
             session, operator, manager, _status = await self._authorize_pricing()
@@ -1327,7 +1382,7 @@ class ModelWebAPI:
             data = _document_optional(
                 await request.body(),
                 set(),
-                optional=("expr", "tiers", "default_expr", "cluster_multiplier", "sample"),
+                optional=("expr", "tiers", "default_expr", "cluster_multiplier", "currency", "sample"),
                 limit=32_768,
             )
             session, _operator, _manager, _status = await self._authorize_pricing()
@@ -1337,6 +1392,9 @@ class ModelWebAPI:
             sample = data.get("sample")
             if sample is not None and type(sample) is not dict:
                 raise ValueError("invalid sample")
+            if "currency" in data and data["currency"] is not None:
+                if type(data["currency"]) is not str or data["currency"] not in ("USD", "CNY"):
+                    raise ValueError("invalid currency")
             rule_payload = {k: v for k, v in data.items() if k != "sample"}
             result = await asyncio.to_thread(
                 validate_tiered_expr_rule, rule_payload, usd_cny_rate=usd_cny_rate, sample=sample

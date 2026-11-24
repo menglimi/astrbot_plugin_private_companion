@@ -731,20 +731,21 @@ test("all 5 pricing modes (per_token blank vs 0, per_tier, tiered_expr validate,
   post.resolve(sampleV2Payload({pricing_rules: post.values.changes.pricing_rules, revision: "rev-m2"}));
   await flush();
 
-  // 3. tiered_expr: currency disabled + validate endpoint strict keys (NO mode/currency!)
+  // 3. tiered_expr: currency selectable (CNY/USD) + validate endpoint sends currency (NO mode!)
   h.root.click("[data-pricing-rule-mode]", {pricingRuleMode: "relay-claude", mode: "tiered_expr"});
-  assert.match(h.root.innerHTML, /data-pricing-rule-currency="relay-claude"\s+disabled/);
+  assert.doesNotMatch(h.root.innerHTML, /data-pricing-rule-currency="relay-claude"\s+disabled/);
   assertNoNestedLabels(h.root.innerHTML, "tiered_expr");
-  h.root.input("[data-pricing-expr-field]", "v1: p * 2 + c * 10", {dataset: {pricingExprField: "expr", pid: "relay-claude"}, type: "change"});
+  h.root.input("[data-pricing-rule-currency]", "CNY", {dataset: {pricingRuleCurrency: "relay-claude"}, type: "change"});
+  h.root.input("[data-pricing-expr-field]", "v1: tier('标准', p * 0.75 + c * 3.75)", {dataset: {pricingExprField: "expr", pid: "relay-claude"}, type: "change"});
   h.root.click("[data-pricing-expr-validate]", {pricingExprValidate: "relay-claude"});
   const valReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/expr/validate");
   assert.ok(valReq);
-  assert.equal(valReq.values.expr, "v1: p * 2 + c * 10");
+  assert.equal(valReq.values.expr, "v1: tier('标准', p * 0.75 + c * 3.75)");
+  assert.equal(valReq.values.currency, "CNY");
   assert.equal("mode" in valReq.values, false, "must NOT send mode to /pricing/expr/validate");
-  assert.equal("currency" in valReq.values, false, "must NOT send currency to /pricing/expr/validate");
   valReq.resolve({
-    valid: true, error: null, used_variables: ["c", "p"], usd_cny_rate: 7.22,
-    samples: [{label: "标准短上下文", cost_usd: 0.04, cost_cny: 0.2888, matched_tier: "expr"}],
+    valid: true, error: null, currency: "CNY", used_variables: ["c", "p"], usd_cny_rate: 7.22,
+    samples: [{label: "标准短上下文", cost_usd: 0.04, cost_cny: 0.2888, matched_tier: "标准"}],
   });
   await flush();
   assert.match(h.root.innerHTML, /表达式校验通过/);
@@ -1068,4 +1069,122 @@ test("regressions: failed cluster multiplier keeps draft clean, non-per_token ba
   h.root.innerHTML = "<sentinel-unmounted />";
   pulseTimer.fn();
   assert.equal(h.root.innerHTML, "<sentinel-unmounted />", "pulse timer must not render after unmount");
+});
+
+test("New API gateway bar: enriched probe notice, recommended group ratio chip, custom-rules hint, group dropdown, and source currency override", async () => {
+  const h = modelsHarness();
+  const base = sampleV2Payload();
+  const payload = sampleV2Payload({
+    sources: [
+      ...base.sources.filter(s => s.source_id !== "newapi:relay-main"),
+      {
+        source_id: "newapi:relay-main",
+        kind: "newapi",
+        label: "示例公益站",
+        enabled: true,
+        status: "ok",
+        model_count: 120,
+        last_ok_at: "2026-11-24T12:00:00Z",
+        provider_id: "relay-claude",
+        currency: "USD",
+        currency_override: null,
+        auth_mode: "anonymous",
+        site_meta: {
+          system_name: "示例公益站",
+          quota_display_type: "CUSTOM",
+          custom_currency_symbol: "🍪",
+          recharge_price: 1.0,
+          group_ratio: {default: 1, gemini: 0.245, geminiultra: 0.5},
+        },
+      },
+    ],
+    clusters: base.clusters.map(c => c.cluster_id === "relay-src" ? {
+      ...c,
+      has_custom_rules: true,
+      newapi_source_id: "newapi:relay-main",
+      newapi_group_hint: {group: "gemini", ratio: 0.245, confidence: "high"},
+    } : c),
+  });
+
+  h.sessionStore.setItem("companion-models-pending-tab.v1", "pricing");
+  h.page.mount(h.root);
+  h.requests.find(r => r.route === "model/pricing").resolve(payload);
+  await flush();
+
+  // New API bar shows recommended group badge, one-click apply button, custom-rules caution, CUSTOM token hint, and currency selector
+  assert.match(h.root.innerHTML, /识别分组 · gemini \(0\.245×\)/);
+  assert.match(h.root.innerHTML, /一键应用 0\.245×/);
+  assert.match(h.root.innerHTML, /聚类倍率会同时作用于该供应商下的已自定义模型规则/);
+  assert.match(h.root.innerHTML, /该站使用自定义代币 🍪/);
+  assert.match(h.root.innerHTML, /1 单位 = ¥1/);
+  assert.match(h.root.innerHTML, /data-pricing-source-currency="newapi:relay-main"/);
+  assertNoNestedLabels(h.root.innerHTML, "newapi_bar");
+
+  // 1) Selecting a site group from dropdown fills multiplier draft input (does NOT auto-POST)
+  const postCountBefore = h.requests.filter(r => r.method === "POST").length;
+  h.root.input("[data-pricing-group-select]", "0.5", {
+    dataset: {pricingGroupSelect: "relay-src"}, type: "change",
+  });
+  assert.equal(h.requests.filter(r => r.method === "POST").length, postCountBefore);
+  assert.match(h.root.innerHTML, /data-pricing-cluster-mult-input="relay-src" value="0\.5"/);
+
+  // 2) Clicking one-click apply recommended group ratio posts cluster multiplier 0.245
+  h.root.click("[data-pricing-apply-group-mult]", {pricingApplyGroupMult: "relay-src", ratio: "0.245"});
+  const applyReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing").at(-1);
+  assert.ok(applyReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(applyReq.values.changes)), {pricing_multipliers: {"relay-src": 0.245}});
+  applyReq.resolve({
+    ...payload,
+    revision: "rev-grp",
+    pricing_multipliers: {"relay-src": 0.245},
+    clusters: payload.clusters.map(c => c.cluster_id === "relay-src" ? {...c, multiplier: 0.245, has_custom_multiplier: true} : c),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /当前倍率已匹配/);
+
+  // 3) Switching New API source currency sends POST model/pricing/sources/currency
+  h.root.input("[data-pricing-source-currency]", "CNY", {
+    dataset: {pricingSourceCurrency: "newapi:relay-main"}, type: "change",
+  });
+  const curReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/sources/currency");
+  assert.ok(curReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(curReq.values)), {
+    source_id: "newapi:relay-main",
+    currency_override: "CNY",
+    sync: true,
+    revision: "rev-grp",
+  });
+  curReq.resolve({
+    ...payload,
+    revision: "rev-cur",
+    sources: payload.sources.map(s => s.source_id === "newapi:relay-main" ? {...s, currency: "CNY", currency_override: "CNY"} : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /结算币种已切换为 人民币 CNY \(¥\)/);
+  assert.match(h.root.innerHTML, /<span class="pw-source-cur">¥<\/span>/);
+  assert.match(h.root.innerHTML, /CNY ¥/);
+
+  // 4) Enriched New API probe notice surfaces site_name, CNY currency, recommended group, and skipped expr count
+  h.root.click("[data-pricing-detect-newapi]", {pricingDetectNewapi: "relay-claude"});
+  const detReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/sources/detect");
+  assert.ok(detReq);
+  detReq.resolve({
+    ...payload,
+    revision: "rev-det-rich",
+    detection: {
+      ok: true,
+      source_id: "newapi:relay-main",
+      deduplicated: true,
+      models: 120,
+      needs_key: false,
+      site_name: "示例公益站",
+      currency: "CNY",
+      detected_group: "gemini",
+      detected_group_ratio: 0.245,
+      skipped_expr_count: 2,
+    },
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /探测成功：已接入 示例公益站（120 个模型 · 人民币 CNY）（已复用同域名价格源） · 推荐分组 gemini \(0\.245×\) · 跳过 2 个特殊私有公式。/);
+  h.page.unmount();
 });

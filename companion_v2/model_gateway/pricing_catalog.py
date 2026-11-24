@@ -20,13 +20,19 @@ import tempfile
 import threading
 from typing import Any
 
-from .pricing_expr import validate_tiered_expr_rule
+from .pricing_expr import (
+    PricingExprError,
+    lower_newapi_billing_expr,
+    validate_tiered_expr_rule,
+)
 
 
 MAX_CATALOG_BYTES = 32 * 1024 * 1024  # 32 MB on-disk safety cap
 AUTO_MATCH_THRESHOLD = 0.85
+PER_CALL_AUTO_MATCH_THRESHOLD = 0.96
 MAX_CANDIDATES_PER_MODEL = 12
 MAX_PRICE_PER_MILLION = 1_000_000.0
+DEFAULT_NEWAPI_QUOTA_PER_UNIT = 500_000.0
 
 PUBLIC_SOURCE_SPECS: tuple[dict[str, str], ...] = (
     {
@@ -276,7 +282,14 @@ _VARIANT_TOKENS = frozenset({
     "coder", "vl", "vision", "audio", "realtime", "tts", "stt", "embed", "embedding",
     "rerank", "haiku", "sonnet", "opus", "reasoner", "r1", "distill", "free", "fast",
     "scout", "maverick",
+    # Relay billing-mode and distinct-capability SKU qualifiers
+    "as", "once", "percall", "call", "times",
+    "image", "img", "search", "web", "online", "net",
+    "video", "music", "edit", "upscale", "inpainting",
+    "enterprise", "high", "low", "medium", "deep", "research", "live",
 })
+_BRACKET_TAG_RE = re.compile(r"^[\[\uFF3B]([^\]\uFF3D]{1,48})[\]\uFF3D]\s*")
+_PER_CALL_BRACKET_RE = re.compile(r"(?:^|[\s/_-])(?:次|按次|once|percall|per-call|as)(?:$|[\s/_-])")
 
 
 def _slug_key(text: str) -> str:
@@ -290,7 +303,15 @@ def _strip_vendor_prefix(raw: object) -> str:
     value = raw.strip().lower()
     if not value:
         return ""
-    value = re.sub(r"^\[[^\]]{1,48}\]\s*", "", value)
+    is_per_call_bracket = False
+    while True:
+        match = _BRACKET_TAG_RE.match(value)
+        if match is None:
+            break
+        tag = match.group(1).strip()
+        if _PER_CALL_BRACKET_RE.search(tag):
+            is_per_call_bracket = True
+        value = value[match.end():]
     changed = True
     while changed:
         changed = False
@@ -302,6 +323,8 @@ def _strip_vendor_prefix(raw: object) -> str:
         tail = value.rsplit("/", 1)[-1].strip()
         if tail:
             value = tail
+    if is_per_call_bracket and value and not value.startswith("percall-"):
+        value = f"percall-{value}"
     return value
 
 
@@ -408,9 +431,13 @@ class SourceStatus:
     error: str | None = None
     provider_id: str | None = None
     needs_key: bool = False
+    currency: str | None = None
+    currency_override: str | None = None
+    auth_mode: str | None = None
+    site_meta: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "source_id": self.source_id,
             "kind": self.kind,
             "label": self.label,
@@ -425,6 +452,15 @@ class SourceStatus:
             "provider_id": self.provider_id,
             "needs_key": self.needs_key,
         }
+        if self.currency is not None:
+            out["currency"] = self.currency
+        if self.currency_override is not None:
+            out["currency_override"] = self.currency_override
+        if self.auth_mode is not None:
+            out["auth_mode"] = self.auth_mode
+        if self.site_meta is not None:
+            out["site_meta"] = deepcopy(self.site_meta)
+        return out
 
 
 @dataclass(frozen=True)
@@ -488,10 +524,13 @@ def _make_per_token_rule(
     cached: float | None,
     creation: float | None,
     out: float | None,
+    *,
+    currency: str = "USD",
 ) -> dict[str, Any]:
+    norm_cur = "CNY" if currency == "CNY" else "USD"
     return {
         "mode": "per_token",
-        "currency": "USD",
+        "currency": norm_cur,
         "input": inp,
         "input_cached": cached,
         "cache_creation": creation,
@@ -516,11 +555,14 @@ def _make_per_tier_rule(
     base: dict[str, float | None],
     context_tiers: list[dict[str, Any]],
     service_tiers: list[dict[str, Any]],
+    *,
+    currency: str = "USD",
 ) -> dict[str, Any]:
+    norm_cur = "CNY" if currency == "CNY" else "USD"
     sorted_ctx = sorted(context_tiers, key=lambda item: int(item["threshold_tokens"]))
     return {
         "mode": "per_tier",
-        "currency": "USD",
+        "currency": norm_cur,
         "base": {
             "input": base.get("input"),
             "input_cached": base.get("input_cached"),
@@ -885,23 +927,318 @@ def adapt_openrouter(payload: object, *, updated_at: str | None = None) -> list[
     return results
 
 
+def _pos_float(value: object, *, min_val: float = 0.0, max_val: float = 1e12) -> float | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if type(value) in (int, float):
+        num = float(value)
+    elif type(value) is str:
+        try:
+            num = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if not math.isfinite(num) or num <= min_val or num > max_val:
+        return None
+    return num
+
+
+def parse_newapi_status(payload: object) -> dict[str, Any]:
+    """Parse New API / One API ``GET /api/status`` into normalized site & currency metadata.
+
+    Pure stdlib helper; never assumes USD when ``quota_display_type == "CNY"``, and
+    never blindly multiplies ``CUSTOM`` virtual currency exchange rates (e.g. 10 cookies).
+    """
+    if type(payload) is not dict:
+        return {
+            "system_name": "",
+            "quota_display_type": "",
+            "display_in_currency": True,
+            "quota_per_unit": DEFAULT_NEWAPI_QUOTA_PER_UNIT,
+            "usd_exchange_rate": 1.0,
+            "custom_currency_symbol": "",
+            "custom_currency_exchange_rate": None,
+            "recharge_price": None,
+            "currency": "USD",
+            "unit_scale": 1.0,
+            "currency_source": "default_usd",
+        }
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    raw_name = data.get("system_name")
+    system_name = raw_name.strip()[:80] if type(raw_name) is str else ""
+
+    raw_display_type = data.get("quota_display_type")
+    qdt = raw_display_type.strip().upper() if type(raw_display_type) is str else ""
+    if qdt not in ("CNY", "USD", "CUSTOM", "TOKENS"):
+        qdt = ""
+
+    display_in_currency = bool(data.get("display_in_currency", True))
+    quota_per_unit = _pos_float(data.get("quota_per_unit"), min_val=0.0, max_val=1e12) or DEFAULT_NEWAPI_QUOTA_PER_UNIT
+    usd_exchange_rate = _pos_float(data.get("usd_exchange_rate"), min_val=0.0, max_val=1000.0) or 1.0
+    raw_custom_sym = data.get("custom_currency_symbol")
+    custom_symbol = raw_custom_sym.strip()[:12] if type(raw_custom_sym) is str else ""
+    custom_rate = _pos_float(data.get("custom_currency_exchange_rate"), min_val=0.0, max_val=100_000.0)
+    recharge_price = _pos_float(data.get("price"), min_val=0.0, max_val=100_000.0)
+
+    if qdt == "CNY":
+        currency = "CNY"
+        unit_scale = round(usd_exchange_rate, 6)
+        currency_source = "status_cny"
+    elif qdt == "USD":
+        currency = "USD"
+        unit_scale = 1.0
+        currency_source = "status_usd"
+    elif qdt in ("CUSTOM", "TOKENS"):
+        currency = "USD"
+        unit_scale = 1.0
+        currency_source = "status_custom"
+    else:
+        currency = "USD"
+        unit_scale = 1.0
+        currency_source = "default_usd"
+
+    return {
+        "system_name": system_name,
+        "quota_display_type": qdt,
+        "display_in_currency": display_in_currency,
+        "quota_per_unit": quota_per_unit,
+        "usd_exchange_rate": round(usd_exchange_rate, 6),
+        "custom_currency_symbol": custom_symbol,
+        "custom_currency_exchange_rate": round(custom_rate, 6) if custom_rate is not None else None,
+        "recharge_price": round(recharge_price, 6) if recharge_price is not None else None,
+        "currency": currency,
+        "unit_scale": unit_scale,
+        "currency_source": currency_source,
+    }
+
+
+def resolve_newapi_currency_params(
+    site_meta: dict[str, Any] | None,
+    *,
+    currency_override: str | None = None,
+) -> tuple[str, float, float]:
+    """Return ``(currency, unit_scale, quota_per_unit)`` honoring optional source override."""
+    meta = site_meta if isinstance(site_meta, dict) else {}
+    qpu = _pos_float(meta.get("quota_per_unit"), min_val=0.0, max_val=1e12) or DEFAULT_NEWAPI_QUOTA_PER_UNIT
+    qdt = str(meta.get("quota_display_type") or "").strip().upper()
+    fx = _pos_float(meta.get("usd_exchange_rate"), min_val=0.0, max_val=1000.0) or 1.0
+
+    override = str(currency_override or "").strip().upper()
+    if override == "CNY":
+        scale = round(fx, 6) if qdt == "CNY" else 1.0
+        return "CNY", scale, qpu
+    if override == "USD":
+        return "USD", 1.0, qpu
+
+    if qdt == "CNY":
+        return "CNY", round(fx, 6), qpu
+    return "USD", 1.0, qpu
+
+
+def extract_newapi_pricing_meta(payload: object) -> dict[str, Any]:
+    """Extract sanitized ``group_ratio``, ``usable_group``, and ``auto_groups`` from ``/api/pricing``."""
+    if type(payload) is not dict:
+        return {"group_ratio": {}, "usable_group": {}, "auto_groups": []}
+
+    raw_ratios = payload.get("group_ratio")
+    group_ratio: dict[str, float] = {}
+    if isinstance(raw_ratios, dict):
+        for raw_group, raw_val in raw_ratios.items():
+            if len(group_ratio) >= 128:
+                break
+            if type(raw_group) is not str:
+                continue
+            gname = raw_group.strip()[:64]
+            if not gname:
+                continue
+            ratio = _nonneg_float(raw_val, scale=1.0, max_val=1000.0)
+            if ratio is not None:
+                group_ratio[gname] = ratio
+
+    raw_usable = payload.get("usable_group")
+    usable_group: dict[str, str] = {}
+    if isinstance(raw_usable, dict):
+        for raw_group, raw_desc in raw_usable.items():
+            if len(usable_group) >= 128:
+                break
+            if type(raw_group) is not str:
+                continue
+            gname = raw_group.strip()[:64]
+            if not gname:
+                continue
+            desc = raw_desc.strip()[:120] if type(raw_desc) is str else ""
+            if desc:
+                usable_group[gname] = desc
+
+    raw_auto = payload.get("auto_groups")
+    auto_groups: list[str] = []
+    if isinstance(raw_auto, list):
+        for item in raw_auto[:32]:
+            if type(item) is str and item.strip():
+                auto_groups.append(item.strip()[:64])
+
+    return {
+        "group_ratio": group_ratio,
+        "usable_group": usable_group,
+        "auto_groups": auto_groups,
+    }
+
+
+def infer_newapi_cluster_group(
+    pricing_payload: object,
+    available_models: set[str] | list[str] | tuple[str, ...],
+) -> dict[str, Any] | None:
+    """Infer the likely New API group and ``group_ratio`` for a key from its ``/v1/models`` set."""
+    if type(pricing_payload) is not dict or not available_models:
+        return None
+    items = pricing_payload.get("data")
+    if type(items) is not list:
+        return None
+    meta = extract_newapi_pricing_meta(pricing_payload)
+    group_ratio = meta["group_ratio"]
+    if not group_ratio:
+        return None
+
+    model_set = {str(m).strip() for m in available_models if type(m) is str and m.strip()}
+    if not model_set:
+        return None
+
+    group_models: dict[str, set[str]] = {}
+    for item in items:
+        if type(item) is not dict:
+            continue
+        mname = str(item.get("model_name") or "").strip()
+        if not mname:
+            continue
+        groups = item.get("enable_groups")
+        if type(groups) is not list:
+            continue
+        for g in groups:
+            if type(g) is str:
+                gname = g.strip()
+                if gname in group_ratio:
+                    group_models.setdefault(gname, set()).add(mname)
+
+    if not group_models:
+        return None
+
+    # 1. Exact model-set match among public groups listed in group_ratio
+    exact = [(g, group_ratio[g]) for g, ms in group_models.items() if ms == model_set]
+    if exact:
+        distinct_ratios = {round(r, 6) for _, r in exact}
+        if len(distinct_ratios) == 1:
+            exact.sort(key=lambda pair: (len(pair[0]), pair[0].lower()))
+            chosen_group, chosen_ratio = exact[0]
+            return {
+                "group": chosen_group,
+                "ratio": chosen_ratio,
+                "confidence": "exact",
+                "model_count": len(model_set),
+            }
+        return None
+
+    # 2. Tight smallest superset match (key sees a subset of a single unambiguous group)
+    supersets = [
+        (len(ms), g, group_ratio[g])
+        for g, ms in group_models.items()
+        if model_set.issubset(ms) and len(ms) <= len(model_set) * 2 + 5
+    ]
+    if supersets:
+        min_size = min(size for size, _, _ in supersets)
+        smallest = [(g, r) for size, g, r in supersets if size == min_size]
+        distinct_ratios = {round(r, 6) for _, r in smallest}
+        if len(distinct_ratios) == 1:
+            smallest.sort(key=lambda pair: (len(pair[0]), pair[0].lower()))
+            chosen_group, chosen_ratio = smallest[0]
+            return {
+                "group": chosen_group,
+                "ratio": chosen_ratio,
+                "confidence": "subset",
+                "model_count": len(model_set),
+            }
+    return None
+
+
+def _adapt_newapi_classic_item(
+    item: dict[str, Any],
+    *,
+    currency: str,
+    unit_scale: float,
+    ratio_per_million: float,
+    require_positive: bool = False,
+) -> dict[str, Any] | None:
+    if item.get("quota_type") == 1:
+        model_price = _nonneg_float(item.get("model_price"), scale=unit_scale)
+        if model_price is None or (require_positive and model_price <= 0.0):
+            return None
+        return {
+            "mode": "per_turn",
+            "currency": currency,
+            "price": model_price,
+            "multiplier": 1.0,
+        }
+
+    model_ratio = _nonneg_float(item.get("model_ratio"), scale=1.0)
+    if model_ratio is None or (require_positive and model_ratio <= 0.0):
+        return None
+    prompt_price = round(model_ratio * ratio_per_million * unit_scale, 6)
+    if not math.isfinite(prompt_price) or prompt_price > MAX_PRICE_PER_MILLION:
+        return None
+    comp_ratio = _nonneg_float(item.get("completion_ratio"), scale=1.0)
+    if comp_ratio is None:
+        comp_ratio = 1.0
+    completion_price = round(prompt_price * comp_ratio, 6)
+    if not math.isfinite(completion_price) or completion_price > MAX_PRICE_PER_MILLION:
+        return None
+
+    cache_ratio = _nonneg_float(item.get("cache_ratio"), scale=1.0)
+    cached_price = round(prompt_price * cache_ratio, 6) if cache_ratio is not None else None
+    if cached_price is not None and (not math.isfinite(cached_price) or cached_price > MAX_PRICE_PER_MILLION):
+        cached_price = None
+
+    create_ratio = _nonneg_float(item.get("create_cache_ratio"), scale=1.0)
+    if create_ratio is not None:
+        creation_price = round(prompt_price * create_ratio, 6)
+    else:
+        creation_price = round(prompt_price * 1.25, 6)
+    if not math.isfinite(creation_price) or creation_price > MAX_PRICE_PER_MILLION:
+        creation_price = None
+
+    return _make_per_token_rule(
+        prompt_price,
+        cached_price,
+        creation_price,
+        completion_price,
+        currency=currency,
+    )
+
+
 def adapt_newapi(
     payload: object,
     *,
     source_id: str,
     source_label: str = "",
     updated_at: str | None = None,
+    currency: str = "USD",
+    unit_scale: float = 1.0,
+    quota_per_unit: float = DEFAULT_NEWAPI_QUOTA_PER_UNIT,
+    diagnostics: dict[str, int] | None = None,
 ) -> list[CatalogPrice]:
-    """Adapt New API ``/api/pricing`` JSON.
+    """Adapt New API ``/api/pricing`` JSON with currency awareness and ``billing_expr`` support.
 
     Rules:
-    - ``billing_mode == "tiered_expr"`` -> pre-validated ``tiered_expr`` rule.
-    - ``quota_type == 1`` -> ``per_turn`` (``model_price`` USD/call).
-    - ``quota_type == 0`` -> ``per_token`` where ``1 ratio = $2/1M``,
-      ``prompt = model_ratio * 2``, ``completion = prompt * completion_ratio``,
-      ``cache_read = prompt * cache_ratio`` (when present),
+    - ``billing_mode == "tiered_expr"`` -> reads ``billing_expr`` first (losslessly lowering
+      simple ``tier(...)`` token/context expressions into ``per_token`` / ``per_tier`` while
+      keeping complex expressions in ``tiered_expr``), then falls back to legacy
+      ``quota_conversion`` / ``quotaConversion`` / ``tiered_expr`` / ``expr`` / ``tiers``,
+      and gracefully degrades to positive classic ``model_ratio`` / ``model_price`` when
+      an expression uses unsupported gateway-only functions (never falsely marking 0 as free).
+    - ``quota_type == 1`` -> ``per_turn`` (``model_price * unit_scale`` in ``currency``).
+    - ``quota_type == 0`` -> ``per_token`` where ``prompt = model_ratio * (1e6 / quota_per_unit) * unit_scale``,
+      ``completion = prompt * completion_ratio``, ``cache_read = prompt * cache_ratio``,
       ``cache_creation = prompt * create_cache_ratio`` (default ``1.25x``).
-    - Strictly ignores ``group_ratio`` and ``enable_groups``.
+    - Keeps base prices unscaled by ``group_ratio`` so cluster multipliers stay orthogonal.
     """
     if type(payload) is not dict:
         return []
@@ -910,6 +1247,22 @@ def adapt_newapi(
     items = payload.get("data")
     if type(items) is not list:
         return []
+
+    norm_currency = "CNY" if currency == "CNY" else "USD"
+    scale = float(unit_scale) if type(unit_scale) in (int, float) and math.isfinite(float(unit_scale)) and float(unit_scale) > 0 else 1.0
+    qpu = float(quota_per_unit) if type(quota_per_unit) in (int, float) and math.isfinite(float(quota_per_unit)) and float(quota_per_unit) > 0 else DEFAULT_NEWAPI_QUOTA_PER_UNIT
+    ratio_per_million = 1_000_000.0 / qpu
+
+    diag = diagnostics if isinstance(diagnostics, dict) else None
+    if diag is not None:
+        for key in (
+            "lowered_per_token",
+            "lowered_per_tier",
+            "kept_tiered_expr",
+            "fallback_classic",
+            "skipped_unsupported_expr",
+        ):
+            diag.setdefault(key, 0)
 
     label = source_label.strip() or source_id
     results: list[CatalogPrice] = []
@@ -923,58 +1276,105 @@ def adapt_newapi(
             continue
 
         billing_mode = str(item.get("billing_mode") or "").strip().lower()
+        raw_billing_expr = item.get("billing_expr")
+        has_billing_expr = type(raw_billing_expr) is str and bool(raw_billing_expr.strip())
         rule: dict[str, Any] | None = None
 
-        if billing_mode == "tiered_expr":
-            raw_spec = (
-                item.get("quota_conversion")
-                if item.get("quota_conversion") is not None
-                else item.get("quotaConversion")
-                if item.get("quotaConversion") is not None
-                else item.get("tiered_expr")
-                if item.get("tiered_expr") is not None
-                else item.get("expr")
-                if item.get("expr") is not None
-                else item.get("tiers")
-            )
-            if type(raw_spec) is list:
-                raw_spec = {"tiers": raw_spec}
-            if raw_spec is None:
-                continue
-            validation = validate_tiered_expr_rule(raw_spec)
-            if not validation["valid"]:
-                continue
-            rule = validation["normalized"]
-        elif item.get("quota_type") == 1:
-            model_price = _nonneg_float(item.get("model_price"), scale=1.0)
-            if model_price is None:
-                continue
-            rule = {
-                "mode": "per_turn",
-                "currency": "USD",
-                "price": model_price,
-                "multiplier": 1.0,
-            }
-        else:
-            model_ratio = _nonneg_float(item.get("model_ratio"), scale=1.0)
-            if model_ratio is None:
-                continue
-            prompt_price = round(model_ratio * 2.0, 6)
-            comp_ratio = _nonneg_float(item.get("completion_ratio"), scale=1.0)
-            if comp_ratio is None:
-                comp_ratio = 1.0
-            completion_price = round(prompt_price * comp_ratio, 6)
-
-            cache_ratio = _nonneg_float(item.get("cache_ratio"), scale=1.0)
-            cached_price = round(prompt_price * cache_ratio, 6) if cache_ratio is not None else None
-
-            create_ratio = _nonneg_float(item.get("create_cache_ratio"), scale=1.0)
-            if create_ratio is not None:
-                creation_price = round(prompt_price * create_ratio, 6)
+        if billing_mode == "tiered_expr" or has_billing_expr:
+            if has_billing_expr:
+                try:
+                    lowered_rule, lowering_kind = lower_newapi_billing_expr(
+                        raw_billing_expr,
+                        currency=norm_currency,
+                        unit_scale=scale,
+                        max_price=MAX_PRICE_PER_MILLION,
+                    )
+                    rule = lowered_rule
+                    if diag is not None:
+                        if lowering_kind == "per_token":
+                            diag["lowered_per_token"] += 1
+                        elif lowering_kind == "per_tier":
+                            diag["lowered_per_tier"] += 1
+                        else:
+                            diag["kept_tiered_expr"] += 1
+                except PricingExprError:
+                    fallback = _adapt_newapi_classic_item(
+                        item,
+                        currency=norm_currency,
+                        unit_scale=scale,
+                        ratio_per_million=ratio_per_million,
+                        require_positive=True,
+                    )
+                    if fallback is not None:
+                        rule = fallback
+                        if diag is not None:
+                            diag["fallback_classic"] += 1
+                    else:
+                        if diag is not None:
+                            diag["skipped_unsupported_expr"] += 1
+                        continue
             else:
-                creation_price = round(prompt_price * 1.25, 6)
-
-            rule = _make_per_token_rule(prompt_price, cached_price, creation_price, completion_price)
+                raw_spec = (
+                    item.get("quota_conversion")
+                    if item.get("quota_conversion") is not None
+                    else item.get("quotaConversion")
+                    if item.get("quotaConversion") is not None
+                    else item.get("tiered_expr")
+                    if item.get("tiered_expr") is not None
+                    else item.get("expr")
+                    if item.get("expr") is not None
+                    else item.get("tiers")
+                )
+                if type(raw_spec) is list:
+                    raw_spec = {"tiers": raw_spec}
+                if raw_spec is not None:
+                    if type(raw_spec) is str:
+                        spec_for_val: Any = {
+                            "expr": (
+                                f"({raw_spec.strip()[3:].strip() if raw_spec.strip().startswith('v1:') else raw_spec.strip()}) * {round(scale, 6):g}"
+                                if abs(scale - 1.0) > 1e-12
+                                else raw_spec
+                            ),
+                            "currency": norm_currency,
+                        }
+                    elif type(raw_spec) is dict:
+                        spec_for_val = {**raw_spec, "currency": raw_spec.get("currency") or norm_currency}
+                        if abs(scale - 1.0) > 1e-12:
+                            prev_cm = float(spec_for_val.get("cluster_multiplier", 1.0))
+                            spec_for_val["cluster_multiplier"] = round(prev_cm * scale, 6)
+                    else:
+                        spec_for_val = raw_spec
+                    validation = validate_tiered_expr_rule(spec_for_val)
+                    if validation["valid"]:
+                        rule = validation["normalized"]
+                        if diag is not None:
+                            diag["kept_tiered_expr"] += 1
+                if rule is None:
+                    fallback = _adapt_newapi_classic_item(
+                        item,
+                        currency=norm_currency,
+                        unit_scale=scale,
+                        ratio_per_million=ratio_per_million,
+                        require_positive=True,
+                    )
+                    if fallback is not None:
+                        rule = fallback
+                        if diag is not None:
+                            diag["fallback_classic"] += 1
+                    else:
+                        if diag is not None:
+                            diag["skipped_unsupported_expr"] += 1
+                        continue
+        else:
+            rule = _adapt_newapi_classic_item(
+                item,
+                currency=norm_currency,
+                unit_scale=scale,
+                ratio_per_million=ratio_per_million,
+                require_positive=False,
+            )
+            if rule is None:
+                continue
 
         price_key = f"{source_id}:{model_name}"
         if price_key in seen_keys:
@@ -1040,14 +1440,20 @@ def _score_features(
     if q_slug == c_slug:
         return 0.92 if variants_match else 0.60
 
-    # Clean boundary prefix match (e.g. gpt-4o-custom vs gpt-4o), strictly guarded by variants!
-    if q_slug.startswith(c_dash) or c_slug.startswith(q_dash):
-        shorter = len(q_slug) if len(q_slug) < len(c_slug) else len(c_slug)
-        longer = len(c_slug) if len(q_slug) < len(c_slug) else len(q_slug)
-        ratio = shorter / longer if longer else 0.0
+    # Clean boundary prefix match:
+    # - Query more specific than candidate (e.g. gpt-4o-custom -> gpt-4o): eligible if variants match.
+    # - Candidate has extra non-date suffix tokens (e.g. gemini-3.6-flash -> gemini-3.6-flash-as / -once):
+    #   NEVER eligible for auto-match (capped <= 0.78), kept only for manual comparison!
+    if q_slug.startswith(c_dash):
+        ratio = len(c_slug) / len(q_slug) if q_slug else 0.0
         if variants_match and ratio >= 0.72:
             return round(0.85 + 0.05 * ratio, 4)
         return round(min(0.65, 0.50 + 0.15 * ratio), 4)
+    if c_slug.startswith(q_dash):
+        ratio = len(q_slug) / len(c_slug) if c_slug else 0.0
+        if variants_match:
+            return round(min(0.78, 0.60 + 0.18 * ratio), 4)
+        return round(min(0.62, 0.45 + 0.15 * ratio), 4)
 
     # Token overlap for manual candidate discovery (always < AUTO_MATCH_THRESHOLD)
     if q_parts.isdisjoint(c_parts):
@@ -1131,8 +1537,9 @@ def find_candidates(
 
     candidates.sort(
         key=lambda c: (
-            not c.is_own_gateway,
+            not (c.is_own_gateway and c.score >= AUTO_MATCH_THRESHOLD),
             -c.score,
+            not c.is_own_gateway,
             _source_sort_rank(c.source_id, c.is_own_gateway),
             c.model_id.lower(),
             c.price_key.lower(),
@@ -1146,13 +1553,28 @@ def select_auto_candidate(
     *,
     threshold: float = AUTO_MATCH_THRESHOLD,
 ) -> Candidate | None:
-    """Select an automatic catalog match only when confidence >= threshold and unambiguous."""
-    eligible = [c for c in candidates if c.score >= threshold]
+    """Select an automatic catalog match only when confidence >= threshold and unambiguous.
+
+    Per-call rules (``per_turn`` / ``per_request``) require a near-exact match
+    (``>= PER_CALL_AUTO_MATCH_THRESHOLD``) so token-billed models never auto-match
+    onto per-call SKUs, and a weak own-gateway fuzzy match cannot override an exact match.
+    """
+    eligible = [
+        c
+        for c in candidates
+        if c.score >= (
+            max(threshold, PER_CALL_AUTO_MATCH_THRESHOLD)
+            if str((c.rule or {}).get("mode") or "") in ("per_turn", "per_request")
+            else threshold
+        )
+    ]
     if not eligible:
         return None
 
+    max_all = max(c.score for c in eligible)
     own = [c for c in eligible if c.is_own_gateway]
-    pool = own if own else eligible
+    max_own = max((c.score for c in own), default=0.0)
+    pool = own if (own and (max_own >= 0.92 or max_own >= max_all - 0.05)) else eligible
     top_score = max(c.score for c in pool)
     top_group = [c for c in pool if abs(c.score - top_score) < 1e-9]
     distinct_models = {_slug_key(_normalize_model_name(c.model_id)) for c in top_group}
