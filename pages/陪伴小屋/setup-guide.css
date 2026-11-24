@@ -21,12 +21,12 @@
 .setup-kicker { display: block; margin:0 0 var(--sp-1); color: var(--muted); font-size:var(--fs-tiny); font-weight: 700; line-height: 1.4; }
 .setup-step-count { flex: 0 0 auto; color: var(--muted); font-size:var(--fs-body); }
 .setup-progress { grid-column: 1; grid-row: 2; display: grid; gap:var(--sp-1); margin:0; padding:0 var(--sp-4) 0 0; list-style: none; border-right: 1px solid var(--line); }
-.setup-progress li { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap:var(--sp-2); min-height: 40px; color: var(--muted); font-size:var(--fs-body); line-height: 1.35; }
-.setup-progress li.current { color: var(--ink); font-weight: 700; }
-.setup-progress li.complete { color: var(--green, var(--t-ok-ink)); }
+.setup-progress > li:not(.setup-progress-group) { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap:var(--sp-2); min-height: 40px; color: var(--muted); font-size:var(--fs-body); line-height: 1.35; }
+.setup-progress > li:not(.setup-progress-group).current { color: var(--ink); font-weight: 700; }
+.setup-progress > li:not(.setup-progress-group).complete { color: var(--green, var(--t-ok-ink)); }
 .setup-progress-marker { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--line-strong); border-radius: 50%; color: inherit; font-size:var(--fs-micro); font-variant-numeric: tabular-nums; }
-.setup-progress li.current .setup-progress-marker { border-color: var(--accent); color: var(--accent); }
-.setup-progress li.complete .setup-progress-marker { border-color: currentColor; }
+.setup-progress > li:not(.setup-progress-group).current .setup-progress-marker { border-color: var(--accent); color: var(--accent); }
+.setup-progress > li:not(.setup-progress-group).complete .setup-progress-marker { border-color: currentColor; }
 .setup-content { grid-column: 2; grid-row: 2; min-width: 0; max-width:780px; }
 .setup-stage { min-width: 0; padding:0 0 var(--sp-5); }
 .setup-stage h3 { margin:0 0 var(--sp-2); color: var(--ink); font-size:var(--fs-head); line-height: 1.35; }
@@ -2421,7 +2421,7 @@
 .setup-progress-group.current > strong { color: var(--accent); }
 .setup-progress-group.current .setup-progress-step:not(.current) { color:var(--muted); }
 .setup-progress-steps { display: grid; gap: var(--sp-1); margin: 0; padding: 0; list-style: none; }
-.setup-progress-step { display: block; min-height: 0; color: var(--muted); font-size: var(--fs-body); line-height: 1.35; }
+.setup-progress li.setup-progress-step { display: block; grid-template-columns: none; min-height: 0; color: var(--muted); font-size: var(--fs-body); line-height: 1.35; }
 .setup-progress-btn { width: 100%; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center;
   gap: var(--sp-2); min-height: 38px; padding: var(--sp-1) var(--sp-2); border: 1px solid transparent;
   border-radius: var(--r-xs); background: transparent; color: inherit; font: inherit; text-align: left;
@@ -2430,9 +2430,10 @@
 .setup-progress-btn:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
 .setup-progress-btn:disabled { cursor: not-allowed; opacity: .55; }
 .setup-progress-btn > span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.setup-progress-step.current { color: var(--t-text-strong); font-weight: 700; }
-.setup-progress-step.current .setup-progress-btn { background: var(--t-accent-quiet); border-color: color-mix(in srgb, var(--t-accent) 32%, transparent); }
-.setup-progress-step.complete .setup-progress-marker { border-color: var(--t-ok); color: var(--t-ok-ink); background: var(--t-ok-quiet); }
+.setup-progress li.setup-progress-step.current { color: var(--t-text-strong); font-weight: 700; }
+.setup-progress li.setup-progress-step.current .setup-progress-btn { background: var(--t-accent-quiet); border-color: color-mix(in srgb, var(--t-accent) 32%, transparent); }
+.setup-progress li.setup-progress-step.current .setup-progress-marker { border-color: var(--t-accent); color: var(--t-accent); }
+.setup-progress li.setup-progress-step.complete .setup-progress-marker { border-color: var(--t-ok); color: var(--t-ok-ink); background: var(--t-ok-quiet); }
 
 .setup-command-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-2) 0; }
 .setup-command-row .setup-command { margin: 0 !important; }
@@ -2536,7 +2537,7 @@
     align-items: center;
     gap: var(--sp-2);
   }
-  .setup-progress-step {
+  .setup-progress li.setup-progress-step {
     flex: 0 0 auto;
     display: flex;
     min-height: 0;
@@ -2565,12 +2566,12 @@
     height: 22px;
     flex: 0 0 auto;
   }
-  .setup-progress-step.current .setup-progress-btn {
+  .setup-progress li.setup-progress-step.current .setup-progress-btn {
     border-color: var(--t-accent);
     background: var(--t-accent-quiet);
     color: var(--t-accent-ink);
   }
-  .setup-progress-step.complete .setup-progress-btn {
+  .setup-progress li.setup-progress-step.complete .setup-progress-btn {
     border-color: color-mix(in srgb, var(--t-ok) 38%, var(--t-line));
   }
 }

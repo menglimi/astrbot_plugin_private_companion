@@ -423,10 +423,14 @@ test("host management shared model card distinguishes immediate hot apply from r
 });
 
 test("setup wizard and memory companion dialog provide mobile capsule rail, auto-scroll, and narrow-screen stacking", async () => {
-  // 1. Mobile capsule rail replaces display:none at <=900px and places content on row 3.
+  // 1. Mobile capsule rail replaces display:none at <=900px, places content on row 3,
+  //    and avoids unscoped `.setup-progress li` grid specificity collisions.
   assert.doesNotMatch(setupCssSource, /\.setup-progress\s*\{\s*display\s*:\s*none/);
+  assert.doesNotMatch(setupCssSource, /\.setup-progress\s+li\s*\{/);
+  assert.match(setupCssSource, /\.setup-progress\s+li\.setup-progress-step\s*\{[^}]*display:\s*block;[^}]*grid-template-columns:\s*none;/);
   assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-content\s*\{[^}]*grid-row\s*:\s*3/);
   assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-progress\s*\{[\s\S]*display:\s*flex;[\s\S]*overflow-x:\s*auto;/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-progress\s+li\.setup-progress-step\s*\{[\s\S]*flex:\s*0 0 auto;[\s\S]*display:\s*flex;/);
   assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-progress-btn\s*\{[\s\S]*flex:\s*0 0 auto;[\s\S]*border-radius:\s*var\(--r-pill\);[\s\S]*white-space:\s*nowrap;/);
 
   // 2. <=600px stacks model select row, wraps header, tightens stage padding, and keeps manual source disclosure static.
