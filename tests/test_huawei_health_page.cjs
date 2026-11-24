@@ -171,3 +171,56 @@ test("trust choices call the existing backend route", async () => {
   const trust = requests.find(item => item.route === "huawei-health/login/trust");
   assert.equal(JSON.stringify(trust?.body), JSON.stringify({choice: "later"}));
 });
+
+test("multi-host mode resolves perception_native_api from selected role", async () => {
+  const requests = [];
+  const listeners = new Map();
+  const root = {
+    isConnected: true,
+    _html: "",
+    get innerHTML() { return this._html; },
+    set innerHTML(value) { this._html = String(value); },
+    querySelector() { return null; },
+    addEventListener(type, handler) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(handler);
+    },
+    removeEventListener(type, handler) {
+      const handlers = listeners.get(type) || [];
+      listeners.set(type, handlers.filter(item => item !== handler));
+    },
+    dispatch(type, event = {}) {
+      for (const handler of listeners.get(type) || []) handler(event);
+    },
+  };
+  const product = {
+    hosted: () => true,
+    role: () => ({
+      role_id: "r1",
+      perception_native_api: "/astrbot_plugin_private_companion/targets/t1/roles/h1/perception-native",
+    }),
+    relative: pathValue => pathValue.replace("/astrbot_plugin_private_companion/", ""),
+    request: async (method, route, body) => {
+      requests.push({method, route, body});
+      if (route === "huawei-health/status") return status();
+      if (route === "targets/t1/roles/h1/perception-native") {
+        return {model: {edit_token: "tok-1", settings: {health_enabled: false, health_proactive_enabled: false}}};
+      }
+      return {ok: true};
+    },
+  };
+  const window = {CompanionProduct: product};
+  vm.runInNewContext(source, {window, crypto, setInterval, clearInterval, setTimeout, clearTimeout, console});
+  window.CompanionHuaweiHealthPage.mount(root);
+  await flush();
+
+  assert.match(root.innerHTML, /健康摘要进入当前私聊/);
+  assert.match(root.innerHTML, /允许健康事件参与主动联系/);
+  assert.ok(requests.some(item => item.method === "GET" && item.route === "targets/t1/roles/h1/perception-native"));
+
+  root.dispatch("change", {target: {dataset: {hwPerceptionField: "health_enabled"}, checked: true}});
+  await flush();
+  const saved = requests.find(item => item.method === "POST" && item.route === "targets/t1/roles/h1/perception-native/configure");
+  assert.ok(saved);
+  assert.equal(saved.body.command.changes.health_enabled, true);
+});

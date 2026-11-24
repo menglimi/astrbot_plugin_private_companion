@@ -49,9 +49,22 @@ window.CompanionHuaweiHealthPage = (() => {
     } catch (failure) { throw new Error(errorText(failure)); }
   }
   function setNotice(text) { notice = String(text || ""); render(); }
+  function perceptionApiPath(suffix = "") {
+    const role = product.role?.();
+    if (typeof role?.perception_native_api === "string" && role.perception_native_api) {
+      return product.relative(role.perception_native_api) + suffix;
+    }
+    return product.hosted?.() ? "" : ("perception-native" + suffix);
+  }
   async function loadPerception() {
+    const path = perceptionApiPath();
+    if (!path) {
+      perception = null;
+      perceptionError = "";
+      return;
+    }
     try {
-      perception = await product.request("GET", "perception-native");
+      perception = await product.request("GET", path);
       perceptionError = "";
     } catch (failure) {
       perception = null;
@@ -59,8 +72,11 @@ window.CompanionHuaweiHealthPage = (() => {
     }
   }
   async function configurePerception(changes) {
-    const current = perception || await product.request("GET", "perception-native");
-    await product.request("POST", "perception-native/configure", {
+    const basePath = perceptionApiPath();
+    const configPath = perceptionApiPath("/configure");
+    if (!basePath || !configPath) throw new Error("请选择一个私聊角色");
+    const current = perception || await product.request("GET", basePath);
+    await product.request("POST", configPath, {
       section: "model",
       command: {
         operation_key: crypto.randomUUID(),
@@ -68,7 +84,7 @@ window.CompanionHuaweiHealthPage = (() => {
         changes,
       },
     }, {timeoutMs: 15000});
-    perception = await product.request("GET", "perception-native");
+    perception = await product.request("GET", basePath);
     return true;
   }
   async function ensureHealthPerception() {
