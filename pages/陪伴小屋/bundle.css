@@ -2933,15 +2933,16 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
    消除右侧数字宽度串扰、非零下限偏移及圆点上下错位。 */
 .ct-weight{position:relative;display:flex;align-items:center;gap:var(--sp-2);min-width:0}
 .ct-weight-track{
+  --ct-track:4px;
   --ct-thumb:14px;
   position:relative;flex:1;min-width:0;display:flex;align-items:center;height:20px;
 }
 .ct-weight-track::before{
-  content:"";position:absolute;left:0;right:0;top:50%;height:4px;transform:translateY(-50%);
+  content:"";position:absolute;left:0;right:0;top:50%;height:var(--ct-track);transform:translateY(-50%);
   border-radius:var(--r-pill);background:var(--t-surface-sunken);pointer-events:none;
 }
 .ct-weight-fill{
-  position:absolute;left:0;top:50%;height:4px;
+  position:absolute;left:0;top:50%;height:var(--ct-track);
   width:calc(var(--p,0) * (100% - var(--ct-thumb)) + var(--ct-thumb) / 2);
   transform:translateY(-50%);
   border-radius:var(--r-pill);background:var(--t-accent-solid);opacity:.78;
@@ -2952,14 +2953,14 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
   background:transparent;-webkit-appearance:none;appearance:none;cursor:pointer;
 }
 .ct-weight input[type="range"]::-webkit-slider-runnable-track{
-  height:4px;border-radius:var(--r-pill);background:transparent;
+  height:var(--ct-track);border-radius:var(--r-pill);background:transparent;
 }
 .ct-weight input[type="range"]::-moz-range-track{
-  height:4px;border-radius:var(--r-pill);border:0;background:transparent;
+  height:var(--ct-track);border-radius:var(--r-pill);border:0;background:transparent;
 }
 .ct-weight input[type="range"]::-webkit-slider-thumb{
   -webkit-appearance:none;box-sizing:border-box;width:var(--ct-thumb);height:var(--ct-thumb);
-  margin-top:-5px;border-radius:50%;
+  margin-top:calc((var(--ct-track) - var(--ct-thumb)) / 2);border-radius:50%;
   background:var(--t-accent-solid);border:2px solid var(--t-surface);
   box-shadow:0 0 0 1px color-mix(in srgb,var(--t-accent-solid) 24%,transparent);
   cursor:grab;transition:transform var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
@@ -3128,21 +3129,23 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 }
 .ct-quota-value i{font-style:normal;font-size:var(--fs-micro);color:var(--t-text-faint)}
 .ct-quota input[type="range"]{
+  --ct-track:4px;
   --ct-thumb:14px;
   --ct-fill:calc(var(--p,0) * (100% - var(--ct-thumb)) + var(--ct-thumb) / 2);
   display:block;width:100%;height:20px;margin:0;padding:0;background:transparent;
   -webkit-appearance:none;appearance:none;cursor:pointer;
 }
 .ct-quota input[type="range"]::-webkit-slider-runnable-track{
-  height:4px;border-radius:var(--r-pill);
+  height:var(--ct-track);border-radius:var(--r-pill);
   background:linear-gradient(to right,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) 0,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) var(--ct-fill),var(--t-surface-sunken) var(--ct-fill),var(--t-surface-sunken) 100%);
 }
 .ct-quota input[type="range"]::-moz-range-track{
-  height:4px;border-radius:var(--r-pill);border:0;
+  height:var(--ct-track);border-radius:var(--r-pill);border:0;
   background:linear-gradient(to right,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) 0,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) var(--ct-fill),var(--t-surface-sunken) var(--ct-fill),var(--t-surface-sunken) 100%);
 }
 .ct-quota input[type="range"]::-webkit-slider-thumb{
-  -webkit-appearance:none;box-sizing:border-box;width:var(--ct-thumb);height:var(--ct-thumb);margin-top:-5px;
+  -webkit-appearance:none;box-sizing:border-box;width:var(--ct-thumb);height:var(--ct-thumb);
+  margin-top:calc((var(--ct-track) - var(--ct-thumb)) / 2);
   border-radius:50%;background:var(--t-accent-solid);
   border:2px solid var(--t-surface);
   box-shadow:0 0 0 1px color-mix(in srgb,var(--t-accent-solid) 24%,transparent);
@@ -6389,7 +6392,7 @@ body.state-connected{min-width:320px}
   top: 50%;
   width: 38px;
   height: 22px;
-  margin-top: -11px;
+  transform: translateY(-50%);
   box-sizing: border-box;
   border-radius: var(--r-pill);
   background: var(--t-surface-sunken);
@@ -6403,7 +6406,7 @@ body.state-connected{min-width:320px}
   top: 50%;
   width: 16px;
   height: 16px;
-  margin-top: -8px;
+  transform: translateY(-50%);
   border-radius: 50%;
   background: var(--t-surface-raised);
   box-shadow: var(--t-shadow);
@@ -6414,7 +6417,7 @@ body.state-connected{min-width:320px}
   background: var(--t-accent-solid);
   border-color: var(--t-accent-solid);
 }
-.host-options-switch input:checked + span::after { transform: translateX(16px); }
+.host-options-switch input:checked + span::after { transform: translate(16px, -50%); }
 .host-options-switch input:focus-visible + span::before {
   outline: 2px solid var(--t-focus);
   outline-offset: 2px;
@@ -7611,12 +7614,12 @@ body.reduce-motion [role="button"].is-refreshing svg{
 #replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{
   justify-content:flex-start;align-items:center;flex-wrap:wrap;gap:var(--sp-1) var(--sp-2);
 }
-#replyWorkspace.expression-voice-focus .wb-number input{flex:0 0 112px;width:112px;min-width:88px;max-width:140px}
-#replyWorkspace.expression-voice-focus .wb-number .wb-range{margin-left:auto}
 #replyWorkspace.expression-voice-focus .wb-control input,
 #replyWorkspace.expression-voice-focus .wb-control select,
 #replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
   min-height:36px;font-size:var(--fs-tiny)}
+#replyWorkspace.expression-voice-focus .wb-control .wb-number input{flex:0 0 112px;width:112px;min-width:88px;max-width:140px}
+#replyWorkspace.expression-voice-focus .wb-control .wb-number .wb-range{margin-left:auto}
 #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:92px;line-height:1.7;resize:vertical}
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-word-editor),
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords),
@@ -14843,12 +14846,13 @@ body.room-editing .product-scope{display:none}
 @container understanding-page (max-width:720px){
   .understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .understanding-stats-compact .understanding-stat{border-bottom:1px solid var(--t-line)}
+  .understanding-stats-compact .understanding-stat:nth-child(2){border-right:0}
   .understanding-stats-compact .understanding-stat:last-child{grid-column:1/-1;border-right:0;border-bottom:0}
 }
 @container understanding-page (max-width:600px){
   .understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}
 }
-@media(max-width:900px){.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
+@media(max-width:900px){.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-stats-compact .understanding-stat{border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:nth-child(2){border-right:0}.understanding-stats-compact .understanding-stat:last-child{grid-column:1/-1;border-right:0;border-bottom:0}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
 @media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stats-compact .understanding-stat{border-right:0;border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:last-child{border-bottom:0}.understanding-stat{min-height:68px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions,.understanding-card,.understanding-forward-workspace .host-options-panel{padding:var(--sp-3)}.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:right}}
 @media(prefers-reduced-motion:reduce){.understanding-tabs button,.understanding-shortcut{scroll-behavior:auto;transition:none}}
 

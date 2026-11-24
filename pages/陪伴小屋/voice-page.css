@@ -140,12 +140,12 @@
 #replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{
   justify-content:flex-start;align-items:center;flex-wrap:wrap;gap:var(--sp-1) var(--sp-2);
 }
-#replyWorkspace.expression-voice-focus .wb-number input{flex:0 0 112px;width:112px;min-width:88px;max-width:140px}
-#replyWorkspace.expression-voice-focus .wb-number .wb-range{margin-left:auto}
 #replyWorkspace.expression-voice-focus .wb-control input,
 #replyWorkspace.expression-voice-focus .wb-control select,
 #replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
   min-height:36px;font-size:var(--fs-tiny)}
+#replyWorkspace.expression-voice-focus .wb-control .wb-number input{flex:0 0 112px;width:112px;min-width:88px;max-width:140px}
+#replyWorkspace.expression-voice-focus .wb-control .wb-number .wb-range{margin-left:auto}
 #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:92px;line-height:1.7;resize:vertical}
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-word-editor),
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords),

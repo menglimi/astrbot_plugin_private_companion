@@ -16,10 +16,10 @@ test("主动联系滑条：权重滑条归一化 --p 补偿半圆点且去重重
   const js = read("contact-page.js");
   const css = read("contact-page.css");
 
-  assert.match(css, /\.ct-weight-track\{[^}]*--ct-thumb:14px/);
+  assert.match(css, /\.ct-weight-track\{[^}]*--ct-track:4px;[^}]*--ct-thumb:14px/);
   assert.match(css, /\.ct-weight-fill\{[^}]*width:calc\(var\(--p,0\) \* \(100% - var\(--ct-thumb\)\) \+ var\(--ct-thumb\) \/ 2\)/);
-  assert.match(css, /\.ct-weight input\[type="range"\]::-webkit-slider-thumb\{[^}]*margin-top:-5px/);
-  assert.match(css, /\.ct-quota input\[type="range"\]::-webkit-slider-thumb\{[^}]*margin-top:-5px/);
+  assert.match(css, /\.ct-weight input\[type="range"\]::-webkit-slider-thumb\{[^}]*margin-top:calc\(\(var\(--ct-track\) - var\(--ct-thumb\)\) \/ 2\)/);
+  assert.match(css, /\.ct-quota input\[type="range"\]::-webkit-slider-thumb\{[^}]*margin-top:calc\(\(var\(--ct-track\) - var\(--ct-thumb\)\) \/ 2\)/);
   assert.doesNotMatch(css, /\.ct-weight::before\{[^}]*right:26px/, "旧版硬编码 right:26px 错位伪元素应已移除");
 
   const window = {
@@ -202,6 +202,9 @@ test("表达语音配置：表达语音配置精简标签、控件底对齐、�
   assert.match(voiceCss, /#replyWorkspace\.expression-voice-focus \.wb-fields>\.wb-field>\.wb-field-main>\.wb-control\{[^}]*margin-top:auto/);
   assert.match(voiceCss, /#replyWorkspace\.expression-voice-focus \.wb-actions\{[^}]*position:static/);
   assert.match(voiceCss, /#replyWorkspace\.expression-voice-focus \.wb-actions\.is-dirty\{[^}]*position:sticky/);
+  const ctrlInputIdx = voiceCss.indexOf("#replyWorkspace.expression-voice-focus .wb-control input");
+  const numInputIdx = voiceCss.indexOf("#replyWorkspace.expression-voice-focus .wb-control .wb-number input");
+  assert.ok(ctrlInputIdx > 0 && numInputIdx > ctrlInputIdx, ".wb-control .wb-number input 必须位于 .wb-control input 之后，避免同权重被 width:100% 覆盖");
   assert.doesNotMatch(wbCss, /#0002/, "workbench.css 气泡阴影应走主题令牌 --t-shadow-lift");
   assert.match(wbJs, /class="wb-actions-status"/, "保存范围 ⓘ 应移至右侧状态区，不再夹在按钮之间");
 });
@@ -219,7 +222,11 @@ test("理解页与宿主开关：理解页合并转发精简层次、自定义�
   const intakePos = forwardsSection.indexOf('id="forwardIntakeWorkspace"');
   assert.ok(editorPos > 0 && intakePos > editorPos, "合并转发页签应先展示当前窗口改写开关，再展示全局解析上限");
 
+  const understandingCss = read("understanding-page.css");
+  assert.match(understandingCss, /\.understanding-stats-compact \.understanding-stat:nth-child\(2\)\{border-right:0\}/, "两列折行时第 2 项须移除右边框，避免与容器边框叠出双线");
+  assert.match(hostCss, /\.host-options-switch > span::before\s*\{[^}]*transform:\s*translateY\(-50%\)/);
   assert.match(hostCss, /\.host-options-switch input:checked \+ span::before\s*\{[^}]*background:\s*var\(--t-accent-solid\)/);
+  assert.match(hostCss, /\.host-options-switch input:checked \+ span::after\s*\{[^}]*transform:\s*translate\(16px,\s*-50%\)/);
   assert.match(hostCss, /\.host-options-metrics-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
 
   // 运行时验证 host-options 开关带 role="switch"、单位文案以及切换即时更新状态文案

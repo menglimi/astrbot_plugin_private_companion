@@ -168,7 +168,7 @@
   top: 50%;
   width: 38px;
   height: 22px;
-  margin-top: -11px;
+  transform: translateY(-50%);
   box-sizing: border-box;
   border-radius: var(--r-pill);
   background: var(--t-surface-sunken);
@@ -182,7 +182,7 @@
   top: 50%;
   width: 16px;
   height: 16px;
-  margin-top: -8px;
+  transform: translateY(-50%);
   border-radius: 50%;
   background: var(--t-surface-raised);
   box-shadow: var(--t-shadow);
@@ -193,7 +193,7 @@
   background: var(--t-accent-solid);
   border-color: var(--t-accent-solid);
 }
-.host-options-switch input:checked + span::after { transform: translateX(16px); }
+.host-options-switch input:checked + span::after { transform: translate(16px, -50%); }
 .host-options-switch input:focus-visible + span::before {
   outline: 2px solid var(--t-focus);
   outline-offset: 2px;

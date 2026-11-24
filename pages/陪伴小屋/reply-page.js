@@ -1532,7 +1532,7 @@ window.CompanionReplyPage = (() => {
 
   function perceptionScopeNote(module) {
     if (module === "forwards") {
-      return "<strong>当前窗口合并转发改写开关</strong>"
+      return "<strong>改写范围与继承说明</strong>"
         + "<p>控制当前窗口是否展开合并转发的节点内容、媒体与阅读提示；留空时继承角色默认。单条消息转发数、节点上限与嵌套深度由下方全局解析上限统一管控。</p>";
     }
     if (module === "image") {

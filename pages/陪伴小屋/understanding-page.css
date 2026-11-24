@@ -63,11 +63,12 @@
 @container understanding-page (max-width:720px){
   .understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .understanding-stats-compact .understanding-stat{border-bottom:1px solid var(--t-line)}
+  .understanding-stats-compact .understanding-stat:nth-child(2){border-right:0}
   .understanding-stats-compact .understanding-stat:last-child{grid-column:1/-1;border-right:0;border-bottom:0}
 }
 @container understanding-page (max-width:600px){
   .understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}
 }
-@media(max-width:900px){.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
+@media(max-width:900px){.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-stats-compact .understanding-stat{border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:nth-child(2){border-right:0}.understanding-stats-compact .understanding-stat:last-child{grid-column:1/-1;border-right:0;border-bottom:0}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
 @media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stats-compact .understanding-stat{border-right:0;border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:last-child{border-bottom:0}.understanding-stat{min-height:68px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions,.understanding-card,.understanding-forward-workspace .host-options-panel{padding:var(--sp-3)}.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:right}}
 @media(prefers-reduced-motion:reduce){.understanding-tabs button,.understanding-shortcut{scroll-behavior:auto;transition:none}}

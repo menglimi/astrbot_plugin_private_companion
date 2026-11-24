@@ -801,15 +801,16 @@
    消除右侧数字宽度串扰、非零下限偏移及圆点上下错位。 */
 .ct-weight{position:relative;display:flex;align-items:center;gap:var(--sp-2);min-width:0}
 .ct-weight-track{
+  --ct-track:4px;
   --ct-thumb:14px;
   position:relative;flex:1;min-width:0;display:flex;align-items:center;height:20px;
 }
 .ct-weight-track::before{
-  content:"";position:absolute;left:0;right:0;top:50%;height:4px;transform:translateY(-50%);
+  content:"";position:absolute;left:0;right:0;top:50%;height:var(--ct-track);transform:translateY(-50%);
   border-radius:var(--r-pill);background:var(--t-surface-sunken);pointer-events:none;
 }
 .ct-weight-fill{
-  position:absolute;left:0;top:50%;height:4px;
+  position:absolute;left:0;top:50%;height:var(--ct-track);
   width:calc(var(--p,0) * (100% - var(--ct-thumb)) + var(--ct-thumb) / 2);
   transform:translateY(-50%);
   border-radius:var(--r-pill);background:var(--t-accent-solid);opacity:.78;
@@ -820,14 +821,14 @@
   background:transparent;-webkit-appearance:none;appearance:none;cursor:pointer;
 }
 .ct-weight input[type="range"]::-webkit-slider-runnable-track{
-  height:4px;border-radius:var(--r-pill);background:transparent;
+  height:var(--ct-track);border-radius:var(--r-pill);background:transparent;
 }
 .ct-weight input[type="range"]::-moz-range-track{
-  height:4px;border-radius:var(--r-pill);border:0;background:transparent;
+  height:var(--ct-track);border-radius:var(--r-pill);border:0;background:transparent;
 }
 .ct-weight input[type="range"]::-webkit-slider-thumb{
   -webkit-appearance:none;box-sizing:border-box;width:var(--ct-thumb);height:var(--ct-thumb);
-  margin-top:-5px;border-radius:50%;
+  margin-top:calc((var(--ct-track) - var(--ct-thumb)) / 2);border-radius:50%;
   background:var(--t-accent-solid);border:2px solid var(--t-surface);
   box-shadow:0 0 0 1px color-mix(in srgb,var(--t-accent-solid) 24%,transparent);
   cursor:grab;transition:transform var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
@@ -996,21 +997,23 @@
 }
 .ct-quota-value i{font-style:normal;font-size:var(--fs-micro);color:var(--t-text-faint)}
 .ct-quota input[type="range"]{
+  --ct-track:4px;
   --ct-thumb:14px;
   --ct-fill:calc(var(--p,0) * (100% - var(--ct-thumb)) + var(--ct-thumb) / 2);
   display:block;width:100%;height:20px;margin:0;padding:0;background:transparent;
   -webkit-appearance:none;appearance:none;cursor:pointer;
 }
 .ct-quota input[type="range"]::-webkit-slider-runnable-track{
-  height:4px;border-radius:var(--r-pill);
+  height:var(--ct-track);border-radius:var(--r-pill);
   background:linear-gradient(to right,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) 0,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) var(--ct-fill),var(--t-surface-sunken) var(--ct-fill),var(--t-surface-sunken) 100%);
 }
 .ct-quota input[type="range"]::-moz-range-track{
-  height:4px;border-radius:var(--r-pill);border:0;
+  height:var(--ct-track);border-radius:var(--r-pill);border:0;
   background:linear-gradient(to right,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) 0,color-mix(in srgb,var(--t-accent-solid) 78%,transparent) var(--ct-fill),var(--t-surface-sunken) var(--ct-fill),var(--t-surface-sunken) 100%);
 }
 .ct-quota input[type="range"]::-webkit-slider-thumb{
-  -webkit-appearance:none;box-sizing:border-box;width:var(--ct-thumb);height:var(--ct-thumb);margin-top:-5px;
+  -webkit-appearance:none;box-sizing:border-box;width:var(--ct-thumb);height:var(--ct-thumb);
+  margin-top:calc((var(--ct-track) - var(--ct-thumb)) / 2);
   border-radius:50%;background:var(--t-accent-solid);
   border:2px solid var(--t-surface);
   box-shadow:0 0 0 1px color-mix(in srgb,var(--t-accent-solid) 24%,transparent);
