@@ -22,6 +22,7 @@ from companion_v2.model_gateway.quota import (
     QuotaSnapshot,
     QuotaStationSpec,
     normalize_currency_symbol,
+    redact_quota_text,
 )
 
 from .base import (
@@ -37,12 +38,30 @@ from .base import (
 )
 
 DEFAULT_NEWAPI_PER_UNIT = 500_000.0
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
 
 _USER_HEADER_HINTS = (
     ("rix-api-user", "Rix-Api-User"),
     ("veloera-user", "Veloera-User"),
     ("new-api-user", "New-Api-User"),
 )
+
+
+def normalize_newapi_display_type(raw_display_type: object) -> str:
+    """Normalize NewAPI /api/status quota_display_type without misclassifying CUSTOM points as USD."""
+    raw = str(raw_display_type or "").strip().upper()
+    if raw in ("CNY", "USD", "CREDIT", "TOKENS"):
+        return raw
+    if raw in ("CUSTOM", "POINTS", "POINT"):
+        return "CREDIT"
+    return ""
+
+
+def _safe_user_id_header(header_name: object) -> str:
+    candidate = str(header_name or "").strip()
+    if candidate and _HEADER_NAME_RE.match(candidate):
+        return candidate
+    return "New-Api-User"
 
 
 def _known_alias_roots(root: str) -> tuple[str, ...]:
@@ -248,18 +267,20 @@ async def exchange_newapi_login_for_token(
     if data_obj.get("require_2fa") is True:
         raise QuotaHttpError("login_2fa_required", "该站点开启了两步验证 (2FA)，请在浏览器登录后手动复制系统访问令牌")
     if login_data.get("success") is not True:
-        msg = str(login_data.get("message") or "").strip() or "用户名或密码错误"
+        msg = redact_quota_text(str(login_data.get("message") or "").strip(), secrets) or "用户名或密码错误"
         raise QuotaHttpError("login_failed", msg)
 
     uid_num = data_obj.get("id")
     uid_str = str(int(uid_num)) if isinstance(uid_num, (int, float)) and not isinstance(uid_num, bool) and uid_num > 0 else ""
 
+    safe_uid_header = _safe_user_id_header(user_id_header)
     tok_headers: dict[str, str] = {}
     if uid_str:
-        tok_headers[user_id_header or "New-Api-User"] = uid_str
+        tok_headers[safe_uid_header] = uid_str
 
     # Prefer reading existing token from /api/user/self if exposed; otherwise call /api/user/token.
     token = ""
+    regenerated = False
     self_status, _h, self_data, _p = await http_request_json(
         "GET",
         f"{root}/api/user/self",
@@ -276,7 +297,7 @@ async def exchange_newapi_login_for_token(
         if isinstance(sd, dict):
             if not uid_str and isinstance(sd.get("id"), int) and sd["id"] > 0:
                 uid_str = str(sd["id"])
-                tok_headers[user_id_header or "New-Api-User"] = uid_str
+                tok_headers[safe_uid_header] = uid_str
             existing_tok = str(sd.get("access_token") or "").strip()
             if existing_tok:
                 token = existing_tok
@@ -296,14 +317,15 @@ async def exchange_newapi_login_for_token(
         if t_status < 200 or t_status >= 300 or not isinstance(tok_data, dict):
             raise QuotaHttpError("token_exchange_failed", f"换取访问令牌失败 (HTTP {t_status})：{t_preview[:100]}")
         if tok_data.get("success") is not True or not str(tok_data.get("data") or "").strip():
-            msg = str(tok_data.get("message") or "").strip() or "站点未返回访问令牌"
+            msg = redact_quota_text(str(tok_data.get("message") or "").strip(), secrets) or "站点未返回访问令牌"
             raise QuotaHttpError("token_exchange_failed", msg)
         token = str(tok_data["data"]).strip()
+        regenerated = True
 
     return {
         "access_token": token,
         "user_id": uid_str,
-        "regenerated": True,
+        "regenerated": regenerated,
     }
 
 
@@ -367,9 +389,9 @@ class _BaseNewApiAdapter(QuotaAdapter):
             if site_status is not None:
                 active_root = candidate_root
                 if not display_type:
-                    raw_dt = str(site_status.get("quota_display_type") or "").strip().upper()
-                    if raw_dt in ("CNY", "USD", "CREDIT", "TOKENS"):
-                        display_type = raw_dt
+                    normalized_dt = normalize_newapi_display_type(site_status.get("quota_display_type"))
+                    if normalized_dt:
+                        display_type = normalized_dt
                 if per_unit <= 0:
                     spu = safe_number(site_status.get("quota_per_unit"))
                     if spu is not None and spu > 0:

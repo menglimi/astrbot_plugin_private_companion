@@ -607,6 +607,127 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertEqual(r_sub.adapter_id, "sub2api")
             self.assertEqual(r_sub.confidence, "high")
 
+            # CUSTOM / POINTS quota_display_type maps to CREDIT (never USD)
+            f_custom, _ = _mock_factory({
+                ("GET", "https://points.example.test/api/status"): _FakeResponse(
+                    200, {"success": True, "data": {"system_name": "积分站", "quota_display_type": "CUSTOM", "custom_currency_symbol": "积分", "quota_per_unit": 1000}}
+                ),
+                ("GET", "https://points.example.test/api/user/self"): _FakeResponse(401, {"success": False, "message": "unauthorized"}),
+            })
+            r_custom = await detect_station("https://points.example.test", session_factory=f_custom)
+            self.assertEqual(r_custom.display_type, "CREDIT")
+            self.assertEqual(r_custom.symbol, "积分")
+
+        asyncio.run(run())
+
+    def test_ssrf_blocks_ipv4_mapped_link_local_metadata_proxy_and_cross_origin_lan_logo(self):
+        from astrbot_host.quota_adapters.base import QuotaHttpError, validate_proxy_url, validate_target_url
+        from astrbot_host.quota_adapters.logo import resolve_logo_url
+
+        # IPv4-mapped IPv6 and link-local addresses must stay blocked even with allow_http=True
+        for blocked in (
+            "http://[::ffff:169.254.169.254]/latest/meta-data/",
+            "http://[::ffff:100.100.100.200]/latest/meta-data/",
+            "http://169.254.12.34/metadata",
+            "http://[fe80::1]/metadata",
+        ):
+            with self.assertRaises(QuotaHttpError) as ctx:
+                validate_target_url(blocked, allow_http=True)
+            self.assertEqual(ctx.exception.code, "ssrf_blocked")
+
+        # Proxy URL must also block cloud metadata & link-local hosts
+        for blocked_proxy in (
+            "http://[::ffff:169.254.169.254]:8080",
+            "socks5://169.254.169.254:1080",
+            "http://[fe80::1]:8080",
+        ):
+            with self.assertRaises(QuotaHttpError) as ctx:
+                validate_proxy_url(blocked_proxy)
+            self.assertEqual(ctx.exception.code, "ssrf_blocked")
+
+        # Cross-origin LAN logo on allow_http=True station must be rejected, while same-origin & public HTTPS pass
+        self.assertEqual(
+            resolve_logo_url("http://192.168.1.10:3000", "http://127.0.0.1:8080/internal.png", allow_http=True),
+            "",
+        )
+        self.assertEqual(
+            resolve_logo_url("http://192.168.1.10:3000", "http://192.168.1.20:3000/other.png", allow_http=True),
+            "",
+        )
+        self.assertEqual(
+            resolve_logo_url("http://192.168.1.10:3000", "/logo.png", allow_http=True),
+            "http://192.168.1.10:3000/logo.png",
+        )
+        self.assertEqual(
+            resolve_logo_url("http://192.168.1.10:3000", "https://cdn.example.test/logo.png", allow_http=True),
+            "https://cdn.example.test/logo.png",
+        )
+
+    def test_newapi_custom_display_type_and_login_exchange_hardening(self):
+        from astrbot_host.quota_adapters.base import QuotaHttpError
+        from astrbot_host.quota_adapters.newapi import exchange_newapi_login_for_token
+
+        async def run():
+            reg = default_registry()
+            # CUSTOM points station must stay CREDIT and not inflate fiat summary
+            f_custom, _ = _mock_factory({
+                ("GET", "https://points.example.test/api/status"): _FakeResponse(
+                    200, {"success": True, "data": {"quota_display_type": "CUSTOM", "custom_currency_symbol": "点", "quota_per_unit": 1000}}
+                ),
+                ("GET", "https://points.example.test/api/user/self"): _FakeResponse(
+                    200, {"success": True, "data": {"quota": 50000, "used_quota": 10000}}
+                ),
+                ("GET", "https://points.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(200, {"success": True, "data": {"items": []}}),
+            })
+            spec = QuotaStationSpec(id="pts", name="积分站", adapter_id="newapi", base_url="https://points.example.test", auth_token="tok-1")
+            snap = await reg.get("newapi").probe(spec, AdapterProbeContext(base_url=spec.base_url, auth_token="tok-1", session_factory=f_custom))
+            self.assertTrue(snap.ok)
+            self.assertEqual(snap.display_type, "CREDIT")
+            self.assertEqual(snap.symbol, "点")
+            summary = summarize_quota_portfolio([spec], {"pts": snap}, display_currency="CNY", usd_cny_rate=7.2)
+            self.assertEqual(summary["fiat_remaining"], 0.0)
+            self.assertEqual(summary["non_fiat_station_count"], 1)
+
+            # Login exchange: echoed password redacted in error
+            f_err, _ = _mock_factory({
+                ("POST", "https://login.example.test/api/user/login"): _FakeResponse(
+                    200, {"success": False, "message": "Invalid password secret-pass-999 for alice"}
+                ),
+            })
+            with self.assertRaises(QuotaHttpError) as ctx:
+                await exchange_newapi_login_for_token("https://login.example.test", "alice", "secret-pass-999", session_factory=f_err)
+            self.assertNotIn("secret-pass-999", str(ctx.exception))
+
+            # Login exchange: invalid header falls back to New-Api-User & existing token sets regenerated=False
+            f_existing, calls_existing = _mock_factory({
+                ("POST", "https://login.example.test/api/user/login"): _FakeResponse(200, {"success": True, "data": {"id": 42}}),
+                ("GET", "https://login.example.test/api/user/self"): _FakeResponse(
+                    200, {"success": True, "data": {"id": 42, "access_token": "existing-tok-42"}}
+                ),
+            })
+            res_existing = await exchange_newapi_login_for_token(
+                "https://login.example.test",
+                "alice",
+                "pw-1",
+                user_id_header="Bad Header\r\nX-Inject: 1",
+                session_factory=f_existing,
+            )
+            self.assertEqual(res_existing["access_token"], "existing-tok-42")
+            self.assertFalse(res_existing["regenerated"])
+            self_call_headers = calls_existing[1][2]["headers"]
+            self.assertEqual(self_call_headers.get("New-Api-User"), "42")
+            self.assertNotIn("Bad Header\r\nX-Inject: 1", self_call_headers)
+
+            # Login exchange: fallback to /api/user/token sets regenerated=True
+            f_regen, _ = _mock_factory({
+                ("POST", "https://login.example.test/api/user/login"): _FakeResponse(200, {"success": True, "data": {"id": 42}}),
+                ("GET", "https://login.example.test/api/user/self"): _FakeResponse(200, {"success": True, "data": {"id": 42, "access_token": ""}}),
+                ("GET", "https://login.example.test/api/user/token"): _FakeResponse(200, {"success": True, "data": "minted-tok-42"}),
+            })
+            res_regen = await exchange_newapi_login_for_token("https://login.example.test", "alice", "pw-1", session_factory=f_regen)
+            self.assertEqual(res_regen["access_token"], "minted-tok-42")
+            self.assertTrue(res_regen["regenerated"])
+
         asyncio.run(run())
 
 

@@ -947,6 +947,8 @@ class QuotaStationStore:
         self,
         edit_token: object,
         payload: object,
+        *,
+        seed_stations: tuple[QuotaStationSpec, ...] | list[QuotaStationSpec] = (),
     ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
         """Create or update one station with optimistic concurrency and secret preservation."""
         with _STORE_LOCK:
@@ -955,6 +957,8 @@ class QuotaStationStore:
                 raise QuotaSettingsError("quota_config_conflict", "站点配置已在别处更新，请刷新后再保存")
             if type(payload) is not dict:
                 raise QuotaSettingsError("quota_config_invalid", "站点参数必须是 JSON 对象")
+            if not self.exists() and seed_stations:
+                stations = list(seed_stations)
 
             raw = deepcopy(payload)
             clear_token = bool(raw.pop("clear_auth_token", False))
@@ -1022,6 +1026,8 @@ class QuotaStationStore:
         self,
         edit_token: object,
         patch: object,
+        *,
+        seed_stations: tuple[QuotaStationSpec, ...] | list[QuotaStationSpec] = (),
     ) -> tuple[list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
         with _STORE_LOCK:
             stations, awareness, current_token = self._read_unlocked()
@@ -1029,6 +1035,8 @@ class QuotaStationStore:
                 raise QuotaSettingsError("quota_config_conflict", "余额感知策略已在别处更新，请刷新后再保存")
             if type(patch) is not dict:
                 raise QuotaSettingsError("quota_config_invalid", "余额感知策略参数无效")
+            if not self.exists() and seed_stations:
+                stations = list(seed_stations)
 
             allowed = {"mode", "primary_station_id", "target_currency", "participating_station_ids"}
             if set(patch) - allowed:

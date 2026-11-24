@@ -17,7 +17,12 @@ from .base import (
     same_origin,
     validate_target_url,
 )
-from .newapi import DEFAULT_NEWAPI_PER_UNIT, detect_required_user_header, fetch_newapi_status
+from .newapi import (
+    DEFAULT_NEWAPI_PER_UNIT,
+    detect_required_user_header,
+    fetch_newapi_status,
+    normalize_newapi_display_type,
+)
 
 DETECT_TOTAL_BUDGET_SECONDS = 4.0
 
@@ -153,8 +158,7 @@ async def detect_station(
             fingerprint_keys = ("quota_per_unit", "quota_display_type", "system_name", "version", "logo", "server_address")
             if any(k in status_data for k in fingerprint_keys):
                 site_name = str(status_data.get("system_name") or hostname).strip()[:64]
-                raw_dt = str(status_data.get("quota_display_type") or "").strip().upper()
-                display_type = raw_dt if raw_dt in ("CNY", "USD", "CREDIT", "TOKENS") else "USD"
+                display_type = normalize_newapi_display_type(status_data.get("quota_display_type")) or "USD"
                 per_unit = safe_number(status_data.get("quota_per_unit")) or DEFAULT_NEWAPI_PER_UNIT
                 symbol = normalize_currency_symbol(display_type, str(status_data.get("custom_currency_symbol") or ""))
                 turnstile = bool(status_data.get("turnstile_check"))

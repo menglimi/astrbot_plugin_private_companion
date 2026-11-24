@@ -22,6 +22,7 @@ from .base import (
     BROWSER_USER_AGENT,
     QuotaHttpError,
     http_request_bytes,
+    same_origin,
     validate_target_url,
 )
 
@@ -54,7 +55,10 @@ def sniff_safe_raster_image(body: bytes) -> str | None:
 
 
 def resolve_logo_url(base_url: str, ref: str, *, allow_http: bool = False) -> str:
-    """Resolve an absolute, protocol-relative, or relative logo reference against base_url."""
+    """Resolve an absolute, protocol-relative, or relative logo reference against base_url.
+
+    Cross-origin logos never inherit ``allow_http=True``: third-party hosts must use public HTTPS.
+    """
     ref_text = str(ref or "").strip()
     if not ref_text:
         return ""
@@ -64,7 +68,8 @@ def resolve_logo_url(base_url: str, ref: str, *, allow_http: bool = False) -> st
         if not parsed_base.scheme or not parsed_base.hostname:
             return ""
         resolved = urljoin(base_clean, ref_text)
-        return validate_target_url(resolved, allow_http=allow_http)
+        effective_allow_http = bool(allow_http) and same_origin(base_clean, resolved)
+        return validate_target_url(resolved, allow_http=effective_allow_http)
     except (ValueError, QuotaHttpError):
         return ""
 
@@ -180,7 +185,7 @@ class StationLogoCache:
                     "GET",
                     target,
                     headers=headers,
-                    allow_http=allow_http,
+                    allow_http=bool(allow_http) and same_origin(base_url, target),
                     proxy_url=proxy_url,
                     timeout_seconds=LOGO_TIMEOUT_SECONDS,
                     max_bytes=LOGO_MAX_BYTES,

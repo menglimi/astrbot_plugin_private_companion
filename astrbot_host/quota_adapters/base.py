@@ -51,15 +51,45 @@ class QuotaHttpError(RuntimeError):
         self.body_preview = body_preview
 
 
+def _parse_ip_address(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    clean = hostname.strip().lower().rstrip(".")
+    if clean.startswith("[") and clean.endswith("]"):
+        clean = clean[1:-1]
+    if "%" in clean:
+        clean = clean.split("%", 1)[0]
+    if not clean:
+        return None
+    try:
+        ip = ipaddress.ip_address(clean)
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def _is_metadata_or_link_local_host(hostname: str) -> bool:
+    lower = hostname.strip().lower().rstrip(".")
+    if lower.startswith("[") and lower.endswith("]"):
+        lower = lower[1:-1]
+    if "%" in lower:
+        lower = lower.split("%", 1)[0]
+    if lower in _BLOCKED_METADATA_HOSTS:
+        return True
+    ip = _parse_ip_address(lower)
+    if ip is None:
+        return False
+    return str(ip) in _BLOCKED_METADATA_HOSTS or bool(ip.is_link_local)
+
+
 def _is_private_or_local_host(hostname: str) -> bool:
     lower = hostname.strip().lower().rstrip(".")
     if not lower:
         return True
     if lower in ("localhost", "ip6-localhost", "ip6-loopback") or lower.endswith(".local"):
         return True
-    try:
-        ip = ipaddress.ip_address(lower)
-    except ValueError:
+    ip = _parse_ip_address(lower)
+    if ip is None:
         return False
     return bool(
         ip.is_private
@@ -69,6 +99,25 @@ def _is_private_or_local_host(hostname: str) -> bool:
         or ip.is_reserved
         or ip.is_unspecified
     )
+
+
+def validate_proxy_url(proxy_url: str) -> str:
+    """Validate optional per-station proxy URL and block cloud metadata / link-local proxy hosts."""
+    cleaned = str(proxy_url or "").strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) > 2048 or any(ord(ch) < 33 for ch in cleaned):
+        raise QuotaHttpError("invalid_proxy", "代理地址格式无效")
+    parsed = urlsplit(cleaned)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https", "socks5"):
+        raise QuotaHttpError("invalid_proxy", "代理地址仅支持 http://、https:// 或 socks5://")
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname or parsed.fragment:
+        raise QuotaHttpError("invalid_proxy", "代理地址缺少有效主机名")
+    if _is_metadata_or_link_local_host(hostname):
+        raise QuotaHttpError("ssrf_blocked", "安全策略禁止将云元数据或链路本地地址作为代理")
+    return cleaned
 
 
 def validate_target_url(url: str, *, allow_http: bool = False) -> str:
@@ -91,8 +140,8 @@ def validate_target_url(url: str, *, allow_http: bool = False) -> str:
     hostname = (parsed.hostname or "").strip().lower()
     if not hostname or parsed.username is not None or parsed.password is not None or parsed.fragment:
         raise QuotaHttpError("invalid_url", "目标地址不能内嵌账号密码或片段")
-    if hostname in _BLOCKED_METADATA_HOSTS:
-        raise QuotaHttpError("ssrf_blocked", "安全策略禁止访问云元数据地址")
+    if _is_metadata_or_link_local_host(hostname):
+        raise QuotaHttpError("ssrf_blocked", "安全策略禁止访问云元数据或链路本地地址")
     if not allow_http and _is_private_or_local_host(hostname):
         raise QuotaHttpError(
             "ssrf_blocked",
@@ -155,23 +204,24 @@ def _build_session(
     session_factory: Callable[..., Any] | None = None,
 ) -> tuple[Any, str | None]:
     """Create a bounded aiohttp session respecting explicit per-station proxy without silent fallback."""
+    safe_proxy = validate_proxy_url(proxy_url) if proxy_url else ""
     if callable(session_factory):
-        return session_factory(timeout_seconds=timeout_seconds, proxy_url=proxy_url, cookie_jar=cookie_jar), None
+        return session_factory(timeout_seconds=timeout_seconds, proxy_url=safe_proxy, cookie_jar=cookie_jar), None
 
     timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=min(5.0, timeout_seconds))
     connector = None
     request_proxy: str | None = None
-    if proxy_url:
-        parsed = urlsplit(proxy_url)
+    if safe_proxy:
+        parsed = urlsplit(safe_proxy)
         scheme = parsed.scheme.lower()
         if scheme == "socks5":
             try:
                 from aiohttp_socks import ProxyConnector
             except ImportError as exc:
                 raise QuotaHttpError("proxy_dependency_missing", "SOCKS5 代理需要安装 aiohttp-socks 依赖") from exc
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            connector = ProxyConnector.from_url(safe_proxy, rdns=True)
         elif scheme in ("http", "https"):
-            request_proxy = proxy_url
+            request_proxy = safe_proxy
         else:
             raise QuotaHttpError("invalid_proxy", "代理地址仅支持 http://、https:// 或 socks5://")
 
