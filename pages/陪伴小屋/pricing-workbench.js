@@ -1273,6 +1273,7 @@ window.CompanionPricingWorkbench = (() => {
         : `${source.label} 结算币种已切换为 ${labelText} 并完成重新同步。`;
     } catch (err) {
       if (!isCurrent(t)) return;
+      if ((err?.code || err?.message) === "pricing_config_conflict") p.stale = true;
       p.bad = true;
       p.syncNotice = fail(err, "更新价格源币种失败。");
     } finally {

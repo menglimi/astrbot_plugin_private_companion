@@ -1422,38 +1422,38 @@ def lower_newapi_billing_expr(
             )
             if final_rates is not None:
                 branches.append(final_rates)
-                base_rates = branches[0]
-                context_tiers: list[dict[str, Any]] = []
-                for idx, thresh in enumerate(thresholds):
-                    tier_rates = dict(branches[idx + 1])
-                    # Preserve opt-in absorption if an earlier tier had explicit cr/cc while a later tier omitted it.
-                    if tier_rates["input_cached"] is None and any(b["input_cached"] is not None for b in branches[: idx + 1]):
-                        tier_rates["input_cached"] = tier_rates["input"]
-                    if tier_rates["cache_creation"] is None and any(b["cache_creation"] is not None for b in branches[: idx + 1]):
-                        tier_rates["cache_creation"] = tier_rates["input"]
-                    context_tiers.append({
-                        "threshold_tokens": thresh,
-                        "input": tier_rates["input"],
-                        "input_cached": tier_rates["input_cached"],
-                        "cache_creation": tier_rates["cache_creation"],
-                        "output": tier_rates["output"],
-                    })
-                return (
-                    {
-                        "mode": "per_tier",
-                        "currency": norm_currency,
-                        "base": {
-                            "input": base_rates["input"],
-                            "input_cached": base_rates["input_cached"],
-                            "cache_creation": base_rates["cache_creation"],
-                            "output": base_rates["output"],
+                # Only lower to per_tier when every branch consistently includes/omits cr and cc;
+                # mixed usage across branches must stay tiered_expr for 100% lossless semantics.
+                cached_flags = {b["input_cached"] is not None for b in branches}
+                create_flags = {b["cache_creation"] is not None for b in branches}
+                if len(cached_flags) == 1 and len(create_flags) == 1:
+                    base_rates = branches[0]
+                    context_tiers: list[dict[str, Any]] = []
+                    for idx, thresh in enumerate(thresholds):
+                        tier_rates = branches[idx + 1]
+                        context_tiers.append({
+                            "threshold_tokens": thresh,
+                            "input": tier_rates["input"],
+                            "input_cached": tier_rates["input_cached"],
+                            "cache_creation": tier_rates["cache_creation"],
+                            "output": tier_rates["output"],
+                        })
+                    return (
+                        {
+                            "mode": "per_tier",
+                            "currency": norm_currency,
+                            "base": {
+                                "input": base_rates["input"],
+                                "input_cached": base_rates["input_cached"],
+                                "cache_creation": base_rates["cache_creation"],
+                                "output": base_rates["output"],
+                            },
+                            "context_tiers": context_tiers,
+                            "service_tiers": [],
+                            "multiplier": 1.0,
                         },
-                        "context_tiers": context_tiers,
-                        "service_tiers": [],
-                        "multiplier": 1.0,
-                    },
-                    "per_tier",
-                )
+                        "per_tier",
+                    )
 
     # Case 3: Keep full tiered_expr (e.g., cc1h, ai, strict '<', service_tier, complex math)
     if abs(scale - 1.0) > 1e-12:

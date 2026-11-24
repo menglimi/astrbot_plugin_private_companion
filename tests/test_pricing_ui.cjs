@@ -1164,6 +1164,17 @@ test("New API gateway bar: enriched probe notice, recommended group ratio chip, 
   assert.match(h.root.innerHTML, /<span class="pw-source-cur">¥<\/span>/);
   assert.match(h.root.innerHTML, /CNY ¥/);
 
+  // 3B) Optimistic revision conflict on currency switch marks state stale consistently with applyClusterMultiplier
+  h.root.input("[data-pricing-source-currency]", "USD", {
+    dataset: {pricingSourceCurrency: "newapi:relay-main"}, type: "change",
+  });
+  const conflictCurReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(conflictCurReq);
+  conflictCurReq.reject(Object.assign(new Error("pricing_config_conflict"), {code: "pricing_config_conflict"}));
+  await flush();
+  assert.match(h.root.innerHTML, /data-pricing-save[^>]*disabled/);
+  // Clear stale flag via a successful fresh probe below (syncDataPreserveDraft clears p.stale)
+
   // 4) Enriched New API probe notice surfaces site_name, CNY currency, recommended group, and skipped expr count
   h.root.click("[data-pricing-detect-newapi]", {pricingDetectNewapi: "relay-claude"});
   const detReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/sources/detect");

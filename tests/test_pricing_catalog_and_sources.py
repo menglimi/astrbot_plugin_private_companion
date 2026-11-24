@@ -440,6 +440,56 @@ class CatalogAdaptersAndScorerTests(unittest.TestCase):
         self.assertAlmostEqual(scaled[0].rule["input"], 7.3)
         self.assertAlmostEqual(scaled[0].rule["output"], 21.9)
 
+        # Legacy dict quota_conversion: malformed cluster_multiplier never crashes batch,
+        # and explicit currency="USD" is NOT double-scaled by CNY unit_scale=7.3!
+        legacy_dict_payload = {
+            "success": True,
+            "data": [
+                {
+                    "model_name": "dict-explicit-usd",
+                    "billing_mode": "tiered_expr",
+                    "quota_conversion": {
+                        "expr": "v1:p * 2 + c * 8",
+                        "currency": "USD",
+                        "cluster_multiplier": 1.0,
+                    },
+                },
+                {
+                    "model_name": "dict-inherit-cny-null-cm",
+                    "billing_mode": "tiered_expr",
+                    "quota_conversion": {
+                        "expr": "v1:p * 2 + c * 8",
+                        "cluster_multiplier": None,
+                    },
+                },
+                {
+                    "model_name": "dict-bad-cm-skipped",
+                    "billing_mode": "tiered_expr",
+                    "model_ratio": 0.0,
+                    "quota_conversion": {
+                        "expr": "v1:p * 2 + c * 8",
+                        "cluster_multiplier": "not-a-number",
+                    },
+                },
+            ],
+        }
+        legacy_diag: dict[str, int] = {}
+        legacy_items = adapt_newapi(
+            legacy_dict_payload,
+            source_id="newapi:legacy-dict",
+            source_label="Legacy",
+            currency="CNY",
+            unit_scale=7.3,
+            diagnostics=legacy_diag,
+        )
+        legacy_by_model = {item.model_id: item for item in legacy_items}
+        self.assertEqual(legacy_by_model["dict-explicit-usd"].rule["currency"], "USD")
+        self.assertAlmostEqual(legacy_by_model["dict-explicit-usd"].rule.get("cluster_multiplier", 1.0), 1.0)
+        self.assertEqual(legacy_by_model["dict-inherit-cny-null-cm"].rule["currency"], "CNY")
+        self.assertAlmostEqual(legacy_by_model["dict-inherit-cny-null-cm"].rule.get("cluster_multiplier", 1.0), 7.3)
+        self.assertNotIn("dict-bad-cm-skipped", legacy_by_model)
+        self.assertEqual(legacy_diag.get("skipped_unsupported_expr"), 1)
+
     def test_candidate_scoring_anti_mismatch_per_call_and_bracket_prefix(self):
         # Asymmetric suffix guard blocks per-token models from matching -as/-once/-search/-image/-custom
         for cand_model in (
@@ -666,6 +716,7 @@ class PricingCatalogServiceTests(unittest.IsolatedAsyncioTestCase):
             # 2) Probe provider A -> anonymous 0 models -> retries WITH same-origin Bearer + allow_redirects=False!
             det1 = await svc.detect_newapi_source(
                 provider_id="prov-a",
+                cluster_id="relay-example",
                 api_base="https://api.example.test/v1",
                 api_key="sk-secret-key-123",
                 supplier_label="Example Relay",
@@ -691,10 +742,11 @@ class PricingCatalogServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("sk-secret-key-123", raw_files)
             self.assertNotIn("proxyuser:proxypass", raw_files)
 
-            # 3) Second provider sharing same api_base with NO key deduplicates to newapi:prov-a
+            # 3) Second provider in the SAME cluster sharing same api_base with NO key deduplicates to newapi:prov-a
             #    and preserves original label/provider_id AND cached prices!
             det2 = await svc.detect_newapi_source(
                 provider_id="prov-b",
+                cluster_id="relay-example",
                 api_base="https://api.example.test/v1/",
                 api_key="",
                 supplier_label="Example Relay B",
@@ -706,6 +758,19 @@ class PricingCatalogServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(det2["status"]["label"], "Example Relay")
             self.assertEqual(det2["status"]["provider_id"], "prov-a")
             self.assertEqual(det2["status"]["model_count"], 1)  # Existing cached price preserved!
+
+            # 3B) Different cluster with NO key on an auth-gated Bearer gateway must NOT hijack newapi:prov-a!
+            det3 = await svc.detect_newapi_source(
+                provider_id="prov-c",
+                cluster_id="relay-other",
+                api_base="https://api.example.test/v1/",
+                api_key="",
+                supplier_label="Other Cluster",
+            )
+            self.assertTrue(det3["ok"])
+            self.assertFalse(det3["deduplicated"])
+            self.assertEqual(det3["source_id"], "newapi:prov-c")
+            self.assertTrue(det3["needs_key"])
 
             # 4) Anonymous 401 -> Bearer retry ALSO 401 -> returns needs_key=True cleanly!
             svc._session_factory = lambda _t: _FakeHttpSession(
@@ -888,6 +953,66 @@ class PricingCatalogServiceTests(unittest.IsolatedAsyncioTestCase):
             cat_priv = catalog_store.read_safe()
             self.assertIn(f"{p_a['source_id']}:model-a", cat_priv["prices"])
             self.assertIn(f"{p_b['source_id']}:model-b", cat_priv["prices"])
+
+            # 5) Legacy upgraded source without auth_mode MUST NOT be overwritten by a distinct Bearer cluster!
+            settings_store.upsert_newapi_source(
+                "newapi:legacy-old",
+                url="https://private.example.test/api/pricing",
+                provider_id="legacy-old",
+                label="Legacy Old",
+                enabled=True,
+                auth_mode=None,
+                cluster_id=None,
+            )
+            p_c = await svc.detect_newapi_source(
+                provider_id="priv-c/model-a",
+                cluster_id="cluster-priv-c",
+                api_base="https://private.example.test/v1",
+                api_key="sk-priv-a",
+                supplier_label="Private C",
+            )
+            self.assertTrue(p_c["ok"])
+            self.assertFalse(p_c["deduplicated"])
+            self.assertEqual(p_c["source_id"], "newapi:priv-c/model-a")
+
+            # 6) Bearer sync MUST NEVER borrow another cluster's API key AND preserves cached prices when key is missing!
+            other_cluster_conns = {
+                "priv-b/model-b": {
+                    "api_base": "https://private.example.test/v1",
+                    "api_key": "sk-priv-b",
+                    "proxy": "",
+                    "cluster_id": "cluster-priv-b",
+                },
+            }
+            borrowed = svc._find_connection_for_newapi_source(
+                other_cluster_conns,
+                provider_id="priv-a/model-a",
+                cluster_id="cluster-priv-a",
+                pricing_url="https://private.example.test/api/pricing",
+                auth_mode="bearer",
+            )
+            self.assertEqual(borrowed, {})
+
+            # Simulate anonymous returning 200 empty data[] while cluster-a's connection is absent:
+            # sync_sources must NOT borrow cluster-b's key AND must preserve model-a in cache!
+            def empty_anon_handler(url, kwargs):
+                if url.endswith("/api/status"):
+                    return _FakeHttpResponse(404, b"no status")
+                auth = (kwargs.get("headers") or {}).get("Authorization", "")
+                if "sk-priv-b" in auth:
+                    raise AssertionError("Bearer sync illegally borrowed another cluster's API key!")
+                return _FakeHttpResponse(200, json.dumps({"success": True, "data": []}).encode("utf-8"))
+
+            svc._session_factory = lambda _t: _FakeHttpSession(empty_anon_handler)
+            res_missing = await svc.sync_sources(
+                source_ids=[p_a["source_id"]],
+                connections=other_cluster_conns,
+            )
+            st_missing = res_missing["results"][0]
+            self.assertEqual(st_missing["status"], "ok")
+            self.assertTrue(st_missing["needs_key"])
+            self.assertEqual(st_missing["model_count"], 1)
+            self.assertIn(f"{p_a['source_id']}:model-a", catalog_store.read_safe()["prices"])
 
 
 if __name__ == "__main__":

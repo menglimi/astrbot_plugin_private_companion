@@ -1338,17 +1338,37 @@ def adapt_newapi(
                             "currency": norm_currency,
                         }
                     elif type(raw_spec) is dict:
-                        spec_for_val = {**raw_spec, "currency": raw_spec.get("currency") or norm_currency}
-                        if abs(scale - 1.0) > 1e-12:
-                            prev_cm = float(spec_for_val.get("cluster_multiplier", 1.0))
-                            spec_for_val["cluster_multiplier"] = round(prev_cm * scale, 6)
+                        explicit_cur = raw_spec.get("currency")
+                        has_explicit_cur = (
+                            type(explicit_cur) is str and explicit_cur.strip().upper() in ("USD", "CNY")
+                        )
+                        eff_cur = explicit_cur.strip().upper() if has_explicit_cur else norm_currency
+                        spec_for_val = {**raw_spec, "currency": eff_cur}
+                        if abs(scale - 1.0) > 1e-12 and not has_explicit_cur:
+                            raw_cm = spec_for_val.get("cluster_multiplier", 1.0)
+                            if raw_cm is None:
+                                cm_val: float | None = 1.0
+                            elif (
+                                type(raw_cm) in (int, float)
+                                and not isinstance(raw_cm, bool)
+                                and math.isfinite(float(raw_cm))
+                                and float(raw_cm) >= 0.0
+                            ):
+                                cm_val = float(raw_cm)
+                            else:
+                                cm_val = None
+                            if cm_val is None:
+                                spec_for_val = None
+                            else:
+                                spec_for_val["cluster_multiplier"] = round(cm_val * scale, 6)
                     else:
                         spec_for_val = raw_spec
-                    validation = validate_tiered_expr_rule(spec_for_val)
-                    if validation["valid"]:
-                        rule = validation["normalized"]
-                        if diag is not None:
-                            diag["kept_tiered_expr"] += 1
+                    if spec_for_val is not None:
+                        validation = validate_tiered_expr_rule(spec_for_val)
+                        if validation["valid"]:
+                            rule = validation["normalized"]
+                            if diag is not None:
+                                diag["kept_tiered_expr"] += 1
                 if rule is None:
                     fallback = _adapt_newapi_classic_item(
                         item,

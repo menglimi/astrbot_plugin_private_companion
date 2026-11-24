@@ -381,6 +381,31 @@ class PricingExprEvaluationTests(unittest.TestCase):
         self.assertEqual(matched_cc1h, "standard")
         self.assertAlmostEqual(cost_cc1h, (5 + 10) * 1_000_000 * 7.3, places=2)
 
+        # 4) Cross-branch inconsistent cr/cc stays tiered_expr for 100% lossless evaluation
+        mixed_cr_expr = (
+            'v1:len <= 200000 ? tier("short", p * 2 + cr * 0.2 + c * 10)'
+            ' : tier("long", p * 4 + c * 18)'
+        )
+        rule_mixed_cr, kind_mixed_cr = lower_newapi_billing_expr(mixed_cr_expr, currency="CNY")
+        self.assertEqual(kind_mixed_cr, "tiered_expr")
+        # In the >200K branch cr is omitted while global used_variables contains cr,
+        # so uncached p = 150k and cached cr = 100k contributes 0 (NOT 100k * 4!).
+        cost_mixed, tier_mixed = evaluate_tiered_expr_rule(
+            rule_mixed_cr,
+            other_input_tokens=150_000,
+            cached_input_tokens=100_000,
+            output_tokens=10_000,
+        )
+        self.assertEqual(tier_mixed, "long")
+        self.assertAlmostEqual(cost_mixed, 150_000 * 4 + 10_000 * 18, places=4)
+
+        mixed_cc_expr = (
+            'v1:len <= 200000 ? tier("short", p * 2 + c * 10)'
+            ' : tier("long", p * 4 + cc * 5 + c * 18)'
+        )
+        _rule_mixed_cc, kind_mixed_cc = lower_newapi_billing_expr(mixed_cc_expr, currency="USD")
+        self.assertEqual(kind_mixed_cc, "tiered_expr")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -194,17 +194,18 @@ def find_newapi_source_by_url(
             if existing_cluster == clean_cluster or existing_pid == clean_cluster:
                 return sid
 
-    if auth_mode == "bearer" and has_key and clean_cluster:
-        # Distinct cluster with its own key on an auth-gated gateway: do NOT share another cluster's bearer source.
-        for sid, cfg in matches:
-            if cfg.get("auth_mode") != "bearer":
-                return sid
+    if auth_mode == "bearer":
+        # Auth-gated Bearer sources are strictly scoped by cluster_id (already checked above);
+        # never reuse another cluster's Bearer source or a legacy source with unknown auth_mode.
         return None
 
     for sid, cfg in matches:
+        if cfg.get("auth_mode") == "anonymous":
+            return sid
+    for sid, cfg in matches:
         if cfg.get("auth_mode") != "bearer":
             return sid
-    return matches[0][0]
+    return None
 
 
 def _default_catalog_session_factory(timeout_seconds: float) -> aiohttp.ClientSession:
@@ -482,10 +483,12 @@ class PricingCatalogService:
         provider_id: str | None,
         cluster_id: str | None,
         pricing_url: str,
+        auth_mode: str | None = None,
     ) -> dict[str, Any]:
         if provider_id and provider_id in connections:
             return connections[provider_id]
         norm_url = pricing_url.rstrip("/").lower()
+        strict_cluster = (auth_mode == "bearer")
         fallback: dict[str, Any] = {}
         for conn in connections.values():
             if not isinstance(conn, dict):
@@ -495,9 +498,9 @@ class PricingCatalogService:
                 continue
             if cluster_id and str(conn.get("cluster_id") or "").strip() == cluster_id:
                 return conn
-            if not fallback:
+            if not strict_cluster and not fallback:
                 fallback = conn
-        return fallback
+        return {} if strict_cluster else fallback
 
     async def _sync_one_source(
         self,
@@ -551,6 +554,7 @@ class PricingCatalogService:
                     provider_id=provider_id,
                     cluster_id=source_cluster_id,
                     pricing_url=url,
+                    auth_mode=prev_auth_mode,
                 )
                 if kind == "newapi"
                 else {}
@@ -762,10 +766,13 @@ class PricingCatalogService:
                 merged_site_meta = {
                     **prev_site_meta,
                     **(status_meta or {}),
-                    "group_ratio": pricing_meta["group_ratio"],
-                    "usable_group": pricing_meta["usable_group"],
-                    "auto_groups": pricing_meta["auto_groups"],
                 }
+                if pricing_meta["group_ratio"] or not prev_site_meta.get("group_ratio"):
+                    merged_site_meta["group_ratio"] = pricing_meta["group_ratio"]
+                if pricing_meta["usable_group"] or not prev_site_meta.get("usable_group"):
+                    merged_site_meta["usable_group"] = pricing_meta["usable_group"]
+                if pricing_meta["auto_groups"] or not prev_site_meta.get("auto_groups"):
+                    merged_site_meta["auto_groups"] = pricing_meta["auto_groups"]
                 if status_meta and status_meta.get("system_name"):
                     eff_label = status_meta["system_name"]
                 resolved_currency, unit_scale, quota_per_unit = resolve_newapi_currency_params(
@@ -782,25 +789,30 @@ class PricingCatalogService:
                     quota_per_unit=quota_per_unit,
                     diagnostics=diag,
                 )
-                merged_site_meta["skipped_expr_count"] = diag.get("skipped_unsupported_expr", 0)
+                if not (len(prices) == 0 and prev_count > 0):
+                    merged_site_meta["skipped_expr_count"] = diag.get("skipped_unsupported_expr", 0)
                 resolved_auth_mode = "bearer" if used_bearer else ("anonymous" if prices else prev_auth_mode)
             else:
                 prices = []
 
             needs_key = (kind == "newapi" and len(prices) == 0)
+            preserve_existing = bool(needs_key and prev_count > 0)
             return (
                 SourceStatus(
                     source_id=source_id, kind=kind, label=eff_label, url=url,
-                    enabled=True, status="ok", model_count=len(prices),
-                    last_sync_at=now_iso, last_ok_at=now_iso, etag=new_etag,
+                    enabled=True, status="ok",
+                    model_count=(prev_count if preserve_existing else len(prices)),
+                    last_sync_at=now_iso,
+                    last_ok_at=(prev_last_ok if preserve_existing else now_iso),
+                    etag=(prev_etag if preserve_existing else new_etag),
                     error=None, provider_id=provider_id, needs_key=needs_key,
-                    currency=resolved_currency,
+                    currency=(prev_currency or resolved_currency) if preserve_existing else resolved_currency,
                     currency_override=currency_override,
-                    auth_mode=resolved_auth_mode,
+                    auth_mode=(prev_auth_mode if preserve_existing else resolved_auth_mode),
                     site_meta=merged_site_meta,
                 ),
-                prices,
-                False,
+                None if preserve_existing else prices,
+                preserve_existing,
             )
 
     async def sync_sources(
