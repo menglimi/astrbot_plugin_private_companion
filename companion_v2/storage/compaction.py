@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shutil
 import sqlite3
 import time
 from typing import Any
 
+from companion_v2.execution.models import TaskError
 from companion_v2.storage.image_payloads import MARKER_PREFIX as CONV_IMG_MARKER, migrate_image_payloads
 from companion_v2.storage.native_dedup import (
     CONTEXT_REF_LEN,
@@ -31,14 +33,46 @@ from companion_v2.storage.native_dedup import (
 )
 from companion_v2.storage.runtime import table_exists
 from companion_v2.storage.semantic import REACTION_FILE_MARKER, SemanticStore
-from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+from companion_v2.storage.sqlite_tuning import active_sqlite_tuning_profile, apply_sidecar_pragmas
 from companion_v2.storage.telemetry_archive import (
     ARCHIVE_FILENAME,
     DEFAULT_TELEMETRY_TTL_DAYS,
     archive_cold_telemetry,
 )
+from companion_v2.storage.tuning_config import active_telemetry_ttl_days
 
 _AUTO_VACUUM_LABELS = {0: "none", 1: "full", 2: "incremental"}
+FULL_VACUUM_DISK_MULTIPLIER = 2.2
+FULL_VACUUM_DISK_MARGIN_BYTES = 64 * 1024 * 1024
+
+
+def full_vacuum_required_bytes(main_db_bytes: int) -> int:
+    """Minimum safe free disk space required before running a full SQLite VACUUM."""
+    return int(max(0, int(main_db_bytes)) * FULL_VACUUM_DISK_MULTIPLIER) + FULL_VACUUM_DISK_MARGIN_BYTES
+
+
+def inspect_disk_free_bytes(path: Path) -> int | None:
+    """Return free bytes on the filesystem hosting *path*, or None if unavailable."""
+    target = path if path.is_dir() else path.parent
+    try:
+        return int(shutil.disk_usage(target).free)
+    except OSError:
+        return None
+
+
+def _ensure_disk_space_for_full_vacuum(main_path: Path) -> None:
+    """Fail fast when free disk space is below 2.2x main DB size + 64 MiB."""
+    main_bytes = _file_size(main_path)
+    required = full_vacuum_required_bytes(main_bytes)
+    free_bytes = inspect_disk_free_bytes(main_path)
+    if free_bytes is not None and free_bytes < required:
+        free_mb = round(free_bytes / (1024 * 1024), 1)
+        req_mb = round(required / (1024 * 1024), 1)
+        raise TaskError(
+            "storage_insufficient_disk_for_vacuum",
+            f"磁盘可用空间不足以执行深度重组（当前可用 {free_mb} MB，安全要求至少 {req_mb} MB，约为当前主库的 2.2 倍）；"
+            "建议改用「一键常规无损瘦身」或先释放磁盘空间。",
+        )
 
 
 def _file_size(path: Path) -> int:
@@ -168,17 +202,22 @@ def database_health_report(
     *,
     data_root: Path | None = None,
     native_image_dir: Path | None = None,
-    ttl_days: int = DEFAULT_TELEMETRY_TTL_DAYS,
+    ttl_days: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Produce a read-only SQLite health and slimming opportunity report."""
+    effective_ttl_days = (
+        max(1, int(ttl_days))
+        if ttl_days is not None
+        else active_telemetry_ttl_days(default=DEFAULT_TELEMETRY_TTL_DAYS)
+    )
     paths = _discover_sidecar_paths(runtime, data_root=data_root, native_image_dir=native_image_dir)
     databases = {
         name: _inspect_sqlite_file(name, path)
         for name, path in paths.items()
     }
     now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    cutoff_iso = (now_utc - timedelta(days=max(1, int(ttl_days)))).isoformat()
+    cutoff_iso = (now_utc - timedelta(days=effective_ttl_days)).isoformat()
 
     opportunities: dict[str, int] = {
         "un_deduped_native_turns": 0,
@@ -280,7 +319,7 @@ def database_health_report(
     if opportunities["cold_core_observations"] + opportunities["cold_laya_payloads"] > 0:
         recommendations.append({
             "code": "archive_cold_telemetry",
-            "label": f"存在超过 {int(ttl_days)} 天的冷遥测明细，可归档至冷库并保留完整每日统计",
+            "label": f"存在超过 {effective_ttl_days} 天的冷遥测明细，可归档至冷库并保留完整每日统计",
         })
     if (
         opportunities["inline_conversation_images"]
@@ -299,12 +338,20 @@ def database_health_report(
 
     profile = getattr(runtime, "tuning_profile", None)
     batch_stats_fn = getattr(runtime, "batched_write_stats", None)
+    main_db_bytes = databases["main"]["db_bytes"] if "main" in databases else 0
+    disk_free_bytes = inspect_disk_free_bytes(paths["main"])
+    vacuum_required_bytes = full_vacuum_required_bytes(main_db_bytes)
+    can_full_vacuum = disk_free_bytes is None or disk_free_bytes >= vacuum_required_bytes
     return {
         "status": "compact_recommended" if recommendations else "healthy",
         "checked_at": now_utc.isoformat(),
+        "telemetry_ttl_days": effective_ttl_days,
         "total_sqlite_bytes": total_sqlite_bytes,
         "total_reclaimable_bytes": total_reclaimable_bytes,
         "max_fragmentation_ratio": max_frag,
+        "disk_free_bytes": disk_free_bytes,
+        "vacuum_required_bytes": vacuum_required_bytes,
+        "can_full_vacuum": can_full_vacuum,
         "databases": databases,
         "opportunities": opportunities,
         "recommendations": recommendations,
@@ -313,6 +360,11 @@ def database_health_report(
             "tuning_tier": getattr(profile, "tier", None),
             "cache_size_kib": getattr(profile, "cache_size_kib", None),
             "mmap_size": getattr(profile, "mmap_size", None),
+            "synchronous": (
+                profile.effective_synchronous()
+                if hasattr(profile, "effective_synchronous")
+                else getattr(profile, "synchronous", None)
+            ),
             "batched_writes": batch_stats_fn() if callable(batch_stats_fn) else None,
         },
     }
@@ -327,7 +379,7 @@ def _maintain_sidecar_sqlite(
 ) -> dict[str, Any]:
     if not path.is_file():
         return {"exists": False, "vacuumed": False, "freed_pages": 0}
-    profile = tuning_profile()
+    profile = active_sqlite_tuning_profile()
     conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
     vacuumed = False
     freed_pages = 0
@@ -368,7 +420,7 @@ def compact_and_slim_databases(
     *,
     data_root: Path | None = None,
     native_image_dir: Path | None = None,
-    ttl_days: int = DEFAULT_TELEMETRY_TTL_DAYS,
+    ttl_days: int | None = None,
     vacuum: bool = False,
     enable_incremental_vacuum: bool = False,
     archive_telemetry: bool = True,
@@ -378,8 +430,21 @@ def compact_and_slim_databases(
 ) -> dict[str, Any]:
     """Run lossless database slimming, archiving, media offload, and vacuuming."""
     started = time.perf_counter()
+    effective_ttl_days = (
+        max(1, int(ttl_days))
+        if ttl_days is not None
+        else active_telemetry_ttl_days(default=DEFAULT_TELEMETRY_TTL_DAYS)
+    )
     rt_root = Path(data_root) if data_root is not None else Path(runtime.data_root)
     paths = _discover_sidecar_paths(runtime, data_root=rt_root, native_image_dir=native_image_dir)
+
+    needs_full_vacuum = bool(vacuum)
+    if not needs_full_vacuum and enable_incremental_vacuum:
+        main_info = _inspect_sqlite_file("main", paths["main"])
+        if main_info.get("exists") and main_info.get("auto_vacuum") != "incremental":
+            needs_full_vacuum = True
+    if needs_full_vacuum:
+        _ensure_disk_space_for_full_vacuum(paths["main"])
 
     flush_fn = getattr(runtime, "flush_batched_writes", None)
     if callable(flush_fn):
@@ -389,7 +454,7 @@ def compact_and_slim_databases(
         runtime,
         data_root=rt_root,
         native_image_dir=native_image_dir,
-        ttl_days=ttl_days,
+        ttl_days=effective_ttl_days,
         now=now,
     )
 
@@ -401,7 +466,7 @@ def compact_and_slim_databases(
 
     # 2. Cold telemetry archiving + pre-aggregated daily rollups.
     if archive_telemetry:
-        steps["archive"] = archive_cold_telemetry(runtime, ttl_days=ttl_days, now=now)
+        steps["archive"] = archive_cold_telemetry(runtime, ttl_days=effective_ttl_days, now=now)
 
     # 3. Media filesystem offload (conversation images, reactions, native images).
     if offload_media:
@@ -474,7 +539,7 @@ def compact_and_slim_databases(
         runtime,
         data_root=rt_root,
         native_image_dir=native_image_dir,
-        ttl_days=ttl_days,
+        ttl_days=effective_ttl_days,
         now=now,
     )
     elapsed_ms = round((time.perf_counter() - started) * 1000)

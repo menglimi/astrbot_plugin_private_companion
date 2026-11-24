@@ -214,7 +214,7 @@ function navHref(next,tab='',subtab=''){
     ||next==='manage'&&tab==='expression'&&subtab
     ||next==='manage'&&tab==='learning'&&subtab
     ||next==='manage'&&tab==='maintenance'&&subtab&&subtab!=='overview'
-    ||next==='manage'&&tab==='data'&&['storage','backup','migration','port'].includes(subtab)
+    ||next==='manage'&&tab==='data'&&['storage','tuning','backup','migration','port'].includes(subtab)
     ||next==='life'&&tab==='diary'&&subtab&&subtab!=='archive';
   return nested?path+'/'+subtab:path;
 }
@@ -280,7 +280,7 @@ function navigationDestination(next,tab='',subtab=''){
       :tab==='models'?(MODEL_TABS.includes(subtab)?subtab:'fn')
       :tab==='expression'?(['text','segment','style','cleanup','voice','components','checks','timing','platform','reaction','group'].includes(subtab)?subtab:'')
       :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','system-prompts','logs','patrol'].includes(subtab)?subtab:'')
-        :tab==='data'?(['storage','backup','migration','port'].includes(subtab)?subtab:'storage')
+        :tab==='data'?(['storage','tuning','backup','migration','port'].includes(subtab)?subtab:'storage')
         :tab==='memory'?(['records','settings'].includes(subtab)?subtab:'')
         :tab==='perception'?(['environment','models','news','screen','balance','recall','injection'].includes(subtab)?subtab:'')
         :tab==='governance'&&['profile','relationship','questionnaire','knowledge'].includes(subtab)?subtab:'profile';
@@ -1130,7 +1130,7 @@ function panelScope(){
   if(section==='host')return {kind:'accounts',label:'全部账号'};
   if(section==='maintenance'&&maintenancePane==='reply-diagnostics')return {kind:'window',requiresWindow:true,concreteOnly:true};
   if(section==='data'&&dataPane==='port')return {kind:'window'};
-  if(section==='data'&&['storage','backup'].includes(dataPane)||section==='mobile'
+  if(section==='data'&&['storage','tuning','backup'].includes(dataPane)||section==='mobile'
     ||section==='learning'&&learningTab==='semantic')return {kind:'global',label:'全局'};
   if((section==='memory'||route==='memories')&&memoryWorkspaceRoute==='records')
     return {kind:'window',requiresWindow:true};
@@ -1342,6 +1342,8 @@ function mountPanelWorkspaces(){
   else guarded('备份与还原卸载',()=>window.CompanionBackupPage?.unmount?.());
   if($('#storageWorkspace'))guarded('插件存储管理',()=>window.CompanionStoragePage?.mount($('#storageWorkspace')));
   else guarded('插件存储管理卸载',()=>window.CompanionStoragePage?.unmount?.());
+  if($('#tuningWorkspace'))guarded('性能调优',()=>window.CompanionTuningPage?.mount($('#tuningWorkspace')));
+  else guarded('性能调优卸载',()=>window.CompanionTuningPage?.unmount?.());
   if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
   else guarded('配置导入导出卸载',()=>window.CompanionConfigPortPage?.unmount?.());
   guarded('配置分区',()=>renderConfigEditors());
@@ -1689,7 +1691,8 @@ function render(){
   unmountSetupGuide();
   window.CompanionBackupPage?.unmount();
   window.CompanionStoragePage?.unmount();
- window.CompanionConfigPortPage?.unmount();
+  window.CompanionTuningPage?.unmount();
+  window.CompanionConfigPortPage?.unmount();
   /* Release editor registrations before replacing their DOM. */
   unmountConfigEditors();
   if(arrangementDraft)finishRoomEditor(false);
@@ -4861,8 +4864,8 @@ const allFunctionsGroups=[
     ['maintenance','settings-2','治理与维护','运行诊断、缓存、效率与巡护',[
       ['诊断','diagnostics'],['缓存','cache'],['效率','efficiency'],['最近','recent'],
       ['提示词','prompts'],['巡护','patrol']]],
-    ['data','database','资料与维护','存储、备份与迁移',[
-      ['存储','storage'],['备份','backup'],['迁移','migration']]],
+    ['data','database','资料与维护','存储、性能调优、备份与迁移',[
+      ['存储','storage'],['性能调优','tuning'],['备份','backup'],['迁移','migration']]],
   ]],
 ];
 function renderAllFunctionsPage(){
@@ -5959,19 +5962,22 @@ function renderHostPageOriginal(){
 function renderDataOriginal(){
   const pages=[
     ['storage','01','database','存储位置与清理策略'],
-    ['backup','02','archive','备份与还原'],
-    ['migration','03','arrow-right-left','旧版资料迁入'],
-    ['port','04','archive','配置导入导出'],
+    ['tuning','02','gauge','性能调优'],
+    ['backup','03','archive','备份与还原'],
+    ['migration','04','arrow-right-left','旧版资料迁入'],
+    ['port','05','archive','配置导入导出'],
   ];
   const navigation=`<nav class="data-page-nav" aria-label="资料与维护子页面">${pages.map(([id,index,icon,label])=>
     `<a href="#manage/data/${id}"${dataPane===id?' aria-current="page"':''}><span class="data-page-nav-index">${index}</span>${I(icon)}<span class="data-page-nav-label">${label}</span></a>`).join('')}</nav>`;
   let content='';
-  if(dataPane==='backup'){
-    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>02</span><h3 id="data-page-title">备份与还原</h3></header><div id="backupWorkspace">${consoleLoading('正在读取快照列表…')}</div></section>`;
+  if(dataPane==='tuning'){
+    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>02</span><h3 id="data-page-title">性能调优</h3></header><div id="tuningWorkspace">${consoleLoading('正在识别本机硬件与性能策略…')}</div></section>`;
+  }else if(dataPane==='backup'){
+    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>03</span><h3 id="data-page-title">备份与还原</h3></header><div id="backupWorkspace">${consoleLoading('正在读取快照列表…')}</div></section>`;
   }else if(dataPane==='migration'){
     /* 迁入工作区自带页面抬头；这里保留一份仅供读屏与路由锚点的标题，
-       避免视觉上出现「03 旧版资料迁入」和抬头标题两份。 */
-    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head sr-only"><span>03</span><h3 id="data-page-title">旧版资料迁入</h3></header><div id="legacyMigrationWorkspace"></div></section>`;
+       避免视觉上出现「04 旧版资料迁入」和抬头标题两份。 */
+    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head sr-only"><span>04</span><h3 id="data-page-title">旧版资料迁入</h3></header><div id="legacyMigrationWorkspace"></div></section>`;
   }else if(dataPane==='port'){
     content=`<div id="configPortWorkspace"></div>`;
   }else{
@@ -6233,7 +6239,8 @@ const searchIndex=[
   ['治理与维护','Token 费用统计、运行诊断、投递排障与缓存状态','settings-2','manage','maintenance',{aliases:['运行诊断','运行状态','排障','Token 统计','费用统计']}],
   ['每日巡视','每日状态巡视时刻、记录与保留时长','scan-heart','manage','maintenance',{subtab:'patrol',aliases:['巡视','状态巡视']}],
   ['回复诊断','当前会话最近回复的组成、耗时与诊断详情','stethoscope','manage','maintenance',{subtab:'reply-diagnostics',aliases:['消息诊断','回复排障']}],
-  ['资料与维护','插件存储空间占用与数据清理','database','manage','data',{subtab:'storage',aliases:['存储管理','插件存储','数据清理']}],
+  ['资料与维护','插件存储空间占用、数据库体检与一键瘦身','database','manage','data',{subtab:'storage',aliases:['存储管理','插件存储','数据清理','数据库瘦身','数据库体检','一键瘦身','VACUUM']}],
+  ['性能调优','五档性能预设（自动/省内存/平衡/高性能/兼容稳妥）与高级微调','gauge','manage','data',{subtab:'tuning',aliases:['性能档位','省内存','低配机','平衡推荐','高性能','兼容稳妥','机械硬盘','HDD','卡顿','防卡顿']}],
   ['备份与还原','创建、校验与还原插件数据备份','archive','manage','data',{subtab:'backup',aliases:['备份','还原','恢复']}],
   ['旧版资料迁入','从旧版数据目录迁入角色与历史资料','folder-input','manage','data',{subtab:'migration',aliases:['迁移','旧版数据']}],
   ['配置导入导出','导出脱敏配置快照或从文件导入','arrow-up-down','manage','data',{subtab:'port',aliases:['导出配置','导入配置']}],
@@ -6906,6 +6913,9 @@ async function openSearchSetting(result){
     if(entry.group==='device.phone'){
       const details=$('.phone-advanced');
       if(details)details.open=true;
+    }
+    if(location.tuningField&&typeof window.CompanionTuningPage?.focusField==='function'){
+      window.CompanionTuningPage.focusField(location.tuningField);
     }
     if(location.selector){
       waitAndFocusTarget({root:location.root||'#shellPanel',selector:location.selector,highlight:true},jump);

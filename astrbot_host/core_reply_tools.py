@@ -939,7 +939,7 @@ class CoreReplyToolSession:
                 "operation_id": receipt.operation_id}
 
 
-def inject_core_reply_tools(event, req, *, application):
+def inject_core_reply_tools(event, req, *, application, provision_image_access: bool = True):
     """Copy the request's ToolSet and append authorized tools for this event only."""
     state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     if not isinstance(state, dict):
@@ -963,12 +963,13 @@ def inject_core_reply_tools(event, req, *, application):
         not private_chat or profile == "full" or "media" in custom_groups
     )
     if media_enabled:
-        # Consent is scoped to the exact AstrBot conversation. A new conversation id
-        # (persona switch, restart, new private session) makes every retained image
-        # capability invisible until it is provisioned for this scope again, so do it
-        # here, on the real event context, before the catalogue is filtered.
-        from .image_access import ensure_image_access
-        ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
+        if provision_image_access:
+            # Consent is scoped to the exact AstrBot conversation. A new conversation id
+            # (persona switch, restart, new private session) makes every retained image
+            # capability invisible until it is provisioned for this scope again, so do it
+            # here, on the real event context, before the catalogue is filtered.
+            from .image_access import ensure_image_access
+            ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
         offered, image_values = core_image_tools(session, session.catalog())
     else:
         offered, image_values = session.catalog(), None
@@ -1019,6 +1020,26 @@ def inject_core_reply_tools(event, req, *, application):
         req.system_prompt = (current.rstrip() + "\n\n" + KB_TOOL_INSTRUCTION).lstrip()
     inject_core_image_prompt(session, req, offered, image_values)
     return tuple(tool._action for tool in appended)
+
+
+async def inject_core_reply_tools_async(event, req, *, application):
+    """Async variant of :func:`inject_core_reply_tools` that offloads image-access SQLite I/O."""
+    state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    if not isinstance(state, dict):
+        return ()
+    session = state.get("_tool_session")
+    if (not isinstance(session, CoreReplyToolSession) or session.application is not application
+            or session.prepared is not state.get("prepared")):
+        session = CoreReplyToolSession(event, state, application)
+        state["_tool_session"] = session
+    private_chat = session.context.scope.kind is ScopeKind.PRIVATE
+    profile = session.private_tool_profile
+    custom_groups = session.private_tool_groups if profile == "custom" else frozenset()
+    media_enabled = not private_chat or profile == "full" or "media" in custom_groups
+    if media_enabled:
+        from .image_access import ensure_image_access_async
+        await ensure_image_access_async(application.runtime, session.context, observed_at=application.tasks.now())
+    return inject_core_reply_tools(event, req, application=application, provision_image_access=False)
 
 
 def inject_core_turn_notes(event, req):

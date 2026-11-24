@@ -25,6 +25,8 @@ from companion_v2.conversation.voice_markup import slice_speech, strip_singing_p
 from .voice import singsing_config_origin
 
 
+from companion_v2.storage.tuning_config import active_tts_max_concurrency
+
 MAX_CONCURRENT_TTS = 3
 
 
@@ -32,7 +34,7 @@ def _max_concurrent_tts(policy=None) -> int:
     value = getattr(policy, "max_concurrent_tts", None)
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
-    return MAX_CONCURRENT_TTS
+    return active_tts_max_concurrency(default=MAX_CONCURRENT_TTS)
 
 
 _SINGSING_INSTRUCTION = (

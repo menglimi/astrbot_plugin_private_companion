@@ -149,13 +149,18 @@ def scope_family_keys(runtime, context):
 
 def _windows(runtime, filter_sql, parameters):
     """Restore the stored turn contexts matching one SQL filter, newest first."""
-    from companion_v2.storage.native_dedup import matching_context_hashes, resolve_context_json
+    from companion_v2.storage.native_dedup import (
+        has_unhashed_context_rows,
+        matching_context_hashes,
+        resolve_context_json,
+    )
 
     seen_keys = set()
     seen_raw = set()
     for table in _WINDOW_TABLES:
         key_column = "context_key" if table == "conversation_native_turns" else "origin_key"
         row_groups = []
+        run_legacy_fallback = True
         if table == "conversation_native_turns":
             hashes = matching_context_hashes(runtime, filter_sql, tuple(parameters))
             if hashes:
@@ -172,17 +177,19 @@ def _windows(runtime, filter_sql, parameters):
                     except (sqlite3.Error, TypeError, ValueError, KeyError) as error:
                         logger.debug("[CompanionV2] 作用域家族窗口去重读取失败 table=%s error_type=%s",
                                      table, type(error).__name__)
-        try:
-            row_groups.append(runtime.read_all(f"""SELECT {key_column} AS ctx_key, context_json FROM {table} WHERE {filter_sql}
-                ORDER BY rowid DESC LIMIT ?""", (*parameters, MAX_FAMILY_WINDOWS)))
-        except (sqlite3.Error, TypeError, ValueError, KeyError) as error:
-            # A missing table or a schema drift is not fatal for a family: the
-            # remaining tables and the current window still describe the owner,
-            # but the reason must stay visible in developer logs.
-            logger.debug("[CompanionV2] 作用域家族窗口读取失败 table=%s error_type=%s",
-                         table, type(error).__name__)
-            if not row_groups:
-                continue
+            run_legacy_fallback = has_unhashed_context_rows(runtime, table)
+        if run_legacy_fallback:
+            try:
+                row_groups.append(runtime.read_all(f"""SELECT {key_column} AS ctx_key, context_json FROM {table} WHERE {filter_sql}
+                    ORDER BY rowid DESC LIMIT ?""", (*parameters, MAX_FAMILY_WINDOWS)))
+            except (sqlite3.Error, TypeError, ValueError, KeyError) as error:
+                # A missing table or a schema drift is not fatal for a family: the
+                # remaining tables and the current window still describe the owner,
+                # but the reason must stay visible in developer logs.
+                logger.debug("[CompanionV2] 作用域家族窗口读取失败 table=%s error_type=%s",
+                             table, type(error).__name__)
+                if not row_groups:
+                    continue
         for rows in row_groups:
             for row in rows:
                 ctx_key = row["ctx_key"]

@@ -926,6 +926,11 @@ class AstrBotMultiController:
         runtime = StorageRuntime.open(data_root=root / "runtime", installation_id=settings.installation_id)
         runtime.backup_directory = backup_directory
         try:
+            from .tuning_api import apply_host_performance_tuning
+            apply_host_performance_tuning(self, runtime=runtime)
+        except Exception as error:
+            logger.warning("[CompanionV2] 性能调优参数应用跳过 error_type=%s", type(error).__name__)
+        try:
             from companion_v2.expression.configuration import migrate_legacy_policy_values
             from companion_v2.expression.reaction_configuration import migrate_window_values
             migrate_legacy_policy_values(runtime)

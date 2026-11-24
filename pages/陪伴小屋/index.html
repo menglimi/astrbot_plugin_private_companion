@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=203e986873876c42">
+    <link rel="stylesheet" href="bundle.css?v=1665d2356788fef5">
 
 
 
@@ -177,8 +177,8 @@
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
     <script defer src="phone-setup.js?v=20261121"></script>
-    <script defer src="search-engine.js?v=fuzzy-search-20261123"></script>
-    <script defer src="app.js?v=fuzzy-search-20261123"></script>
+    <script defer src="search-engine.js?v=perf-tuning-20261124"></script>
+    <script defer src="app.js?v=perf-tuning-20261124"></script>
     <script defer src="role-card.js?v=role-card-20261118"></script>
     <script defer src="room-editor.js?v=room-theme-persist-20261120"></script>
     <script defer src="memory-page.js?v=memory-discard-20261112"></script>
@@ -213,7 +213,8 @@
     <script defer src="reply-diagnostics.js?v=reply-diagnostics-20261123"></script>
     <script defer src="appearance-page.js?v=account-display-preferences-20261028"></script>
     <script defer src="backup-page.js?v=data-subpages-20261008-r2"></script>
-    <script defer src="storage-page.js?v=storage-layout-20261120"></script>
+    <script defer src="storage-page.js?v=perf-tuning-20261124"></script>
+    <script defer src="tuning-page.js?v=perf-tuning-20261124"></script>
     <script defer src="understanding-page.js?v=understanding-figma-layout-20261007"></script>
     <script defer src="module-ready.js?v=module-ready-20261028"></script>
     <script>

@@ -1503,22 +1503,16 @@ class ContactSchedule:
                               "contact_worker", "failed", "contact_schedule_failed", purpose=purpose)
             return Outcome.failed("contact_schedule_failed", "automatic opportunity stopped without replaying its model task")
 
-    def _advance_judges(self, at, available):
-        """Run the outstanding persona judgements on this tick's free background slots.
-
-        A judgement is its own supervised task, submitted when the draft was
-        sealed, so it needs one background slot of its own rather than a slot
-        nested inside the contact worker. A draft whose judgement can never
-        complete (an attempt that died, an expired window) is archived as
-        withheld instead of waiting forever or being sent unjudged.
-        """
+    def _prepare_judges(self, at, available, active_judge_count, active_judge_ids):
+        """Inspect outstanding persona judgements off the event loop; return spawn specs."""
         if self.contacts.judge_runner is None or JUDGE_KIND not in self.contacts.gateway.router.profiles:
-            return
+            return ()
+        to_spawn = []
         for row in self.contacts.outstanding_judgements(limit=4):
-            if len(self._judges) >= available:
-                return
+            if active_judge_count + len(to_spawn) >= available:
+                break
             task_id = row["judge_task_id"]
-            if task_id is None or task_id in self._judges:
+            if task_id is None or task_id in active_judge_ids:
                 continue
             if row["judge_state"] in QUEUED:
                 spec = json.loads(row["judge_record"])["spec"]
@@ -1529,12 +1523,33 @@ class ContactSchedule:
                     continue
                 if not self._account_available(context):
                     continue
-                worker = asyncio.create_task(self.contacts.judge_runner.run(context, task_id),
-                                             name="companion:contact-judge:" + task_id)
-                self._judges[task_id] = worker
-                worker.add_done_callback(lambda done: self.notify())
+                to_spawn.append((context, task_id))
                 continue
             self._withhold(row, "judge_unknown", "主动人格判定没有可用结果，未判定的草稿不发送")
+        return tuple(to_spawn)
+
+    def _spawn_judges(self, candidates):
+        """Spawn asyncio tasks for prepared persona judgements on the event loop."""
+        for context, task_id in candidates:
+            if self._closed or task_id in self._judges:
+                continue
+            worker = asyncio.create_task(self.contacts.judge_runner.run(context, task_id),
+                                         name="companion:contact-judge:" + task_id)
+            self._judges[task_id] = worker
+            worker.add_done_callback(lambda done: self.notify())
+
+    def _advance_judges(self, at, available):
+        """Run the outstanding persona judgements on this tick's free background slots.
+
+        A judgement is its own supervised task, submitted when the draft was
+        sealed, so it needs one background slot of its own rather than a slot
+        nested inside the contact worker. A draft whose judgement can never
+        complete (an attempt that died, an expired window) is archived as
+        withheld instead of waiting forever or being sent unjudged.
+        """
+        candidates = self._prepare_judges(at, available, len(self._judges), frozenset(self._judges))
+        if candidates:
+            self._spawn_judges(candidates)
 
     def _withhold(self, row, failure, reason):
         with self.runtime.transaction():
@@ -1570,21 +1585,40 @@ class ContactSchedule:
             AND NOT EXISTS (SELECT 1 FROM conversation_flows newer WHERE newer.route_key = f.route_key AND newer.sequence > f.sequence)
             ORDER BY f.sequence LIMIT 16""", (cursor,))
 
-    def _begin_tick(self):
-        """Read the tick's bounded input set; no candidate source is evaluated here."""
-        if self._closed:
-            return None
-        now = self.tasks.now()
-        for context in tuple(self._maintenance_contexts.values()):
-            try:
-                preferences = self.contacts.preferences.read(context, observed_at=self.tasks.now())
-                if preferences.is_success:
-                    self.news_events.maintain(context, preferences.unwrap())
-                    if getattr(self, "exploration", None) is not None:
-                        self.exploration.maintain(context, preferences.unwrap())
-            except (TaskError, ValueError, TypeError, AttributeError):
-                # A source status must never take down the contact coordinator.
-                pass
+    def _native_rows(self, native_cursor):
+        """Fetch latest completed private native turns per context via covering index."""
+        from companion_v2.conversation.native_turns import turns_available
+
+        if not turns_available(self.runtime):
+            return ()
+        return self.runtime.read_all("""WITH RECURSIVE distinct_ctx(context_key) AS (
+                SELECT MIN(context_key) FROM conversation_native_turns
+                UNION ALL
+                SELECT (
+                    SELECT MIN(t.context_key) FROM conversation_native_turns t
+                    WHERE t.context_key > d.context_key
+                )
+                FROM distinct_ctx d
+                WHERE d.context_key IS NOT NULL
+            ),
+            latest_ids(latest_rowid) AS (
+                SELECT (
+                    SELECT t.rowid FROM conversation_native_turns t
+                    WHERE t.context_key = d.context_key
+                    ORDER BY t.observed_at DESC, t.rowid DESC
+                    LIMIT 1
+                )
+                FROM distinct_ctx d
+                WHERE d.context_key IS NOT NULL
+            )
+            SELECT n.rowid AS sequence, n.*
+            FROM latest_ids l
+            JOIN conversation_native_turns n ON n.rowid = l.latest_rowid
+            WHERE n.rowid > ? AND n.scope_kind = 'private'
+              AND n.generation_state = 'completed'
+            ORDER BY n.rowid ASC LIMIT 16""", (native_cursor,))
+
+    def _reap_completed_workers(self):
         for key, worker in tuple(self._workers.items()):
             if worker.done():
                 if not worker.cancelled():
@@ -1595,15 +1629,24 @@ class ContactSchedule:
                 if not worker.cancelled():
                     worker.result()
                 del self._judges[key]
-        require(self.tasks.check_generation())
-        if CONTACT_KIND not in self.contacts.gateway.router.profiles:
-            self._note_coordinator(self.tasks.now(), "blocked", "contact_model_unregistered")
-            return None
-        held = self.runtime.read_one("SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", ())[0]
-        available = self.tasks.limits.background_slots - held - len(self._workers) - len(self._judges)
-        self._advance_judges(self.tasks.now(), max(0, available))
-        held = self.runtime.read_one("SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", ())[0]
-        available = self.tasks.limits.background_slots - held - len(self._workers) - len(self._judges)
+
+    def _maintain_sources(self, contexts):
+        for context in contexts:
+            try:
+                preferences = self.contacts.preferences.read(context, observed_at=self.tasks.now())
+                if preferences.is_success:
+                    self.news_events.maintain(context, preferences.unwrap())
+                    if getattr(self, "exploration", None) is not None:
+                        self.exploration.maintain(context, preferences.unwrap())
+            except (TaskError, ValueError, TypeError, AttributeError):
+                # A source status must never take down the contact coordinator.
+                pass
+
+    def _finish_tick_candidates(self, now, active_workers, active_judges, cursor, native_cursor):
+        held = self.runtime.read_one(
+            "SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", (),
+        )[0]
+        available = self.tasks.limits.background_slots - held - active_workers - active_judges
         if available <= 0:
             self._note_coordinator(self.tasks.now(), "blocked", "background_capacity_exhausted")
             return None
@@ -1611,17 +1654,54 @@ class ContactSchedule:
         if retained >= self.tasks.limits.retained_tasks:
             self._note_coordinator(self.tasks.now(), "blocked", "task_storage_full")
             return None
-        legacy_rows = self._legacy_rows(self._cursor)
-        from companion_v2.conversation.native_turns import project, turns_available
-        native_rows = self.runtime.read_all("""SELECT n.rowid AS sequence, n.* FROM conversation_native_turns n
-            WHERE n.rowid > ? AND n.scope_kind = 'private'
-            AND n.generation_state = 'completed'
-            AND NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
-                WHERE newer.context_key = n.context_key
-                AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
-            ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
+        legacy_rows = self._legacy_rows(cursor)
+        native_rows = self._native_rows(native_cursor)
+        from companion_v2.conversation.native_turns import project
         rows = (*legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
         return now, rows, available, len(legacy_rows), len(native_rows)
+
+    def _begin_tick_offload(self, maintenance_contexts, active_workers, active_judges,
+                            active_judge_ids, cursor, native_cursor):
+        """Run tick SQLite reads off the event loop; return pending judges or ready candidates."""
+        if self._closed:
+            return ("ready", None)
+        now = self.tasks.now()
+        self._maintain_sources(maintenance_contexts)
+        require(self.tasks.check_generation())
+        if CONTACT_KIND not in self.contacts.gateway.router.profiles:
+            self._note_coordinator(self.tasks.now(), "blocked", "contact_model_unregistered")
+            return ("ready", None)
+        held = self.runtime.read_one(
+            "SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", (),
+        )[0]
+        available = self.tasks.limits.background_slots - held - active_workers - active_judges
+        pending_judges = self._prepare_judges(
+            self.tasks.now(), max(0, available), active_judges, active_judge_ids,
+        )
+        if pending_judges:
+            return ("judges", now, pending_judges)
+        return ("ready", self._finish_tick_candidates(now, active_workers, active_judges, cursor, native_cursor))
+
+    def _begin_tick(self):
+        """Read the tick's bounded input set; no candidate source is evaluated here."""
+        if self._closed:
+            return None
+        self._reap_completed_workers()
+        phase = self._begin_tick_offload(
+            tuple(self._maintenance_contexts.values()),
+            len(self._workers),
+            len(self._judges),
+            frozenset(self._judges),
+            self._cursor,
+            self._native_cursor,
+        )
+        if phase[0] == "judges":
+            _, now, pending_judges = phase
+            self._spawn_judges(pending_judges)
+            return self._finish_tick_candidates(
+                now, len(self._workers), len(self._judges), self._cursor, self._native_cursor,
+            )
+        return phase[1]
 
     def _plan_one(self, row, now):
         """Evaluate one candidate off the write transaction."""
@@ -1712,13 +1792,39 @@ class ContactSchedule:
         self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
 
     async def advance_async(self):
-        """Keep each source scan off AstrBot's event loop; activation stays on it."""
+        """Keep tick preparation and each source scan off the event loop; activation stays on it."""
         if self._closed or self._advancing:
             return
         self._advancing = True
         try:
-            prepared = self._begin_tick()
-            if prepared is None:
+            self._reap_completed_workers()
+            if self._closed:
+                return
+            phase = await asyncio.to_thread(
+                self._begin_tick_offload,
+                tuple(self._maintenance_contexts.values()),
+                len(self._workers),
+                len(self._judges),
+                frozenset(self._judges),
+                self._cursor,
+                self._native_cursor,
+            )
+            if self._closed:
+                return
+            if phase[0] == "judges":
+                _, now, pending_judges = phase
+                self._spawn_judges(pending_judges)
+                prepared = await asyncio.to_thread(
+                    self._finish_tick_candidates,
+                    now,
+                    len(self._workers),
+                    len(self._judges),
+                    self._cursor,
+                    self._native_cursor,
+                )
+            else:
+                prepared = phase[1]
+            if prepared is None or self._closed:
                 return
             now, rows, available, legacy_count, native_count = prepared
             exhausted = True
@@ -1749,7 +1855,10 @@ class ContactSchedule:
                     self._cursor = 0
                 if native_count < 16:
                     self._native_cursor = 0
-            self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
+            if not self._closed:
+                await asyncio.to_thread(
+                    self._note_coordinator, self.tasks.now(), "running", "contact_schedule_running",
+                )
         finally:
             self._advancing = False
         self._planning = None

@@ -178,9 +178,9 @@ test("contact-page.css：修复拨盘区 170px 挤压、素材工具栏溢出与
   assert.match(css, /calc\(\s*var\(--sp-1\)\s*\*\s*-1\s*\)/);
 });
 
-test("maintenance-page.css：4 列页签导航、缓存/联动容器折行与高对比语义色", () => {
+test("maintenance-page.css：5 列页签导航、缓存/联动容器折行与高对比语义色", () => {
   const css = stripComments(read("pages/陪伴小屋/maintenance-page.css"));
-  assert.match(css, /\.data-page-nav\s*\{[^}]*repeat\(\s*4\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
+  assert.match(css, /\.data-page-nav\s*\{[^}]*repeat\(\s*5\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
   assert.match(css, /@container\s+maint-cache\s*\(\s*max-width:\s*960px\s*\)[\s\S]*?\.maint-cache-split/);
   assert.match(css, /\.maint-memory-linkage\s+dl\s*\{[^}]*repeat\(\s*auto-fit\s*,\s*minmax\(\s*min\(\s*130px\s*,\s*100%\s*\)\s*,\s*1fr\s*\)\)/);
   assert.match(css, /\.maint-cache-donut\s+strong\s*\{[^}]*color:\s*var\(--t-ok-ink\)/);

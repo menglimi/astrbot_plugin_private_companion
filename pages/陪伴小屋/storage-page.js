@@ -2,8 +2,10 @@
 
 window.CompanionStoragePage = (() => {
   const ROUTE = "storage";
+  const HEALTH_ROUTE = "storage/health";
+  const COMPACT_ROUTE = "storage/compact";
   const text = value => String(value ?? "").replace(/[&<>"']/g,
-    character => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[character]));
+    character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[character]));
   const formatBytes = value => {
     const size = Number(value);
     if (!Number.isFinite(size) || size <= 0) return "0 B";
@@ -13,13 +15,45 @@ window.CompanionStoragePage = (() => {
     return `${(size / 1024 ** 3).toFixed(2)} GB`;
   };
   const labels = {database: "运行资料", backups: "备份快照", other: "其他文件"};
+  const DB_LABELS = {
+    main: "主数据库",
+    semantic_catalog: "语义与表情库",
+    memory_search: "记忆检索索引",
+    telemetry_archive: "冷遥测归档库",
+    native_image: "生图制品库",
+    configuration: "配置库",
+  };
   let root = null, bridge = null, version = 0;
-  let state = {loading: true, busy: false, error: false, message: "", status: null,
-    form: {path: "", backup_path: "", retention_count: 10, retention_days: 90,
-      auto_backup_enabled: false, auto_backup_interval_minutes: 1440}, confirming: false};
+  let state = emptyState();
+
+  function emptyState() {
+    return {
+      loading: true,
+      busy: false,
+      healthLoading: false,
+      compacting: false,
+      error: false,
+      message: "",
+      status: null,
+      health: null,
+      healthError: "",
+      compactSummary: null,
+      confirming: false,
+      confirmingVacuum: false,
+      form: {
+        path: "",
+        backup_path: "",
+        retention_count: 10,
+        retention_days: 90,
+        auto_backup_enabled: false,
+        auto_backup_interval_minutes: 1440,
+      },
+    };
+  }
 
   function live(ticket) { return ticket === version && root?.isConnected; }
   function stop() { version += 1; root = null; bridge = null; }
+
   function sizeBar(status) {
     const categories = status?.inventory?.categories || {};
     const total = Number(status?.inventory?.total_bytes) || 0;
@@ -33,6 +67,140 @@ window.CompanionStoragePage = (() => {
     ).join("");
     return `<div class="storage-usage-bar" role="img" aria-label="插件存储占用 ${formatBytes(total)}">${segments || "<span></span>"}</div><div class="storage-usage-legend">${legend}</div>`;
   }
+
+  function renderHealthCard() {
+    const health = state.health;
+    const disabled = state.busy || state.compacting;
+    if (!health && state.healthLoading) {
+      return `<section class="storage-health-card" data-db-health-card aria-label="数据库体检与一键瘦身">
+        <div class="storage-health-head">
+          <div class="storage-health-title"><h4>数据库体检与一键瘦身</h4><span class="storage-health-badge is-subtle">正在体检…</span></div>
+          <div class="storage-health-head-actions"><a class="button small" href="#manage/data/tuning">性能调优</a></div>
+        </div>
+        <p class="storage-health-hint">正在扫描主库与副库体积、重复上下文、冷遥测明细和空闲页碎片…</p>
+      </section>`;
+    }
+
+    if (!health) {
+      const note = state.healthError || "尚未读取到运行中的数据库体检报告；可点击「立即体检」刷新。";
+      return `<section class="storage-health-card" data-db-health-card aria-label="数据库体检与一键瘦身">
+        <div class="storage-health-head">
+          <div class="storage-health-title"><h4>数据库体检与一键瘦身</h4><span class="storage-health-badge is-subtle">待体检</span></div>
+          <div class="storage-health-head-actions">
+            <button class="button small" type="button" data-db-health-refresh${disabled ? " disabled" : ""}>立即体检</button>
+            <a class="button small" href="#manage/data/tuning">性能调优</a>
+          </div>
+        </div>
+        <p class="storage-health-hint">${text(note)}</p>
+      </section>`;
+    }
+
+    const opp = health.opportunities || {};
+    const dedupCount = (Number(opp.un_deduped_native_turns) || 0)
+      + (Number(opp.un_deduped_native_observations) || 0)
+      + (Number(opp.un_deduped_core_observations) || 0);
+    const coldCount = (Number(opp.cold_core_observations) || 0) + (Number(opp.cold_laya_payloads) || 0);
+    const mediaCount = (Number(opp.inline_conversation_images) || 0)
+      + (Number(opp.inline_reaction_blobs) || 0)
+      + (Number(opp.inline_native_image_blobs) || 0);
+    const reclaimBytes = Number(health.total_reclaimable_bytes) || 0;
+    const totalOppCount = dedupCount + coldCount + mediaCount;
+    const fragPct = Math.round((Number(health.max_fragmentation_ratio) || 0) * 100);
+    const recommended = health.status === "compact_recommended";
+    const ttlDays = Number(health.telemetry_ttl_days) || 14;
+    const canVacuum = health.can_full_vacuum !== false;
+    const vacuumReqText = formatBytes(health.vacuum_required_bytes);
+    const diskFreeText = health.disk_free_bytes == null ? "—" : formatBytes(health.disk_free_bytes);
+
+    const dbChips = Object.entries(health.databases || {})
+      .filter(([, item]) => item && item.exists)
+      .map(([name, item]) => {
+        const walPart = Number(item.wal_bytes) > 0 ? ` · WAL ${formatBytes(item.wal_bytes)}` : "";
+        return `<span class="storage-health-db-chip"><span>${text(DB_LABELS[name] || name)}</span><strong>${formatBytes(item.total_bytes)}</strong><span>${text(walPart)}</span></span>`;
+      }).join("");
+
+    const recs = Array.isArray(health.recommendations) && health.recommendations.length
+      ? `<ul class="storage-health-recs">${health.recommendations.map(item => `<li>${text(item.label)}</li>`).join("")}</ul>`
+      : "";
+
+    const vacuumConfirm = state.confirmingVacuum
+      ? `<div class="storage-vacuum-confirm" role="region" aria-label="深度重组确认">
+          <p><strong>确认执行深度整理压缩（全量 VACUUM）？</strong></p>
+          <p>该操作会将已释放的空闲页彻底压缩为更小的硬盘文件，执行期间会短暂暂停写入数秒；所在磁盘需预留至少 <strong>${text(vacuumReqText)}</strong>（约为当前主库的 2.2 倍）。</p>
+          ${!canVacuum ? `<p>当前可用磁盘空间（${text(diskFreeText)}）低于安全要求，请先释放磁盘空间或改用「一键常规无损瘦身」。</p>` : ""}
+          <div class="storage-health-buttons">
+            <button class="button primary small" type="button" data-db-compact-vacuum-confirm${disabled || !canVacuum ? " disabled" : ""}>确认执行深度重组</button>
+            <button class="button small" type="button" data-db-compact-vacuum-cancel${state.compacting ? " disabled" : ""}>取消</button>
+          </div>
+        </div>`
+      : "";
+
+    const summary = state.compactSummary;
+    const summaryBanner = summary
+      ? `<div class="storage-compact-summary" data-db-compact-summary role="status">
+          <strong>${summary.vacuum ? "深度重组完成" : "常规无损瘦身完成"}（耗时 ${(summary.elapsedMs / 1000).toFixed(1)} 秒）：瘦身前 ${formatBytes(summary.beforeBytes)} → 瘦身后 ${formatBytes(summary.afterBytes)}，已释放 ${formatBytes(summary.reclaimedBytes)}</strong>
+          <span>${text(summary.detail)}</span>
+        </div>`
+      : "";
+
+    return `<section class="storage-health-card" data-db-health-card aria-label="数据库体检与一键瘦身">
+      <div class="storage-health-head">
+        <div class="storage-health-title">
+          <h4>数据库体检与一键瘦身</h4>
+          <span class="storage-health-badge${recommended ? " is-warn" : ""}">${recommended ? "建议瘦身" : "状态良好"}</span>
+        </div>
+        <div class="storage-health-head-actions">
+          <button class="button small" type="button" data-db-health-refresh${disabled ? " disabled" : ""}>重新体检</button>
+          <a class="button small" href="#manage/data/tuning">性能调优</a>
+        </div>
+      </div>
+
+      <div class="storage-health-kpis">
+        <div class="storage-health-kpi">
+          <span>数据库总占用</span>
+          <strong>${formatBytes(health.total_sqlite_bytes)}</strong>
+          <small>含主库、副库与 WAL 日志</small>
+        </div>
+        <div class="storage-health-kpi">
+          <span>可回收空闲页</span>
+          <strong>${formatBytes(reclaimBytes)}</strong>
+          <small>最高碎片率 ${fragPct}%</small>
+        </div>
+        <div class="storage-health-kpi">
+          <span>待优化记录</span>
+          <strong>${totalOppCount} 项</strong>
+          <small>去重 / 冷归档 / 外置媒体</small>
+        </div>
+        <div class="storage-health-kpi">
+          <span>所在磁盘可用</span>
+          <strong>${text(diskFreeText)}</strong>
+          <small>${canVacuum ? `满足深度重组（需 ≥ ${text(vacuumReqText)}）` : `深度重组需 ≥ ${text(vacuumReqText)}`}</small>
+        </div>
+      </div>
+
+      ${dbChips ? `<div class="storage-health-dbs">${dbChips}</div>` : ""}
+
+      <div class="storage-health-opps">
+        <div class="storage-health-opp${dedupCount > 0 ? " has-work" : ""}"><span>重复上下文 / 人设提示词去重</span><strong>${dedupCount > 0 ? `${dedupCount} 条可优化` : "已最简"}</strong></div>
+        <div class="storage-health-opp${coldCount > 0 ? " has-work" : ""}"><span>冷遥测明细归档（超 ${ttlDays} 天）</span><strong>${coldCount > 0 ? `${coldCount} 条可归档` : "无需归档"}</strong></div>
+        <div class="storage-health-opp${mediaCount > 0 ? " has-work" : ""}"><span>库内图片 / 表情外置到文件系统</span><strong>${mediaCount > 0 ? `${mediaCount} 项可外置` : "已外置"}</strong></div>
+        <div class="storage-health-opp${reclaimBytes >= 4 * 1024 * 1024 ? " has-work" : ""}"><span>数据库空闲页回收</span><strong>${reclaimBytes > 0 ? formatBytes(reclaimBytes) : "无冗余页"}</strong></div>
+      </div>
+
+      ${recs}
+      ${summaryBanner}
+      ${vacuumConfirm}
+
+      <div class="storage-health-actions">
+        <p class="storage-health-hint">常规无损瘦身全程在线执行、不中断聊天且零数据丢失；需要进一步缩小硬盘文件体积时，再使用全量深度重组。</p>
+        <div class="storage-health-buttons">
+          <button class="button primary small" type="button" data-db-compact-normal${disabled ? " disabled" : ""}>${state.compacting ? "正在瘦身…" : "一键常规无损瘦身（推荐）"}</button>
+          <button class="button small" type="button" data-db-compact-vacuum-review${disabled ? " disabled" : ""}>深度整理压缩（全量重组）</button>
+        </div>
+      </div>
+    </section>`;
+  }
+
   function render() {
     if (!root) return;
     if (state.loading) {
@@ -63,6 +231,7 @@ window.CompanionStoragePage = (() => {
         <header class="storage-usage-header"><div><span>插件资料占用</span><strong>${formatBytes(inventory.total_bytes)}</strong></div><div><span>${status?.restart_required ? "目标磁盘可用" : "所在磁盘可用"}</span><strong>${diskFree}</strong></div></header>
         ${sizeBar(status)}
       </section>
+      ${renderHealthCard()}
       <form class="storage-settings" data-storage-form>
         <section class="storage-panel"><h4>存储位置</h4><div class="storage-location-grid">
           <label class="storage-path-field"><span class="storage-field-label">运行资料位置 <em>重启生效</em></span><input name="path" type="text" autocomplete="off" spellcheck="false" placeholder="留空使用 AstrBot 默认目录" value="${text(state.form.path)}"><small>填写其他磁盘上的绝对目录。</small>${locationState}</label>
@@ -100,6 +269,7 @@ window.CompanionStoragePage = (() => {
       ${message}
     </div>`;
   }
+
   async function getBridge() {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       if (window.AstrBotPluginPage?.apiGet) return window.AstrBotPluginPage;
@@ -107,9 +277,10 @@ window.CompanionStoragePage = (() => {
     }
     throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable"});
   }
-  async function call(method, body) {
+
+  async function call(method, body, route = ROUTE) {
     bridge = bridge || await getBridge();
-    const response = await (method === "GET" ? bridge.apiGet(ROUTE) : bridge.apiPost(ROUTE, body));
+    const response = await (method === "GET" ? bridge.apiGet(route) : bridge.apiPost(route, body));
     const wrapped = ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
       : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
     if (wrapped?.status === "error") {
@@ -122,22 +293,57 @@ window.CompanionStoragePage = (() => {
     }
     return result;
   }
+
+  function isHealthReport(payload) {
+    return Boolean(payload && typeof payload === "object"
+      && payload.databases && typeof payload.databases === "object"
+      && payload.opportunities && typeof payload.opportunities === "object");
+  }
+
+  async function loadHealth(ticket = version, {silent = false} = {}) {
+    state.healthLoading = true;
+    if (!silent) render();
+    try {
+      const report = await call("GET", null, HEALTH_ROUTE);
+      if (!live(ticket)) return;
+      if (isHealthReport(report)) {
+        state.health = report;
+        state.healthError = "";
+      } else {
+        state.health = null;
+        state.healthError = "";
+      }
+    } catch (error) {
+      if (!live(ticket)) return;
+      state.health = null;
+      state.healthError = error.code === "staging_not_initialized"
+        ? "插件运行档尚未加载，启动后即可执行数据库体检与瘦身。"
+        : "数据库体检暂不可用，请稍后重试。";
+    }
+    state.healthLoading = false;
+    render();
+  }
+
   async function load(ticket = version) {
     state.loading = true;
     render();
     try {
-      const result = await call("GET");
+      const result = await call("GET", null, ROUTE);
       if (!live(ticket)) return;
       state.status = result;
-      state.form = {path: result.selected_path || "",
+      state.form = {
+        path: result.selected_path || "",
         backup_path: result.selected_backup_path || "",
         retention_count: result.policy?.retention_count ?? 10,
         retention_days: result.policy?.retention_days ?? 90,
         auto_backup_enabled: result.auto_backup?.auto_backup_enabled ?? false,
-        auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? 1440};
+        auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? 1440,
+      };
       state.loading = false;
       state.error = false;
       state.message = "";
+      render();
+      loadHealth(ticket, {silent: true});
     } catch (error) {
       if (!live(ticket)) return;
       state.loading = false;
@@ -145,24 +351,101 @@ window.CompanionStoragePage = (() => {
       state.message = error.code === "dashboard_identity_required" ? "请从 AstrBot 管理界面登录后查看。"
         : error.code === "storage_location_unavailable" ? "存储磁盘暂不可用；资料不会自动写回默认位置。"
         : "插件存储读取失败，请重试并检查管理界面连接。";
+      render();
     }
+  }
+
+  function formatCompactDetail(steps) {
+    const parts = [];
+    const dedup = steps?.dedup || {};
+    const dedupTotal = (Number(dedup.role_blobs_migrated) || 0)
+      + (Number(dedup.turn_contexts_migrated) || 0)
+      + (Number(dedup.obs_contexts_migrated) || 0)
+      + (Number(dedup.core_contexts_migrated) || 0);
+    if (dedupTotal > 0) parts.push(`上下文/人设去重 ${dedupTotal} 条`);
+    const arch = steps?.archive || {};
+    const archTotal = (Number(arch.core_observations_archived) || 0)
+      + (Number(arch.laya_payloads_archived) || 0);
+    if (archTotal > 0) parts.push(`冷遥测归档 ${archTotal} 条`);
+    const media = steps?.media_offload || {};
+    const mediaTotal = (Number(media.conversation_images?.migrated) || 0)
+      + (Number(media.reactions?.migrated) || 0)
+      + (Number(media.native_images?.migrated) || 0);
+    if (mediaTotal > 0) parts.push(`媒体外置 ${mediaTotal} 项`);
+    const mainVac = steps?.vacuum?.main || {};
+    if (mainVac.vacuumed) parts.push("已完成主库全量重组");
+    else if ((Number(mainVac.freed_pages) || 0) > 0) parts.push(`增量回收 ${mainVac.freed_pages} 页`);
+    return parts.length ? parts.join(" · ") : "数据库已处于紧凑健康状态，已同步刷新索引统计。";
+  }
+
+  async function runCompaction({vacuum = false} = {}, ticket = version) {
+    state.compacting = true;
+    state.confirmingVacuum = false;
+    state.message = "";
+    state.error = false;
+    render();
+    try {
+      const result = await call("POST", {
+        vacuum: Boolean(vacuum),
+        dedup_native: true,
+        archive_telemetry: true,
+        offload_media: true,
+      }, COMPACT_ROUTE);
+      if (!live(ticket)) return;
+      const beforeBytes = Number(result.before?.total_sqlite_bytes) || 0;
+      const afterBytes = Number(result.after?.total_sqlite_bytes) || 0;
+      const reclaimedBytes = Number(result.reclaimed_sqlite_bytes) || Math.max(0, beforeBytes - afterBytes);
+      state.compactSummary = {
+        vacuum: Boolean(vacuum),
+        beforeBytes,
+        afterBytes,
+        reclaimedBytes,
+        elapsedMs: Number(result.elapsed_ms) || 0,
+        detail: formatCompactDetail(result.steps),
+      };
+      if (isHealthReport(result.after)) {
+        state.health = result.after;
+      }
+      state.error = false;
+      state.message = `数据库瘦身完成：${formatBytes(beforeBytes)} → ${formatBytes(afterBytes)}，释放 ${formatBytes(reclaimedBytes)}。`;
+      try {
+        const refreshed = await call("GET", null, ROUTE);
+        if (live(ticket) && refreshed?.inventory) state.status = refreshed;
+      } catch {}
+    } catch (error) {
+      if (!live(ticket)) return;
+      state.error = true;
+      const code = error.code || "";
+      const messages = {
+        storage_insufficient_disk_for_vacuum: error.message || "磁盘剩余空间不足（需至少 2.2 倍主库空间），无法执行全量深度重组；请改用常规无损瘦身或先清理磁盘。",
+        staging_not_initialized: "插件运行档尚未加载，请先初始化后再执行数据库瘦身。",
+        dashboard_identity_required: "请从已登录的 AstrBot 管理页面执行数据库瘦身。",
+        core_access_required: "当前管理身份没有执行数据库瘦身的权限。",
+      };
+      state.message = messages[code] || "数据库瘦身未能完成，请稍后重试。";
+      if (code && !state.message.includes(code)) state.message += `（${code}）`;
+    }
+    state.compacting = false;
     render();
   }
+
   async function update(body, ticket = version) {
     state.busy = true;
     state.message = "";
     render();
     try {
-      const result = await call("POST", body);
+      const result = await call("POST", body, ROUTE);
       if (!live(ticket)) return;
       if (result.inventory) {
         state.status = result;
-        state.form = {path: result.selected_path || "",
+        state.form = {
+          path: result.selected_path || "",
           backup_path: result.selected_backup_path || "",
           retention_count: result.policy?.retention_count ?? state.form.retention_count,
           retention_days: result.policy?.retention_days ?? state.form.retention_days,
           auto_backup_enabled: result.auto_backup?.auto_backup_enabled ?? state.form.auto_backup_enabled,
-          auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? state.form.auto_backup_interval_minutes};
+          auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? state.form.auto_backup_interval_minutes,
+        };
       }
       const cache = result.cache_result || {};
       const cleanup = result.cleanup_result || {};
@@ -192,13 +475,12 @@ window.CompanionStoragePage = (() => {
     state.busy = false;
     render();
   }
+
   function mount(node) {
     stop();
     root = node;
     const ticket = version;
-    state = {loading: true, busy: false, error: false, message: "", status: null,
-      form: {path: "", backup_path: "", retention_count: 10, retention_days: 90,
-      auto_backup_enabled: false, auto_backup_interval_minutes: 1440}, confirming: false};
+    state = emptyState();
     root.addEventListener("input", event => {
       if (event.target?.name === "auto_backup_interval_minutes") state.form.auto_backup_interval_minutes = event.target.value;
       if (event.target?.name === "path") state.form.path = event.target.value;
@@ -209,15 +491,19 @@ window.CompanionStoragePage = (() => {
     root.addEventListener("submit", event => {
       if (!event.target?.matches("[data-storage-form]")) return;
       event.preventDefault();
-      update({action: "save", path: String(state.form.path || "").trim(),
+      update({
+        action: "save",
+        path: String(state.form.path || "").trim(),
         backup_path: String(state.form.backup_path || "").trim(),
-        retention_count: Number(state.form.retention_count), retention_days: Number(state.form.retention_days),
+        retention_count: Number(state.form.retention_count),
+        retention_days: Number(state.form.retention_days),
         auto_backup_enabled: state.form.auto_backup_enabled,
-        auto_backup_interval_minutes: Number(state.form.auto_backup_interval_minutes)}, ticket);
+        auto_backup_interval_minutes: Number(state.form.auto_backup_interval_minutes),
+      }, ticket);
     });
     root.addEventListener("click", event => {
       const button = event.target?.closest("button");
-      if (!button || state.busy) return;
+      if (!button || state.busy || state.compacting) return;
       if (button.hasAttribute("data-storage-auto-toggle")) {
         state.form.auto_backup_enabled = !state.form.auto_backup_enabled;
         button.setAttribute("aria-checked", String(state.form.auto_backup_enabled));
@@ -227,6 +513,11 @@ window.CompanionStoragePage = (() => {
       else if (button.hasAttribute("data-storage-clean-review")) { state.confirming = true; render(); }
       else if (button.hasAttribute("data-storage-clean-cancel")) { state.confirming = false; render(); }
       else if (button.hasAttribute("data-storage-clean-confirm")) update({action: "clean"}, ticket);
+      else if (button.hasAttribute("data-db-health-refresh")) loadHealth(ticket);
+      else if (button.hasAttribute("data-db-compact-normal")) runCompaction({vacuum: false}, ticket);
+      else if (button.hasAttribute("data-db-compact-vacuum-review")) { state.confirmingVacuum = true; render(); }
+      else if (button.hasAttribute("data-db-compact-vacuum-cancel")) { state.confirmingVacuum = false; render(); }
+      else if (button.hasAttribute("data-db-compact-vacuum-confirm")) runCompaction({vacuum: true}, ticket);
     });
     render();
     load(ticket);

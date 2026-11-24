@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from companion_v2.storage.image_payloads import image_extension
-from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+from companion_v2.storage.sqlite_tuning import active_sqlite_tuning_profile, apply_sidecar_pragmas
 
 from .types import NativeImageError, document, fingerprint, inspect_image
 
@@ -41,12 +41,12 @@ _SCHEMA_STATEMENTS = (
 class ImageStore:
     BUSY_TIMEOUT_MS = 5000
 
-    def __init__(self, directory: Path, generation: str | None, *, identity_key: str):
+    def __init__(self, directory: Path, generation: str | None, *, identity_key: str, profile=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / "native_image.sqlite3"
         self.runtime_id = uuid4().hex
-        self._profile = tuning_profile()
+        self._explicit_profile = profile
         is_new = not self.path.exists()
         with self.db(enable_wal=True, set_incremental_vacuum=is_new) as db:
             for statement in _SCHEMA_STATEMENTS:
@@ -58,6 +58,10 @@ class ImageStore:
             db.execute("INSERT INTO runtime(singleton,generation) VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation", (self.runtime_id,))
             db.execute("UPDATE operations SET state=CASE WHEN state='prepared' THEN 'stopped' ELSE 'unknown' END, "
                        "error='runtime_restarted',updated=? WHERE state IN ('prepared','dispatching')", (time.time(),))
+
+    @property
+    def _profile(self):
+        return self._explicit_profile or active_sqlite_tuning_profile()
 
     @property
     def media_root(self) -> Path:
@@ -361,7 +365,7 @@ def migrate_native_image_store_at(directory: Path | str, *, batch_size: int = 64
     db_path = base_dir / "native_image.sqlite3"
     if not db_path.is_file():
         return {"migrated": 0, "already_file_backed": 0, "bytes_offloaded": 0}
-    profile = tuning_profile()
+    profile = active_sqlite_tuning_profile()
     media_root = base_dir / "media" / "images"
     chunk = max(8, int(batch_size))
     migrated = 0

@@ -18,7 +18,11 @@ def _distinct_role_private_contexts(runtime, context):
     """Collect distinct private TaskContexts for this role, deduplicating before JSON decode."""
     if context.scope.kind is not ScopeKind.PRIVATE:
         return ()
-    from companion_v2.storage.native_dedup import matching_context_hashes, resolve_context_json
+    from companion_v2.storage.native_dedup import (
+        has_unhashed_context_rows,
+        matching_context_hashes,
+        resolve_context_json,
+    )
 
     scope_filter = """json_extract(context_json, '$.role_binding.role.subject_id') = ?
         AND json_extract(context_json, '$.role_binding.scope.bot_id') = ?
@@ -42,11 +46,12 @@ def _distinct_role_private_contexts(runtime, context):
                 f"WHERE kind = 'input' AND context_hash IN ({marks}) ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
                 chunk,
             ))
-    queries.append((
-        "SELECT context_key AS ctx_key, context_json FROM conversation_native_observations WHERE kind = 'input' AND "
-        + scope_filter + " ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
-        parameters,
-    ))
+    if has_unhashed_context_rows(runtime, "conversation_native_observations", kind="input"):
+        queries.append((
+            "SELECT context_key AS ctx_key, context_json FROM conversation_native_observations WHERE kind = 'input' AND "
+            + scope_filter + " ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
+            parameters,
+        ))
     seen_keys = set()
     seen_raw = set()
     distinct = []

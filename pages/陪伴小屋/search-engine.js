@@ -254,7 +254,7 @@
     ["一起房间", "共处电话", "一起看", "一起读", "小说", "together"],
     ["现实触及", "叫醒", "闹钟", "reality"],
     ["群聊", "插话", "复读", "接话", "旁听", "话题线", "interjection"],
-    ["性能模式", "低配", "省内存", "精简模式", "轻量模式", "performance"],
+    ["性能模式", "低配", "低配机", "省内存", "精简模式", "轻量模式", "性能调优", "性能档位", "兼容稳妥", "机械硬盘", "hdd", "nas", "卡顿", "防卡顿", "流畅", "performance", "tuning"],
     ["分段", "拆句", "多条发送", "segmentation", "segment"],
     ["表情", "表情包", "贴纸", "reaction", "emoji"],
     ["联网", "搜索服务", "网页搜索", "deepseek"],
@@ -264,6 +264,8 @@
     ["合并转发", "转发消息", "forward", "forward_intake"],
     ["撤回", "防撤回", "recall"],
     ["存储", "清理", "缓存", "磁盘", "storage"],
+    ["数据库瘦身", "数据库体检", "一键瘦身", "瘦身", "体检", "压缩", "释放空间", "空闲页", "vacuum", "去重", "冷归档", "compact"],
+    ["连库数", "查库通道", "连接池", "内存映射", "mmap", "写盘策略", "synchronous", "wal", "写入合并", "后台并发", "语音并发"],
   ];
 
   /* Precompile synonym map & pinyin for synonym phrases. */
@@ -871,7 +873,7 @@
       return { next: "manage", tab: "data", subtab: "storage", root: "#storageWorkspace" };
     }
     if (section === "performance") {
-      return { next: "manage", tab: "appearance", root: "#appearanceWorkspace" };
+      return { next: "manage", tab: "data", subtab: "tuning", root: "#tuningWorkspace", selector: "[data-tuning-lite-card]" };
     }
     if (section === "multi_host" || section === "staging" || section === "target") {
       return { next: "manage", tab: "host", workspaceFocus: { workspace: "host", selector: "#binding-editor-heading" } };
@@ -1137,7 +1139,7 @@
         aliases: ["密度", "圆角", "字号", "大字模式", "减少动效", "动效"],
         location: { next: "manage", tab: "appearance", root: "#appearanceWorkspace", selector: "[data-ap-dim]" },
       },
-      /* 4b. storage-page.js */
+      /* 4b. storage-page.js & tuning-page.js */
       {
         group: "storage.page",
         groupTitle: "资料与维护",
@@ -1153,6 +1155,17 @@
         group: "storage.page",
         groupTitle: "资料与维护",
         section: "storage",
+        sectionTitle: "数据库体检与瘦身",
+        field: "storage_database_health_compaction",
+        label: "数据库体检与一键瘦身",
+        help: "扫描主库与副库体积、重复上下文、冷遥测明细和空闲页碎片，支持在线常规无损瘦身与全量深度重组（VACUUM）。",
+        aliases: ["数据库瘦身", "数据库体检", "一键瘦身", "瘦身", "体检", "压缩", "释放空间", "清理空闲页", "VACUUM", "SQLite 瘦身", "重复上下文去重", "冷遥测归档"],
+        location: { next: "manage", tab: "data", subtab: "storage", root: "#storageWorkspace", selector: "[data-db-health-card]" },
+      },
+      {
+        group: "storage.page",
+        groupTitle: "资料与维护",
+        section: "storage",
         sectionTitle: "插件存储管理",
         field: "storage_auto_cleanup",
         label: "开启定期自动清理旧记录与临时文件",
@@ -1160,6 +1173,40 @@
         aliases: ["自动清理开关", "定时清理"],
         location: { next: "manage", tab: "data", subtab: "storage", root: "#storageWorkspace", selector: "[data-storage-auto-toggle]" },
       },
+      {
+        group: "tuning.page",
+        groupTitle: "资料与维护",
+        section: "tuning",
+        sectionTitle: "性能调优",
+        field: "performance_tuning_profile",
+        label: "性能调优档位（自动 / 省内存 / 平衡 / 高性能 / 兼容稳妥）",
+        help: "自动识别本机内存（含容器限额）与 CPU 核心数并推荐档位，支持五档一键切换、机械硬盘兼容稳妥模式与防爆内存保护。",
+        aliases: ["性能调优", "性能档位", "自动推荐", "省内存轻量化", "省内存", "低配机", "平衡推荐", "高性能流畅", "高性能", "兼容稳妥", "机械硬盘", "HDD", "NAS", "卡顿", "防卡顿", "auto", "eco", "balanced", "turbo", "compat"],
+        location: { next: "manage", tab: "data", subtab: "tuning", root: "#tuningWorkspace", selector: "[data-tuning-profiles]" },
+      },
+      ...[
+        ["cache_size_mb", "主库内存缓存", "数据库读写", "调大翻聊天记录和状态更快但多占内存；调小更省内存。", ["主库缓存", "SQLite缓存", "cache_size", "内存缓存"]],
+        ["sidecar_cache_size_mb", "副库内存缓存", "数据库读写", "图库、语义索引与归档等附属库的内存缓存大小。", ["副库缓存", "附属库缓存", "sidecar_cache"]],
+        ["mmap_size_mb", "数据库内存映射", "数据库读写", "固态硬盘大库调大可显著提速；设为 0 最省内存且适合机械硬盘与网络盘。", ["内存映射", "mmap", "mmap_size"]],
+        ["sidecar_mmap_size_mb", "副库内存映射", "数据库读写", "附属库内存映射上限；设为 0 兼容老旧磁盘与小内存设备。", ["副库映射", "sidecar_mmap"]],
+        ["reader_pool_size", "同时查库通道数", "数据库读写", "允许多个页面或群聊并发查库；机械硬盘建议调小防磁头争抢。", ["连库数", "读连接池", "只读连接", "reader_pool_size"]],
+        ["journal_size_limit_mb", "写入日志截断阈值", "数据库读写", "WAL 临时写入日志超过阈值后自动截断合并回主库。", ["WAL上限", "日志截断", "journal_size_limit"]],
+        ["synchronous", "写盘安全策略", "数据库读写", "常规（NORMAL）兼顾速度与日常安全；最稳（FULL）每笔落盘防断电丢数。", ["写盘策略", "同步模式", "synchronous", "断电保护"]],
+        ["write_batch_window_ms", "写入合并等待窗口", "任务与并发", "将毫秒内零碎统计合并成一次写盘，调大更护硬盘，设为 0 即时落盘。", ["批量写入", "合并写入", "write_batch_window_ms"]],
+        ["background_slots", "后台并发任务数", "任务与并发", "同时运行日记、反思与主动联系等后台任务的并发槽位数。", ["后台任务并发", "后台槽位", "background_slots"]],
+        ["tts_max_concurrency", "语音同时合成数", "任务与并发", "多段语音回复同时合成并发数，调小可避免触发语音接口限流。", ["TTS并发", "语音并发", "tts_max_concurrency"]],
+        ["telemetry_ttl_days", "运行明细保留天数", "归档与清理", "超过天数的调用明细在瘦身时归档至冷库，每日统计完整保留。", ["遥测保留", "明细保留", "冷归档天数", "telemetry_ttl_days"]],
+      ].map(([field, label, sectionTitle, help, aliases]) => ({
+        group: "tuning.page",
+        groupTitle: "性能调优",
+        section: "tuning",
+        sectionTitle,
+        field,
+        label,
+        help,
+        aliases,
+        location: { next: "manage", tab: "data", subtab: "tuning", root: "#tuningWorkspace", tuningField: field, selector: `[data-tuning-field="${field}"]` },
+      })),
       /* 4c. backup-page.js */
       {
         group: "backup.page",

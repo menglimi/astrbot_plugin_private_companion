@@ -36,7 +36,7 @@ class WriteBehindBatcher:
         max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     ) -> None:
         self._runtime = runtime
-        self._window_seconds = max(0.005, float(window_seconds))
+        self._window_seconds = max(0.0, float(window_seconds))
         self._max_batch_size = max(1, int(max_batch_size))
         self._condition = Condition()
         self._queue: deque[list[Any]] = deque()
@@ -119,6 +119,20 @@ class WriteBehindBatcher:
             self._closed = True
             self._condition.notify_all()
 
+    def configure(
+        self,
+        *,
+        window_ms: int | None = None,
+        max_batch_size: int | None = None,
+    ) -> None:
+        """Hot-update coalescing window or batch ceiling without stopping the worker."""
+        with self._condition:
+            if window_ms is not None:
+                self._window_seconds = max(0.0, min(0.5, float(window_ms) / 1000.0))
+            if max_batch_size is not None:
+                self._max_batch_size = max(1, int(max_batch_size))
+            self._condition.notify_all()
+
     def stats(self) -> dict[str, int]:
         with self._condition:
             return {
@@ -127,6 +141,7 @@ class WriteBehindBatcher:
                 "flushed_batches": self._flushed_batches,
                 "coalesced": self._coalesced,
                 "errors": self._errors,
+                "window_ms": round(self._window_seconds * 1000),
             }
 
     def _pop_batch_locked(self) -> tuple[list[list[Any]], int]:
@@ -189,13 +204,15 @@ class WriteBehindBatcher:
                     # Wait up to window_seconds for sibling writes to coalesce unless
                     # batch is full, an explicit flush was requested, or we are closing.
                     if (
-                        len(self._queue) < self._max_batch_size
+                        self._window_seconds > 0.0
+                        and len(self._queue) < self._max_batch_size
                         and not self._flush_requested
                         and not self._closing
                     ):
                         deadline = time.monotonic() + self._window_seconds
                         while (
-                            len(self._queue) < self._max_batch_size
+                            self._window_seconds > 0.0
+                            and len(self._queue) < self._max_batch_size
                             and not self._flush_requested
                             and not self._closing
                         ):

@@ -216,6 +216,19 @@ class HostSettings:
             # 旧数据根，一旦把开关打开，看上去开了限额、实际什么都没限。
             tokens=_integer(runtime.get("daily_token_soft_limit", 800_000), minimum=0, maximum=10**12),
             kinds=soft_kinds)
+        resolved_background_slots = _integer(runtime.get("background_slots", 3), minimum=1, maximum=32)
+        if isinstance(config, dict):
+            perf_cfg = config.get("performance")
+            if isinstance(perf_cfg, dict):
+                from companion_v2.storage.tuning_config import (
+                    DEFAULT_PROFILE,
+                    normalize_tuning_config,
+                    resolve_performance_plan,
+                )
+                prof, overrides = normalize_tuning_config(perf_cfg)
+                if prof != DEFAULT_PROFILE or "background_slots" in overrides:
+                    resolved_background_slots = int(resolve_performance_plan(perf_cfg).values["background_slots"])
+
         return cls(
             enabled=_boolean(staging.get("enabled", False)),
             profile_id=profile_id,
@@ -264,7 +277,7 @@ class HostSettings:
             ),
             limits=SupervisorLimits(
                 _integer(runtime.get("foreground_slots", 2), minimum=1, maximum=32),
-                _integer(runtime.get("background_slots", 3), minimum=1, maximum=32),
+                resolved_background_slots,
                 _integer(runtime.get("queued_per_lane", 64), minimum=1, maximum=10_000),
                 _integer(runtime.get("retained_tasks", 10_000), minimum=1, maximum=100_000),
             ),

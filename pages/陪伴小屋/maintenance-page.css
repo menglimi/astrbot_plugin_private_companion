@@ -1740,10 +1740,13 @@
 .data-page { display:grid; gap:var(--sp-4); min-width:0; color:var(--t-text); container-type:inline-size; container-name:data-page; }
 .data-page-nav {
   display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
+  grid-template-columns:repeat(5,minmax(0,1fr));
   border-bottom:1px solid var(--t-line);
 }
-@container data-page (max-width:720px) {
+@container data-page (max-width:920px) {
+  .data-page-nav { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@container data-page (max-width:640px) {
   .data-page-nav { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media (max-width:760px) {
