@@ -257,7 +257,7 @@ window.CompanionMemoryPage = (() => {
     if (value.owner === "external") {
       return `长期记录：〈${name}〉（外部）`;
     }
-    return "长期记录：本插件事实库";
+    return "长期记录：本插件事实库（轻量内置）";
   }
   /* 徽标与面包屑。
    *
@@ -388,6 +388,7 @@ window.CompanionMemoryPage = (() => {
       .filter(key => Number.isInteger(states[key]) && states[key] > 0)
       .map(key => `${stateLabels[key] || key} ${num(states[key])}`).join(" · ") || "尚无整理批次";
     const linkage = overview.linkage || {};
+    const externalOwned = data.ownership?.owner === "external";
     let linkageTitle = "未接通";
     let linkageNote = "";
     let linkageTone = "is-warn";
@@ -395,15 +396,23 @@ window.CompanionMemoryPage = (() => {
       linkageTitle = `${ownerName(linkage.display_name, "外部记忆插件")}已接通`;
       linkageTone = "is-ok";
     } else if (linkage.state === "not_owner") {
-      linkageTitle = "本插件事实库";
+      linkageTitle = "仅轻量内置事实库";
+      if (!externalOwned) {
+        linkageNote = "当前仅启用本插件轻量内置事实库，长期记忆与深度回忆不完整。强烈建议安装配合插件「我会牢牢记住你」（astrbot_plugin_memory_companion），安装后自动协同接管。";
+      }
     } else if (linkage.reason === "unsupported_scope") {
       linkageTitle = "当前对象不支持外部私聊摘要";
       linkageNote = "切换到已授权的私聊对象后可读取对应摘要。";
     } else if (linkage.reason) {
       linkageNote = `读取状态：${String(linkage.reason).replace(/_/g, " ")}。本地事实不受影响。`;
+    } else if (!externalOwned && data.ownership?.owner === "self") {
+      linkageTitle = "仅轻量内置事实库";
+      linkageNote = "未检测到外部长期记忆插件，当前仅依赖本插件轻量内置事实与经历。强烈建议安装配合插件「我会牢牢记住你」以获得完整长期记忆体验。";
     }
     const categoryLabels = {profile:"个人资料", preference:"偏好", relationship:"关系", private_conversation:"私聊内容", other:"其他"};
     const categories = Array.isArray(linkage.categories) ? linkage.categories : [];
+    const showCompanionGuideButton = !externalOwned && linkage.state !== "ready"
+      && typeof window.CompanionMemoryCompanionHint?.openGuideDialog === "function";
     return `<section class="mem-block mem-overview-block">
       <div class="mem-block-head"><h3>事实与经历概况</h3><span class="mem-badge">本插件 · 当前对象</span></div>
       <div class="mem-overview-grid">
@@ -414,6 +423,7 @@ window.CompanionMemoryPage = (() => {
       </div>
       <section class="mem-linkage" aria-label="外部记忆联动">
         <div class="mem-linkage-head"><div><h4>外部记忆插件</h4><p>${e(linkageNote)}</p></div><span class="mem-badge ${linkageTone}">${e(linkageTitle)}</span></div>
+        ${showCompanionGuideButton ? `<div class="mc-hint-actions"><button type="button" class="mem-btn is-primary" data-mc-hint-action="open-guide">查看「我会牢牢记住你」安装指南</button></div>` : ""}
         ${linkage.state === "ready" ? `<dl class="mem-linkage-counts">${categories.map(item =>
           `<div><dt>${e(categoryLabels[item.key] || "其他")}</dt><dd>${countValue(item.count)}</dd></div>`).join("")}
           <div><dt>合计</dt><dd>${countValue(linkage.counts?.total)}</dd></div></dl>` : ""}
@@ -1548,6 +1558,13 @@ window.CompanionMemoryPage = (() => {
     const el = event.target.closest("button");
     if (!el || !root.contains(el) || el.disabled) return;
     const id = el.id;
+    if (el.dataset?.mcHintAction && window.CompanionMemoryCompanionHint?.handleAction) {
+      void window.CompanionMemoryCompanionHint.handleAction(el.dataset.mcHintAction, {
+        onUpdate: () => { load(); },
+        notify: message => { if (message) { notice(message, false); render(); } },
+      });
+      return;
+    }
     if (id === "memory-directory-refresh") { directory(); return; }
     if (id === "memory-disable-reflection") { disableReflection(); return; }
     if (id === "memory-refresh" || id === "memory-detail-refresh") {

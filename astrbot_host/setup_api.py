@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
+from copy import copy, deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -12,6 +12,12 @@ from uuid import uuid4
 
 from astrbot.api.web import request
 
+from companion_v2.adapters.astrbot.memory_owner import read_memory_companion_status
+from companion_v2.adapters.astrbot.provider import (
+    PROBE_OUTPUT_TOKENS,
+    looks_like_text_provider,
+)
+from companion_v2.adapters.astrbot.provider_transport import extract_error_status_code
 from companion_v2.execution.models import TERMINAL, TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
@@ -22,10 +28,13 @@ from companion_v2.proactive.scheduling import DIAGNOSTIC_ENVIRONMENT_VARIANTS
 from companion_v2.sources.privacy import redact_text
 
 from .binding_store import PendingBinding, binding_path, read_binding, write_binding
-from .bootstrap_provider import (resolve_bootstrap_provider, supported_text_provider,
-                                 text_provider_catalog, text_provider_predicate)
+from .bootstrap_provider import (active_chat_provider_info, provider_capabilities,
+                                 provider_model_name, resolve_bootstrap_provider,
+                                 supported_text_provider, text_provider_catalog,
+                                 text_provider_predicate)
 from .identity_derivation import derive_bot_id, derive_role_id, normalize_persona_id
 from .management_identity import dashboard_operator
+from .page_api import read_user_hint_preferences
 from .persona_catalog import available_personas
 from .settings import HostControlError
 from .setup_state import SETUP_STEPS, SetupStateStore, SetupStepsIncomplete
@@ -36,6 +45,13 @@ PREFIX = "/astrbot_plugin_private_companion/setup"
 # Profile editors submit the complete edited field set in one request. The
 # per-field limits are larger than the small command-route body cap.
 PROFILE_BODY_LIMIT = 262144
+MODEL_PROBE_TIMEOUT_SECONDS = 15.0
+VISION_SETUP_TASKS = (
+    "conversation.image_narration",
+    "conversation.context_image_caption",
+    "screen.interpretation",
+    "conversation.image_review",
+)
 logger = logging.getLogger(__name__)
 
 ROUTE_REJECTION_LABELS = {
@@ -354,11 +370,14 @@ class SetupWebAPI:
     def routes(self):
         return [
             (PREFIX + "/status", self.status, ["GET"], "Read persistent Companion V2 setup progress"),
+            (PREFIX + "/health", self.health, ["GET"], "Run a zero-side-effect onboarding readiness health check"),
             (PREFIX + "/upgrade", self.prepare_upgrade, ["POST"], "Confirm existing legacy account and persona mappings"),
             (PREFIX + "/targets", self.api_targets, ["GET"], "Read connected OneBot accounts and native personas"),
             (PREFIX + "/binding/confirm", self.confirm_binding, ["POST"], "Confirm the Companion V2 core administrator window"),
+            (PREFIX + "/binding/select", self.select_binding, ["POST"], "Directly select and confirm a discovered private window as the core administrator"),
             (PREFIX + "/binding/reset", self.reset_binding, ["POST"], "Release the confirmed core administrator window so it can be bound again"),
             (PREFIX + "/model", self.model, ["POST"], "Choose the initial Companion V2 text provider"),
+            (PREFIX + "/model/probe", self.probe_model, ["POST"], "Run a lightweight live connectivity check on one AstrBot text provider"),
             (PREFIX + "/model-tasks", self.model_tasks, ["GET"], "Read per-task model routes for the setup role"),
             (PREFIX + "/model-tasks/configure", self.configure_model_task, ["POST"], "Configure one setup-role model task"),
             (PREFIX + "/profile", self.profile, ["GET"], "Read setup-role profile and relationship cards"),
@@ -367,6 +386,7 @@ class SetupWebAPI:
             (PREFIX + "/host/start", self.reconnect_host, ["POST"], "Reconnect a completed Companion V2 setup"),
             (PREFIX + "/prepare", self.prepare, ["POST"], "Prepare the confirmed Companion V2 profile"),
             (PREFIX + "/complete", self.complete, ["POST"], "Record a completed Companion V2 setup section"),
+            (PREFIX + "/finish", self.finish_setup, ["POST"], "Complete first-run onboarding after verifying core prerequisites"),
             (PREFIX + "/proactive-test", self.proactive_test, ["POST"], "Run a one-time proactive contact through the V2 contact and delivery pipeline"),
             (PREFIX + "/proactive-test/status", self.proactive_test_status, ["GET"], "Read the existing proactive test receipt without host discovery"),
             (PREFIX + "/proactive-recipients", self.proactive_recipients, ["GET"], "Read current core administrator test recipients"),
@@ -422,8 +442,10 @@ class SetupWebAPI:
 
     def _model_providers(self) -> list[dict]:
         context = getattr(self.controller, "context", None)
-        expected_type = text_provider_predicate(getattr(self.controller, "native_types", None))
-        return text_provider_catalog(context, expected_type) if context is not None else []
+        native_types = getattr(self.controller, "native_types", None)
+        expected_type = text_provider_predicate(native_types)
+        video_type = getattr(native_types, "video_provider_type", None)
+        return text_provider_catalog(context, expected_type, video_type=video_type) if context is not None else []
 
     def _configured_provider_id(self) -> str:
         config = getattr(self.controller, "config", {})
@@ -441,15 +463,38 @@ class SetupWebAPI:
         providers = self._model_providers()
         if selection is not None and selection.provider_id and not any(
                 item["id"] == selection.provider_id for item in providers):
-            providers.append({"id": selection.provider_id, "name": selection.name or selection.provider_id})
+            providers.append({"id": selection.provider_id, "name": selection.name or selection.provider_id,
+                              "model": "", "capabilities": ["text"]})
         return providers
+
+    def _effective_chat_model(self) -> dict | None:
+        context = getattr(self.controller, "context", None)
+        native_types = getattr(self.controller, "native_types", None)
+        expected_type = text_provider_predicate(native_types)
+        video_type = getattr(native_types, "video_provider_type", None)
+        return active_chat_provider_info(context, expected_type, video_type=video_type)
+
+    def _memory_companion_document(self, username: str = "") -> dict:
+        session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
+        ownership = None
+        if session is not None and getattr(session, "application", None) is not None:
+            try:
+                ownership = session.application.memory.context.ownership()
+            except Exception:
+                ownership = None
+        summary = read_memory_companion_status(getattr(self.controller, "context", None), ownership=ownership)
+        dismissed = False
+        if username:
+            hints = read_user_hint_preferences(getattr(self.controller, "data_root", None), username)
+            dismissed = bool(hints.get("memoryCompanion", False))
+        return {**summary, "hint_dismissed": dismissed}
 
     def _configured_fallback_provider_id(self) -> str:
         config = getattr(self.controller, "config", {})
         section = config.get("model", {}) if isinstance(config, dict) else {}
         return str(section.get("fallback_provider_id", "")) if isinstance(section, dict) else ""
 
-    def _status_document(self) -> dict:
+    def _status_document(self, *, username: str = "") -> dict:
         state = self.progress.read()
         binding = self._binding()
         status = self.controller.status()
@@ -463,6 +508,11 @@ class SetupWebAPI:
         selection_id = (selection.provider_id
                         if selection is not None and selection.source in ("auto", "configured")
                         else "")
+        catalog = self._model_catalog()
+        active_provider_id = selection_id or self._configured_provider_id()
+        selected_entry = next((item for item in catalog if item["id"] == active_provider_id), None)
+        vision_providers = [item for item in catalog if "image" in (item.get("capabilities") or ())]
+        primary_supports_vision = bool(selected_entry and "image" in (selected_entry.get("capabilities") or ()))
         if not confirmed:
             step = "binding"
         elif state["ready"]:
@@ -477,12 +527,18 @@ class SetupWebAPI:
         return {"step": step,
                 "binding": binding, "binding_confirmed": confirmed, "prepared": prepared,
                 "completed": completed, "skipped": skipped,
-                "model": {"provider_id": selection_id or self._configured_provider_id(),
+                "model": {"provider_id": active_provider_id,
                           "fallback_provider_id": self._configured_fallback_provider_id(),
                           "provider_source": (selection.source if selection_id and selection is not None
                                               else "unavailable"),
-                          "providers": self._model_catalog()},
+                          "providers": catalog,
+                          "effective_chat_model": self._effective_chat_model(),
+                          "primary_supports_vision": primary_supports_vision,
+                          "vision_providers": vision_providers},
+                "memory_companion": self._memory_companion_document(username=username),
                 "proactive_test": state["proactive_test"], "ready": state["ready"],
+                "finished_at": state.get("finished_at"),
+                "finished_by": state.get("finished_by"),
                 "settings_error": getattr(getattr(self.controller, "settings_error", None), "code", None),
                 "host": status}
 
@@ -530,8 +586,9 @@ class SetupWebAPI:
 
     async def status(self):
         try:
-            await self._test_progress(self._admin())
-            document = await asyncio.to_thread(self._status_document)
+            username = self._admin()
+            await self._test_progress(username)
+            document = await asyncio.to_thread(self._status_document, username=username)
             from .upgrade_setup import UpgradeSetup
             try:
                 document["upgrade"], _ = await UpgradeSetup(self.controller).plan()
@@ -690,6 +747,32 @@ class SetupWebAPI:
         except (ValueError, TypeError, KeyError, OSError):
             return self._error("setup_binding_confirmation_failed", "the pending private window could not be confirmed")
 
+    async def select_binding(self):
+        """Directly bind a discovered private window as the core administrator."""
+        try:
+            username = self._admin()
+            data = await self._body({"platform_id", "account_id", "participant_id"},
+                                    optional={"persona_id"})
+            selector = getattr(self.controller, "select_core_binding", None)
+            if not callable(selector):
+                raise TaskError("setup_binding_unavailable", "the active host cannot select a private window directly")
+
+            def select_sync():
+                result = selector(
+                    platform_id=data["platform_id"],
+                    account_id=data["account_id"],
+                    participant_id=data["participant_id"],
+                    persona_id=data.get("persona_id", ""),
+                )
+                return result.get("binding") or self._binding(), self._status_document(username=username)
+
+            binding, status = await asyncio.to_thread(select_sync)
+            return self._response(Outcome.success({"binding": binding, "confirmed": True, "status": status}))
+        except (TaskError, HostControlError) as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
+            return self._error("setup_binding_confirmation_failed", "the selected private window could not be bound")
+
     async def reset_binding(self):
         """Release the confirmed core administrator window so it can be bound again.
 
@@ -729,16 +812,212 @@ class SetupWebAPI:
             return self._error("setup_binding_reset_failed",
                                "the confirmed private window could not be reset")
 
-    async def model(self):
+    @staticmethod
+    def _probe_error_hint(error: Exception) -> tuple[str, str]:
+        if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+            return "timeout", "请求超时（15 秒内未返回）。请检查代理、接口地址或模型服务状态。"
+        status_code = extract_error_status_code(error)
+        if status_code in (401, 403):
+            return "failed", f"鉴权失败（HTTP {status_code}）。请到 AstrBot「模型提供商」核对 API Key 与权限。"
+        if status_code == 404:
+            return "failed", "接口或模型名不存在（HTTP 404）。请核对 Base URL 与模型名称是否填写正确。"
+        if status_code == 429:
+            return "failed", "触发频率限制或额度不足（HTTP 429）。请检查账户余额或限流设置。"
+        if isinstance(status_code, int) and status_code >= 500:
+            return "failed", f"模型服务端异常（HTTP {status_code}）。可稍后重试或配置一个全局备用模型。"
+        name = type(error).__name__
+        detail = str(error).lower()
+        if "connect" in detail or "connection" in name.lower() or "dns" in detail or "ssl" in detail:
+            return "failed", "无法连接到模型服务地址。请检查网络、代理设置或接口 URL。"
+        return "failed", f"调用未成功（{name}）。请核对 AstrBot 中该 Provider 的配置与日志。"
+
+    @staticmethod
+    def _probe_output_key(model: str, protocol: str) -> str:
+        if "responses" in protocol:
+            return "max_output_tokens"
+        lowered = str(model or "").casefold()
+        if lowered.startswith(("gpt-6", "gpt-5", "o1", "o3", "o4")):
+            return "max_completion_tokens"
+        return "max_tokens"
+
+    async def _run_provider_probe(self, provider) -> str:
+        native = copy(provider)
+        config = getattr(provider, "provider_config", None)
+        config_dict = deepcopy(config) if isinstance(config, dict) else {}
+        native.provider_config = config_dict
+        model = provider_model_name(provider)
+        protocol = str(config_dict.get("type") or "").lower()
+        client = getattr(provider, "client", None)
+        if looks_like_text_provider(provider):
+            with_options = getattr(client, "with_options", None)
+            if callable(with_options):
+                native.client = with_options(max_retries=0)
+            if "responses" in protocol and callable(getattr(native, "_prepare_chat_payload", None)):
+                payload, _ = await native._prepare_chat_payload(
+                    prompt="Reply OK.", contexts=[], model=model)
+                payload["max_output_tokens"] = PROBE_OUTPUT_TOKENS
+                result = await native._query(payload, None, request_max_retries=1)
+            else:
+                output_key = self._probe_output_key(model, protocol)
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply OK."}],
+                    output_key: PROBE_OUTPUT_TOKENS,
+                }
+                result = await native._query(payload, None, request_max_retries=1)
+        elif callable(getattr(native, "text_chat", None)):
+            try:
+                result = await native.text_chat(prompt="Reply OK.", request_max_retries=1)
+            except TypeError:
+                result = await native.text_chat(prompt="Reply OK.")
+        else:
+            raise TaskError("host_provider_unavailable", "provider does not expose a supported text transport")
+        if result is None:
+            raise ValueError("empty provider response")
+        text = getattr(result, "completion_text", None)
+        if not isinstance(text, str) or not text.strip():
+            raw = getattr(result, "raw_completion", None)
+            choices = getattr(raw, "choices", None)
+            if isinstance(choices, (list, tuple)) and choices:
+                msg = getattr(choices[0], "message", None)
+                text = getattr(msg, "content", "") or ""
+        return redact_text(str(text or "").strip())[:80]
+
+    async def probe_model(self):
+        """Lightweight live connectivity test for one selected AstrBot provider."""
         try:
             self._admin()
+            data = await self._body({"provider_id"})
+            provider_id = data["provider_id"]
+            if type(provider_id) is not str or not provider_id.strip() or len(provider_id) > 512:
+                raise ValueError("invalid provider")
+            provider_id = provider_id.strip()
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
+            return self._error("setup_model_invalid", "choose a loaded AstrBot text provider to test")
+
+        try:
+            context = getattr(self.controller, "context", None)
+            native_types = getattr(self.controller, "native_types", None)
+            expected_type = text_provider_predicate(native_types)
+            video_type = getattr(native_types, "video_provider_type", None)
+            available = {item["id"] for item in self._model_providers()}
+            provider = context.get_provider_by_id(provider_id) if context is not None else None
+            if (provider is None or provider_id not in available or expected_type is None
+                    or not supported_text_provider(provider, expected_type)):
+                raise TaskError("host_provider_unavailable", "choose a loaded AstrBot text provider supported by V2")
+            model = provider_model_name(provider)
+            caps = provider_capabilities(provider, video_type=video_type)
+            started = _time.monotonic()
+            try:
+                preview = await asyncio.wait_for(
+                    self._run_provider_probe(provider),
+                    timeout=MODEL_PROBE_TIMEOUT_SECONDS,
+                )
+                latency_ms = max(1, int((_time.monotonic() - started) * 1000))
+                return self._response(Outcome.success({
+                    "provider_id": provider_id,
+                    "ok": True,
+                    "status": "ok",
+                    "latency_ms": latency_ms,
+                    "model": model,
+                    "capabilities": caps,
+                    "reply_preview": preview or "OK",
+                    "error": "",
+                    "hint": "",
+                }))
+            except Exception as error:
+                latency_ms = max(1, int((_time.monotonic() - started) * 1000))
+                status, hint = self._probe_error_hint(error)
+                return self._response(Outcome.success({
+                    "provider_id": provider_id,
+                    "ok": False,
+                    "status": status,
+                    "latency_ms": latency_ms,
+                    "model": model,
+                    "capabilities": caps,
+                    "reply_preview": "",
+                    "error": type(error).__name__,
+                    "hint": hint,
+                }))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+
+    async def _apply_vision_provider(self, username: str, vision_provider_id: str) -> list[str]:
+        """Assign a chosen vision-capable provider to registered vision tasks on role layer."""
+        if not vision_provider_id:
+            return []
+        try:
+            session, context, _instruction = await self._setup_context()
+        except TaskError:
+            return []
+
+        def apply_sync():
+            from companion_v2.model_gateway.management import ModelManagement
+            manager = ModelManagement(session.application, context)
+            operator = self._operator(self.controller, username)
+            status = require(manager.status(operator, layer="role"))
+            providers_by_id = {item["id"]: item for item in status.get("providers", [])}
+            chosen = providers_by_id.get(vision_provider_id)
+            if chosen is None or "image" not in (chosen.get("capabilities") or ()):
+                return []
+            updated = []
+            for task in status.get("tasks", []):
+                kind = task.get("kind")
+                if kind not in VISION_SETUP_TASKS:
+                    continue
+                required = task.get("capabilities") or ()
+                if not all(cap in (chosen.get("capabilities") or ()) for cap in required):
+                    continue
+                current_provider = (task.get("fields") or {}).get("provider", {}).get("value", "")
+                current_fallback = (task.get("fields") or {}).get("fallback", {}).get("value", "")
+                if current_provider == vision_provider_id:
+                    updated.append(kind)
+                    continue
+                fallback_info = providers_by_id.get(current_fallback) if current_fallback else None
+                fallback_valid = (
+                    bool(current_fallback)
+                    and current_fallback != vision_provider_id
+                    and fallback_info is not None
+                    and all(cap in (fallback_info.get("capabilities") or ()) for cap in required)
+                )
+                fallback = current_fallback if fallback_valid else ""
+                try:
+                    require(manager.configure(operator, {
+                        "kind": kind,
+                        "layer": "role",
+                        "operation_key": f"setup-vision-{kind}-{uuid4().hex[:12]}",
+                        "edit_token": task["edit_token"],
+                        "changes": {"provider": vision_provider_id, "fallback": fallback},
+                        "reset": [],
+                    }))
+                    updated.append(kind)
+                except TaskError as task_err:
+                    logger.debug("[CompanionV2] 跳过不兼容的视觉任务路由 kind=%s code=%s",
+                                 kind, task_err.code)
+            return updated
+
+        try:
+            return await asyncio.to_thread(apply_sync)
+        except Exception as error:
+            logger.warning("[CompanionV2] 新手引导应用视觉模型任务路由失败 error_type=%s",
+                           type(error).__name__)
+            return []
+
+    async def model(self):
+        try:
+            username = self._admin()
             raw = await request.body()
             if len(raw) > 4096:
                 raise ValueError("request is too large")
             data = json.loads(raw.decode("utf-8"))
             has_fallback = isinstance(data, dict) and "fallback_provider_id" in data
+            has_vision = isinstance(data, dict) and "vision_provider_id" in data
+            complete_step = bool(data.get("complete_step", False)) if isinstance(data, dict) else False
             if (type(data) is not dict or "provider_id" not in data
-                    or set(data) - {"provider_id", "fallback_provider_id"}):
+                    or set(data) - {"provider_id", "fallback_provider_id", "vision_provider_id", "complete_step"}
+                    or ("complete_step" in data and type(data["complete_step"]) is not bool)):
                 raise ValueError("invalid model fields")
             provider_id = data["provider_id"]
             if type(provider_id) is not str or not provider_id.strip() or len(provider_id) > 512:
@@ -750,6 +1029,12 @@ class SetupWebAPI:
                 if type(raw_fallback) is not str or len(raw_fallback.strip()) > 512:
                     raise ValueError("invalid fallback provider")
                 fallback_provider_id = raw_fallback.strip()
+            vision_provider_id = ""
+            if has_vision:
+                raw_vision = data["vision_provider_id"]
+                if type(raw_vision) is not str or len(raw_vision.strip()) > 512:
+                    raise ValueError("invalid vision provider")
+                vision_provider_id = raw_vision.strip()
         except TaskError as error:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
@@ -758,8 +1043,8 @@ class SetupWebAPI:
         stage_box = ["provider_validation"]
         try:
             def save_model_sync():
-                status = self._status_document()
-                if status["step"] != "model":
+                status = self._status_document(username=username)
+                if not status["binding_confirmed"]:
                     raise TaskError("setup_step_order_invalid", "confirm the core administrator window before choosing a model")
                 if fallback_provider_id == provider_id:
                     raise TaskError("model_fallback_duplicate",
@@ -776,6 +1061,12 @@ class SetupWebAPI:
                             or not supported_text_provider(fallback_provider, expected_type)):
                         raise TaskError("host_provider_unavailable",
                                         "choose a loaded AstrBot text provider for the fallback model")
+                if vision_provider_id:
+                    vision_provider = self.controller.context.get_provider_by_id(vision_provider_id)
+                    if (vision_provider_id not in available
+                            or not supported_text_provider(vision_provider, expected_type)):
+                        raise TaskError("host_provider_unavailable",
+                                        "choose a loaded AstrBot vision-capable provider")
                 config = self.controller.config
                 if not isinstance(config, dict):
                     raise TaskError("setup_config_unavailable", "the plugin configuration cannot be edited here")
@@ -822,18 +1113,25 @@ class SetupWebAPI:
                             deferred["init_code"])
                 return self._response(Outcome.success({
                     "provider_id": provider_id, **deferred,
-                    "status": await asyncio.to_thread(self._status_document)}))
+                    "status": await asyncio.to_thread(self._status_document, username=username)}))
             if initialized.failure is not None:
                 if initialized.failure.code != "host_must_stop":
                     raise TaskError(initialized.failure.code, initialized.failure.reason)
                 # The setup guide can be reopened while the shared host is
                 # already running. The provider is saved and the current host
                 # keeps serving; it will use the new selection after reload.
+                if complete_step:
+                    await asyncio.to_thread(self.progress.complete, "model", skipped=False)
                 return self._response(Outcome.success({"provider_id": provider_id,
                     "prepared": True, "restart_required": True,
-                    "status": await asyncio.to_thread(self._status_document)}))
+                    "status": await asyncio.to_thread(self._status_document, username=username)}))
+            vision_applied = await self._apply_vision_provider(username, vision_provider_id)
+            if complete_step:
+                await asyncio.to_thread(self.progress.complete, "model", skipped=False)
             return self._response(Outcome.success({"provider_id": provider_id,
-                "prepared": True, "status": await asyncio.to_thread(self._status_document)}))
+                "prepared": True, "restart_required": False,
+                "vision_applied": vision_applied,
+                "status": await asyncio.to_thread(self._status_document, username=username)}))
         except TaskError as error:
             return self._error(error.code, str(error))
         except Exception as error:
@@ -917,9 +1215,6 @@ class SetupWebAPI:
                 prepared = bool(getattr(self.controller, "runtime", None)
                                 and (getattr(self.controller, "session", None)
                                      or getattr(self.controller, "last_session", None)))
-                position = SETUP_STEPS.index(step)
-                if any(name not in state["completed"] + state["skipped"] for name in SETUP_STEPS[:position]):
-                    raise TaskError("setup_step_order_invalid", "finish the previous setup section first")
                 need_init = False
                 if step != "model" and not prepared:
                     refresh = getattr(self.controller, "refresh_settings", None)
@@ -959,6 +1254,247 @@ class SetupWebAPI:
             return self._error(error.code, str(error))
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
             return self._error("setup_request_invalid", "finish or skip the current setup section")
+
+    def _health_document(self, *, username: str = "") -> dict:
+        status = self._status_document(username=username)
+        binding = status.get("binding") or {}
+        binding_confirmed = bool(status.get("binding_confirmed"))
+        prepared = bool(status.get("prepared"))
+        host = status.get("host") or {}
+        accepting = bool(host.get("accepting"))
+        model = status.get("model") or {}
+        providers = model.get("providers") or []
+        provider_id = model.get("provider_id") or ""
+        provider_loaded = bool(provider_id and any(item.get("id") == provider_id for item in providers))
+        primary_vision = bool(model.get("primary_supports_vision"))
+        vision_providers = model.get("vision_providers") or []
+        memory_companion = status.get("memory_companion") or {}
+
+        accounts = []
+        topology = getattr(self.controller, "session_topology", None)
+        if topology is not None and callable(getattr(topology, "accounts", None)):
+            try:
+                accounts = list(topology.accounts() or [])
+            except Exception:
+                accounts = []
+        configured_personas = []
+        settings = getattr(self.controller, "settings", None)
+        if settings is not None and hasattr(settings, "personas"):
+            configured_personas = list(getattr(settings, "personas", ()) or ())
+        elif isinstance(getattr(self.controller, "config", None), dict):
+            configured_personas = list(
+                (self.controller.config.get("multi_host") or {}).get("personas") or []
+            )
+
+        if accounts and (configured_personas or binding_confirmed):
+            account_check = {
+                "id": "account", "label": "机器人与人格映射", "status": "ok",
+                "summary": f"已连接 {len(accounts)} 个机器人账号"
+                           + (f"，已映射 {len(configured_personas)} 个人格" if configured_personas else ""),
+                "fix_step": "binding",
+            }
+        elif accounts:
+            account_check = {
+                "id": "account", "label": "机器人与人格映射", "status": "warn",
+                "summary": f"已发现 {len(accounts)} 个机器人账号，尚未完成人格映射",
+                "fix_step": "binding",
+            }
+        else:
+            account_check = {
+                "id": "account", "label": "机器人与人格映射", "status": "error",
+                "summary": "暂未检测到在线的机器人账号，请先在 AstrBot 中连接消息平台",
+                "fix_step": "binding",
+            }
+
+        binding_check = {
+            "id": "binding", "label": "核心管理员私聊",
+            "status": "ok" if binding_confirmed else "error",
+            "summary": (f"已绑定私聊窗口（{binding.get('display_name') or binding.get('participant_id') or '已确认'}）"
+                        if binding_confirmed else "尚未确认核心管理员私聊窗口"),
+            "fix_step": "binding",
+        }
+
+        if provider_loaded and primary_vision:
+            model_check = {
+                "id": "model", "label": "插件通用与识图模型", "status": "ok",
+                "summary": f"已配置 {provider_id}（支持文本与识图）",
+                "fix_step": "model",
+            }
+        elif provider_loaded:
+            model_check = {
+                "id": "model", "label": "插件通用与识图模型", "status": "warn",
+                "summary": (f"通用模型 {provider_id} 已就绪，但当前不支持图片理解"
+                            + (f"（可在第 2 步指定 {len(vision_providers)} 个可用视觉模型之一）"
+                               if vision_providers else "（如暂不用看图/识屏可忽略）")),
+                "fix_step": "model",
+            }
+        else:
+            model_check = {
+                "id": "model", "label": "插件通用与识图模型", "status": "error",
+                "summary": "尚未选定可用的插件通用模型",
+                "fix_step": "model",
+            }
+
+        if prepared and accepting:
+            runtime_check = {
+                "id": "runtime", "label": "陪伴运行实例", "status": "ok",
+                "summary": "运行实例已启动并正在接收消息",
+                "fix_step": "proactive_test",
+            }
+        elif prepared:
+            runtime_check = {
+                "id": "runtime", "label": "陪伴运行实例", "status": "warn",
+                "summary": "运行实例已准备，完成引导时会自动启动接收消息",
+                "fix_step": "proactive_test",
+            }
+        else:
+            runtime_check = {
+                "id": "runtime", "label": "陪伴运行实例", "status": "warn",
+                "summary": "完成窗口绑定与模型选择后将自动准备运行实例",
+                "fix_step": "model",
+            }
+
+        mc_state = memory_companion.get("state", "missing")
+        if mc_state == "connected":
+            memory_check = {
+                "id": "memory", "label": "长期记忆搭档", "status": "ok",
+                "summary": "已连接「我会牢牢记住你」，长期记忆与深度回忆完整就绪",
+                "fix_step": "knowledge",
+            }
+        elif mc_state == "external_other":
+            memory_check = {
+                "id": "memory", "label": "长期记忆搭档", "status": "ok",
+                "summary": f"已接入外部记忆插件〈{memory_companion.get('external_name') or '外部记忆插件'}〉",
+                "fix_step": "knowledge",
+            }
+        elif mc_state == "disabled":
+            memory_check = {
+                "id": "memory", "label": "长期记忆搭档", "status": "warn",
+                "summary": "已安装「我会牢牢记住你」但尚未启用，目前仅使用轻量内置记忆",
+                "fix_step": "knowledge",
+            }
+        elif mc_state == "bridge_disabled":
+            memory_check = {
+                "id": "memory", "label": "长期记忆搭档", "status": "warn",
+                "summary": "已启用「我会牢牢记住你」但协作桥接未打开，目前仅使用轻量内置记忆",
+                "fix_step": "knowledge",
+            }
+        else:
+            memory_check = {
+                "id": "memory", "label": "长期记忆搭档", "status": "warn",
+                "summary": "当前仅启用轻量内置记忆，长期记忆与深度回忆不完整，强烈建议安装「我会牢牢记住你」",
+                "fix_step": "knowledge",
+            }
+
+        proactive_check = {
+            "id": "proactive", "label": "主动联系与作息", "status": "ok",
+            "summary": "可在引导第 5 步或陪伴小屋随时调整主动频率与免打扰时段",
+            "fix_step": "proactive",
+        }
+        session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
+        if session is not None and binding_confirmed and username:
+            try:
+                target = None
+                if getattr(self.controller, "_multi_host", False):
+                    parked = self.controller._parked_binding()
+                    target = self.controller._core_target(parked) if parked is not None else None
+                if target is None and hasattr(session, "profile"):
+                    ctx = session.profile.target
+                else:
+                    ctx = None
+                if ctx is not None:
+                    operator = self._operator(self.controller, username)
+                    cs = require(ContactManagement(session.application, ctx).status(operator))
+                    enabled = bool((cs.get("settings") or {}).get("enabled", False))
+                    proactive_check["summary"] = (
+                        "私聊主动联系已开启" if enabled else "私聊主动联系当前关闭（可随时开启）"
+                    )
+            except Exception:
+                pass
+
+        checks = [account_check, binding_check, model_check, runtime_check, memory_check, proactive_check]
+        blocking = [item["id"] for item in (binding_check, model_check) if item["status"] == "error"]
+        return {
+            "checks": checks,
+            "can_finish": not blocking,
+            "blocking": blocking,
+            "memory_companion": memory_companion,
+            "ready": bool(status.get("ready")),
+            "accepting": accepting,
+        }
+
+    async def health(self):
+        try:
+            username = self._admin()
+            document = await asyncio.to_thread(self._health_document, username=username)
+            return self._response(Outcome.success(document))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
+            return self._error("setup_health_unavailable", "the onboarding health check could not be computed")
+
+    async def finish_setup(self):
+        """Complete first-run onboarding after verifying core prerequisites."""
+        try:
+            username = self._admin()
+            data = await self._body(set(), optional={"start_host"})
+            start_host = data.get("start_host", True)
+            if type(start_host) is not bool:
+                raise ValueError("start_host must be boolean")
+
+            def verify_prerequisites():
+                status = self._status_document(username=username)
+                if not status["binding_confirmed"]:
+                    raise TaskError("setup_binding_confirmation_required",
+                                    "confirm the core administrator private window first")
+                model = status.get("model") or {}
+                provider_id = model.get("provider_id") or ""
+                available = {item.get("id") for item in model.get("providers") or ()}
+                if not provider_id or provider_id not in available:
+                    raise TaskError("setup_model_required",
+                                    "choose a loaded AstrBot text provider before finishing setup")
+                return bool(status.get("prepared")), bool((status.get("host") or {}).get("accepting"))
+
+            prepared, accepting = await asyncio.to_thread(verify_prerequisites)
+            if not prepared:
+                initialized = await self.controller.initialize_profile()
+                deferred = deferred_initialization(initialized.failure)
+                if deferred is not None:
+                    return self._response(Outcome.success({
+                        "ready": False,
+                        "started": False,
+                        **deferred,
+                        "status": await asyncio.to_thread(self._status_document, username=username),
+                        "health": await asyncio.to_thread(self._health_document, username=username),
+                    }))
+                if initialized.failure is not None and initialized.failure.code != "host_must_stop":
+                    raise TaskError(initialized.failure.code, initialized.failure.reason)
+            started = accepting
+            start_error = ""
+            if start_host and not accepting:
+                active = await self.controller.start()
+                if active.failure is None or active.failure.code == "host_already_started":
+                    started = True
+                else:
+                    start_error = active.failure.code
+            await asyncio.to_thread(
+                self.progress.finish,
+                finished_by=username,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+            status = await asyncio.to_thread(self._status_document, username=username)
+            health = await asyncio.to_thread(self._health_document, username=username)
+            return self._response(Outcome.success({
+                "ready": True,
+                "started": bool(started or (status.get("host") or {}).get("accepting")),
+                "start_error": start_error,
+                "status": status,
+                "health": health,
+            }))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, KeyError, OSError, UnicodeError):
+            return self._error("setup_finish_failed", "the onboarding guide could not be completed")
 
     async def _test_context(self):
         session, context, instruction = await self._setup_context()

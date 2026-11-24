@@ -605,6 +605,48 @@ class AstrBotMultiController:
         session.sync_settings(settings)
         logger.info("[CompanionV2] 已把确认的核心管理员窗口同步到运行中的会话")
 
+    def select_core_binding(self, *, platform_id: str, account_id: str,
+                            participant_id: str, persona_id: str = "") -> dict:
+        """Directly confirm a discovered private window as the core admin window."""
+        for label, value in (("platform_id", platform_id), ("account_id", account_id),
+                             ("participant_id", participant_id)):
+            if (type(value) is not str or not value.strip() or len(value.strip()) > 128
+                    or "\n" in value or "\r" in value):
+                raise TaskError("host_identity_invalid", f"{label} is invalid")
+        platform_id = platform_id.strip()
+        account_id = account_id.strip()
+        participant_id = participant_id.strip()
+        if participant_id == "*":
+            raise TaskError("setup_private_window_required",
+                            "select a specific private chat window rather than a wildcard")
+        if persona_id is None:
+            persona_id = ""
+        if type(persona_id) is not str or len(persona_id) > 128 or "\n" in persona_id or "\r" in persona_id:
+            raise TaskError("host_identity_invalid", "persona_id is invalid")
+        persona_id = persona_id.strip()
+        if persona_id == "[%None]":
+            persona_id = ""
+        if not persona_id and self.settings is not None:
+            from .identity_derivation import derive_bot_id
+            candidates = [
+                item.persona_id for item in getattr(self.settings, "personas", ())
+                if item.bot_id == derive_bot_id(platform_id, account_id)
+                or any(acc.platform_id == platform_id and acc.self_id == account_id and acc.bot_id == item.bot_id
+                       for acc in getattr(self.settings, "accounts", ()))
+            ]
+            unique = list(dict.fromkeys(candidates))
+            if len(unique) == 1 and unique[0] != "[%None]":
+                persona_id = unique[0]
+        binding = PendingBinding(platform_id, account_id, participant_id, persona_id, confirmed=True)
+        self._register_core_binding(binding)
+        write_binding(self.binding_root, binding)
+        if self.runtime is not None and self.authority is not None:
+            core_target = self._core_target(binding)
+            if core_target is not None and core_target.participant_id != "*":
+                with self.runtime.transaction():
+                    self.authority.ensure_core_admin_tier(core_target)
+        return {"confirmed": True, "binding": self.binding_state()}
+
     def handles_binding(self, event):
         from .recalls import is_notice_event
         return (not is_notice_event(event) and is_private_message(event)
@@ -1075,7 +1117,7 @@ class AstrBotMultiController:
                     and previous_session.application.state == "running")
                 if previous_session is not None and previous_session.application.state not in ("new", "stopped"):
                     self._accepting = False
-                    report = await previous_session.close(grace_seconds=0.5)
+                    report = await previous_session.close(grace_seconds=2.0)
                     if getattr(report, "state", None) != "stopped":
                         raise TaskError("host_must_stop", "the shared host did not finish stopping before initialization")
                     async with self._control_lock:

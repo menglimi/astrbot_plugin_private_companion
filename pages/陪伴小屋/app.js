@@ -523,6 +523,10 @@ async function probeHost(){
     toast(error?.message||'配置接续失败，请在「开始使用」页查看状态后重试。');
     navigate('manage','setup');
   });
+  if(window.CompanionMemoryCompanionHint){
+    window.CompanionMemoryCompanionHint.subscribe(()=>renderShellSide());
+    void window.CompanionMemoryCompanionHint.load().then(()=>renderShellSide());
+  }
 }
 function onProductChanged(reason){
   if(reason?.kind==='browser-preferences'){updateHostChrome();if(reason.message)toast(reason.message);return;}
@@ -760,16 +764,23 @@ function renderStageBar(){
 function liteHomeSuspended(){
   return litePerformanceMode&&(document.hidden||Boolean(window.CompanionShell?.section));
 }
-let shellSideHost=null,shellSideStateCard='',shellSideAge='',shellSideSchedule='';
+function memoryCompanionHintCard(){
+  const api=window.CompanionMemoryCompanionHint;
+  if(!api)return '';
+  const status=api.current();
+  if(!status||!api.shouldShowBanner(status))return '';
+  return api.renderCard(status,{compact:true,allowDismiss:true,context:'home'});
+}
+let shellSideHost=null,shellSideHint='',shellSideStateCard='',shellSideAge='',shellSideSchedule='';
 function renderShellSide(){
   const host=$('#shellSide');
   if(!host||liteHomeSuspended())return;
   host.setAttribute('aria-label',arrangementDraft?'布置房间工作台':'此刻的状态与今日安排');
   if(arrangementDraft)return;
-  const nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
+  const nextHint=memoryCompanionHintCard(),nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
   const rendered=host===shellSideHost&&Boolean(host.innerHTML)&&!host.innerHTML.includes('id="roomEditor"');
-  if(rendered&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
-  if(rendered&&nextStateCard===shellSideStateCard){
+  if(rendered&&nextHint===shellSideHint&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
+  if(rendered&&nextHint===shellSideHint&&nextStateCard===shellSideStateCard){
     const ageNode=host.querySelector?.('[data-home-state-age]');
     const agendaHost=host.querySelector?.('[data-home-agenda-clock]');
     const ageCompatible=nextAge===shellSideAge||(Boolean(ageNode)&&Boolean(nextAge));
@@ -789,8 +800,9 @@ function renderShellSide(){
       return;
     }
   }
-  host.innerHTML=homeStateBand()+homeScheduleBand();
+  host.innerHTML=nextHint+homeStateBand()+homeScheduleBand();
   shellSideHost=host;
+  shellSideHint=nextHint;
   shellSideStateCard=nextStateCard;
   shellSideAge=nextAge;
   shellSideSchedule=nextSchedule;
@@ -7046,6 +7058,16 @@ function openSearch(initialQuery=''){
 }
 document.addEventListener('click',event=>{
   const el=event.target.closest('button,a');if(!el)return;
+  if(el.dataset.mcHintAction&&window.CompanionMemoryCompanionHint?.handleAction){
+    if(!el.closest('#memoryWorkspace')&&!el.closest('.setup-shell')){
+      event.preventDefault();
+      void window.CompanionMemoryCompanionHint.handleAction(el.dataset.mcHintAction,{
+        onUpdate:()=>renderShellSide(),
+        notify:message=>{if(message)toast(message);},
+      });
+      return;
+    }
+  }
   if(el.hasAttribute('data-profile-avatar-remove')){
     event.preventDefault();setProfileAvatar('');toast('头像已移除，保存角色档案后生效');return;
   }
