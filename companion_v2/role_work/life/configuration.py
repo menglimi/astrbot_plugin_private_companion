@@ -15,14 +15,14 @@ GROUP = "role.life"
 DEFAULTS = {"enabled": False, "diary_enabled": True, "diary_time": "23:50", "timezone": "Asia/Shanghai",
             "sleep_enabled": False, "sleep_time": "00:30", "sleep_timezone": "Asia/Shanghai",
             "sleep_variation_minutes": 20, "sleep_window_minutes": 120, "sleep_minutes": 480,
-            "reading_enabled": False, "derive_enabled": True,
+            "reading_enabled": False, "reading_share_in_group": True, "derive_enabled": True,
             "diary_style_prompt": "",
             "dream_theme_candidates": "", "dream_mixed_themes_enabled": False,
             "dream_intimate_theme_enabled": False, "dream_afterglow_mode": "auto",
             **REST_GATE_DEFAULTS}
 OWNER = "role.life.settings"
 SLEEP_FIELDS = frozenset(("sleep_enabled", "sleep_time", "sleep_timezone", "sleep_variation_minutes",
-                          "sleep_window_minutes", "sleep_minutes"))
+                          "sleep_window_minutes", "sleep_minutes", "reading_share_in_group"))
 AFTERGLOW_MODES = ("auto", "轻", "标准", "明显")
 
 

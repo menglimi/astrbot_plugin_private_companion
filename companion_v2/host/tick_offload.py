@@ -75,7 +75,7 @@ from companion_v2.role_work.life.configuration import GROUP as LIFE_GROUP, targe
 from companion_v2.role_work.life.coordinator import RoleLifeCoordinator
 from companion_v2.role_work.life.physiology import nap_ready, night_sleep_ready
 from companion_v2.role_work.life.runtime import RoleLifeRuntime
-from companion_v2.role_work.life.scheduling import next_bedtime
+from companion_v2.role_work.life.scheduling import next_bedtime, sleep_due_window_expired
 from companion_v2.role_work.models import RoleActivityState as LifeState
 from companion_v2.role_work.reader import READ_KIND
 from companion_v2.role_work.state.maintenance import KIND as STATE_KIND, StateMaintenance
@@ -771,7 +771,7 @@ def _scan_life_routine_sync(
         now = routine.app.now()
         routine.app.role_state.body_clock.resume_due(routine.context, observed_at=now)
         for sleeping in routine.app.role_state.body_clock.active(routine.context, "sleep"):
-            wake_key = "wake:" + sleeping.activity_id
+            wake_key = f"wake:{sleeping.activity_id}:{sleeping.revision}"
             if (
                 sleeping.work.due_at <= now
                 and wake_key not in active_workers
@@ -815,13 +815,24 @@ def _scan_life_routine_sync(
             and routine.app.life_runtime.owns_sleep_schedule(routine)
         ):
             zone = routine.settings["sleep_timezone"]
-            local_now = now.astimezone(ZoneInfo(zone))
             due_day = routine._next_sleep.astimezone(ZoneInfo(zone)).date()
-            if not (
-                due_day != local_now.date()
-                and local_now.time().replace(tzinfo=None)
-                < time.fromisoformat(routine.settings["sleep_time"])
+            if sleep_due_window_expired(
+                now,
+                routine._next_sleep,
+                window_minutes=routine.settings["sleep_window_minutes"],
+                sleep_minutes=routine.settings["sleep_minutes"],
             ):
+                routine._next_sleep = next_bedtime(
+                    now + timedelta(microseconds=1),
+                    routine.owner,
+                    zone,
+                    time.fromisoformat(routine.settings["sleep_time"]),
+                    routine.settings["sleep_variation_minutes"],
+                )
+                routine._next_wake = routine._next_sleep + timedelta(
+                    minutes=routine.settings["sleep_minutes"]
+                )
+            else:
                 profile = routine.app.role_state.body_clock.profile(routine.context, now=now)
                 window_closed = now >= routine._next_sleep + timedelta(
                     minutes=routine.settings["sleep_window_minutes"]
@@ -965,8 +976,10 @@ def _scan_calendar_work(routine: RoleLifeRuntime, records, now, writing_active: 
         None,
     )
     current = [item for item in page["items"] if item["state"] == "accepted" and item["start"] <= stamp(now)]
-    if page["scan_truncated"] or any(life_routine_for(item) is None for item in current):
+    if page["scan_truncated"] or any(item.get("kind") == "commitment" for item in current):
         current = []
+    else:
+        current = [item for item in current if life_routine_for(item) is not None]
     if writing_active or routine.app.role_state.body_clock.active(context, "reading"):
         return
     if writer is not None:
@@ -974,11 +987,18 @@ def _scan_calendar_work(routine: RoleLifeRuntime, records, now, writing_active: 
             if life_routine_for(item) != "writing":
                 continue
             key = "writing:" + item["id"] + ":" + str(item["sequence"])
+            prior = routine.results.get(key)
+            retryable_prior = (
+                prior is not None
+                and getattr(prior, "failure", None) is not None
+                and getattr(writer, "is_retryable_failure", lambda _: False)(prior.failure.code)
+            )
             if (
-                key not in routine.results
+                (prior is None or retryable_prior)
                 and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
                 and writer.ready(context, item)
             ):
+                routine.results.pop(key, None)
                 to_launch.append((key, lambda w=writer, r=routine, it=item: w.run(r, it), None))
                 return
     if (

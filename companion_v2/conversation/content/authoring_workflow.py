@@ -374,10 +374,11 @@ class ContentAuthoringWorkflow:
         finished = True
         if job.scheduled:
             try:
-                raw = json.loads(raw)
-                finished = raw.pop("finished")
+                parsed = dict(authoring.decode_json_object(raw))
+                finished = parsed.pop("finished")
                 if type(finished) is not bool:
                     raise ValueError("finished must be a boolean")
+                raw = parsed
             except (AttributeError, KeyError, TypeError, ValueError) as error:
                 raise TaskError("content_authoring_output", "scheduled writing must report completion") from error
         job.result = replace(authoring_service.parse_draft(raw, action=action), finished=finished)

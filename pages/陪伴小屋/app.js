@@ -1134,6 +1134,7 @@ function panelScope(){
     ||section==='learning'&&learningTab==='semantic')return {kind:'global',label:'全局'};
   if((section==='memory'||route==='memories')&&memoryWorkspaceRoute==='records')
     return {kind:'window',requiresWindow:true};
+  if(window.CompanionShell?.view==='diary')return {kind:'window',privateOnly:true};
   if(['decision','models','identity-feelings','perception','contact','understanding'].includes(section)
     ||section==='expression'&&['expression-text','expression-voice','expression-platform'].includes(expressionModule)
     ||window.CompanionShell?.view==='state')return {kind:'window'};

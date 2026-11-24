@@ -27,7 +27,10 @@ def _legacy_base_need(activity):
     return 480
 
 
-def sleep_profile(episodes, *, workload_score, now):
+STALE_DISABLED_SLEEP_MINUTES = 24 * 60
+
+
+def sleep_profile(episodes, *, workload_score, now, sleep_enabled=True):
     """Calculate current role physiology from durable sleep episodes and observations."""
     now = normalize_utc(now, field="sleep observation")
     episodes = tuple(sorted(episodes, key=lambda item: (item.started_at, item.activity_id)))
@@ -59,6 +62,13 @@ def sleep_profile(episodes, *, workload_score, now):
         pressure = 0
     else:
         awake_minutes = max(0, round((now - latest.updated_at).total_seconds() / 60))
+        if not sleep_enabled and awake_minutes > STALE_DISABLED_SLEEP_MINUTES:
+            # Automatic sleep is disabled and the last recorded sleep is stale;
+            # do not report a pinned 100/100 sleep pressure as if the role were
+            # suffering multi-day insomnia.
+            return {"sleep_pressure": None, "sleep_debt_minutes": 0,
+                    "workload_score": workload_score, "awake_minutes": None,
+                    "has_sleep_history": False}
         pressure = min(100, round(awake_minutes / 60 * 4.0 + debt * 0.14 + workload_score * 0.12))
     return {"sleep_pressure": pressure, "sleep_debt_minutes": round(debt),
             "workload_score": workload_score, "awake_minutes": awake_minutes,
@@ -95,7 +105,9 @@ def night_sleep_ready(profile):
     pressure = profile.get("sleep_pressure")
     if pressure is None:
         return True  # With no receipt history there is no pressure estimate to delay the first night.
-    threshold = max(48, 66 - profile.get("workload_score", 0) * 0.12
+    # 16h awake after 8h sleep produces 64 pressure at zero workload/debt; a 60
+    # base threshold allows steady nightly sleep without daily drift.
+    threshold = max(48, 60 - profile.get("workload_score", 0) * 0.12
                     - profile.get("sleep_debt_minutes", 0) * 0.035)
     return pressure >= threshold
 

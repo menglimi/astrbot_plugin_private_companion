@@ -32,6 +32,8 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskError, digest, require
@@ -142,6 +144,78 @@ _PROACTIVE_CONFIGURATION_FIELDS = frozenset({
     "role.state.planning_weather_max_age_minutes",
 })
 
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_V1_MARKER_FILES = frozenset({
+    "companions.json",
+    "memory_companion.db",
+    "astrbot_plugin_private_companion_config.json",
+    "astrbot_plugin_private_companion.json",
+})
+
+
+def _strip_path_wrappers(raw: str) -> str:
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1].strip()
+    if text.lower().startswith("file://"):
+        parsed = urlparse(text)
+        if parsed.netloc in ("", "localhost"):
+            text = url2pathname(parsed.path).strip()
+        else:
+            # Windows UNC-like file://D:/... where drive ended up in netloc
+            text = url2pathname(f"//{parsed.netloc}{parsed.path}").strip()
+    return text
+
+
+def _normalize_v1_override_path(override, *, posix_check: bool | None = None) -> Path:
+    """Validate and normalize an explicit ``v1_root`` override with actionable error codes."""
+    if type(override) is not str:
+        raise TaskError("legacy_path_empty", "V1 path must be a non-empty absolute directory")
+    text = _strip_path_wrappers(override)
+    if not text:
+        raise TaskError("legacy_path_empty", "V1 path must be a non-empty absolute directory")
+    is_posix = (os.name != "nt") if posix_check is None else bool(posix_check)
+    if is_posix and _WINDOWS_DRIVE_RE.match(text):
+        raise TaskError(
+            "legacy_path_windows_on_posix",
+            "Windows drive path cannot be accessed from a Linux/container host",
+        )
+    explicit = Path(text).expanduser()
+    if not explicit.is_absolute():
+        raise TaskError("legacy_path_not_absolute", "V1 path must be an absolute directory")
+    try:
+        exists = explicit.exists()
+    except PermissionError as error:
+        raise TaskError("legacy_path_permission_denied", "permission denied accessing V1 path") from error
+    except OSError as error:
+        raise TaskError("legacy_path_not_found", "V1 path could not be accessed") from error
+    if not exists:
+        raise TaskError("legacy_path_not_found", "V1 path does not exist")
+    try:
+        if explicit.is_file():
+            if explicit.name.lower() in _V1_MARKER_FILES and explicit.parent.is_dir():
+                explicit = explicit.parent
+            else:
+                raise TaskError("legacy_path_is_file", "V1 path points to a file instead of a directory")
+        if not explicit.is_dir():
+            raise TaskError("legacy_root_invalid", "V1 path is not a directory")
+        try:
+            next(explicit.iterdir(), None)
+        except PermissionError as error:
+            raise TaskError("legacy_path_permission_denied", "permission denied reading V1 directory") from error
+        if not any((explicit / marker).exists() for marker in ("companions.json", "users", "groups", "diaries", "profiles")):
+            for candidate in (
+                explicit / V1_PLUGIN_DATA_NAME,
+                explicit / "plugin_data" / V1_PLUGIN_DATA_NAME,
+            ):
+                if candidate.is_dir():
+                    return candidate
+        return explicit
+    except TaskError:
+        raise
+    except PermissionError as error:
+        raise TaskError("legacy_path_permission_denied", "permission denied reading V1 directory") from error
+
 
 class LegacyMigrationWebAPI:
     def __init__(self, controller):
@@ -174,20 +248,15 @@ class LegacyMigrationWebAPI:
         最常见的布局。两条路都不通就如实报错，不猜也不创建目录。
         """
         if override is not None:
-            if type(override) is not str or not override.strip():
-                raise ValueError("V1 path must be a non-empty absolute directory")
-            from pathlib import Path
-            explicit = Path(override.strip()).expanduser()
-            if not explicit.is_absolute() or not explicit.is_dir():
-                raise ValueError("V1 path must be an existing absolute directory")
-            return explicit, "request"
+            return _normalize_v1_override_path(override), "request"
 
         configured = (self.controller.config or {}).get("legacy", {})
         if isinstance(configured, dict):
             explicit = configured.get("v1_root")
             if type(explicit) is str and explicit.strip():
-                from pathlib import Path
-                return Path(explicit.strip()), "configured"
+                cleaned = _strip_path_wrappers(explicit)
+                if cleaned:
+                    return Path(cleaned).expanduser(), "configured"
 
         return find_v1_data_root(self._v1_source_data_root())
 
@@ -217,6 +286,17 @@ class LegacyMigrationWebAPI:
         image_configuration, image_issue = self._v1_image_configuration()
         native_configurations, native_issues = self._v1_native_extension_configurations()
         host_configuration, host_issue = self._read_v1_host_configuration()
+        if host_configuration is None and not host_issue and root_override is not None:
+            # When the operator points v1_root at a copied backup folder on
+            # Linux/Docker/Android, also probe the sibling config/ beside root.
+            fallback_cfg_path = v1_host_config_path(root)
+            if fallback_cfg_path is not None:
+                try:
+                    raw_fallback = json.loads(fallback_cfg_path.read_text(encoding="utf-8-sig"))
+                    if isinstance(raw_fallback, dict):
+                        host_configuration = raw_fallback
+                except (OSError, ValueError, UnicodeDecodeError):
+                    host_issue = "v1_host_configuration_unreadable"
         enriched_accounts = await legacy_account_inventory(
             self.controller, host_configuration, accounts, personas)
         return LegacyMigration(v1_root=root, v1_configuration=host_configuration,
@@ -2118,8 +2198,13 @@ class LegacyMigrationWebAPI:
         else:
             scoped_plan = planned
             scope_status = self._scope_status(session, scoped_plan)
+        try:
+            current_plugin_data_dir = str(Path(self._v1_source_data_root()).expanduser().resolve(strict=False))
+        except (OSError, ValueError, TypeError):
+            current_plugin_data_dir = str(self._v1_source_data_root())
         return Outcome.success({
             "v1_root": str(root),
+            "current_plugin_data_dir": current_plugin_data_dir,
             "findings": [item.document() for item in scoped_plan.findings],
             "configuration_scope": configuration_scope,
             "scope_status": scope_status,

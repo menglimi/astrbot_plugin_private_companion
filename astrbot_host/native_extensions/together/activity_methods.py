@@ -987,11 +987,11 @@ class TogetherActivityMethods:
             if visible_text:
                 await send({'type': 'bot_text', 'text': visible_text, 'source': display_source})
             return False
-        provider = self._room_tts_provider(room)
+        provider = self._room_tts_provider(room, spoken_text=spoken)
         # Native V2 Together owns provider selection and browser fallback.
         # Speech is kept inside this extension; no external voice facade is
         # consulted on the reply path.
-        voice_config = {'voice_language': room.native_v2.tts_language} if room.native_v2 is not None else self._companion_realtime_voice_config()
+        voice_config = self._room_voice_config(room, spoken_text=spoken)
         browser_language = self._companion_tts_browser_language(voice_config)
         timeout_seconds = room.native_v2.tts_timeout_seconds if room.native_v2 is not None else _clamp_int(getattr(self, 'tts_timeout_seconds', 60), 60, 15, 180)
         if provider is None:

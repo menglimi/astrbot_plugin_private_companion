@@ -1294,9 +1294,21 @@ class PrivateCompanionV2StagingPlugin(Star):
                 return
         debounce_manager = None
         debounce_pending = None
+        trailing_image_coalesced = False
         if plain_text is not None and isinstance(target_key, str) and target_key:
             debounce_manager = self._private_debounce_manager()
             debounce_pending = debounce_manager.reserve(target_key, event, plain_text)
+        elif (channel == "private" and not is_calendar_command
+              and isinstance(target_key, str) and target_key):
+            candidate_manager = self._private_debounce_manager()
+            if candidate_manager.has_pending_text(target_key):
+                trailing_text = PrivateDebounce.private_trailing_image_text(event)
+                if trailing_text is not None:
+                    debounce_pending = candidate_manager.reserve(
+                        target_key, event, trailing_text, seal_media=True)
+                    if debounce_pending is not None:
+                        debounce_manager = candidate_manager
+                        trailing_image_coalesced = True
         forward_parse_task = None
         if event_has_forward:
             if debounce_pending is not None:
@@ -1489,7 +1501,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                             native_context=getattr(self.staging, "context", None),
                         )
                         if not apply_debounced_private_merge(
-                                event, merged_text, has_forwards=aggregated_forwards is not None):
+                                event,
+                                merged_text,
+                                has_forwards=aggregated_forwards is not None,
+                                preserve_components=trailing_image_coalesced,
+                        ):
                             suppress_default_reply(event)
                             self._record_no_reply(event, "private_debounce_merge_failed", origin_key=origin_key,
                                                   channel="private", event_ref=event_ref, stage="intake",
@@ -1627,7 +1643,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         media = getattr(observer, "media", None)
         if callable(media):
             try:
-                media(event, prepared)
+                media(event, prepared, collection_only=True)
+            except TypeError:
+                try:
+                    media(event, prepared)
+                except Exception:
+                    pass
             except Exception:
                 pass
         if channel == "group" and group_admission is not None:

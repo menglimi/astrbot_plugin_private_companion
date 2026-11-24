@@ -402,7 +402,10 @@ class ReferenceMaterialManagement:
         reference_options, wardrobe_options = self._settings(context)
         assets = (*self.repository.list(owner, state=ReferenceState.ACTIVE),
                   *self.repository.list(owner, state=ReferenceState.WITHDRAWN))
-        items = self.repository.list_items(owner, state=None)
+        active_items = self.repository.list_items(owner, state=ReferenceState.ACTIVE)
+        withdrawn_items = self.repository.list_items(owner, state=ReferenceState.WITHDRAWN, order_by_updated=True)
+        items = (*active_items, *withdrawn_items)
+        withdrawn_total = self.repository.count_items(owner, state=ReferenceState.WITHDRAWN)
         reference_views = []
         for asset in assets:
             view = _asset_view(self.repository, owner, asset)
@@ -432,6 +435,7 @@ class ReferenceMaterialManagement:
                           "description": item.description, "tags": item.tags,
                           "asset_id": item.asset_id, "state": item.state.value,
                           "revision": item.revision} for item in items],
+            "wardrobe_counts": {"active": len(active_items), "withdrawn": withdrawn_total},
             "daily_outfit": daily,
         }
 

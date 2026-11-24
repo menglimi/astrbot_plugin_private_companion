@@ -59,8 +59,10 @@ class FakeRouter:
     def __init__(self):
         self.port = FakePort()
         self.queries = []
+        self.source_kinds = []
 
     def for_settings(self, values, context=None):
+        self.source_kinds.append(values.get("news_source_kind"))
         self.queries.append(values["web_exploration_interests"])
         return self.port
 
@@ -149,13 +151,37 @@ class ExplorationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(router.queries)
         self.assertTrue(all("摄影" in query or "手冲咖啡" in query for query in router.queries))
 
-    async def test_disabled_or_non_search_source_never_starts_a_worker(self):
+    async def test_disabled_exploration_never_starts_a_worker(self):
         runtime = FakeRuntime()
         contacts = NS(runtime=runtime, tasks=NS(now=lambda: NOW))
         service = ExplorationEvents(contacts, FakeDates(()), FakeRouter())
         service.maintain(context(), preferences(web_exploration_enabled=False))
-        service.maintain(context(), preferences(news_source_kind="host"))
         self.assertEqual(service._workers, {})
+
+    async def test_exploration_runs_in_parallel_with_non_search_news_source(self):
+        runtime = FakeRuntime()
+        contacts = NS(runtime=runtime, tasks=NS(now=lambda: NOW))
+        router = FakeRouter()
+        service = ExplorationEvents(contacts, FakeDates((
+            {"basis": "profile_relationship_date", "label": "对方生日",
+             "days_until": 9, "date": "2026-11-20"},
+        )), router)
+
+        rss_prefs = preferences(
+            web_exploration_enabled=True,
+            news_source_kind="rss",
+            news_source_url="https://daily.juya.uk/rss.xml",
+        )
+        service.maintain(context(), rss_prefs)
+        self.assertEqual(len(service._workers), 1)
+        await next(iter(service._workers.values()))
+
+        snapshot = service.read(context())
+        self.assertEqual(snapshot["last_result"], "notes")
+        self.assertEqual(len(snapshot["notes"]), 1)
+        self.assertTrue(router.source_kinds)
+        self.assertTrue(all(kind == "search" for kind in router.source_kinds))
+        self.assertEqual(rss_prefs.values["news_source_kind"], "rss")
 
 
 if __name__ == "__main__":

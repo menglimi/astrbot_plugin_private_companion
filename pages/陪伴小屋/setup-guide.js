@@ -1122,7 +1122,8 @@ window.CompanionSetup = (() => {
         <details class="setup-migration-source-manual">
           <summary>手动指定来源</summary>
           <label class="setup-legacy-path"><span>旧版数据目录（可选）</span><input type="text" inputmode="text" autocomplete="off" spellcheck="false" data-setup-legacy="root" value="${escape(legacyRootDraft)}" placeholder="留空时自动查找"></label>
-          <p class="setup-migration-micro">使用旧版插件数据目录的绝对路径；留空时自动查找。</p>
+          <p class="setup-migration-micro">使用当前 AstrBot 所在设备/容器内的绝对路径（留空时自动查找）。</p>
+          ${legacyFinding?.current_plugin_data_dir ? `<p class="setup-migration-micro">当前插件数据目录：<code>${escape(legacyFinding.current_plugin_data_dir)}</code> <button type="button" class="setup-migration-text-action" data-setup-copy-data-dir>复制路径</button></p>` : ""}
         </details>
       </div>
     </div>`;
@@ -1262,6 +1263,12 @@ window.CompanionSetup = (() => {
     legacy_scope_stale: "迁移范围已变化，请重新读取后再执行",
     legacy_plan_stale: "配置在执行前已更新，重新执行会先重新试算",
     legacy_request_invalid: "请求未被接受，重新执行会先重新试算",
+    legacy_path_empty: "请填写旧版数据目录路径，或留空自动查找",
+    legacy_path_windows_on_posix: "当前运行在 Linux/容器或手机环境中，不能填写 Windows 盘符路径；请填写本机/容器内的绝对路径",
+    legacy_path_not_absolute: "请填写完整的绝对路径（如 /AstrBot/data/plugin_data/... 或 D:\\...）",
+    legacy_path_not_found: "找不到该目录，请确认数据已放到当前 AstrBot 所在设备或容器内",
+    legacy_path_is_file: "填写的是文件路径，请改为填写旧版数据目录路径",
+    legacy_path_permission_denied: "没有权限读取该目录，请检查权限或移至插件数据目录同级位置",
     legacy_source_missing: "旧版来源已不可读取",
     legacy_source_changed: "旧版来源在试算后发生变化，请重新试算",
     legacy_nothing_to_import: "没有可导入内容",
@@ -4208,6 +4215,24 @@ window.CompanionSetup = (() => {
           item.destination_id !== removeDestination.dataset.destinationId);
         legacyPersonaBatchError = "";
         render();
+      }
+      return;
+    }
+    if (event.target.closest?.("[data-setup-copy-data-dir]")) {
+      const dataDir = legacyFinding?.current_plugin_data_dir;
+      if (dataDir) {
+        if (navigator?.clipboard?.writeText) {
+          navigator.clipboard.writeText(dataDir).then(() => {
+            notice = "已复制当前插件数据目录路径。";
+            render();
+          }).catch(() => {
+            notice = `当前插件数据目录：${dataDir}`;
+            render();
+          });
+        } else {
+          notice = `当前插件数据目录：${dataDir}`;
+          render();
+        }
       }
       return;
     }

@@ -112,16 +112,21 @@ class PersistentRoleLifeLedger:
              after_id, after_id, limit))
         return tuple(activity_from_json(row["record_json"]) for row in rows)
 
-    def archive_activities(self, owner, scope, *, after_id=None, limit=30):
+    def archive_activities(self, owner, scope, *, after_id=None, limit=30, kind=None):
         """Page by import time with contiguous, ascending offsets within a book."""
         self._page(limit, after_id)
-        rows = self.runtime.read_all("""WITH archive AS (
+        kind_clause = "" if kind is None else " AND json_extract(record_json, '$.work.kind') = ?"
+        params = [self._owner_key(owner), encode(scope)]
+        if kind is not None:
+            params.append(str(kind))
+        params.extend((after_id, limit))
+        rows = self.runtime.read_all(f"""WITH archive AS (
                 SELECT record_json, activity_id, json_extract(record_json, '$.started_at') AS started,
                     COALESCE(json_extract(record_json, '$.work.source.source_id'), '') AS source_id,
                     COALESCE(json_extract(record_json, '$.work.start_offset'), 0) AS offset
                 FROM role_activities
                 WHERE owner_key = ? AND json_extract(record_json, '$.scope') = json(?)
-                    AND json_type(record_json, '$.work') = 'object'
+                    AND json_type(record_json, '$.work') = 'object'{kind_clause}
             ), cursor AS (
                 SELECT started, source_id, offset, activity_id FROM archive WHERE activity_id = ?
             )
@@ -130,7 +135,7 @@ class PersistentRoleLifeLedger:
                 a.started = c.started AND (a.source_id, a.offset, a.activity_id)
                     > (c.source_id, c.offset, c.activity_id))
             ORDER BY a.started DESC, a.source_id, a.offset, a.activity_id LIMIT ?""",
-            (self._owner_key(owner), encode(scope), after_id, limit))
+            tuple(params))
         return tuple(activity_from_json(row["record_json"]) for row in rows)
 
     def transition_activity(self, activity_id, *, owner, expected_revision, state,
@@ -184,6 +189,74 @@ class PersistentRoleLifeLedger:
                 WHEN 'completed' THEN 2 WHEN 'planned' THEN 3 ELSE 4 END,
                 updated_at DESC, activity_id DESC LIMIT ?""",
             (self._owner_key(owner), encode(scope), stamp(observed_at), limit))
+        return tuple(activity_from_json(row["record_json"]) for row in rows)
+
+    def context_reading_activities(self, owner, scope, *, observed_at, limit=48):
+        """Bounded reading activities for one scope so sleep logs never starve bookshelf context."""
+        self._page(limit, None)
+        if scope.installation_id != owner.installation_id or scope.bot_id != owner.bot_id:
+            raise ReferenceValidationError("activity scope crosses its role owner")
+        rows = self.runtime.read_all("""SELECT record_json FROM role_activities
+            WHERE owner_key = ? AND json_extract(record_json, '$.scope') = json(?) AND updated_at <= ?
+              AND (json_extract(record_json, '$.work.kind') = 'reading'
+                   OR json_type(record_json, '$.reading') = 'object')
+              AND state != 'cancelled'
+            ORDER BY CASE state WHEN 'active' THEN 0 WHEN 'completed' THEN 1
+                WHEN 'paused' THEN 2 WHEN 'planned' THEN 3 ELSE 4 END,
+                updated_at DESC, activity_id DESC LIMIT ?""",
+            (self._owner_key(owner), encode(scope), stamp(observed_at), limit))
+        return tuple(activity_from_json(row["record_json"]) for row in rows)
+
+    def book_progress_for_sources(self, owner, scope, source_ids, *, observed_at=None):
+        """Aggregate chunk completion per reading source inside one scope."""
+        cleaned = tuple(dict.fromkeys(str(item) for item in (source_ids or ()) if isinstance(item, str) and item))
+        if not cleaned:
+            return {}
+        if scope.installation_id != owner.installation_id or scope.bot_id != owner.bot_id:
+            raise ReferenceValidationError("activity scope crosses its role owner")
+        placeholders = ",".join("?" for _ in cleaned)
+        time_clause = "" if observed_at is None else " AND updated_at <= ?"
+        params = [self._owner_key(owner), encode(scope), *cleaned]
+        if observed_at is not None:
+            params.append(stamp(observed_at))
+        rows = self.runtime.read_all(
+            f"""SELECT record_json FROM role_activities
+                WHERE owner_key = ? AND json_extract(record_json, '$.scope') = json(?)
+                  AND json_extract(record_json, '$.work.kind') = 'reading'
+                  AND json_extract(record_json, '$.work.source.source_id') IN ({placeholders})
+                  AND state != 'cancelled'{time_clause}""",
+            tuple(params),
+        )
+        progress = {}
+        for row in rows:
+            activity = activity_from_json(row["record_json"])
+            if activity.work is None or activity.work.source is None:
+                continue
+            sid = activity.work.source.source_id
+            entry = progress.setdefault(sid, {"completed": 0, "total": 0, "completed_book": False})
+            entry["total"] += 1
+            if (activity.state is RoleActivityState.COMPLETED and activity.reading is not None
+                    and activity.reading.source == activity.work.source
+                    and activity.reading.content_hash == activity.work.content_hash
+                    and (activity.reading.start_offset, activity.reading.end_offset)
+                        == (activity.work.start_offset, activity.work.end_offset)):
+                entry["completed"] += 1
+        for entry in progress.values():
+            entry["completed_book"] = entry["total"] > 0 and entry["completed"] >= entry["total"]
+        return progress
+
+    def role_reading_activities(self, owner, *, observed_at, limit=48):
+        """Bounded role-wide reading activities across private shelves for opt-in public summary projection."""
+        self._page(limit, None)
+        rows = self.runtime.read_all("""SELECT record_json FROM role_activities
+            WHERE owner_key = ? AND updated_at <= ?
+              AND json_extract(record_json, '$.scope.kind') = 'private'
+              AND (json_extract(record_json, '$.work.kind') = 'reading'
+                   OR json_type(record_json, '$.reading') = 'object')
+              AND state IN ('active', 'completed')
+            ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END,
+                updated_at DESC, activity_id DESC LIMIT ?""",
+            (self._owner_key(owner), stamp(observed_at), limit))
         return tuple(activity_from_json(row["record_json"]) for row in rows)
 
     def add_artifact(self, artifact: RoleArtifact, *, owner: RoleOwnerRef) -> RoleArtifact:

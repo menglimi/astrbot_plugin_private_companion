@@ -75,6 +75,44 @@ class SleepPhysiologyTests(unittest.TestCase):
         self.assertGreaterEqual(debt_day["sleep_debt_minutes"], 90)
         self.assertTrue(nap_ready(debt_day, local_minutes=14 * 60))
 
+    def test_disabled_auto_sleep_does_not_pin_pressure_from_stale_history(self):
+        old = episode("old", at=NOW - timedelta(days=3))
+        disabled = sleep_profile((old,), workload_score=10, now=NOW, sleep_enabled=False)
+        self.assertIsNone(disabled["sleep_pressure"])
+        self.assertIsNone(disabled["awake_minutes"])
+        self.assertFalse(disabled["has_sleep_history"])
+        self.assertEqual(disabled["sleep_debt_minutes"], 0)
+        # Active sleep still reports 0 pressure even when auto-sleep is disabled.
+        manual_active = episode("active", at=NOW - timedelta(hours=1), state=State.ACTIVE)
+        active_profile = sleep_profile((old, manual_active), workload_score=10, now=NOW, sleep_enabled=False)
+        self.assertEqual(active_profile["sleep_pressure"], 0)
+        self.assertTrue(active_profile["has_sleep_history"])
+
+    def test_zero_workload_sixteen_hours_awake_is_ready_without_daily_drift(self):
+        rested_night = episode("rested", at=NOW - timedelta(hours=24), slept=480)
+        at_bedtime = sleep_profile((rested_night,), workload_score=0, now=NOW)
+        self.assertEqual(at_bedtime["sleep_pressure"], 64)
+        self.assertTrue(night_sleep_ready(at_bedtime))
+
+    def test_sleep_due_window_and_schedule_summary_handle_midnight_and_late_bedtime(self):
+        from companion_v2.role_work.life.scheduling import sleep_due_window_expired, sleep_schedule_summary
+        # Bedtime at 23:55 crossing into 00:10 next day must NOT expire.
+        bedtime = datetime(2026, 10, 14, 15, 55, tzinfo=timezone.utc)
+        self.assertFalse(sleep_due_window_expired(
+            bedtime + timedelta(minutes=15), bedtime, window_minutes=120, sleep_minutes=480))
+        # A bedtime missed by 12 hours (e.g. machine offline overnight) expires cleanly.
+        self.assertTrue(sleep_due_window_expired(
+            bedtime + timedelta(hours=12), bedtime, window_minutes=120, sleep_minutes=480))
+        summary = sleep_schedule_summary({
+            "sleep_enabled": True, "sleep_time": "04:00",
+            "sleep_timezone": "Asia/Shanghai", "sleep_minutes": 480,
+        })
+        self.assertEqual(summary, {
+            "enabled": True, "sleep_time": "04:00",
+            "timezone": "Asia/Shanghai", "duration_minutes": 480,
+            "expected_wake_time": "12:00",
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -314,7 +314,10 @@
 .image-materials-upload-fields .image-materials-roles,.image-materials-upload-fields .button{grid-column:1/-1}
 .image-materials-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:calc(var(--sp-3) * .75)}
 .image-materials-wardrobe-editor{padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line)}
+.image-materials-wardrobe-tools{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
 .image-materials-add-wardrobe{justify-self:start}
+.image-materials-withdrawn-group{display:grid;gap:var(--sp-2);margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px dashed var(--t-line)}
+.image-materials-withdrawn-title{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:500}
 .image-materials-outfit{display:grid;gap:var(--sp-3);min-width:0;padding-block:var(--sp-4);border-block:1px solid var(--t-line);container:outfit-photo / inline-size}
 .image-materials-outfit h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-body)}
 .image-materials-outfit>header button{display:inline-flex;align-items:center;gap:var(--sp-2);min-width:8rem}

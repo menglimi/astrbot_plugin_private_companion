@@ -33,6 +33,7 @@ class Pending:
     wake_logged: bool = False
     followups_logged: int = 0
     force_ready: bool = False
+    sealed_media: bool = False
 
     @property
     def latest_text(self):
@@ -67,9 +68,19 @@ class PrivateDebounce:
         self._resolution_timeout = (float(resolution_timeout)
                                     if resolution_timeout is not None and resolution_timeout > 0 else None)
         self._pending: dict[str, Pending] = {}
+        self._sealed: dict[int, Pending] = {}
         self._lock = asyncio.Lock()
         self._sequence = 0
         self._closed = False
+
+    def _is_live(self, pending):
+        return (self._pending.get(pending.key) is pending
+                or self._sealed.get(id(pending)) is pending)
+
+    def _detach(self, pending):
+        if self._pending.get(pending.key) is pending:
+            self._pending.pop(pending.key, None)
+        self._sealed.pop(id(pending), None)
 
     @property
     def closed(self):
@@ -110,7 +121,20 @@ class PrivateDebounce:
                 timing_text=self._timing(pending),
             )
 
-    def reserve(self, key, event, text, *, received_at=None):
+    def has_pending_text(self, key, *, received_at=None):
+        """Return True when a non-media private debounce window is actively collecting."""
+        if self._closed or not isinstance(key, str) or not key:
+            return False
+        pending = self._pending.get(key)
+        if pending is None or pending.state not in {"collecting", "active"} or pending.sealed_media:
+            return False
+        received = self._clock() if received_at is None else received_at
+        if (pending.state == "collecting" and self._resolution_timeout is not None
+                and (received - pending.latest_received) >= self._resolution_timeout):
+            return False
+        return True
+
+    def reserve(self, key, event, text, *, received_at=None, seal_media=False):
         """Register an event before the handler's first await.
 
         AstrBot's event loop runs this synchronous method atomically, preserving
@@ -136,7 +160,12 @@ class PrivateDebounce:
             pending.wake.set()
             self._pending.pop(key, None)
             pending = None
-        if pending is None or pending.state in {"finished", "aborted", "closed", "bypass"}:
+        if (pending is None or pending.state in {"finished", "aborted", "closed", "bypass"}
+                or pending.sealed_media):
+            if seal_media:
+                # A trailing image only coalesces onto an already-pending text burst;
+                # standalone images keep their immediate delivery path.
+                return None
             policy = self.policy
             pending = Pending(
                 key=key,
@@ -159,6 +188,12 @@ class PrivateDebounce:
         pending.owner = event
         pending.owner_ticket = ticket
         pending.latest_received = received
+        if seal_media:
+            pending.sealed_media = True
+            pending.force_ready = True
+            if self._pending.get(key) is pending:
+                self._pending.pop(key, None)
+            self._sealed[id(pending)] = pending
         pending.wake.set()
         if pending.state == "active":
             self._log_followups(pending)
@@ -197,6 +232,45 @@ class PrivateDebounce:
             return None
         text = "".join(part.text for part in parsed[1])
         return text if text.strip() else None
+
+    @staticmethod
+    def private_trailing_image_text(event):
+        """Return optional caption text when ``event`` is a single-image private message.
+
+        Allows a single trailing sticker/image arriving during an active private
+        text debounce window to merge onto the pending text turn instead of
+        splitting into two back-to-back replies.
+        """
+        message_obj = getattr(event, "message_obj", None)
+        kind = getattr(getattr(message_obj, "type", None), "value",
+                       getattr(message_obj, "type", None))
+        if kind != "FriendMessage":
+            return None
+        try:
+            parts = tuple(message_obj.message)
+        except (AttributeError, TypeError):
+            return None
+        if not parts:
+            return None
+        getter = getattr(event, "get_platform_name", None)
+        official = callable(getter) and getter() in {"qq_official", "qq_official_webhook"}
+        texts = []
+        image_count = 0
+        for part in parts:
+            part_kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+            if part_kind == "Image":
+                image_count += 1
+                if image_count > 1:
+                    return None
+            elif part_kind == "Plain" and isinstance(getattr(part, "text", None), str):
+                texts.append(part.text)
+            elif official and part_kind == "At" and getattr(part, "qq", None) == "qq_official":
+                continue
+            else:
+                return None
+        if image_count != 1:
+            return None
+        return "".join(texts)
 
     @staticmethod
     def replace_private_plain_text(event, text):
@@ -243,7 +317,7 @@ class PrivateDebounce:
                 return "aborted"
             if pending.state == "bypass":
                 return "bypass"
-            if pending.state == "finished" or self._pending.get(pending.key) is not pending:
+            if pending.state == "finished" or not self._is_live(pending):
                 return "finished"
             if policy is None or not policy.enabled:
                 # Once one message has entered an active burst, retain its
@@ -251,7 +325,7 @@ class PrivateDebounce:
                 if pending.state == "active":
                     return "active"
                 pending.state = "bypass"
-                self._pending.pop(pending.key, None)
+                self._detach(pending)
                 pending.wake.set()
                 return "bypass"
             if pending.state == "active":
@@ -327,10 +401,10 @@ class PrivateDebounce:
                     return "closed"
                 if pending.state != "active":
                     return pending.state
-                if self._pending.get(pending.key) is not pending:
-                    return pending.state
                 if pending.owner_ticket != reservation.ticket or pending.owner is not event:
                     return "superseded"
+                if not self._is_live(pending):
+                    return pending.state
                 if pending.force_ready:
                     return "ready"
                 version = pending.version
@@ -353,13 +427,12 @@ class PrivateDebounce:
     async def finish(self, reservation, event):
         """Atomically close the turn only for its latest event."""
         pending = reservation.pending
-        key = reservation.key
         async with self._lock:
-            if (self._pending.get(key) is not pending or pending.state != "active"
+            if (not self._is_live(pending) or pending.state != "active"
                     or pending.owner_ticket != reservation.ticket
                     or pending.owner is not event or self._closed):
                 return None
-            self._pending.pop(key, None)
+            self._detach(pending)
             pending.state = "finished"
             ordered = sorted(zip(pending.tickets, pending.entries), key=lambda item: item[0])
             entries = tuple(entry for _, entry in ordered)
@@ -374,12 +447,11 @@ class PrivateDebounce:
 
     async def abort(self, reservation, *, event):
         pending = reservation.pending
-        key = reservation.key
         async with self._lock:
-            if (self._pending.get(key) is not pending
+            if (not self._is_live(pending)
                     or pending.owner_ticket != reservation.ticket or pending.owner is not event):
                 return False
-            self._pending.pop(key, None)
+            self._detach(pending)
             if pending.state not in {"finished", "closed"}:
                 pending.state = "aborted"
                 if pending.wake_logged:
@@ -411,8 +483,9 @@ class PrivateDebounce:
     async def close(self):
         async with self._lock:
             self._closed = True
-            pending = tuple(self._pending.values())
+            pending = (*self._pending.values(), *self._sealed.values())
             self._pending.clear()
+            self._sealed.clear()
             for item in pending:
                 item.state = "closed"
                 item.wake.set()

@@ -48,7 +48,20 @@ window.CompanionOutputPage=(()=>{
   const fullImageCache=new Map(),fullImagePending=new Map(),albumFullError=new Map();
   let albumReferenceOpen=false,albumReferenceImageId="",albumReferenceLabel="",albumReferenceRoles=new Set(["identity"]),albumReferenceError="";
   let naiStatus=null;
-  let works=[],worksLoaded=false,worksBusy=false,workTicket=0,workSelection=null;
+  let works=[],worksLoaded=false,worksBusy=false,workTicket=0,workSelection=null,authoringStatus=null;
+  const AUTHORING_ERROR_LABELS={
+    content_authoring_output:"模型未返回合法的创作 JSON 格式，可等待自动重试或检查写作模型路由。",
+    content_authoring_disabled:"创作开关当前未开启。",
+    content_authoring_capacity:"写作任务通道繁忙，稍后会自动重试。",
+    task_lane_full:"后台任务通道繁忙，稍后会自动重试。",
+    model_usage_unknown:"写作模型调用未返回完整结果，稍后会自动重试。",
+    model_task_unregistered:"写作模型任务路由尚未注册，请在「模型与连接」确认写作模型。",
+    content_provider_unavailable:"Content 创作拓展尚未就绪。",
+    life_sleeping:"当时角色正在睡眠，已暂停定时创作。",
+    life_schedule_changed:"对应日程时段已变更或结束。",
+    content_candidate_conflict:"作品候选稿已更新，请先手动审阅再续写。",
+    capability_role_not_enabled:"当前角色未开启 Content 拓展权限。",
+  };
   const product=()=>window.CompanionProduct;
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const endpointLabel=item=>String(item?.name||"").trim()||String(item?.model||"").trim()||"未命名模型";
@@ -866,8 +879,11 @@ window.CompanionOutputPage=(()=>{
   function renderWorks(){
     const host=root?.querySelector("[data-output-works-list]");
     if(!host)return;
+    const statusBanner=authoringStatus?.state==="failed"
+      ?`<div class="output-observation-empty" role="status">最近一次定时创作未完成${authoringStatus.window_title?`（${esc(authoringStatus.window_title)}）`:""}：${esc(AUTHORING_ERROR_LABELS[authoringStatus.code]||authoringStatus.code||"未知原因")}${authoringStatus.at?` · ${esc(formatTime(authoringStatus.at))}`:""}${authoringStatus.retryable?" · 稍后将自动重试":""}</div>`
+      :"";
     const sections=[["writing","正在创作"],["finished","已完成作品"]];
-    host.innerHTML=sections.map(([state,label])=>{
+    host.innerHTML=statusBanner+sections.map(([state,label])=>{
       const rows=works.map((item,index)=>({item,index})).filter(({item})=>item.state===state);
       return `<section><h3>${label}</h3><ul class="output-work-list">${rows.map(({item,index})=>`
         <li><button type="button" data-output-native-action="work-preview" data-work-index="${index}">
@@ -885,6 +901,7 @@ window.CompanionOutputPage=(()=>{
       const data=await product().request("GET","works/library",worksTarget());
       if(!live(id))return;
       works=Array.isArray(data.works)?data.works:[];
+      authoringStatus=data.authoring_status&&typeof data.authoring_status==="object"?data.authoring_status:null;
       worksLoaded=true;
       renderWorks();
       const dates=works.map(item=>item.candidate_at||item.created_at).sort();
@@ -1284,9 +1301,10 @@ window.CompanionOutputPage=(()=>{
     root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;observationSeq++;observationRefreshedAt="";sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
     albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumStandaloneItem=null;albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
     albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";
+    authoringStatus=null;
   }
   function mount(node){
-    unmount();root=node;scope=product()?.scopeKey?.()||"";works=[];worksLoaded=false;worksBusy=false;workSelection=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
+    unmount();root=node;scope=product()?.scopeKey?.()||"";works=[];worksLoaded=false;worksBusy=false;workSelection=null;authoringStatus=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
     if(!root)return;
     abort=new AbortController();
     root.addEventListener("input",input,{signal:abort.signal});

@@ -186,10 +186,10 @@ class RoleLifeCoordinator:
                 "label": f"{scope.platform} · 账号 {account} · 会话 {scope.native_scope_id}"}
 
     def cancel_activity(self, identifier):
+        wake_prefix = "wake:" + identifier + ":"
         for routine in tuple(self.routines.values()):
-            for key in (identifier, "wake:" + identifier):
-                worker = routine._workers.get(key)
-                if worker is not None:
+            for key, worker in tuple(routine._workers.items()):
+                if key in (identifier, "wake:" + identifier) or key.startswith(wake_prefix):
                     worker.cancel()
 
     @property

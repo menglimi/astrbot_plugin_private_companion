@@ -964,3 +964,25 @@ test("deleted AstrBot source remains visible as invalid and cannot submit a quer
   assert.match(page.balanceWorkspace.innerHTML,/所选 AstrBot 供应商不可用/);
   page.page.unmount();
 });
+
+test("overview shows parallel web exploration alongside AI daily RSS without conflict", async () => {
+  const page = harness();
+  page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+  page.emit({
+    ...page.snapshot,
+    news: {
+      ready: true, assembled: true, networkStatus: "succeeded", itemCount: 8,
+      label: "橘鸦AI早报", sourceKind: "rss",
+      explorationEnabled: true, explorationInterests: "古典钢琴,甜品",
+      explorationIntervalHours: 8, explorationResultCount: 6,
+      explorationSearchReady: true, explorationSearchLabel: "AstrBot 网页搜索",
+      explorationNoteCount: 2,
+      externalSelfLinkEnabled: true, lastCheckedAt: "2026-10-01 17:50",
+    },
+  });
+  assert.match(page.root.innerHTML, /AI 日报已装配/);
+  assert.match(page.root.innerHTML, /已并行开启网络探索/);
+  assert.match(page.page.preview("ext-external"), /并行启用 · AstrBot 网页搜索 · 已记 2 条笔记/);
+  page.page.unmount();
+});

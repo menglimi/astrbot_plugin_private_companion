@@ -92,7 +92,14 @@ class WorksWebAPI:
                 app, context, _ = self._private_context()
                 path = content_database(app.runtime.data_root)
                 works = await asyncio.to_thread(catalogue, path, ContentAccess(app), context) if path.is_file() else []
-                return outcome_response(Outcome.success({"works": works}))
+                authoring_status = (
+                    app.scheduled_authoring.last_run_status(context)
+                    if getattr(app, "scheduled_authoring", None) is not None else None
+                )
+                return outcome_response(Outcome.success({
+                    "works": works,
+                    "authoring_status": authoring_status,
+                }))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):

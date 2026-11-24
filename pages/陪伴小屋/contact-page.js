@@ -2153,7 +2153,7 @@ window.CompanionContactPage = (() => {
           ]},
       ]},
       {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", sections:[
-        {master:srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。", {master:true}),
+        {master:srcToggle("web_exploration_enabled", "网络探索", "独立使用搜索源运行，可与 RSS / B 站 / 热榜等资讯来源同时开启；生日等惊喜目标只记笔记，不会直接说破。", {master:true}),
           active:webExploreOn, fields:[
             srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。", {stacked:true, span:true}),
             srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
