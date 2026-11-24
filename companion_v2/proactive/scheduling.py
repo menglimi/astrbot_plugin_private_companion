@@ -1630,14 +1630,24 @@ class ContactSchedule:
                     worker.result()
                 del self._judges[key]
 
-    def _maintain_sources(self, contexts):
+    def _read_maintenance_preferences(self, contexts):
+        ready = []
         for context in contexts:
             try:
                 preferences = self.contacts.preferences.read(context, observed_at=self.tasks.now())
                 if preferences.is_success:
-                    self.news_events.maintain(context, preferences.unwrap())
-                    if getattr(self, "exploration", None) is not None:
-                        self.exploration.maintain(context, preferences.unwrap())
+                    ready.append((context, preferences.unwrap()))
+            except (TaskError, ValueError, TypeError, AttributeError):
+                # A source status must never take down the contact coordinator.
+                pass
+        return tuple(ready)
+
+    def _dispatch_maintenance_sources(self, source_prefs):
+        for context, prefs in source_prefs:
+            try:
+                self.news_events.maintain(context, prefs)
+                if getattr(self, "exploration", None) is not None:
+                    self.exploration.maintain(context, prefs)
             except (TaskError, ValueError, TypeError, AttributeError):
                 # A source status must never take down the contact coordinator.
                 pass
@@ -1664,13 +1674,13 @@ class ContactSchedule:
                             active_judge_ids, cursor, native_cursor):
         """Run tick SQLite reads off the event loop; return pending judges or ready candidates."""
         if self._closed:
-            return ("ready", None)
+            return ("ready", None, ())
         now = self.tasks.now()
-        self._maintain_sources(maintenance_contexts)
+        source_prefs = self._read_maintenance_preferences(maintenance_contexts)
         require(self.tasks.check_generation())
         if CONTACT_KIND not in self.contacts.gateway.router.profiles:
             self._note_coordinator(self.tasks.now(), "blocked", "contact_model_unregistered")
-            return ("ready", None)
+            return ("ready", None, source_prefs)
         held = self.runtime.read_one(
             "SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", (),
         )[0]
@@ -1679,8 +1689,8 @@ class ContactSchedule:
             self.tasks.now(), max(0, available), active_judges, active_judge_ids,
         )
         if pending_judges:
-            return ("judges", now, pending_judges)
-        return ("ready", self._finish_tick_candidates(now, active_workers, active_judges, cursor, native_cursor))
+            return ("judges", now, pending_judges, source_prefs)
+        return ("ready", self._finish_tick_candidates(now, active_workers, active_judges, cursor, native_cursor), source_prefs)
 
     def _begin_tick(self):
         """Read the tick's bounded input set; no candidate source is evaluated here."""
@@ -1695,8 +1705,9 @@ class ContactSchedule:
             self._cursor,
             self._native_cursor,
         )
+        self._dispatch_maintenance_sources(phase[-1])
         if phase[0] == "judges":
-            _, now, pending_judges = phase
+            _, now, pending_judges, _ = phase
             self._spawn_judges(pending_judges)
             return self._finish_tick_candidates(
                 now, len(self._workers), len(self._judges), self._cursor, self._native_cursor,
@@ -1811,8 +1822,9 @@ class ContactSchedule:
             )
             if self._closed:
                 return
+            self._dispatch_maintenance_sources(phase[-1])
             if phase[0] == "judges":
-                _, now, pending_judges = phase
+                _, now, pending_judges, _ = phase
                 self._spawn_judges(pending_judges)
                 prepared = await asyncio.to_thread(
                     self._finish_tick_candidates,

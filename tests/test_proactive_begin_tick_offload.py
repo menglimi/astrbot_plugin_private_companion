@@ -192,6 +192,48 @@ class ProactiveTickOffloadAndCoveringScanTests(unittest.IsolatedAsyncioTestCase)
             self.assertEqual(len(offload_threads), 1)
             self.assertNotEqual(offload_threads[0], loop_thread)
 
+    async def test_advance_async_reads_prefs_off_loop_and_dispatches_maintain_on_event_loop(self):
+        with TemporaryDirectory(prefix="proactive-maintain-loop-") as tmp, StorageRuntime.open(
+            data_root=Path(tmp), installation_id=INST
+        ) as runtime:
+            coord = self._build_schedule(runtime)
+            ctx = _make_context(1, kind=ScopeKind.PRIVATE)
+            coord._maintenance_contexts = {ctx.key: ctx}
+
+            loop_thread = threading.get_ident()
+            pref_read_threads: list[int] = []
+            maintain_threads: list[tuple[str, int]] = []
+            spawned_tasks: list[asyncio.Task] = []
+
+            def fake_pref_read(context, *, observed_at):
+                pref_read_threads.append(threading.get_ident())
+                return Outcome.success(NS(context=context, observed_at=observed_at))
+
+            def fake_news_maintain(context, prefs):
+                maintain_threads.append(("news", threading.get_ident()))
+                # Must succeed without RuntimeError: no running event loop.
+                spawned_tasks.append(asyncio.create_task(asyncio.sleep(0)))
+
+            def fake_exploration_maintain(context, prefs):
+                maintain_threads.append(("exploration", threading.get_ident()))
+                spawned_tasks.append(asyncio.create_task(asyncio.sleep(0)))
+
+            coord.contacts = NS(
+                gateway=NS(router=NS(profiles={CONTACT_KIND: object()})),
+                judge_runner=None,
+                preferences=NS(read=fake_pref_read),
+            )
+            coord.news_events = NS(maintain=fake_news_maintain)
+            coord.exploration = NS(maintain=fake_exploration_maintain)
+
+            await coord.advance_async()
+            if spawned_tasks:
+                await asyncio.gather(*spawned_tasks)
+
+            self.assertEqual(len(pref_read_threads), 1)
+            self.assertNotEqual(pref_read_threads[0], loop_thread)
+            self.assertEqual(maintain_threads, [("news", loop_thread), ("exploration", loop_thread)])
+
 
 class DedupFallbackSkipTests(unittest.TestCase):
     def setUp(self):

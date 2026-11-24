@@ -252,6 +252,47 @@ class PerformanceTuningConfigTests(unittest.TestCase):
         release_host_performance_tuning(bit32_ctrl)
         self.assertIsNone(active_performance_plan())
 
+    def test_conf_schema_declares_performance_overrides_as_dict_and_loads_in_astrbot_config(self):
+        from astrbot.core.config.astrbot_config import AstrBotConfig
+
+        schema_path = Path(__file__).resolve().parent.parent / "_conf_schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        perf_items = schema["performance"]["items"]
+        self.assertEqual(perf_items["overrides"]["type"], "dict")
+        self.assertEqual(perf_items["overrides"]["default"], {})
+        self.assertTrue(perf_items["overrides"]["invisible"])
+
+        # Every "object" node in _conf_schema.json must carry an "items" dict for AstrBotConfig._parse_schema.
+        missing_items: list[str] = []
+
+        def walk(node: dict, prefix: str = "") -> None:
+            for key, value in node.items():
+                if not isinstance(value, dict):
+                    continue
+                dotted = f"{prefix}.{key}" if prefix else key
+                if value.get("type") == "object":
+                    if not isinstance(value.get("items"), dict):
+                        missing_items.append(dotted)
+                    else:
+                        walk(value["items"], dotted)
+
+        walk(schema)
+        self.assertEqual(missing_items, [])
+
+        with TemporaryDirectory(prefix="astrbot-schema-") as tmp:
+            cfg_path = str(Path(tmp) / "plugin_config.json")
+            cfg = AstrBotConfig(config_path=cfg_path, schema=schema)
+            self.assertEqual(cfg["performance"]["profile"], "auto")
+            self.assertEqual(cfg["performance"]["overrides"], {})
+            cfg["performance"]["overrides"] = {"cache_size_mb": 64, "synchronous": "FULL"}
+            cfg.save_config()
+
+            reloaded = AstrBotConfig(config_path=cfg_path, schema=schema)
+            self.assertEqual(
+                reloaded["performance"]["overrides"],
+                {"cache_size_mb": 64, "synchronous": "FULL"},
+            )
+
 
 class HotRefreshRuntimeAndSidecarsTests(unittest.TestCase):
     def setUp(self):

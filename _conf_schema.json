@@ -27,7 +27,7 @@
       "overrides": {
         "description": "性能高级微调覆盖项",
         "hint": "仅保存手动微调过的参数覆盖值，由陪伴小屋「资料与维护 → 性能调优」管理。",
-        "type": "object",
+        "type": "dict",
         "default": {},
         "invisible": true
       }
