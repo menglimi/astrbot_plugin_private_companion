@@ -274,6 +274,17 @@ class BackgroundHistory:
                 row, item = native
                 last_at = item["received_at"]
                 input_reference = {"event_key": row["observation_id"], "event_hash": row["content_hash"]}
+            from companion_v2.conversation.native_turns import latest_turn_activity
+            turn_input = latest_turn_activity(
+                self.runtime,
+                context.key,
+                end=stamp(at),
+                after=reset["reset_at"] if reset is not None and "reset_at" in reset.keys() else None,
+            )
+            if (turn_input is not None and not turn_input["input_observation_id"]
+                    and (last_at is None or turn_input["observed_at"] > last_at)):
+                last_at = turn_input["observed_at"]
+                input_reference = {"event_key": turn_input["turn_id"], "event_hash": turn_input["observed_at"]}
         counts = self.runtime.read_one("""SELECT
             COUNT(DISTINCT CASE WHEN state = 'delivered' AND delivered_at > ? AND delivered_at <= ? AND rowid > ?
                 THEN json_extract(request_json, '$.source_ref') END) AS unanswered,

@@ -41,7 +41,7 @@ def outcome(method):
         try:
             return Outcome.success(method(*args, **kwargs))
         except TaskError as error:
-            return Outcome.failed(error.code, str(error))
+            return Outcome.failed(error.code, str(error), details=error.details or None)
     return call
 
 

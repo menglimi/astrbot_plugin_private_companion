@@ -363,6 +363,47 @@ class PhoneManagement(GroupEditor):
     layers = phone_fields()[0].layers
     error_prefix = "device_phone"
 
+    @staticmethod
+    def _adb_diagnostic(settings, *, config_source, target, available=False):
+        from ..device.adb import diagnose_adb_not_found
+
+        resolved_role_id = target.role.subject_id if target.role is not None else ""
+        resolved_bot_id = target.bot_id or ""
+        if available:
+            return {
+                "available": True,
+                "reason": "ok",
+                "configured_adb_path": str(settings.adb or "").strip(),
+                "config_source": config_source,
+                "resolved_role_id": resolved_role_id,
+                "resolved_bot_id": resolved_bot_id,
+            }
+        details = diagnose_adb_not_found(settings.adb)
+        return {
+            "available": False,
+            **details,
+            "config_source": config_source,
+            "resolved_role_id": resolved_role_id,
+            "resolved_bot_id": resolved_bot_id,
+        }
+
+    @outcome
+    def status(self, operator):
+        from ..device.adb import AdbError, discover_adb
+        from ..device.configuration import PhoneSettingsReader
+
+        base = require(super().status(operator))
+        target = self._target()
+        settings, config_source = PhoneSettingsReader(
+            self.app.configuration, fallback_root=self.runtime.data_root
+        ).read_with_source(operator, target, self.app.now())
+        try:
+            discover_adb(settings.adb)
+            diagnostic = self._adb_diagnostic(settings, config_source=config_source, target=target, available=True)
+        except AdbError:
+            diagnostic = self._adb_diagnostic(settings, config_source=config_source, target=target, available=False)
+        return {**base, "adb_diagnostic": diagnostic}
+
     @outcome
     def connection(self, operator, data):
         from ..device.adb import AdbClient, AdbError, discover_adb
@@ -383,8 +424,9 @@ class PhoneManagement(GroupEditor):
             raise TaskError("device_phone_connection_invalid", "invalid phone configuration version")
         target = self._authorize(operator, "configuration.read" if action == "scan" else "configuration.write")
         self.app.tasks.check_generation()
-        settings = PhoneSettingsReader(self.app.configuration, fallback_root=self.runtime.data_root).read_for(
-            operator, target, self.app.now())
+        settings, config_source = PhoneSettingsReader(
+            self.app.configuration, fallback_root=self.runtime.data_root
+        ).read_with_source(operator, target, self.app.now())
         try:
             adb = AdbClient(discover_adb(settings.adb), timeout=8)
             if action == "pair":
@@ -393,6 +435,16 @@ class PhoneManagement(GroupEditor):
                 adb.connect(data["address"])
             devices = adb.devices()
         except AdbError as error:
+            if error.code == "adb_not_found":
+                diag = self._adb_diagnostic(settings, config_source=config_source, target=target, available=False)
+                details = {
+                    "reason": diag["reason"],
+                    "configured_adb_path": diag["configured_adb_path"],
+                    "config_source": diag["config_source"],
+                    "resolved_role_id": diag["resolved_role_id"],
+                    "resolved_bot_id": diag["resolved_bot_id"],
+                }
+                raise TaskError(error.code, str(error), details=details) from None
             raise TaskError(error.code, "ADB did not complete the requested operation") from None
         if action != "use":
             return {"devices": [{"serial": item.serial, "model": item.model, "state": item.state,

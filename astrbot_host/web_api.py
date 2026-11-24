@@ -74,11 +74,15 @@ def outcome_response(result: Outcome, *, message: str = "") -> dict[str, Any]:
         # The dashboard page bridge forwards only ``message`` to plugin pages and
         # drops the rest of the envelope, so the machine code must travel there
         # for the pages to translate it; the human-readable reason stays beside it.
+        data = {}
+        if isinstance(result.failure.details, dict) and result.failure.details:
+            data.update(_json_value(result.failure.details))
+        data["code"] = result.failure.code
         return {
             "status": "error",
             "message": result.failure.code,
             "reason": result.failure.reason,
-            "data": {"code": result.failure.code},
+            "data": data,
         }
     return {"status": "ok", "message": message, "data": _json_value(result.unwrap())}
 

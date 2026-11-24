@@ -25,7 +25,7 @@ from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
 from companion_v2.model_gateway.models import ModelTaskProfile
 
 from .adb import AdbClient, AdbError
-from .annotate import annotate_screen, image_size
+from .annotate import MAX_ANNOTATED_BYTES, annotate_screen, image_mime_type, image_size
 from .configuration import PhoneSettings, PhoneSettingsReader, load_settings
 from .checkout import (CANCEL_COMMAND, MEITUAN_CUTLERY_SUBMIT, MEITUAN_EXPRESS_PAYMENT, QUICK_APPROVAL,
                        CheckoutDecision, checkout_boundary, checkout_frame, checkout_screenshot,
@@ -332,7 +332,11 @@ class PhoneActionService:
         return DeliveryContent(record.notice, (image,))
 
     def _queue_notice(self, record, at):
-        if not record.notice or not record.shopping:
+        if not record.notice:
+            return
+        if not record.shopping and record.state not in ("done", "failed"):
+            return
+        if self.app is None or getattr(self.app, "outbound", None) is None:
             return
         context = TaskContext.restore(json.loads(record.context_json))
         try:
@@ -509,8 +513,12 @@ class PhoneActionService:
         try:
             observation = await asyncio.to_thread(session.observe, stored.step)
         except AdbError as error:
-            notice = ("手机已亮屏，请在手机上解锁后重新发起任务。" if error.code == "adb_unlock_required"
-                      else "读取手机画面失败，请检查手机。")
+            if error.code == "adb_unlock_required":
+                notice = "手机已亮屏，请在手机上解锁后重新发起任务。"
+            elif error.code == "adb_screenshot_secure":
+                notice = "当前手机页面开启了隐私防截屏保护（如密码、支付或银行界面），无法读取画面。"
+            else:
+                notice = "读取手机画面失败，请检查手机。"
             self._finish(stored, state="failed", code=error.code, notice=notice)
             raise TaskError(error.code, str(error)) from error
         if stored.checkout:
@@ -539,7 +547,7 @@ class PhoneActionService:
             ROLE_INSTRUCTION, SealedForegroundContext((), (), ()),
             INSTRUCTION + ordering +
             "\n本轮允许的动作：" + ", ".join(sorted(allowed)) +
-            "\n\n" + decision_prompt(stored.goal, observation, history),
+            "\n\n" + decision_prompt(stored.goal, observation, history, screenshot_attached=image is not None),
             run.task.spec.context.role_binding,
             output_format="phone_action", response_format="json_object",
             images=(image,) if image is not None else ())
@@ -745,23 +753,35 @@ class PhoneActionService:
                                          checkout=None, inflight_at=""))
 
     def _annotate(self, record: PhoneTaskRecord, observation: PhoneObservation, run, at):
-        """Draw grid and node boxes; never fail the step because of the annotation."""
+        """Draw grid and node boxes; degrade cleanly without silently misreporting."""
         if not observation.screenshot:
             return None
         try:
             annotated = annotate_screen(observation.screenshot, observation.elements,
                                         boxes=observation.stable)
+            mime_type = image_mime_type(annotated)
             width, height = image_size(annotated)
+        except ImportError:
+            # Pillow unavailable: fall back to raw PNG if within model budget.
+            if len(observation.screenshot) > MAX_ANNOTATED_BYTES:
+                return None
+            annotated = observation.screenshot
+            mime_type = "image/png"
+            width, height = observation.width, observation.height
+        except (ValueError, TypeError, TaskError, OSError):
+            return None
+        try:
             identifier = "phone-shot-" + digest([record.task_id, observation.step])[:32]
             source = SourceRef(identifier, "device.phone", run.task.spec.context.scope,
                                VersionRef(identifier, 1), at)
-            descriptor = ImageDescriptor(0, "image/png", width, height, len(annotated),
+            descriptor = ImageDescriptor(0, mime_type, width, height, len(annotated),
                                          hashlib.sha256(annotated).hexdigest())
             image = PhonePromptImage(source, source, descriptor,
                                      base64.b64encode(annotated).decode("ascii"))
         except (ValueError, TypeError, TaskError):
             return None
-        self._store_screenshot(f"{record.task_id}-{observation.step}.png", annotated)
+        suffix = ".jpg" if mime_type == "image/jpeg" else ".png"
+        self._store_screenshot(f"{record.task_id}-{observation.step}{suffix}", annotated)
         return image
 
     def _store_screenshot(self, filename: str, data: bytes) -> bool:
@@ -772,7 +792,7 @@ class PhoneActionService:
         except OSError:
             return False
         try:
-            files = sorted((*folder.glob("*.png"), *folder.glob("phone-checkout-*.jpg")),
+            files = sorted((*folder.glob("*.png"), *folder.glob("*.jpg")),
                            key=lambda path: path.stat().st_mtime, reverse=True)
             for old in files[40:]:
                 old.unlink(missing_ok=True)

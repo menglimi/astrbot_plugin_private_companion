@@ -12,6 +12,7 @@ saved this group keeps working, and the page writes the group from then on.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -211,17 +212,26 @@ class PhoneSettingsReader:
     def read(self, context, at):
         return self.read_for(context.actor, target_for(context), at)
 
-    def read_for(self, actor, target, at):
+    def read_with_source(self, actor, target, at) -> tuple[PhoneSettings, str]:
+        """Return ``(settings, config_source)`` where source is role_config, phone.json or default."""
         snapshot = require(self.configuration.read(actor, target=target, group_id=GROUP, observed_at=at))
-        if self.fallback_root is not None and all(
-                getattr(value, "source", None) is None for value in snapshot.values.values()):
+        fields_map = getattr(snapshot, "fields", None)
+        if isinstance(fields_map, Mapping):
+            has_explicit = any(getattr(item, "source", None) is not None for item in fields_map.values())
+            raw_items = fields_map.items()
+        else:
+            has_explicit = any(getattr(item, "source", None) is not None for item in snapshot.values.values())
+            raw_items = snapshot.values.items()
+        if not has_explicit and self.fallback_root is not None and (self.fallback_root / SETTINGS_FILE).is_file():
             try:
-                return load_settings(self.fallback_root)
+                return load_settings(self.fallback_root), "phone.json"
             except ValueError:
                 pass
-        values = {key.removeprefix(GROUP + "."): getattr(value, "value", value)
-                  for key, value in snapshot.values.items()}
-        return settings_from_values(values)
+        values = {key.removeprefix(GROUP + "."): getattr(item, "value", item) for key, item in raw_items}
+        return settings_from_values(values), ("role_config" if has_explicit else "default")
+
+    def read_for(self, actor, target, at):
+        return self.read_with_source(actor, target, at)[0]
 
 
 def load_settings(root: str | Path) -> PhoneSettings:

@@ -71,24 +71,46 @@ def annotate_screen(png: bytes, elements: Sequence[UiElement], *, grid: int = DE
               f"grid={grid}px  node boxes hidden (unstable frame)  {width}x{height}")
     draw.text((4, 3), legend, fill=(235, 235, 235, 255), font=font)
     composed = Image.alpha_composite(base, overlay).convert("RGB")
-    data = _encode(composed)
+    data = _encode_png(composed)
     if len(data) <= max_bytes:
         return data
-    # A very busy screen can exceed the model image budget; one bounded downscale
-    # preserves legibility better than silently dropping the image.
-    scale = 0.7
-    resized = composed.resize((max(1, int(width * scale)), max(1, int(height * scale))),
-                              Image.LANCZOS)
-    data = _encode(resized)
-    if len(data) > max_bytes:
-        raise ValueError("annotated screenshot exceeds the model image budget")
-    return data
+    # Busy high-DPI screens can exceed the model image budget as full-resolution
+    # PNG; downscale progressively and fall back to JPEG before refusing.
+    scaled_images = []
+    for scale in (0.75, 0.55, 0.4):
+        resized = composed.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.LANCZOS,
+        )
+        scaled_images.append(resized)
+        data = _encode_png(resized)
+        if len(data) <= max_bytes:
+            return data
+    for candidate in (composed, *scaled_images):
+        for quality in (85, 72):
+            data = _encode_jpeg(candidate, quality=quality)
+            if len(data) <= max_bytes:
+                return data
+    raise ValueError("annotated screenshot exceeds the model image budget")
 
 
-def _encode(image) -> bytes:
+def _encode_png(image) -> bytes:
     buffer = BytesIO()
     image.save(buffer, "PNG", optimize=True, compress_level=6)
     return buffer.getvalue()
+
+
+def _encode_jpeg(image, *, quality: int = 85) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, "JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
+
+
+def image_mime_type(data: bytes) -> str:
+    """Detect PNG vs JPEG bytes produced by ``annotate_screen``."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return "image/png"
 
 
 def image_size(png: bytes) -> tuple[int, int]:

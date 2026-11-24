@@ -48,6 +48,12 @@ from .persona_judge import KIND as JUDGE_KIND
 from .preferences import ContactPreferences
 from .service import CONTACT_KIND
 
+# Minimum quiet period after a completed reply whenever idle gating is enabled
+# (``idle_seconds > 0``). Prevents high-intensity tiers like ``live`` from
+# shrinking a short idle setting into immediate post-reply contact while still
+# honoring explicit ``idle_seconds`` values below this floor.
+POST_REPLY_MIN_COOLDOWN_SECONDS = 60
+
 
 DIAGNOSTIC_ENVIRONMENT_VARIANTS = {
     "weather": ("weather_events", "weather_event", "天气观测生产器"),
@@ -307,6 +313,50 @@ class ContactSchedule:
                 found.append(datetime.fromisoformat(row["observed_at"]))
         return max(found) if found else None
 
+    def _post_reply_idle_seconds(self, preferences):
+        """Effective post-reply idle wait, respecting explicit short overrides."""
+        configured = int(preferences.values["idle_seconds"])
+        if configured <= 0:
+            return 0
+        scaled = self.rhythm.idle_seconds(preferences)
+        return min(configured, max(scaled, POST_REPLY_MIN_COOLDOWN_SECONDS))
+
+    def _conversation_activity_at(self, context, event, row, *, at=None):
+        """Latest observable activity timestamp of the conversation window.
+
+        Measures idle time from reply completion (``last_sent_at`` / ``phase_at``
+        and confirmed assistant send timestamps) rather than inbound arrival
+        alone, and preserves the newest media or absorbed follow-up timestamps
+        even when ``_origin`` fell back to an older text turn for evidence.
+        """
+        from companion_v2.conversation.native_turns import latest_assistant_reply_at, latest_turn_activity
+
+        timestamps = [event.received_at, datetime.fromisoformat(row["created_at"])]
+        sources = [row]
+        if isinstance(row, Mapping) and isinstance(row.get("_latest_native_activity"), Mapping):
+            sources.append(row["_latest_native_activity"])
+        end_stamp = stamp(at) if at is not None else None
+        latest_turn = latest_turn_activity(self.runtime, context.key, end=end_stamp)
+        if latest_turn is not None:
+            sources.append(latest_turn)
+        for source in sources:
+            keys = source.keys() if hasattr(source, "keys") else ()
+            for column in ("observed_at", "phase_at", "last_sent_at"):
+                if column not in keys:
+                    continue
+                raw = source[column]
+                if isinstance(raw, str) and raw:
+                    try:
+                        parsed = datetime.fromisoformat(raw)
+                    except ValueError:
+                        continue
+                    if at is None or parsed <= at:
+                        timestamps.append(parsed)
+        reply_at = latest_assistant_reply_at(self.runtime, context.key, end=end_stamp)
+        if reply_at is not None:
+            timestamps.append(reply_at)
+        return max(timestamps)
+
     def _origin(self, context, batch_id, at):
         """Select the origin conversation, moving forward when it was superseded.
 
@@ -316,8 +366,10 @@ class ContactSchedule:
         over, the original turn is remembered in ``previous_batch_id``, and the
         caller still runs every safety check against the new row.
         """
-        from companion_v2.conversation.native_turns import input_event, latest_input, latest_scope
+        from companion_v2.conversation.native_turns import foreground_busy, input_event, latest_input, latest_scope
 
+        if foreground_busy(self.runtime, context):
+            raise TaskError("contact_conversation_changed", "a foreground reply is currently in flight")
         row = self.runtime.read_one("""SELECT f.state AS flow_state, b.* FROM conversation_flows f
             JOIN conversation_batches b ON b.batch_id = f.batch_id WHERE f.route_key = ?
             ORDER BY f.sequence DESC LIMIT 1""", (context.scope.key,))
@@ -342,7 +394,15 @@ class ContactSchedule:
             origin = {"batch_id": anchor_turn["turn_id"], "event_key": event.scoped_key,
                       "event_hash": digest([event, context.key, anchor_turn["role_instruction"]]),
                       "role_hash": digest(anchor_turn["role_instruction"])}
-            latest = anchor_turn
+            if fallback_input:
+                latest = dict(anchor_turn)
+                latest["_latest_native_activity"] = {
+                    "observed_at": native.get("observed_at"),
+                    "phase_at": native.get("phase_at"),
+                    "last_sent_at": native.get("last_sent_at"),
+                }
+            else:
+                latest = anchor_turn
         else:
             if (row is None or row["origin_key"] != context.key
                     or row["flow_state"] != "complete" or row["state"] != "ready"
@@ -416,6 +476,12 @@ class ContactSchedule:
             raise TaskError("contact_conversation_changed",
                             "the latest private conversation has no stable identity")
         origin, batch, event = self._origin(context, batch_id, at)
+        preferences = require(self.contacts.preferences.read(context, observed_at=at))
+        if not preferences.values["automatic_enabled"]:
+            raise TaskError("contact_automatic_disabled", "automatic opportunities are disabled")
+        idle = self._post_reply_idle_seconds(preferences)
+        if at < self._conversation_activity_at(context, event, batch, at=at) + timedelta(seconds=idle):
+            raise TaskError("contact_conversation_active", "original conversation has not reached its configured idle time")
         marker = {
             "captured_at": captured_at,
             "source_id": source_id,
@@ -444,8 +510,8 @@ class ContactSchedule:
         preferences = require(self.contacts.preferences.read(context, observed_at=at))
         if not preferences.values["automatic_enabled"]:
             raise TaskError("contact_automatic_disabled", "automatic opportunities are disabled")
-        idle = self.rhythm.idle_seconds(preferences)
-        if at < max(event.received_at, datetime.fromisoformat(row["created_at"])) + timedelta(seconds=idle):
+        idle = self._post_reply_idle_seconds(preferences)
+        if at < self._conversation_activity_at(context, event, row, at=at) + timedelta(seconds=idle):
             raise TaskError("contact_conversation_active", "original conversation has not reached its configured idle time")
         interaction = None
         if ("greeting_event" in origin or "burst_event" in origin or "followup_event" in origin
@@ -538,9 +604,13 @@ class ContactSchedule:
             self._note_window(context, row, at, "sleep", "skipped", "sleep_wake_grace",
                               next_at=sleep.morning_opened_at)
             return None
+        from companion_v2.conversation.native_turns import foreground_busy
+        if foreground_busy(self.runtime, context):
+            self._note_window(context, row, at, "conversation", "skipped", "foreground_reply_in_flight")
+            return None
         origin, batch, event = self._origin(context, row["batch_id"], at)
-        first = max(event.received_at, datetime.fromisoformat(batch["created_at"])) + timedelta(
-            seconds=self.rhythm.idle_seconds(preferences))
+        activity_at = self._conversation_activity_at(context, event, batch, at=at)
+        first = activity_at + timedelta(seconds=self._post_reply_idle_seconds(preferences))
         if at < first:
             self._note_window(context, row, at, "rhythm", "skipped", "idle_period_not_elapsed", next_at=first)
             return None
@@ -1616,8 +1686,12 @@ class ContactSchedule:
         native_rows = self.runtime.read_all("""SELECT n.rowid AS sequence, n.* FROM conversation_native_turns n
             WHERE n.rowid > ? AND n.scope_kind = 'private'
             AND n.generation_state = 'completed'
+            AND NOT EXISTS (SELECT 1 FROM conversation_native_turns open_t
+                WHERE open_t.scope_kind = 'private' AND open_t.context_key = n.context_key
+                AND open_t.generation_state IN ('prepared', 'running'))
             AND NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
                 WHERE newer.context_key = n.context_key
+                AND newer.generation_state != 'absorbed'
                 AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
             ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
         rows = (*legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))

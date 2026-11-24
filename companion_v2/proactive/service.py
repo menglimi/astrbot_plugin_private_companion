@@ -1322,6 +1322,10 @@ class ProactiveContacts:
                                 suffix=suffix, scope_kind=job.context.scope.kind.value)
                             if finalized is not None:
                                 body, segments = finalized
+                                if self._dangling_after_own_reply(job, segments):
+                                    body, reaction_intent = None, None
+                                    segments = ()
+                                    dangling_reason = "continuation_after_silence"
             skip_reason = None
             if body is None:
                 if dangling_reason:
@@ -1771,8 +1775,11 @@ class ProactiveContacts:
             self.gateway.ledger.discard(completion.call_id)
             raise
         threshold = preferences.values["proactive_persona_judge_threshold"]
-        allowed = decision == "send" and score >= threshold
+        judge_allowed = decision == "send" and score >= threshold
+        allowed = judge_allowed
         reviewed_final = None
+        post_review_skip_reason = None
+        post_review_dedup_reason = None
         pending_review = data.get("pending_expression_review")
         if (allowed and isinstance(pending_review, dict) and pending_review.get("rules")
                 and self.expression_review is not None
@@ -1807,6 +1814,24 @@ class ProactiveContacts:
                         reviewed, presentation=presentation, segmentation=segmentation,
                         statements=protected, suffix=alert_suffix,
                         scope_kind=context.scope.kind.value)
+        if allowed and reviewed_final is not None:
+            reviewed_body, reviewed_segments = reviewed_final
+            review_job = type("_ReviewedJob", (), {
+                "last_reply": data.get("last_reply"),
+                "interaction": data.get("interaction"),
+            })()
+            if self._dangling_after_own_reply(review_job, reviewed_segments):
+                allowed = False
+                post_review_skip_reason = "continuation_after_silence"
+            elif self._duplicate(
+                context, reviewed_body, preferences, self.tasks.now(),
+                purpose=data.get("purpose"), contact_id=contact_id,
+                origin=origin or diagnostic_origin,
+                administrator_test=data.get("administrator_test") is True,
+            ):
+                allowed = False
+                post_review_skip_reason = "duplicate"
+                post_review_dedup_reason = "exact_repeat"
         pending_reaction_intent = data.get("pending_reaction_intent") if isinstance(data.get("pending_reaction_intent"), str) else None
         diagnostic_image = data.get("diagnostic_image") is True
         offered = None
@@ -1852,16 +1877,36 @@ class ProactiveContacts:
             payload_hash = current["payload_hash"]
             if allowed and reviewed_final is not None:
                 body_text, reviewed_segments = reviewed_final
-                document["parts"] = [{"text": text, "payload_hash": manifest_hash(text, ())}
-                                     for text in reviewed_segments]
-                payload_hash = manifest_hash(body_text, ())
-                if isinstance(document.get("voice"), dict) and document.get("voice_language", "zh") == "zh":
-                    speech = re.sub(r"\s+", " ",
-                        strip_voice_markup(strip_internal_expression_protocol(body_text))).strip()
-                    if speech and len(speech) <= 2000:
-                        document["voice"] = {**document["voice"], "speech": speech}
-                    else:
-                        document.pop("voice", None)
+                if self._duplicate(
+                    context, body_text, preferences, self.tasks.now(),
+                    purpose=document.get("purpose"), contact_id=contact_id,
+                    origin=origin or diagnostic_origin,
+                    administrator_test=document.get("administrator_test") is True,
+                ):
+                    allowed = False
+                    post_review_skip_reason = "duplicate"
+                    post_review_dedup_reason = "exact_repeat"
+                    reaction = None
+                else:
+                    document["parts"] = [{"text": text, "payload_hash": manifest_hash(text, ())}
+                                         for text in reviewed_segments]
+                    payload_hash = manifest_hash(body_text, ())
+                    if isinstance(document.get("voice"), dict) and document.get("voice_language", "zh") == "zh":
+                        speech = re.sub(r"\s+", " ",
+                            strip_voice_markup(strip_internal_expression_protocol(body_text))).strip()
+                        if speech and len(speech) <= 2000:
+                            document["voice"] = {**document["voice"], "speech": speech}
+                        else:
+                            document.pop("voice", None)
+            if not allowed and post_review_skip_reason is not None:
+                body_text = ""
+                payload_hash = manifest_hash("", ())
+                document["parts"] = []
+                document.pop("voice", None)
+                document.pop("reaction", None)
+                reaction = None
+                if post_review_dedup_reason is not None:
+                    document["dedup_reason"] = post_review_dedup_reason
             final_body = body_text
             if reaction is not None:
                 payload_hash = manifest_hash(body_text, (reaction["manifest"],))
@@ -1874,10 +1919,12 @@ class ProactiveContacts:
                 document["reaction"] = reaction
             document["decision"] = "send" if allowed else "skip"
             document["judge"] = {**judge, "state": "resolved", "decision": decision, "score": score,
-                                 "reason": reason, "allowed": allowed, "cached": False,
+                                 "reason": reason, "allowed": judge_allowed, "cached": False,
                                  "attempt_id": run.claim.attempt_id,
                                  "model_call_id": completion.call_id, "failure": None}
-            document["skip_reason"] = None if allowed else "persona_review"
+            document["skip_reason"] = (
+                None if allowed else (post_review_skip_reason or "persona_review")
+            )
             run.begin_effect()
             require(self.operations.reserve(operation,
                 parameter_hash=digest([run.task.spec.request_ref, judge["signature"]]), observed_at=self.tasks.now()))
@@ -1971,6 +2018,10 @@ class ProactiveContacts:
             if request.not_before < earliest:
                 raise TaskError("contact_part_spacing_changed", "contact part spacing is earlier than its sealed policy")
         administrator_test = data.get("administrator_test") is True
+        if not administrator_test:
+            from companion_v2.conversation.native_turns import foreground_busy
+            if foreground_busy(self.runtime, request.context):
+                raise TaskError("contact_conversation_changed", "a foreground reply is currently in flight")
         preferences = self._policy(request.context, data["purpose"], at,
                                    token=data["preference_token"], contact_id=row["contact_id"],
                                    administrator_test=administrator_test)
