@@ -11670,18 +11670,32 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
    自动适配 6 套主题、3 档密度、3 档圆角、4 档字号与减弱动效。 */
 
 .qw-root {
+  display: block;
+  min-width: 0;
+  color: var(--t-text);
+  font-size: var(--fs-body);
+}
+
+.qw-main {
   container-type: inline-size;
   container-name: quota-wb;
   display: grid;
   gap: var(--sp-3);
   min-width: 0;
+}
+
+.qw-modal-host {
+  position: relative;
   color: var(--t-text);
   font-size: var(--fs-body);
 }
 
 .qw-root *,
 .qw-root *::before,
-.qw-root *::after {
+.qw-root *::after,
+.qw-modal-host *,
+.qw-modal-host *::before,
+.qw-modal-host *::after {
   box-sizing: border-box;
 }
 
@@ -12440,7 +12454,15 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   place-items: center;
   padding: var(--sp-4);
   background: var(--scrim);
+}
+
+.qw-modal-backdrop.is-entering {
   animation: qwFadeIn var(--dur-fast) ease both;
+}
+
+.qw-modal-backdrop.is-leaving {
+  animation: qwFadeOut var(--dur-fast) ease both;
+  pointer-events: none;
 }
 
 .qw-modal {
@@ -12453,7 +12475,48 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   background: var(--t-surface);
   box-shadow: var(--t-shadow-lift);
   overflow: hidden;
+}
+
+.qw-modal.is-entering {
   animation: qwSlideUp var(--dur) ease both;
+}
+
+.qw-modal.is-leaving {
+  animation: qwSlideDown var(--dur-fast) ease both;
+}
+
+.qw-error-slot:empty,
+.qw-test-result-slot:empty,
+.qw-detect-slot:empty,
+.qw-login-slot:empty,
+[data-qw-primary-fields]:empty,
+[data-qw-advanced-fields]:empty {
+  display: none;
+}
+
+.qw-step-content,
+[data-qw-protocol-banner],
+[data-qw-primary-fields],
+[data-qw-advanced-fields] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.qw-step-content > *,
+[data-qw-primary-fields] > *,
+[data-qw-advanced-fields] > * {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+}
+
+.qw-step-content.is-switching {
+  animation: qwSoftReveal var(--dur-fast) ease both;
+}
+
+.qw-test-preview.is-fresh {
+  animation: qwSoftReveal var(--dur-fast) ease both;
 }
 
 @keyframes qwFadeIn {
@@ -12461,12 +12524,28 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   to { opacity: 1; }
 }
 
+@keyframes qwFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 @keyframes qwSlideUp {
   from { opacity: 0; transform: translateY(10px) scale(.985); }
   to { opacity: 1; transform: none; }
 }
 
+@keyframes qwSlideDown {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(8px) scale(.988); }
+}
+
+@keyframes qwSoftReveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
 .qw-modal-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -12483,6 +12562,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 }
 
 .qw-steps {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -12538,14 +12618,22 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 .qw-modal-body {
   flex: 1 1 auto;
-  overflow: auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--sp-4);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: var(--sp-3);
-  align-content: start;
+}
+
+.qw-modal-body > * {
+  flex: 0 0 auto;
+  flex-shrink: 0;
 }
 
 .qw-modal-foot {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -12758,10 +12846,11 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 /* 折叠高级区与一次性登录换取 */
 .qw-details {
+  flex: 0 0 auto;
+  flex-shrink: 0;
   border: 1px solid var(--t-line);
   border-radius: var(--r-sm);
   background: var(--t-surface-soft);
-  overflow: hidden;
 }
 
 .qw-details > summary {
@@ -12780,8 +12869,14 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 .qw-details-body {
   padding: var(--sp-3);
   border-top: 1px solid var(--t-line);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: var(--sp-3);
+}
+
+.qw-details-body > * {
+  flex: 0 0 auto;
+  flex-shrink: 0;
 }
 
 /* 测试结果预览卡 */
@@ -12967,6 +13062,8 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 @media (prefers-reduced-motion: reduce) {
   .qw-modal-backdrop,
   .qw-modal,
+  .qw-step-content,
+  .qw-test-preview,
   .qw-card,
   .qw-btn,
   .qw-progress-fill {
@@ -12977,6 +13074,8 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 :root[data-motion="off"] .qw-modal-backdrop,
 :root[data-motion="off"] .qw-modal,
+:root[data-motion="off"] .qw-step-content,
+:root[data-motion="off"] .qw-test-preview,
 :root[data-motion="off"] .qw-card,
 :root[data-motion="off"] .qw-btn,
 :root[data-motion="off"] .qw-progress-fill {

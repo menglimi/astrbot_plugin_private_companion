@@ -554,6 +554,21 @@ test("quota-workbench.css uses 100% semantic design tokens with container querie
   assert.match(stripped, /@media\s*\(max-width:\s*560px\)\s*\{[\s\S]*?\.qw-card\s*\{[^}]*padding:\s*var\(--sp-3\)/);
   assert.match(stripped, /@media\s*\(max-width:\s*560px\)\s*\{[\s\S]*?\.qw-card-head\s*\{[^}]*flex-wrap:\s*wrap/);
   assert.match(stripped, /@media\s*\(max-width:\s*420px\)\s*\{[\s\S]*?\.qw-segment\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  // Entrance animation must ONLY be scoped to .is-entering (never unconditional on .qw-modal-backdrop / .qw-modal)
+  const backdropBase = stripped.match(/\.qw-modal-backdrop\s*\{([^}]*)\}/);
+  const modalBase = stripped.match(/\.qw-modal\s*\{([^}]*)\}/);
+  assert.ok(backdropBase && !/\banimation\s*:/i.test(backdropBase[1]), ".qw-modal-backdrop base rule must not define unconditional animation");
+  assert.ok(modalBase && !/\banimation\s*:/i.test(modalBase[1]), ".qw-modal base rule must not define unconditional animation");
+  assert.match(stripped, /\.qw-modal-backdrop\.is-entering\s*\{[^}]*animation:\s*qwFadeIn/);
+  assert.match(stripped, /\.qw-modal\.is-entering\s*\{[^}]*animation:\s*qwSlideUp/);
+  assert.match(stripped, /\.qw-test-preview\.is-fresh\s*\{[^}]*animation:\s*qwSoftReveal/);
+  // Modal body & <details> must never clip expanded disclosures via flex-shrink or overflow:hidden
+  assert.match(stripped, /\.qw-modal-body\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/);
+  assert.match(stripped, /\.qw-modal-body\s*>\s*\*\s*\{[^}]*flex-shrink:\s*0/);
+  const detailsBlock = stripped.match(/\.qw-details\s*\{([^}]*)\}/);
+  assert.ok(detailsBlock, ".qw-details rule must exist");
+  assert.match(detailsBlock[1], /flex-shrink:\s*0/);
+  assert.doesNotMatch(detailsBlock[1], /overflow\s*:\s*hidden/i, ".qw-details must not use overflow:hidden that clips expanded fields");
 });
 
 test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card, advancedOpen persistence, and SVG icon defense", async () => {
@@ -648,7 +663,7 @@ test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card
   h.root.click("[data-qw-step]", { qwStep: "2" });
   h.root.click("[data-qw-toggle-advanced]");
   h.root.input("[data-qw-check]", "", { dataset: { qwCheck: "allow_http" }, checked: true, type: "change" });
-  assert.match(h.root.innerHTML, /<details class="qw-details" open>/);
+  assert.match(h.root.innerHTML, /<details class="qw-details"[^>]*\bopen\b/);
 
   h.root.click("[data-qw-test-draft]");
   await flush();
@@ -683,4 +698,530 @@ test("XSS payloads in station names, URLs, error text, and models are 100% HTML-
   assert.doesNotMatch(html, /<iframe/i);
   assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
   h.page.unmount();
+});
+
+function createMiniDom() {
+  const VOID_TAGS = new Set(["input", "img", "br", "hr", "meta", "link", "source"]);
+  const docHandlers = {};
+  const document = {
+    hidden: false,
+    activeElement: null,
+    documentElement: { dataset: {} },
+    body: null,
+    addEventListener(type, fn) { (docHandlers[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      if (!docHandlers[type]) return;
+      docHandlers[type] = docHandlers[type].filter(f => f !== fn);
+    },
+    dispatchEvent(type, ev) {
+      for (const fn of [...(docHandlers[type] || [])]) fn(ev);
+    },
+    createElement(tag) {
+      return new MiniElement(tag, document);
+    },
+  };
+
+  function toCamel(k) {
+    return k.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  }
+  function parseAttrs(raw) {
+    const map = new Map();
+    const re = /([a-zA-Z0-9_:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    let m;
+    while ((m = re.exec(raw)) !== null) {
+      const name = m[1].toLowerCase();
+      const val = m[2] ?? m[3] ?? m[4] ?? "";
+      map.set(name, val);
+    }
+    return map;
+  }
+  function decodeHtml(s) {
+    return String(s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  }
+  function parseHtmlInto(parent, html) {
+    parent.children = [];
+    parent._text = "";
+    const str = String(html || "");
+    const stack = [parent];
+    const tokenRe = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^>"']*(?:"[^"]*"|'[^']*')?)*?)\s*(\/?)>|([^<]+)/g;
+    let m;
+    while ((m = tokenRe.exec(str)) !== null) {
+      const top = stack[stack.length - 1];
+      if (m[5] !== undefined) {
+        top._text += decodeHtml(m[5]);
+        continue;
+      }
+      const isClose = m[1] === "/";
+      const tag = m[2].toLowerCase();
+      const attrStr = m[3] || "";
+      const selfClose = m[4] === "/" || VOID_TAGS.has(tag);
+      if (isClose) {
+        for (let i = stack.length - 1; i >= 1; i--) {
+          if (stack[i].tagName.toLowerCase() === tag) {
+            stack.length = i;
+            break;
+          }
+        }
+      } else {
+        const el = new MiniElement(tag, parent._doc);
+        const attrs = parseAttrs(attrStr);
+        for (const [k, v] of attrs.entries()) {
+          el.setAttribute(k, decodeHtml(v));
+        }
+        top.appendChild(el);
+        if (!selfClose) stack.push(el);
+      }
+    }
+  }
+
+  function matchSingleSelector(el, sel) {
+    const s = sel.trim();
+    if (!s) return false;
+    // Support combined tag/class/attr selectors like button[data-qw-step="1"], .qw-field.is-highlight
+    let rest = s;
+    const tagMatch = rest.match(/^([a-zA-Z][a-zA-Z0-9-]*)/);
+    if (tagMatch) {
+      if (el.tagName.toLowerCase() !== tagMatch[1].toLowerCase()) return false;
+      rest = rest.slice(tagMatch[1].length);
+    }
+    const parts = rest.match(/(\.[a-zA-Z0-9_-]+|#[a-zA-Z0-9_-]+|\[[^\]]+\])/g) || [];
+    for (const part of parts) {
+      if (part.startsWith(".")) {
+        if (!el.classList.contains(part.slice(1))) return false;
+      } else if (part.startsWith("#")) {
+        if (el.getAttribute("id") !== part.slice(1)) return false;
+      } else if (part.startsWith("[")) {
+        const am = part.match(/^\[([a-zA-Z0-9_-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]+)))?\]$/);
+        if (!am) return false;
+        const attrName = am[1].toLowerCase();
+        const want = am[2] ?? am[3] ?? am[4];
+        if (!el._attrs.has(attrName)) return false;
+        if (want !== undefined && el._attrs.get(attrName) !== want) return false;
+      }
+    }
+    return true;
+  }
+
+  class MiniElement {
+    constructor(tag, doc) {
+      this.tagName = String(tag).toUpperCase();
+      this._doc = doc;
+      this.parentNode = null;
+      this.children = [];
+      this._attrs = new Map();
+      this._listeners = {};
+      this._text = "";
+      this._htmlRaw = "";
+      this.scrollTop = 0;
+      this.offsetWidth = 640;
+      this.offsetHeight = 400;
+      this.value = "";
+      this.checked = false;
+      this.disabled = false;
+      this.open = false;
+      this.inert = false;
+      this.isConnected = true;
+      const self = this;
+      this.dataset = new Proxy({}, {
+        get(_, prop) {
+          if (typeof prop !== "string") return undefined;
+          const attr = "data-" + prop.replace(/[A-Z]/g, c => "-" + c.toLowerCase());
+          return self._attrs.get(attr);
+        },
+        set(_, prop, val) {
+          const attr = "data-" + String(prop).replace(/[A-Z]/g, c => "-" + c.toLowerCase());
+          self.setAttribute(attr, String(val));
+          return true;
+        },
+      });
+      this.classList = {
+        _set() {
+          return new Set((self._attrs.get("class") || "").split(/\s+/).filter(Boolean));
+        },
+        _save(set) {
+          self._attrs.set("class", [...set].join(" "));
+        },
+        contains(c) { return this._set().has(c); },
+        add(...cs) { const s = this._set(); cs.forEach(c => c && s.add(c)); this._save(s); },
+        remove(...cs) { const s = this._set(); cs.forEach(c => s.delete(c)); this._save(s); },
+        toggle(c, force) {
+          const s = this._set();
+          const next = force !== undefined ? Boolean(force) : !s.has(c);
+          if (next) s.add(c); else s.delete(c);
+          this._save(s);
+          return next;
+        },
+      };
+    }
+    get className() { return this._attrs.get("class") || ""; }
+    set className(v) { this._attrs.set("class", String(v || "")); }
+    get title() { return this._attrs.get("title") || ""; }
+    set title(v) { this._attrs.set("title", String(v || "")); }
+    get textContent() {
+      if (this.children.length === 0) return this._text;
+      return this._text + this.children.map(c => c.textContent).join("");
+    }
+    set textContent(v) {
+      this.children = [];
+      this._text = String(v ?? "");
+      this._htmlRaw = this._text;
+    }
+    get innerHTML() {
+      return this._htmlRaw;
+    }
+    set innerHTML(v) {
+      this._htmlRaw = String(v ?? "");
+      parseHtmlInto(this, this._htmlRaw);
+    }
+    setAttribute(name, value) {
+      const k = String(name).toLowerCase();
+      const v = String(value ?? "");
+      this._attrs.set(k, v);
+      if (k === "value") this.value = v;
+      if (k === "disabled") this.disabled = true;
+      if (k === "checked") this.checked = true;
+      if (k === "open") this.open = true;
+    }
+    getAttribute(name) {
+      const k = String(name).toLowerCase();
+      return this._attrs.has(k) ? this._attrs.get(k) : null;
+    }
+    removeAttribute(name) {
+      const k = String(name).toLowerCase();
+      this._attrs.delete(k);
+      if (k === "disabled") this.disabled = false;
+      if (k === "checked") this.checked = false;
+      if (k === "open") this.open = false;
+    }
+    appendChild(child) {
+      if (child.parentNode) child.remove();
+      child.parentNode = this;
+      this.children.push(child);
+      return child;
+    }
+    remove() {
+      if (!this.parentNode) return;
+      this.parentNode.children = this.parentNode.children.filter(c => c !== this);
+      this.parentNode = null;
+    }
+    contains(node) {
+      let cur = node;
+      while (cur) {
+        if (cur === this) return true;
+        cur = cur.parentNode;
+      }
+      return false;
+    }
+    matches(selector) {
+      return String(selector).split(",").some(s => matchSingleSelector(this, s));
+    }
+    closest(selector) {
+      let cur = this;
+      while (cur) {
+        if (cur.matches(selector)) return cur;
+        cur = cur.parentNode;
+      }
+      return null;
+    }
+    querySelectorAll(selector) {
+      const out = [];
+      const walk = node => {
+        for (const child of node.children) {
+          if (child.matches(selector)) out.push(child);
+          walk(child);
+        }
+      };
+      walk(this);
+      return out;
+    }
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
+    }
+    addEventListener(type, fn, opts) {
+      (this._listeners[type] ||= []).push({ fn, once: Boolean(opts?.once) });
+    }
+    removeEventListener(type, fn) {
+      if (!this._listeners[type]) return;
+      this._listeners[type] = this._listeners[type].filter(item => item.fn !== fn);
+    }
+    dispatch(type, event = {}) {
+      const ev = { type, target: this, preventDefault() {}, ...event };
+      let cur = this;
+      while (cur) {
+        const list = [...(cur._listeners[type] || [])];
+        for (const item of list) {
+          if (item.once) cur.removeEventListener(type, item.fn);
+          item.fn(ev);
+        }
+        cur = cur.parentNode;
+      }
+    }
+    focus() { this._doc.activeElement = this; }
+    blur() { if (this._doc.activeElement === this) this._doc.activeElement = null; }
+  }
+
+  document.body = new MiniElement("body", document);
+  return { document, MiniElement };
+}
+
+test("Live DOM: modal shell persists (===) with zero re-animation, zero scroll jump, and zero focus loss across test/save/error/step/autoRefresh", async () => {
+  const { document } = createMiniDom();
+  const requests = [];
+  const timers = [];
+  const localStore = makeStorage();
+  const sessionStore = makeStorage();
+  const window = {
+    document,
+    CompanionProduct: {
+      hosted: () => true,
+      role: () => ({ model_api: "/astrbot_plugin_private_companion/model" }),
+      identity: () => ({ installation_id: "inst", operator_id: "operator" }),
+      bridgeNow: () => window.AstrBotPluginPage,
+      bridgeFor: () => ({ then: resolve => resolve(window.AstrBotPluginPage) }),
+    },
+    AstrBotPluginPage: {
+      apiGet: (route, params) => new Promise((resolve, reject) => requests.push({ method: "GET", route, params, resolve, reject })),
+      apiPost: (route, values) => new Promise((resolve, reject) => requests.push({ method: "POST", route, values, resolve, reject })),
+    },
+    localStorage: localStore,
+    sessionStorage: sessionStore,
+    crypto: { randomUUID: () => "op-" + requests.length },
+    lucide: { createIcons() {} },
+    matchMedia: () => ({ matches: false }),
+  };
+  const fakeSetTimeout = (fn, ms) => {
+    const id = timers.length + 1;
+    timers.push({ id, fn, ms, cleared: false });
+    return id;
+  };
+  const fakeClearTimeout = id => {
+    const item = timers.find(t => t.id === id);
+    if (item) item.cleared = true;
+  };
+  const baseGlobals = {
+    window, document, localStorage: localStore, sessionStorage: sessionStore,
+    Intl, Date, Math, Number, String, Array, Object, Map, Set, JSON, Promise, URL,
+    setTimeout: fakeSetTimeout, clearTimeout: fakeClearTimeout,
+    setInterval: fakeSetTimeout, clearInterval: fakeClearTimeout,
+    requestAnimationFrame: cb => cb(),
+    matchMedia: window.matchMedia,
+    crypto: window.crypto, AbortController,
+  };
+  vm.runInNewContext(workbenchSource, { ...baseGlobals });
+  vm.runInNewContext(pricingSource, { ...baseGlobals });
+  vm.runInNewContext(quotaSource, { ...baseGlobals });
+  vm.runInNewContext(modelsSource, { ...baseGlobals });
+
+  const root = document.createElement("div");
+  document.body.appendChild(root);
+
+  window.CompanionModelsPage.mount(root, { initialTab: "quota" });
+  await flush();
+  requests.find(r => r.method === "GET" && r.route === "model/quota").resolve(sampleQuotaPayload());
+  await flush();
+
+  // Verify decoupled .qw-main inside .model-workspace-main and sibling .qw-modal-host physically outside wsMain
+  const wsMain = root.querySelector(".model-workspace-main");
+  const mainEl = root.querySelector("[data-qw-main]");
+  const modalHost = root.querySelector("[data-qw-modal-host]");
+  const cardRelayBefore = root.querySelector('[data-qw-card="st-relay"]');
+  assert.ok(wsMain && mainEl && modalHost && cardRelayBefore);
+  assert.equal(wsMain.contains(modalHost), false, ".qw-modal-host must live outside wsMain so wsMain updates never destroy an open modal");
+  assert.equal(mainEl.contains(modalHost), false, ".qw-modal-host must be outside .qw-main");
+
+  // Open edit modal on st-relay
+  root.querySelector('[data-qw-edit="st-relay"]').dispatch("click");
+  const backdropRef = modalHost.querySelector("[data-qw-modal-backdrop]");
+  const modalRef = modalHost.querySelector(".qw-modal");
+  const bodyRef = modalHost.querySelector("[data-qw-modal-body]");
+  const nameInputRef = modalRef.querySelector('[data-qw-field="name"]');
+  const testBtnRef = modalRef.querySelector("[data-qw-test-draft]");
+  const saveBtnRef = modalRef.querySelector("[data-qw-save-station]");
+  assert.ok(backdropRef && modalRef && bodyRef && nameInputRef && testBtnRef && saveBtnRef);
+  assert.ok(backdropRef.classList.contains("is-entering"), "Initial open should trigger one-shot entrance animation");
+  assert.ok(modalRef.classList.contains("is-entering"));
+
+  // Finish one-shot entrance animation -> is-entering removed
+  modalRef.dispatch("animationend");
+  assert.equal(backdropRef.classList.contains("is-entering"), false);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+
+  // User scrolls modal body and focuses name input
+  bodyRef.scrollTop = 240;
+  nameInputRef.focus();
+  assert.equal(document.activeElement, nameInputRef);
+
+  // 1) Click「测试连通性」: pending -> success (ZERO rebuild, ZERO scroll jump, ZERO focus loss!)
+  testBtnRef.dispatch("click");
+  await flush();
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef, "Backdrop must be exact same DOM node during test pending");
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef, "Modal must be exact same DOM node during test pending");
+  assert.equal(modalHost.querySelector("[data-qw-test-draft]"), testBtnRef, "Test button itself must patch in place");
+  assert.equal(testBtnRef.disabled, true);
+  assert.equal(testBtnRef.textContent, "测试中…");
+  assert.equal(backdropRef.classList.contains("is-entering"), false);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+  assert.equal(bodyRef.scrollTop, 240, "Scroll position must not jump on test pending");
+  assert.equal(document.activeElement, nameInputRef, "Input focus must not be lost on test pending");
+
+  const testReq1 = requests.filter(r => r.route === "model/quota/test").pop();
+  testReq1.resolve({ snapshot: { ok: true, remaining: 42.5, display_type: "USD", symbol: "$", latency_ms: 88 } });
+  await flush();
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef);
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef);
+  assert.equal(modalRef.querySelector('[data-qw-field="name"]'), nameInputRef);
+  assert.equal(testBtnRef.disabled, false);
+  assert.equal(testBtnRef.textContent, "测试连通性");
+  assert.equal(bodyRef.scrollTop, 240, "Scroll position must remain 240 after test success");
+  assert.equal(document.activeElement, nameInputRef, "Input focus must remain intact after test success");
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+  assert.ok(modalRef.querySelector(".qw-test-preview.is-fresh"), "Only test result slot should softly reveal");
+
+  // 2) Click「保存站点」: pending -> server error (ZERO modal rebuild/re-pop!)
+  saveBtnRef.dispatch("click");
+  await flush();
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef);
+  assert.equal(saveBtnRef.disabled, true);
+  assert.equal(saveBtnRef.textContent, "保存并刷新中…");
+  assert.equal(bodyRef.scrollTop, 240);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+
+  const saveErrReq = requests.filter(r => r.route === "model/quota/stations").pop();
+  saveErrReq.reject(Object.assign(new Error("quota_config_conflict"), { code: "quota_config_conflict" }));
+  await flush();
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef);
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef);
+  assert.equal(saveBtnRef.disabled, false);
+  assert.equal(saveBtnRef.textContent, "保存站点");
+  assert.match(modalRef.querySelector("[data-qw-modal-error]").innerHTML, /已在别处更新/);
+  assert.equal(bodyRef.scrollTop, 240);
+  assert.equal(document.activeElement, nameInputRef);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+
+  // 3) Background autoRefresh fires while modal is STILL open -> main panel reconciles cards in place, modal untouched!
+  const autoTimer = timers.filter(t => !t.cleared && t.ms >= 60000).pop();
+  assert.ok(autoTimer, "Auto refresh timer should be scheduled");
+  autoTimer.fn();
+  await flush();
+  const bgReq = requests.filter(r => r.route === "model/quota/refresh").pop();
+  assert.ok(bgReq);
+  const refreshedPayload = sampleQuotaPayload();
+  refreshedPayload.snapshots["st-relay"].remaining = 8.88;
+  bgReq.resolve(refreshedPayload);
+  await flush();
+  assert.equal(root.querySelector('[data-qw-card="st-relay"]'), cardRelayBefore, "Existing card should be reconciled in place without grid flash");
+  assert.match(cardRelayBefore.innerHTML, /\$8\.88/);
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef, "Background refresh must never touch modal backdrop");
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef, "Background refresh must never touch modal shell");
+  assert.equal(bodyRef.scrollTop, 240);
+  assert.equal(document.activeElement, nameInputRef);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+
+  // 4) Step 2 -> Step 1 -> Step 2 switch keeps exact same backdrop & modal DOM shell (zero popup replay) and resets scrollTop cleanly
+  modalRef.querySelector('[data-qw-step="1"]').dispatch("click");
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef);
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef);
+  assert.equal(bodyRef.scrollTop, 0);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+
+  modalRef.querySelector('[data-qw-step="2"]').dispatch("click");
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef);
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+
+  // 4b) Self-healing requires_user_id test inside Live DOM expands user_id without recreating modal or losing scroll
+  bodyRef.scrollTop = 180;
+  modalRef.querySelector("[data-qw-test-draft]").dispatch("click");
+  await flush();
+  const healReq = requests.filter(r => r.route === "model/quota/test").pop();
+  healReq.resolve({
+    snapshot: { ok: false, error_code: "requires_user_id", error: "需要 Rix-Api-User", detected_header: "Rix-Api-User" },
+  });
+  await flush();
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), backdropRef);
+  assert.equal(modalHost.querySelector(".qw-modal"), modalRef);
+  assert.equal(bodyRef.scrollTop, 180);
+  assert.equal(modalRef.classList.contains("is-entering"), false);
+  const uidInput = modalRef.querySelector('[data-qw-field="user_id"]');
+  assert.ok(uidInput, "Self-healing should expand user_id in place");
+  assert.equal(document.activeElement, uidInput, "Self-healing should focus expanded user_id input");
+
+  // 5) Save succeeds -> modal closes cleanly ONCE, main panel refreshes
+  modalRef.querySelector("[data-qw-save-station]").dispatch("click");
+  await flush();
+  const saveOkReq = requests.filter(r => r.route === "model/quota/stations").pop();
+  saveOkReq.resolve(sampleQuotaPayload({ edit_token: "tok-v3" }));
+  await flush();
+  assert.equal(modalHost.getAttribute("aria-hidden"), "true");
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), null);
+  assert.match(mainEl.querySelector("[data-qw-hero-core]").innerHTML, /站点已保存并完成实时刷新/);
+
+  // 6) Step 1 (添加监测站点): source mode toggle, AstrBot provider pick, manual URL detect (pending->done), preset pick, and Step 1->2 keep exact same modal DOM shell
+  mainEl.querySelector('[data-qw-open-wizard="manual"]').dispatch("click");
+  const addBackdrop = modalHost.querySelector("[data-qw-modal-backdrop]");
+  const addModal = modalHost.querySelector(".qw-modal");
+  assert.ok(addBackdrop && addModal);
+  assert.ok(addBackdrop.classList.contains("is-entering"));
+  addModal.dispatch("animationend");
+  assert.equal(addBackdrop.classList.contains("is-entering"), false);
+
+  // Switch source mode manual -> astrbot_provider -> pick provider -> auto-detect pending & done
+  addModal.querySelector('[data-qw-source-mode="astrbot_provider"]').dispatch("click");
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), addBackdrop);
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.equal(addModal.classList.contains("is-entering"), false);
+
+  addModal.querySelector('[data-qw-pick-provider="ds_official"]').dispatch("click");
+  await flush();
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.equal(addModal.classList.contains("is-entering"), false);
+  const detProvReq = requests.filter(r => r.route === "model/quota/detect").pop();
+  detProvReq.resolve({ ok: true, adapter_id: "deepseek", confidence: "high", reason: "已识别为 DeepSeek" });
+  await flush();
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.match(addModal.querySelector("[data-qw-detect-slot]").innerHTML, /已识别为 DeepSeek/);
+
+  // Switch back to manual, focus URL input, run manual detect pending -> done without losing focus or re-animating modal
+  addModal.querySelector('[data-qw-source-mode="manual"]').dispatch("click");
+  const urlInput = addModal.querySelector('[data-qw-field="base_url"]');
+  urlInput.value = "https://relay.example.com";
+  urlInput.focus();
+  urlInput.dispatch("input");
+  const detectBtn = addModal.querySelector("[data-qw-detect]");
+  detectBtn.dispatch("click");
+  await flush();
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.equal(addModal.querySelector("[data-qw-detect]"), detectBtn);
+  assert.equal(detectBtn.disabled, true);
+  assert.equal(detectBtn.textContent, "识别中…");
+  assert.equal(document.activeElement, urlInput, "URL input focus must survive manual detect");
+  const detManReq = requests.filter(r => r.route === "model/quota/detect").pop();
+  detManReq.resolve({ ok: true, adapter_id: "newapi", confidence: "high", reason: "已识别为 NewAPI" });
+  await flush();
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.equal(detectBtn.disabled, false);
+  assert.equal(detectBtn.textContent, "智能识别");
+  assert.equal(document.activeElement, urlInput);
+
+  // Pick protocol preset chip & proceed to Step 2 inside exact same modal shell
+  addModal.querySelector('[data-qw-pick-adapter="newapi_user_id"]').dispatch("click");
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.ok(addModal.querySelector('[data-qw-pick-adapter="newapi_user_id"]').classList.contains("is-active"));
+  addModal.querySelector('[data-qw-step="2"]').dispatch("click");
+  assert.equal(modalHost.querySelector("[data-qw-modal-backdrop]"), addBackdrop);
+  assert.equal(modalHost.querySelector(".qw-modal"), addModal);
+  assert.equal(addModal.classList.contains("is-entering"), false);
+  assert.ok(addModal.querySelector('[data-qw-field="user_id"]'));
+
+  // Close add modal cleanly
+  addModal.querySelector("[data-qw-close-wizard]").dispatch("click");
+  assert.equal(modalHost.getAttribute("aria-hidden"), "true");
+
+  // 7) Awareness policy panel toggles & edits without destroying station cards
+  const cardBeforeAw = root.querySelector('[data-qw-card="st-relay"]');
+  mainEl.querySelector("[data-qw-toggle-awareness]").dispatch("click");
+  assert.ok(mainEl.querySelector(".qw-awareness-panel"));
+  assert.equal(root.querySelector('[data-qw-card="st-relay"]'), cardBeforeAw, "Opening awareness panel must not rebuild station cards");
+
+  window.CompanionModelsPage.unmount();
 });

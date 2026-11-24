@@ -111,7 +111,7 @@ window.CompanionModelsPage = (() => {
   }
   let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true, onTabChange = null;
   let deferChangeRender = false, deferredRenderPending = false, pointerResetTimer = null;
-  let wsShell = null, wsMain = null, wsDock = null, wsMask = null, wsDrawer = null;
+  let wsShell = null, wsMain = null, wsDock = null, wsMask = null, wsDrawer = null, wsQuotaModalHost = null;
   let overlayCloseTimer = null, overlayWasOpen = false;
   let dockCloseTimer = null, dockWasOpen = false, dockHadReport = false, reportCloseTimer = null;
   let quickCloseTimer = null, advAnimTimer = null;
@@ -1997,11 +1997,29 @@ window.CompanionModelsPage = (() => {
   }
   /* ---------- Multi-station Quota Dashboard delegation ---------- */
   const quotaWorkbench = () => window.CompanionQuotaWorkbench || null;
+  function syncQuotaTabBadge(s) {
+    if (!useLiveDom() || !wsMain) return;
+    const btn = wsMain.querySelector?.('[data-model-tab="quota"]');
+    if (!btn) return;
+    const badge = quotaWorkbench()?.tabBadge?.(s.quota) || "";
+    let pill = btn.querySelector?.(".c");
+    if (badge) {
+      if (!pill) {
+        pill = document.createElement("span");
+        pill.className = "c";
+        btn.appendChild(pill);
+      }
+      pill.textContent = badge;
+    } else if (pill) {
+      pill.remove?.();
+    }
+  }
   function quotaCtx(s) {
     const wb = quotaWorkbench();
     s.quota ||= wb?.createState?.() || {loaded: false, loading: false, busy: false, data: null, wizard: null};
     return {
       state: s, q: s.quota, path, api, render,
+      syncTabBadge: () => syncQuotaTabBadge(s),
       isCurrent: ticket => current(ticket, s), ticket: () => version, root: () => root, fail,
     };
   }
@@ -3672,7 +3690,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   }
   const useLiveDom = () => Boolean(root && typeof document !== "undefined" && typeof document.createElement === "function" && typeof root.appendChild === "function");
   function ensureLiveShell() {
-    if (wsShell && wsShell.parentNode === root && wsMain && wsDock && wsMask && wsDrawer) return;
+    if (wsShell && wsShell.parentNode === root && wsMain && wsDock && wsMask && wsDrawer && wsQuotaModalHost) return;
     if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
     if (wsDock) wsDock.removeEventListener("transitionend", handleDockTransitionEnd);
     root.innerHTML = "";
@@ -3697,10 +3715,15 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     wsDrawer.setAttribute("aria-hidden", "true");
     wsDrawer.inert = true;
     wsDrawer.addEventListener("transitionend", handleDrawerTransitionEnd);
+    wsQuotaModalHost = document.createElement("div");
+    wsQuotaModalHost.className = "qw-modal-host";
+    wsQuotaModalHost.setAttribute("data-qw-modal-host", "");
+    wsQuotaModalHost.setAttribute("aria-hidden", "true");
     wsShell.appendChild(wsMain);
     wsShell.appendChild(wsDock);
     wsShell.appendChild(wsMask);
     wsShell.appendChild(wsDrawer);
+    wsShell.appendChild(wsQuotaModalHost);
     root.appendChild(wsShell);
     overlayWasOpen = false;
     dockWasOpen = false;
@@ -3771,7 +3794,39 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     const mainHtml = `${s.tab === "fn" ? semanticBanner() : ""}${tabBar(s)}${(s.bad || s.denied) ? notice(s) : ""}${pane(s)}`;
     if (useLiveDom()) {
       ensureLiveShell();
-      wsMain.innerHTML = mainHtml;
+      const qwb = s.tab === "quota" && path ? quotaWorkbench() : null;
+      if (qwb && typeof qwb.syncDom === "function") {
+        let tabsHost = wsMain.querySelector?.("[data-quota-tabs-host]");
+        let noticeHost = wsMain.querySelector?.("[data-quota-notice-host]");
+        let mountHost = wsMain.querySelector?.("[data-quota-mount]");
+        if (!tabsHost || !noticeHost || !mountHost) {
+          wsMain.innerHTML = "";
+          tabsHost = document.createElement("div");
+          tabsHost.setAttribute("data-quota-tabs-host", "");
+          noticeHost = document.createElement("div");
+          noticeHost.setAttribute("data-quota-notice-host", "");
+          mountHost = document.createElement("div");
+          mountHost.setAttribute("data-quota-mount", "");
+          wsMain.appendChild(tabsHost);
+          wsMain.appendChild(noticeHost);
+          wsMain.appendChild(mountHost);
+          tabsHost.innerHTML = tabBar(s);
+        } else {
+          syncQuotaTabBadge(s);
+        }
+        const noticeHtml = (s.bad || s.denied) ? notice(s) : "";
+        if (noticeHost.innerHTML !== noticeHtml) noticeHost.innerHTML = noticeHtml;
+        qwb.syncDom(quotaCtx(s), mountHost, wsQuotaModalHost);
+      } else {
+        if (wsMain.querySelector?.("[data-quota-mount]")) {
+          quotaWorkbench()?.detachDom?.(s.quota);
+          if (wsQuotaModalHost) {
+            wsQuotaModalHost.innerHTML = "";
+            wsQuotaModalHost.setAttribute("aria-hidden", "true");
+          }
+        }
+        wsMain.innerHTML = mainHtml;
+      }
       syncLiveDock(s);
       syncLiveOverlay(spec);
     } else {
@@ -3896,7 +3951,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (advAnimTimer) { clearTimeout(advAnimTimer); advAnimTimer = null; }
     if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
     if (wsDock) wsDock.removeEventListener("transitionend", handleDockTransitionEnd);
-    wsShell = wsMain = wsDock = wsMask = wsDrawer = null; overlayWasOpen = false; dockWasOpen = false; dockHadReport = false;
+    wsShell = wsMain = wsDock = wsMask = wsDrawer = wsQuotaModalHost = null; overlayWasOpen = false; dockWasOpen = false; dockHadReport = false;
     deferChangeRender = false; deferredRenderPending = false;
     if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerdown", handlePointerDown); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") { document.removeEventListener("keydown", handleKeydown); document.removeEventListener("pointerup", handlePointerUp); document.removeEventListener("pointercancel", handlePointerUp); }
