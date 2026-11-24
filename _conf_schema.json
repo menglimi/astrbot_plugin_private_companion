@@ -1104,5 +1104,33 @@
         "default": ""
       }
     }
+  },
+  "private_debounce_semantic": {
+    "description": "私聊语义防抖",
+    "type": "object",
+    "items": {
+      "model_dir": {
+        "description": "本地模型目录",
+        "type": "string",
+        "default": "",
+        "hint": "填写包含 model.onnx 和 tokenizer/tokenizer.json 的绝对目录。模型仅读取本地文件。"
+      },
+      "threshold": {
+        "description": "完整性阈值",
+        "type": "float",
+        "default": 0.8
+      },
+      "maximum_wait_ms": {
+        "description": "未说完时等待毫秒",
+        "type": "int",
+        "default": 15000
+      },
+      "inference_timeout_ms": {
+        "description": "推理超时毫秒",
+        "type": "int",
+        "default": 1500
+      }
+    },
+    "hint": "保存后重载插件。运行环境需安装 onnxruntime 和 tokenizers。模型不可用时使用计时防抖。"
   }
 }

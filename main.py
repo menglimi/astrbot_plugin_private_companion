@@ -447,7 +447,8 @@ class PrivateCompanionV2StagingPlugin(Star):
     def _private_debounce_manager(self):
         manager = getattr(self, "_private_debounce", None)
         if manager is None:
-            manager = PrivateDebounce()
+            from .astrbot_host.private_semantic_debounce import classifier_from_config
+            manager = PrivateDebounce(semantic=classifier_from_config(self.config))
             self._private_debounce = manager
         return manager
 
@@ -715,6 +716,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         return lock
 
     async def initialize(self) -> None:
+        self._private_debounce_manager()
         if self._session_settings_warm_task is None or self._session_settings_warm_task.done():
             self._session_settings_warm_task = asyncio.create_task(
                 warm_session_settings(), name="companion-v2-session-settings-warmup")
