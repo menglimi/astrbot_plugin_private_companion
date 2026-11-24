@@ -31,6 +31,8 @@ function fixture(nai = null, album = {}) {
     ["#outputObservationWorkspace", {innerHTML: ""}],
   ]);
   const requests = [];
+  const confirmations = [];
+  let confirmAnswer = true;
   let observabilityFailure = false;
   let reconnectFailureCode = "";
   let outputFailure = false;
@@ -85,6 +87,13 @@ function fixture(nai = null, album = {}) {
     dispatchEvent() {},
     document: {createElement: () => ({click() {}, remove() {}}), body: {appendChild() {}}},
   };
+  // 真实页面由 confirmation-dialog.js 注册 CompanionConfirm（<dialog> 实现）。沙箱
+  // iframe 没有 allow-modals，原生 confirm() 会静默返回 false，所以页面必须走这里；
+  // mock 也要提供它，否则测不到真实路径。
+  window.CompanionConfirm = request => {
+    confirmations.push(typeof request === "string" ? {message: request} : {...request});
+    return Promise.resolve(confirmAnswer);
+  };
   const root = {
     isConnected: true,
     addEventListener(type, listener) {listeners.set(type, listener);},
@@ -96,7 +105,9 @@ function fixture(nai = null, album = {}) {
   const context = {window, document: window.document, crypto: {randomUUID: () => "synthetic-op"}, console, AbortController, Event, setTimeout, clearTimeout, Promise, Math, Date, JSON,
     Object, String, Array, Map, Set, Error};
   vm.runInNewContext(source, context, {filename: "output-page.js"});
-  return {page: window.CompanionOutputPage, nodes, single, requests, root,
+  return {page: window.CompanionOutputPage, nodes, single, requests, root, confirmations,
+    answerConfirm(value) {confirmAnswer = value;},
+    dropConfirmChannel() {delete window.CompanionConfirm; delete window.confirm;},
     toggleNai(operation, checked) {
       const target = {matches: selector => selector === "[data-output-nai-operation]",
         dataset: {outputNaiOperation: operation}, checked};
@@ -344,6 +355,49 @@ test("gallery supports selection, export, delete and open-folder actions", async
   state.page.unmount();
 });
 
+test("album delete asks the sandbox-safe dialog and never silently swallows the click", async () => {
+  // 回归：AstrBot 的插件页 iframe 只有 allow-scripts/allow-forms/allow-downloads，没有
+  // allow-modals，原生 confirm() 按规范静默返回 false。老代码 `if(!confirm(...)) return`
+  // 于是把「无法弹窗」当成「用户取消」，表现为点删除没任何反应。这里锁定三条：
+  // 走 CompanionConfirm、取消时不发请求、两种确认通道都缺失时要给出可见错误。
+  const cancelled = fixture();
+  cancelled.page.mount(cancelled.root);
+  await new Promise(resolve => setImmediate(resolve));
+  cancelled.toggleAlbum("img-1", true);
+  cancelled.answerConfirm(false);
+  cancelled.clickAction("album-hide");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancelled.confirmations.length, 1, "删除必须先请求确认");
+  assert.equal(cancelled.confirmations[0].danger, true);
+  assert.match(cancelled.confirmations[0].message, /删除选中的 1 张图片/);
+  assert.ok(!cancelled.requests.some(request => request.endpoint === "image-materials/album/hide"),
+    "用户取消后不得删除");
+  cancelled.page.unmount();
+
+  const confirmed = fixture();
+  confirmed.page.mount(confirmed.root);
+  await new Promise(resolve => setImmediate(resolve));
+  confirmed.toggleAlbum("img-1", true);
+  confirmed.clickAction("album-hide");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(confirmed.requests.some(request => request.method === "POST" &&
+    request.endpoint === "image-materials/album/hide"), "确认后必须真正发出删除请求");
+  confirmed.page.unmount();
+
+  const noChannel = fixture();
+  noChannel.page.mount(noChannel.root);
+  await new Promise(resolve => setImmediate(resolve));
+  noChannel.toggleAlbum("img-1", true);
+  noChannel.dropConfirmChannel();
+  noChannel.clickAction("album-hide");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!noChannel.requests.some(request => request.endpoint === "image-materials/album/hide"),
+    "没有确认通道时绝不能直接删除");
+  assert.match(noChannel.single.get("#outputAlbumWorkspace").innerHTML, /无法弹出确认框/,
+    "没有确认通道时必须给出可见错误，而不是静默失败");
+  noChannel.page.unmount();
+});
+
 test("open-folder notice reports existing count without sync noise and maps album folder errors", async () => {
   let mode = "already-synced";
   const state = fixture(null, {
@@ -513,6 +567,12 @@ function fullGalleryFixture(options = {}) {
     removeEventListener() {},
     dispatchEvent() {},
     document: {createElement: () => ({click() {}, remove() {}, select() {}, style: {}}), body: {appendChild() {}}},
+  };
+  // 与真实宿主一致：确认由同页 CompanionConfirm 提供（沙箱 iframe 里原生 confirm 恒为 false）。
+  const confirmations = [];
+  window.CompanionConfirm = request => {
+    confirmations.push(typeof request === "string" ? {message: request} : {...request});
+    return Promise.resolve(true);
   };
   const root = {
     isConnected: true,

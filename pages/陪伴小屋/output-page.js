@@ -698,10 +698,33 @@ window.CompanionOutputPage=(()=>{
     }catch(error){if(live(id)){albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"导出失败";albumNotice=albumError;}}
     finally{if(live(id)){albumBusy="";renderAlbum();}}
   }
+  /* 危险操作的前置确认。
+   *
+   * 为什么不用原生 confirm：本页运行在 AstrBot 的沙箱 iframe 里，该 iframe 只带
+   * `allow-scripts allow-forms allow-downloads`，没有 `allow-modals`。按 HTML 规范，
+   * 此时「无法显示简单对话框」直接成立，confirm() 不弹窗也不抛错，而是返回 false。
+   * 于是 `if(!confirm(...)) return` 会被当成用户取消，表现为点了没任何反应。
+   *
+   * 所以优先用同页的自定义确认框（confirmation-dialog.js 提供的 CompanionConfirm，
+   * 由 <dialog> 实现，不受 allow-modals 限制）；两者都拿不到时返回 null，让调用方
+   * 明确提示失败，绝不把它当成「用户取消」而静默吞掉。 */
+  async function confirmDanger(options){
+    if(typeof window?.CompanionConfirm==="function")return (await window.CompanionConfirm(options))===true;
+    if(typeof window?.confirm==="function")return window.confirm(options.message)===true;
+    return null;
+  }
   async function hideAlbum(){
     const ids=visibleSelectedIds();
     if(albumBusy||!ids.length)return;
-    if(typeof window.confirm==="function"&&!window.confirm(`确定从图库删除选中的 ${ids.length} 张图片？图片会从当前角色图库中移除，不会删除原始来源记录。`))return;
+    const startTicket=ticket;
+    const confirmed=await confirmDanger({
+      title:"从图库删除",
+      message:`确定从图库删除选中的 ${ids.length} 张图片？图片会从当前角色图库中移除，不会删除原始来源记录。`,
+      confirmText:"删除",cancelText:"取消",danger:true});
+    // 确认框是异步的：期间换了角色或卸载页面就放弃这次操作。
+    if(startTicket!==ticket||!root?.isConnected)return;
+    if(confirmed===null){albumError="当前页面无法弹出确认框，未执行删除。";albumNotice=albumError;renderAlbum();return;}
+    if(!confirmed||albumBusy)return;
     const id=ticket;albumBusy="hide";albumNotice="正在从图库删除…";albumError="";renderAlbum();
     try{
       const groups=selectedAlbumGroups();let count=0,errors=[];

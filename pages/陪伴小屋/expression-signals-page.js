@@ -676,9 +676,26 @@ window.CompanionExpressionSignalsPage = (() => {
     if (refreshed) { notice = resultNotice; error = resultError; }
     render();
   }
+  /* 危险操作的前置确认：本页在 AstrBot 的沙箱 iframe 里运行，iframe 没有
+     `allow-modals`，原生 confirm() 按规范会静默返回 false（不弹窗也不抛错），
+     把「无法确认」误当成「用户取消」。优先用同页 CompanionConfirm（<dialog>，
+     不受 allow-modals 限制）；都拿不到时返回 null 让调用方明确报错。 */
+  async function confirmDanger(options) {
+    if (typeof window?.CompanionConfirm === "function") return (await window.CompanionConfirm(options)) === true;
+    if (typeof window?.confirm === "function") return window.confirm(options.message) === true;
+    return null;
+  }
   async function cleanupUnavailable() {
     if (busy || writing || !sources.length) return;
-    if (!window.confirm("清理后这些候选会进入「已拒绝」，不能再采纳。确定清理所有原文已失效的待审候选？")) return;
+    const startTicket = mountTicket;
+    const confirmed = await confirmDanger({
+      title: "清理失效候选",
+      message: "清理后这些候选会进入「已拒绝」，不能再采纳。确定清理所有原文已失效的待审候选？",
+      confirmText: "清理", cancelText: "取消", danger: true,
+    });
+    if (startTicket !== mountTicket || !mounted(startTicket)) return;
+    if (confirmed === null) { notice = "当前页面无法弹出确认框，未执行清理。"; error = true; render(); return; }
+    if (!confirmed || busy || writing) return;
     const current = mountTicket;
     busy = true; writing = true; notice = ""; error = false; render();
     let rejected = 0, failed = false;
