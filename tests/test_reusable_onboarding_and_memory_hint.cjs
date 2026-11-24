@@ -83,13 +83,28 @@ function setupHarness({status, responses = {}}) {
   let html = "";
   let directoryRefreshes = 0;
   let currentStatus = status;
+  const saveInlineBtn = {
+    disabled: true,
+    attrs: new Map(),
+    setAttribute(k, v) { this.attrs.set(k, v); if (k === "disabled") this.disabled = true; },
+    removeAttribute(k) { this.attrs.delete(k); if (k === "disabled") this.disabled = false; },
+    hasAttribute(k) { return this.attrs.has(k); },
+  };
+  const syncInlineBtnFromHtml = markup => {
+    const match = /<button[^>]*data-setup-action="save-inline-role"[^>]*>/.exec(markup || "");
+    if (!match) return;
+    const isDisabled = /\sdisabled(?:\s|=|>)/.test(match[0]);
+    saveInlineBtn.disabled = isDisabled;
+    if (isDisabled) saveInlineBtn.attrs.set("disabled", "");
+    else saveInlineBtn.attrs.delete("disabled");
+  };
   const node = {
     addEventListener: (name, fn) => { listeners[name] = fn; },
     removeEventListener: name => { delete listeners[name]; },
-    querySelector: () => null,
+    querySelector: sel => sel === '[data-setup-action="save-inline-role"]' ? saveInlineBtn : null,
     querySelectorAll: () => [],
   };
-  Object.defineProperty(node, "innerHTML", {get: () => html, set: v => { html = v; }});
+  Object.defineProperty(node, "innerHTML", {get: () => html, set: v => { html = v; syncInlineBtnFromHtml(v); }});
   const product = {
     request(method, route, body) {
       calls.push({method, route, body});
@@ -139,6 +154,13 @@ function setupHarness({status, responses = {}}) {
     change(name, value, dataset = {}) {
       listeners.change({target: {name, value, dataset}});
     },
+    toggleRolePersona(personaId, checked = true) {
+      listeners.change({target: {value: personaId, checked, dataset: {setupRole: "persona"}}});
+    },
+    inputRoleName(value) {
+      listeners.input({target: {value, dataset: {setupRole: "name"}}});
+    },
+    get saveInlineBtn() { return saveInlineBtn; },
   };
 }
 
@@ -275,6 +297,58 @@ test("setup wizard supports clickable left rail, direct private window select, s
   // Close wizard returns to post-ready hub.
   page.clickAction("close-wizard");
   assert.match(page.html, /开始使用 · 常用设置导览/);
+  page.unmount();
+});
+
+test("inline role creator unlocks submit button immediately on typing role name after selecting persona", async () => {
+  const page = setupHarness({
+    status: {
+      ready: false,
+      step: "binding",
+      completed: [],
+      skipped: [],
+      binding_confirmed: false,
+      prepared: false,
+      binding: {bound: false, confirmed: false, pending: false},
+      model: {provider_id: "", fallback_provider_id: "", providers: []},
+    },
+    responses: {
+      "GET setup/targets": {
+        accounts: [{platform_id: "qq-main", account_id: "100", bot_id: "bot-100", display_name: "主号"}],
+        personas: [{bot_id: "bot-100", persona_id: "p_wanxing", label: "晚星人格", mapped: false}],
+        targets: [],
+      },
+      "POST accounts/role": {saved: true, role_id: "role-wanxing"},
+    },
+  });
+  page.mount();
+  await settle();
+
+  page.clickAction("toggle-role-creator");
+  assert.equal(page.saveInlineBtn.disabled, true);
+
+  // Select persona first while name is still empty -> button stays disabled.
+  page.toggleRolePersona("p_wanxing", true);
+  assert.equal(page.saveInlineBtn.disabled, true);
+
+  // Typing a name via input event unlocks the submit button in place without needing another checkbox click!
+  page.inputRoleName("晚星");
+  assert.equal(page.saveInlineBtn.disabled, false);
+  assert.equal(page.saveInlineBtn.hasAttribute("disabled"), false);
+
+  // Clearing name re-disables the button.
+  page.inputRoleName("   ");
+  assert.equal(page.saveInlineBtn.disabled, true);
+
+  // Typing valid name again enables and submits POST accounts/role.
+  page.inputRoleName("晚星");
+  assert.equal(page.saveInlineBtn.disabled, false);
+  page.clickAction("save-inline-role");
+  await settle();
+  const roleSave = page.calls.find(item => item.method === "POST" && item.route === "accounts/role");
+  assert.ok(roleSave, "expected POST accounts/role call");
+  assert.equal(roleSave.body.role_id, "晚星");
+  assert.deepEqual(JSON.parse(JSON.stringify(roleSave.body.persona_ids)), ["p_wanxing"]);
   page.unmount();
 });
 

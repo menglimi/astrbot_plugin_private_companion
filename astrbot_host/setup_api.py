@@ -1120,10 +1120,12 @@ class SetupWebAPI:
                 # The setup guide can be reopened while the shared host is
                 # already running. The provider is saved and the current host
                 # keeps serving; it will use the new selection after reload.
+                vision_applied = await self._apply_vision_provider(username, vision_provider_id)
                 if complete_step:
                     await asyncio.to_thread(self.progress.complete, "model", skipped=False)
                 return self._response(Outcome.success({"provider_id": provider_id,
                     "prepared": True, "restart_required": True,
+                    "vision_applied": vision_applied,
                     "status": await asyncio.to_thread(self._status_document, username=username)}))
             vision_applied = await self._apply_vision_provider(username, vision_provider_id)
             if complete_step:
@@ -1255,6 +1257,75 @@ class SetupWebAPI:
         except (ValueError, TypeError, KeyError, OSError, UnicodeError):
             return self._error("setup_request_invalid", "finish or skip the current setup section")
 
+    def _readonly_health_context(self, session, binding: dict):
+        """Resolve the confirmed private TaskContext strictly read-only (zero DB writes)."""
+        if session is None:
+            return None
+        if not getattr(self.controller, "_multi_host", False):
+            profile = getattr(session, "profile", None)
+            return getattr(profile, "target", None)
+        authority = getattr(self.controller, "authority", None)
+        settings = getattr(self.controller, "settings", None)
+        runtime = getattr(self.controller, "runtime", None)
+        if authority is None or settings is None or runtime is None:
+            return None
+        try:
+            from companion_v2.execution.models import TaskContext
+            from companion_v2.foundation.refs import AudienceRef, ScopeRef
+
+            parked = self.controller._parked_binding()
+            target = self.controller._core_target(parked) if parked is not None else None
+            if target is None or target.participant_id == "*":
+                return None
+            role_candidates = []
+            bound_role = binding.get("role_id")
+            if isinstance(bound_role, str) and bound_role.strip():
+                role_candidates.append(settings.canonical_role_id(bound_role.strip()))
+            for persona in getattr(settings, "personas", ()) or ():
+                if persona.bot_id == target.bot_id:
+                    canonical = settings.canonical_role_id(persona.role_id)
+                    if canonical not in role_candidates:
+                        role_candidates.append(canonical)
+            stored = None
+            with runtime.read_snapshot():
+                for role_id in role_candidates:
+                    candidate = authority.read(authority.context_key(target, role_id))
+                    if isinstance(candidate, dict):
+                        stored = candidate
+                        break
+                if stored is None:
+                    active = authority.read("host.multi.active:" + target.target_id)
+                    if isinstance(active, dict):
+                        stored = active
+                if stored is None:
+                    prefix = "host.multi.context:"
+                    for row in runtime.read_all(
+                        "SELECT value FROM runtime_metadata WHERE substr(key, 1, ?) = ?",
+                        (len(prefix), prefix),
+                    ):
+                        try:
+                            candidate = json.loads(row["value"])
+                            scope_probe = ScopeRef.restore(candidate)
+                        except (TypeError, ValueError, KeyError):
+                            continue
+                        if (scope_probe.kind is ScopeKind.PRIVATE
+                                and scope_probe.platform == target.platform_id
+                                and scope_probe.account_id == target.account_id
+                                and scope_probe.bot_id == target.bot_id
+                                and scope_probe.native_scope_id == target.participant_id):
+                            stored = candidate
+                            break
+                if not isinstance(stored, dict):
+                    return None
+                scope = ScopeRef.restore(stored)
+                actor = authority.actor(target, scope.native_scope_id)
+                resolution = authority.personas.resolve(scope, observed_at=self.controller.now())
+                if resolution.failure is not None:
+                    return None
+                return TaskContext(actor, resolution.unwrap().binding, AudienceRef(scope, (actor.subject,)))
+        except Exception:
+            return None
+
     def _health_document(self, *, username: str = "") -> dict:
         status = self._status_document(username=username)
         binding = status.get("binding") or {}
@@ -1269,6 +1340,10 @@ class SetupWebAPI:
         primary_vision = bool(model.get("primary_supports_vision"))
         vision_providers = model.get("vision_providers") or []
         memory_companion = status.get("memory_companion") or {}
+
+        session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
+        ctx = (self._readonly_health_context(session, binding)
+               if session is not None and binding_confirmed and username else None)
 
         accounts = []
         topology = getattr(self.controller, "session_topology", None)
@@ -1314,10 +1389,33 @@ class SetupWebAPI:
             "fix_step": "binding",
         }
 
+        vision_assigned_id = ""
+        if provider_loaded and not primary_vision and ctx is not None and session is not None and username:
+            try:
+                from companion_v2.model_gateway.management import ModelManagement
+                operator = self._operator(self.controller, username)
+                mstatus = require(ModelManagement(session.application, ctx).status(operator, layer="role"))
+                cap_map = {item["id"]: set(item.get("capabilities") or ()) for item in mstatus.get("providers", [])}
+                for task in mstatus.get("tasks", []):
+                    if task.get("kind") not in VISION_SETUP_TASKS:
+                        continue
+                    pid = (task.get("fields") or {}).get("provider", {}).get("value", "")
+                    if pid and "image" in cap_map.get(pid, set()):
+                        vision_assigned_id = pid
+                        break
+            except Exception:
+                vision_assigned_id = ""
+
         if provider_loaded and primary_vision:
             model_check = {
                 "id": "model", "label": "插件通用与识图模型", "status": "ok",
                 "summary": f"已配置 {provider_id}（支持文本与识图）",
+                "fix_step": "model",
+            }
+        elif provider_loaded and vision_assigned_id:
+            model_check = {
+                "id": "model", "label": "插件通用与识图模型", "status": "ok",
+                "summary": f"通用模型 {provider_id} 已就绪，图片理解由 {vision_assigned_id} 接管",
                 "fix_step": "model",
             }
         elif provider_loaded:
@@ -1391,24 +1489,14 @@ class SetupWebAPI:
             "summary": "可在引导第 5 步或陪伴小屋随时调整主动频率与免打扰时段",
             "fix_step": "proactive",
         }
-        session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
-        if session is not None and binding_confirmed and username:
+        if ctx is not None and session is not None and username:
             try:
-                target = None
-                if getattr(self.controller, "_multi_host", False):
-                    parked = self.controller._parked_binding()
-                    target = self.controller._core_target(parked) if parked is not None else None
-                if target is None and hasattr(session, "profile"):
-                    ctx = session.profile.target
-                else:
-                    ctx = None
-                if ctx is not None:
-                    operator = self._operator(self.controller, username)
-                    cs = require(ContactManagement(session.application, ctx).status(operator))
-                    enabled = bool((cs.get("settings") or {}).get("enabled", False))
-                    proactive_check["summary"] = (
-                        "私聊主动联系已开启" if enabled else "私聊主动联系当前关闭（可随时开启）"
-                    )
+                operator = self._operator(self.controller, username)
+                cs = require(ContactManagement(session.application, ctx).status(operator))
+                enabled = bool((cs.get("settings") or {}).get("enabled", False))
+                proactive_check["summary"] = (
+                    "私聊主动联系已开启" if enabled else "私聊主动联系当前关闭（可随时开启）"
+                )
             except Exception:
                 pass
 

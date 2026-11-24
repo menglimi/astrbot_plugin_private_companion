@@ -79,9 +79,14 @@ MEMORY_OWNER_REPO_URL = "https://github.com/menglimi/astrbot_plugin_memory_compa
 MEMORY_OWNER_ACCESSORS = ("get_memory_companion_bridge", "get_active_bridge")
 
 # 插件注册表里可能用这几个字段之一表明身份，逐个比对（去掉连字符/下斜杠后比较）。
-_MEMORY_OWNER_IDENTITIES = frozenset(
-    {MEMORY_OWNER_PLUGIN_ID, "astrbot-plugin-memory-companion", "MemoryCompanion", "memory_companion"}
-)
+_MEMORY_OWNER_IDENTITIES = frozenset({
+    MEMORY_OWNER_PLUGIN_ID,
+    "astrbot-plugin-memory-companion",
+    "astrbot_plugin_remember_you",
+    "astrbot-plugin-remember-you",
+    "MemoryCompanion",
+    "memory_companion",
+})
 
 
 @dataclass(frozen=True)

@@ -4715,7 +4715,7 @@ window.CompanionSetup = (() => {
     if (action === "retry-model-routes") { void retryQuickModels(); return; }
     if (action === "reopen-wizard") {
       wizardReopened = true;
-      activeStep = state?.binding_confirmed ? "binding" : "binding";
+      activeStep = "binding";
       notice = "";
       render();
       if (state) void loadStepData(state).then(() => render());
@@ -4777,6 +4777,13 @@ window.CompanionSetup = (() => {
     if (event.target.dataset?.setupRole === "name") {
       setupRoleName = event.target.value;
       setupRoleMessage = "";
+      const saveBtn = root?.querySelector?.('[data-setup-action="save-inline-role"]');
+      if (saveBtn) {
+        const disabled = Boolean(setupRoleBusy || !setupRoleName.trim() || !setupRolePersonas.size);
+        saveBtn.disabled = disabled;
+        if (disabled) saveBtn.setAttribute?.("disabled", "");
+        else saveBtn.removeAttribute?.("disabled");
+      }
       return;
     }
     if (event.target.dataset?.setupLegacy === "new-role-name") {

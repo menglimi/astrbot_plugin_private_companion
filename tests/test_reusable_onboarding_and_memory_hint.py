@@ -105,6 +105,11 @@ class MemoryCompanionDetectionTests(unittest.TestCase):
         disabled_ctx = _FakeRegistryContext([_FakeStar(_FakeCompanionModule(_FakeBridge(True)), activated=False)])
         self.assertEqual(read_memory_companion_status(disabled_ctx)["state"], "disabled")
 
+        legacy_disabled = _FakeStar(_FakeCompanionModule(_FakeBridge(True)), activated=False, name="astrbot_plugin_remember_you")
+        legacy_disabled.module_path = "data.plugins.astrbot_plugin_remember_you.main"
+        legacy_disabled.root_dir_name = "astrbot_plugin_remember_you"
+        self.assertEqual(read_memory_companion_status(_FakeRegistryContext([legacy_disabled]))["state"], "disabled")
+
         bridge_off_ctx = _FakeRegistryContext([_FakeStar(_FakeCompanionModule(None), activated=True)])
         self.assertEqual(read_memory_companion_status(bridge_off_ctx)["state"], "bridge_disabled")
 
@@ -361,6 +366,14 @@ class ReusableOnboardingApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("model", saved["data"]["status"]["completed"])
         self.assertFalse(saved["data"]["status"]["model"]["primary_supports_vision"])
 
+        # 3b. Health check recognizes assigned vision model AND reads real multi-host proactive switch!
+        vision_health = await self.call("health")
+        self.assertEqual(vision_health["status"], "ok", vision_health)
+        vchecks = {item["id"]: item for item in vision_health["data"]["checks"]}
+        self.assertEqual(vchecks["model"]["status"], "ok")
+        self.assertIn("gpt-vision", vchecks["model"]["summary"])
+        self.assertEqual(vchecks["proactive"]["summary"], "私聊主动联系当前关闭（可随时开启）")
+
         # 4. Complete an optional step out of strict sequence (skip straight to "group").
         skipped_group = await self.call("complete", {"step": "group", "skipped": True})
         self.assertEqual(skipped_group["status"], "ok", skipped_group)
@@ -387,10 +400,43 @@ class ReusableOnboardingApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(finished["data"]["ready"])
         self.assertTrue(finished["data"]["started"])
 
+        # 7b. Enable proactive contact while running and verify multi-host health check reflects it live.
+        from companion_v2.execution.models import require as _require
+        from companion_v2.proactive.management import ContactManagement
+        session = self.controller.session or self.controller.last_session
+        ctx = self.api._readonly_health_context(session, finished["data"]["status"]["binding"])
+        self.assertIsNotNone(ctx)
+        operator = self.api._operator(self.controller, "administrator")
+        cm = ContactManagement(session.application, ctx)
+        cs = _require(cm.status(operator))
+        _require(cm.configure(operator, {
+            "operation_key": "test-enable-proactive-health",
+            "edit_token": cs["edit_token"],
+            "changes": {"enabled": True},
+        }))
+        enabled_health = await self.call("health")
+        echecks = {item["id"]: item for item in enabled_health["data"]["checks"]}
+        self.assertEqual(echecks["proactive"]["summary"], "私聊主动联系已开启")
+
         # 8. Model can still be edited even AFTER ready=True (reusable wizard!).
         reused = await self.call("model", {"provider_id": "deepseek-text"})
         self.assertEqual(reused["status"], "ok", reused)
         self.assertEqual(self.config["model"]["provider_id"], "deepseek-text")
+
+        # 9. Even if initialize_profile returns host_must_stop, vision_provider_id is still applied!
+        from companion_v2.foundation.outcome import Outcome
+        with patch.object(
+            self.controller,
+            "initialize_profile",
+            AsyncMock(return_value=Outcome.failed("host_must_stop", "still draining")),
+        ):
+            busy_saved = await self.call("model", {
+                "provider_id": "deepseek-text",
+                "vision_provider_id": "gpt-vision",
+            })
+        self.assertEqual(busy_saved["status"], "ok", busy_saved)
+        self.assertTrue(busy_saved["data"]["restart_required"])
+        self.assertIn("conversation.image_narration", busy_saved["data"]["vision_applied"])
 
 
 if __name__ == "__main__":
