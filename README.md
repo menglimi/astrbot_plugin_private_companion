@@ -141,6 +141,21 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 ---
 
+#### 配置本地 ONNX 语义防抖
+
+1. **准备模型。** 可复用「消息防抖」插件已下载的 `plugin_data/astrbot_plugin_debounce/models/normal` 目录。也可从 [ModelScope 的 normal 模型仓库](https://modelscope.cn/models/advent259141/astrbot_debouncer_normal) 下载 `model/model.onnx` 和 `tokenizer/tokenizer.json`，按下方结构放置。模型须兼容句子完整性二分类，输出为 `logits`，类别 1 表示完整。选择插件目录之外的位置以便升级后复用。
+2. **安装运行依赖。** 在运行 AstrBot 的同一个 Python 环境安装 `onnxruntime` 和 `tokenizers`。例如使用该环境的 `python -m pip install onnxruntime tokenizers`。Docker 部署时，模型目录需挂载到容器内，依赖也应装进容器运行环境。
+3. **填写目录并重载。** 在 AstrBot 的「我会永远陪着你 → 私聊语义防抖」填写模型根目录的绝对路径。重载后在日志中查找「私聊语义防抖本地模型就绪」。
+4. **为会话启用。** 在陪伴小屋的「私聊节奏 · 连续输入」开启防抖和「使用本地模型判断是否说完」。完整性阈值默认 0.8，未说完时从最后一条消息起最多等 15 秒，且仍受从首条消息起算的「单轮总上限」约束。如果希望用足 15 秒，需按聊天节奏适当提高默认 8 秒的总上限。
+5. **确认或关闭。** 连续发两条短消息后查看「私聊语义收口」日志中的评分与 `action`。模型不可用或推理超时会继续使用计时防抖。关闭语义判断开关即可恢复纯计时。
+
+```text
+模型根目录/
+├── model.onnx
+└── tokenizer/
+    └── tokenizer.json
+```
+
 ### 3.2 首次使用（「陪伴小屋 → 开始使用」八步引导）
 
 首次安装后，先在 AstrBot 中准备好可用的平台适配器（`aiocqhttp`、QQ 官方机器人或 `weixin_oc` 个人微信）、聊天模型和人格，再打开插件扩展页 **「陪伴小屋 → 开始使用」**，按页面左侧分组步骤树完成 **第 1–8 步** 配置：

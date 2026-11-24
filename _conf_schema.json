@@ -1113,24 +1113,27 @@
         "description": "本地模型目录",
         "type": "string",
         "default": "",
-        "hint": "填写包含 model.onnx 和 tokenizer/tokenizer.json 的绝对目录。模型仅读取本地文件。"
+        "hint": "填写 AstrBot 进程可读取的绝对目录。目录下应直接包含 model.onnx 和 tokenizer/tokenizer.json。已有消息防抖插件模型可复用，手动下载方法见 README「配置本地 ONNX 语义防抖」。留空时使用计时防抖。"
       },
       "threshold": {
         "description": "完整性阈值",
+        "hint": "范围为大于 0 至 1，分数低于阈值时继续等补话。",
         "type": "float",
         "default": 0.8
       },
       "maximum_wait_ms": {
         "description": "未说完时等待毫秒",
+        "hint": "范围 10～120000，从最近一条消息起算。仍受陪伴小屋中的单轮总上限限制。",
         "type": "int",
         "default": 15000
       },
       "inference_timeout_ms": {
         "description": "推理超时毫秒",
+        "hint": "范围 10～10000，推理超时后按原静默规则收口。",
         "type": "int",
         "default": 1500
       }
     },
-    "hint": "保存后重载插件。运行环境需安装 onnxruntime 和 tokenizers。模型不可用时使用计时防抖。"
+    "hint": "在 AstrBot 的 Python 环境安装 onnxruntime 和 tokenizers，填写模型目录并重载插件，再到陪伴小屋「私聊节奏 · 连续输入」开启本地模型判断。"
   }
 }
