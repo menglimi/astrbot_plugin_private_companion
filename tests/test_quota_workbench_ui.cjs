@@ -571,7 +571,7 @@ test("quota-workbench.css uses 100% semantic design tokens with container querie
   assert.doesNotMatch(detailsBlock[1], /overflow\s*:\s*hidden/i, ".qw-details must not use overflow:hidden that clips expanded fields");
 });
 
-test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card, advancedOpen persistence, and SVG icon defense", async () => {
+test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card, advancedOpen persistence, sanitized SVG + brand emblem fallback, and unsafe URI defense", async () => {
   const h = quotaHarness();
   h.page.mount(h.root, { initialTab: "quota" });
   await flush();
@@ -594,13 +594,37 @@ test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card
       {
         id: "st-or-unlim",
         name: "OpenRouter 无限额",
-        adapter_id: "deepseek",
+        adapter_id: "openrouter",
         source_mode: "astrbot_provider",
         astrbot_provider_id: "ds_official",
         base_url: "https://openrouter.ai/api/v1",
         enabled: true,
         participate_in_awareness: false,
         has_token: false,
+        has_proxy: false,
+      },
+      {
+        id: "st-cat-svg",
+        name: "示例中转站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://cat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+      },
+      {
+        id: "st-cookie-custom",
+        name: "饼干自定义币站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://cookie.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
         has_proxy: false,
       },
     ],
@@ -612,7 +636,7 @@ test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card
         display_type: "USD",
         symbol: "$",
         checked_at: "2026-11-24T12:00:00+08:00",
-        logo_version: "v-svg-attack",
+        logo_version: "v-unsafe-uri",
       },
       "st-or-unlim": {
         station_id: "st-or-unlim",
@@ -624,10 +648,30 @@ test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card
         extra: "当前 Key 未设置消费上限",
         checked_at: "2026-11-24T12:00:00+08:00",
       },
+      "st-cat-svg": {
+        station_id: "st-cat-svg",
+        ok: true,
+        remaining: 48.92,
+        display_type: "CNY",
+        symbol: "¥",
+        checked_at: "2026-11-24T12:00:00+08:00",
+        logo_version: "v-cat-svg",
+      },
+      "st-cookie-custom": {
+        station_id: "st-cookie-custom",
+        ok: true,
+        remaining: 732.98,
+        used: 2614.72,
+        total: 3347.7,
+        display_type: "CREDIT",
+        symbol: "🍪",
+        extra: "站内换算 10 🍪 = 1 基准单位 · 参考充值约 ¥73.30",
+        checked_at: "2026-11-24T12:00:00+08:00",
+      },
     },
     summary: {
       ...sampleQuotaPayload().summary,
-      health_by_id: { "legacy-default": "normal", "st-or-unlim": "normal" },
+      health_by_id: { "legacy-default": "normal", "st-or-unlim": "normal", "st-cat-svg": "normal", "st-cookie-custom": "normal" },
     },
   });
   h.requests.find(r => r.route === "model/quota").resolve(payload);
@@ -640,18 +684,27 @@ test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card
   assert.match(html, /编辑并迁移/);
   assert.doesNotMatch(html, /data-qw-delete-arm="legacy-default"/);
 
-  // OpenRouter unlimited key renders as healthy "不限额" + used + extra (never is-error)
+  // OpenRouter unlimited key renders as healthy "不限额" + used + extra AND official inline brand SVG fallback
   assert.match(html, /不限额/);
   assert.match(html, /已用 \$3\.25/);
   assert.match(html, /当前 Key 未设置消费上限/);
   assert.doesNotMatch(html, /qw-balance-value is-error/);
+  assert.match(html, /qw-avatar is-brand[^>]*data-qw-avatar="st-or-unlim"[\s\S]*?<svg class="qw-brand-svg"/);
 
-  // Malicious SVG data URL from /quota/icon must be rejected by frontend allowlist
-  const iconReq = h.requests.find(r => r.route === "model/quota/icon");
-  assert.ok(iconReq);
-  iconReq.resolve({ available: true, data_url: "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+PC9zdmc+" });
+  // Custom currency card displays custom symbol & transparent conversion note
+  assert.match(html, /732\.98/);
+  assert.match(html, /qw-balance-unit">🍪</);
+  assert.match(html, /站内换算 10 🍪 = 1 基准单位 · 参考充值约 ¥73\.30/);
+
+  // Non-base64 / text/html data URIs MUST still be rejected, while server-sanitized base64 SVG data URI renders safely inside <img>
+  const unsafeReq = h.requests.find(r => r.route === "model/quota/icon" && r.params?.id === "legacy-default");
+  const svgReq = h.requests.find(r => r.route === "model/quota/icon" && r.params?.id === "st-cat-svg");
+  assert.ok(unsafeReq && svgReq);
+  unsafeReq.resolve({ available: true, data_url: "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==" });
+  svgReq.resolve({ available: true, data_url: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==" });
   await flush();
-  assert.doesNotMatch(h.root.innerHTML, /data:image\/svg\+xml/i);
+  assert.doesNotMatch(h.root.innerHTML, /data:text\/html/i);
+  assert.match(h.root.innerHTML, /<img src="data:image\/svg\+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg=="/);
 
   // Step 1 manual URL uses <label for="qw-step1-base-url"> (not wrapping button/div)
   h.root.click("[data-qw-open-wizard]", { qwOpenWizard: "manual" });

@@ -65,9 +65,38 @@ window.CompanionQuotaWorkbench = (() => {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[ch]));
 
-  const SAFE_ICON_DATA_URL_RE = /^data:image\/(png|jpeg|webp|x-icon|gif);base64,[A-Za-z0-9+/=]+$/i;
+  const SAFE_ICON_DATA_URL_RE = /^data:image\/(png|jpeg|webp|x-icon|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/i;
   const isSafeIconDataUrl = url => typeof url === "string" && SAFE_ICON_DATA_URL_RE.test(url);
-  const iconCache = new Map(); // `${id}:${version}` -> verified raster data_url
+  const iconCache = new Map(); // `${id}:${version}` -> verified raster or sanitized static-SVG data_url
+
+  /* Theme-adapted monochrome vector emblems (100% currentColor, zero hardcoded colors)
+   * used as graceful fallbacks when an official station's remote icon is offline/unavailable. */
+  const OFFICIAL_BRAND_SVGS = {
+    deepseek:
+      '<svg class="qw-brand-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M4.2 14.4c1.3 2.7 4.4 4.4 8 4.4 4.8 0 8.1-2.9 8.6-6.9.2-1.8-.8-3.4-2.5-3.9-1.1-.3-2.1.1-2.9.9-1.2-2.2-3.9-3.6-6.9-3.1-3.1.5-5.3 3-5.3 5.9 0 1 .3 1.9 1 2.7Z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>' +
+      '<circle cx="13.6" cy="11.2" r="1.15" fill="currentColor"/>' +
+      '<path d="M3.2 10.6c.8-.9 1.9-1.3 3-1.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
+      "</svg>",
+    openrouter:
+      '<svg class="qw-brand-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<circle cx="5.5" cy="12" r="2.2" stroke="currentColor" stroke-width="1.8"/>' +
+      '<circle cx="18.2" cy="6.5" r="2.1" stroke="currentColor" stroke-width="1.8"/>' +
+      '<circle cx="18.2" cy="17.5" r="2.1" stroke="currentColor" stroke-width="1.8"/>' +
+      '<path d="M7.7 11.2 16 7.4M7.7 12.8 16 16.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+      "</svg>",
+    siliconflow:
+      '<svg class="qw-brand-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M5 8.5c2.2-2.2 5.2-2.2 7 0s4.8 2.2 7 0" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/>' +
+      '<path d="M5 12.5c2.2-2.2 5.2-2.2 7 0s4.8 2.2 7 0" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/>' +
+      '<path d="M5 16.5c2.2-2.2 5.2-2.2 7 0s4.8 2.2 7 0" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/>' +
+      "</svg>",
+    moonshot:
+      '<svg class="qw-brand-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M18.6 14.6A7.3 7.3 0 0 1 9.4 5.4a7.4 7.4 0 1 0 9.2 9.2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>' +
+      '<path d="M16.8 5.2v3.2M15.2 6.8h3.2" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"/>' +
+      "</svg>",
+  };
   let wizardOpenSeq = 0;
 
   function isReducedMotion() {
@@ -493,9 +522,24 @@ window.CompanionQuotaWorkbench = (() => {
     const logoKey = snap?.logo_version ? `${station.id}:${snap.logo_version}` : "";
     const cachedLogo = logoKey ? iconCache.get(logoKey) : "";
     const logoUrl = isSafeIconDataUrl(cachedLogo) ? cachedLogo : "";
-    return logoUrl
-      ? { hasLogo: true, title: station.name, html: `<img src="${esc(logoUrl)}" alt="" loading="lazy" decoding="async">` }
-      : { hasLogo: false, title: snap?.logo_error ? "图标未加载：" + snap.logo_error : station.name, html: esc(initials(station.name)) };
+    if (logoUrl) {
+      return { hasLogo: true, isBrand: false, title: station.name, html: `<img src="${esc(logoUrl)}" alt="" loading="lazy" decoding="async">` };
+    }
+    const brandSvg = OFFICIAL_BRAND_SVGS[String(station?.adapter_id || "").toLowerCase()] || "";
+    if (brandSvg) {
+      return {
+        hasLogo: false,
+        isBrand: true,
+        title: snap?.logo_error ? `${station.name}（内置品牌徽标）` : station.name,
+        html: brandSvg,
+      };
+    }
+    return {
+      hasLogo: false,
+      isBrand: false,
+      title: snap?.logo_error ? "图标未加载：" + snap.logo_error : station.name,
+      html: esc(initials(station.name)),
+    };
   }
 
   function renderStationCardParts(ctx, station) {
@@ -516,7 +560,8 @@ window.CompanionQuotaWorkbench = (() => {
 
     const isLegacyProjected = Boolean(data.legacy_projected && station.id === "legacy-default");
     const avatar = avatarMarkupFor(station, snap);
-    const avatarHtml = `<div class="qw-avatar${avatar.hasLogo ? " has-logo" : ""}" data-qw-avatar="${esc(station.id)}" title="${esc(avatar.title)}">${avatar.html}</div>`;
+    const avatarCls = `qw-avatar${avatar.hasLogo ? " has-logo" : ""}${avatar.isBrand ? " is-brand" : ""}`;
+    const avatarHtml = `<div class="${avatarCls}" data-qw-avatar="${esc(station.id)}" title="${esc(avatar.title)}">${avatar.html}</div>`;
 
     let balanceHtml = "";
     if (snap && snap.ok) {
@@ -1138,6 +1183,7 @@ window.CompanionQuotaWorkbench = (() => {
       if (!st || !avatarEl) continue;
       const av = avatarMarkupFor(st, snaps[sid]);
       avatarEl.classList?.toggle?.("has-logo", av.hasLogo);
+      avatarEl.classList?.toggle?.("is-brand", av.isBrand);
       avatarEl.title = av.title;
       avatarEl.innerHTML = av.html;
     }
