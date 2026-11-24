@@ -312,6 +312,7 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     "/quota/refresh",
                     "/quota/awareness",
                     "/quota/icon",
+                    "/quota/upstream-logs",
                 ):
                     self.assertIn("/astrbot_plugin_private_companion/model" + suffix, route_paths)
 
@@ -776,6 +777,154 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                 self.assertEqual(svc._resolve_global_http_proxy(), "")
 
                 await svc.close()
+
+        asyncio.run(run())
+
+    def test_balance_metadata_upstream_logs_cache_and_pricing_resolver_bridge(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                log_fetches = [0]
+
+                def router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "system_name": "星渊",
+                                    "server_address": "https://api.syuan.org",
+                                    "quota_display_type": "CNY",
+                                    "quota_per_unit": 500000,
+                                    "usd_exchange_rate": 1,
+                                    "price": 1,
+                                },
+                            },
+                        )
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(
+                            200,
+                            {"success": True, "data": {"id": 12, "username": "xy", "quota": 31805000, "used_quota": 5000000, "group": "vip"}},
+                        )
+                    if url.endswith("/api/subscription/self"):
+                        return _FakeResponse(404, b"")
+                    if "/api/log/self?p=1&page_size=1&type=2" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    if "/api/log/self?p=1&page_size=40&type=2" in url:
+                        log_fetches[0] += 1
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "items": [
+                                        {
+                                            "created_at": 1795470000,
+                                            "model_name": "gemini-4-hydrogen",
+                                            "token_name": "companion-bot",
+                                            "group": "vip",
+                                            "prompt_tokens": 10000,
+                                            "completion_tokens": 500,
+                                            "quota": 500000,
+                                            "other": json.dumps({"billing_source": "subscription", "cache_tokens": 6000, "group_ratio": 0.65}),
+                                        },
+                                        {
+                                            "created_at": 1795460000,
+                                            "model_name": "claude-sonnet",
+                                            "token_name": "cli-dev",
+                                            "group": "default",
+                                            "prompt_tokens": 2000,
+                                            "completion_tokens": 400,
+                                            "quota": 1000000,
+                                            "other": json.dumps({"billing_source": "wallet", "cache_tokens": 0, "group_ratio": 1.0}),
+                                        },
+                                    ]
+                                },
+                            },
+                        )
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc.store.read()
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "syuan",
+                        "name": "星渊",
+                        "adapter_id": "newapi_user_id",
+                        "base_url": "https://aiapi.syuan.org",
+                        "auth_token": "tok-syuan-secret",
+                        "user_id": "12",
+                        "participate_in_awareness": True,
+                    },
+                )
+                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "syuan"})
+                await svc.refresh_station("syuan")
+
+                # 1) MultiStationBalancePort.balance_metadata works on both success & error paths
+                port = configured_balance_port(ctrl.config, context=ctrl.context, runtime_root=Path(tmp), controller=ctrl)
+                obs = await port.fetch()
+                meta = port.balance_metadata(obs)
+                self.assertEqual(meta["source_kind"], "quota_dashboard")
+                self.assertEqual(meta["awareness_mode"], "primary")
+                self.assertEqual(meta["station_id"], "syuan")
+                self.assertEqual(meta["station_name"], "星渊")
+                self.assertTrue(meta["is_primary_explicit"])
+                self.assertEqual(meta["participating_count"], 1)
+                self.assertEqual(meta["currency_symbol"], "¥")
+
+                # Even without observation (error path), station_name stays populated
+                meta_err = port.balance_metadata(None)
+                self.assertEqual(meta_err["station_name"], "星渊")
+                self.assertEqual(meta_err["source_kind"], "quota_dashboard")
+
+                # 2) GET /quota/upstream-logs: wallet vs subscription, cache hit rate, 5-min cache on token_name filter
+                api = ModelWebAPI(ctrl)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(query={"station_id": "syuan", "days": "7"})):
+                        res_all = await api._quota_api.upstream_logs()
+                    self.assertEqual(res_all["status"], "ok")
+                    d_all = res_all["data"]
+                    self.assertFalse(d_all["counted_in_private_companion_budget"])
+                    self.assertEqual(d_all["total_calls"], 2)
+                    self.assertEqual(d_all["subscription_calls"], 1)
+                    self.assertEqual(d_all["wallet_calls"], 1)
+                    self.assertAlmostEqual(d_all["subscription_cost"], 1.0, places=4)
+                    self.assertAlmostEqual(d_all["wallet_cost"], 2.0, places=4)
+                    self.assertAlmostEqual(d_all["cache_hit_rate"], 50.0, places=1)
+                    self.assertEqual(d_all["token_names"], ["cli-dev", "companion-bot"])
+                    self.assertAlmostEqual(d_all["observed_groups"]["vip"], 0.65, places=4)
+                    self.assertEqual(log_fetches[0], 1)
+
+                    # Filtered by token_name hits cache (0 new fetches) while keeping full token_names list
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(query={"station_id": "syuan", "days": "7", "token_name": "companion-bot"})):
+                        res_filt = await api._quota_api.upstream_logs()
+                    self.assertEqual(res_filt["status"], "ok")
+                    self.assertEqual(log_fetches[0], 1)
+                    self.assertTrue(res_filt["data"]["cached"])
+                    self.assertEqual(res_filt["data"]["total_calls"], 1)
+                    self.assertEqual(res_filt["data"]["token_names"], ["cli-dev", "companion-bot"])
+
+                # 3) resolve_station_for_origin matches alias api.syuan.org <-> aiapi.syuan.org + exposes observed_group_ratios
+                resolved = svc.resolve_station_for_origin("https://api.syuan.org/v1")
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved["station_id"], "syuan")
+                self.assertEqual(resolved["auth_token"], "tok-syuan-secret")
+                self.assertEqual(resolved["user_id"], "12")
+                self.assertEqual(resolved["group_name"], "vip")
+                self.assertAlmostEqual(resolved["observed_group_ratios"]["vip"], 0.65, places=4)
+                self.assertIsNone(svc.resolve_station_for_origin("https://unrelated.example.test"))
+
+                # 4) PricingCatalogService injection works safely both standalone & with setter
+                cat_svc = api._pricing_catalog_service(Path(tmp), ctrl.session)
+                self.assertIsNotNone(cat_svc)
+
+                await close_quota_watch_services(ctrl)
 
         asyncio.run(run())
 

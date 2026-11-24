@@ -63,6 +63,7 @@ class QuotaWebEndpoints:
             (prefix + "/quota/refresh", self.refresh, ["POST"], "Refresh all or one monitored quota station"),
             (prefix + "/quota/awareness", self.save_awareness, ["POST"], "Save multi-station balance awareness aggregation policy"),
             (prefix + "/quota/icon", self.icon, ["GET"], "Read cached same-origin station logo data URL for one station"),
+            (prefix + "/quota/upstream-logs", self.upstream_logs, ["GET"], "Read-only upstream NewAPI consumption logs for reconciliation"),
         ]
 
     @staticmethod
@@ -199,6 +200,7 @@ class QuotaWebEndpoints:
                 body["edit_token"],
                 body["station"],
             )
+            service.invalidate_upstream_logs(spec.id)
             self._sync_live_balance_port(runtime)
             if body.get("probe_after_save", True) and spec.enabled:
                 try:
@@ -230,6 +232,7 @@ class QuotaWebEndpoints:
             await asyncio.to_thread(service.store.delete_station, body["edit_token"], sid)
             service.snapshot_cache.delete(sid)
             service.logo_cache.forget(sid)
+            service.invalidate_upstream_logs(sid)
             self._sync_live_balance_port(runtime)
             payload = await asyncio.to_thread(service.get_dashboard_payload, runtime=runtime, session=session)
             return self._response(Outcome.success({"deleted": True, "station_id": sid, **payload}))
@@ -293,3 +296,32 @@ class QuotaWebEndpoints:
             return self._response(Outcome.failed(error.code, error.reason))
         except (ValueError, TypeError):
             return self._response(Outcome.failed("quota_request_invalid", "无法读取站点头像"))
+
+    async def upstream_logs(self):
+        try:
+            session, _op, _mgr, _status = await self._authorize(
+                allow_query_keys=("station_id", "days", "token_name", "force")
+            )
+            station_id = str(request.query.get("station_id") or "").strip()
+            raw_days = str(request.query.get("days") or "7").strip()
+            try:
+                days = int(raw_days) if raw_days else 7
+            except ValueError as exc:
+                raise QuotaSettingsError("quota_request_invalid", "天数参数必须是整数") from exc
+            token_name = str(request.query.get("token_name") or "").strip()
+            force = str(request.query.get("force") or "").strip().lower() in ("1", "true", "yes")
+            service, _runtime = self._service(session)
+            data = await service.get_upstream_logs(
+                station_id=station_id,
+                days=days,
+                token_name=token_name,
+                force=force,
+                session=session,
+            )
+            return self._response(Outcome.success(data))
+        except TaskError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except QuotaSettingsError as error:
+            return self._response(Outcome.failed(error.code, error.reason))
+        except (ValueError, TypeError):
+            return self._response(Outcome.failed("quota_request_invalid", "无法读取上游消费日志对照"))

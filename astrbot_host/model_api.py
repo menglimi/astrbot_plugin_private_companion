@@ -842,14 +842,18 @@ class ModelWebAPI:
                     observation = await asyncio.wait_for(port.fetch(), timeout=12)
                 except Exception as error:
                     from .service_balance import balance_failure_data
+                    meta_fn = getattr(port, "balance_metadata", None)
+                    extra_meta = meta_fn(None) if callable(meta_fn) else {"source_kind": "legacy_balance"}
                     data = {"configured": True, "available": False, "provider": port.provider,
                             "provider_label": port.provider_label, "currency_label": port.currency_label,
-                            "observed_at": None, "amount": None, **balance_failure_data(error)}
+                            "observed_at": None, "amount": None, **extra_meta, **balance_failure_data(error)}
                 else:
                     from .service_balance import balance_observation_data
+                    meta_fn = getattr(port, "balance_metadata", None)
+                    extra_meta = meta_fn(observation) if callable(meta_fn) else {"source_kind": "legacy_balance"}
                     data = {"configured": True, "available": True, "provider": port.provider,
                             "provider_label": port.provider_label, "state": "available",
-                            **balance_observation_data(port, observation)}
+                            **extra_meta, **balance_observation_data(port, observation)}
                 return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -1029,17 +1033,44 @@ class ModelWebAPI:
         key = str(Path(runtime_root).resolve())
         service = services.get(key)
         if service is None:
+            import inspect
+            from .quota_service import get_quota_watch_service
+
             def _connections():
                 _p, _s, conns = collect_provider_inventory(self.controller, session)
                 return conns
 
+            def _quota_station_resolver(origin: str):
+                try:
+                    qsvc = get_quota_watch_service(self.controller, Path(runtime_root))
+                    return qsvc.resolve_station_for_origin(origin, session=session)
+                except Exception:
+                    return None
+
+            init_kwargs: dict[str, Any] = {
+                "now": getattr(base, "now", None),
+                "proxy_resolver": lambda: read_astrbot_http_proxy(self.controller),
+                "connections_resolver": _connections,
+            }
+            try:
+                if "quota_station_resolver" in inspect.signature(PricingCatalogService.__init__).parameters:
+                    init_kwargs["quota_station_resolver"] = _quota_station_resolver
+            except (TypeError, ValueError):
+                pass
+
             service = PricingCatalogService(
                 PricingSettingsStore(Path(runtime_root)),
                 PriceCatalogStore(Path(runtime_root)),
-                now=getattr(base, "now", None),
-                proxy_resolver=lambda: read_astrbot_http_proxy(self.controller),
-                connections_resolver=_connections,
+                **init_kwargs,
             )
+            setter = getattr(service, "set_quota_station_resolver", None)
+            if callable(setter):
+                setter(_quota_station_resolver)
+            elif hasattr(service, "_quota_station_resolver"):
+                try:
+                    service._quota_station_resolver = _quota_station_resolver
+                except Exception:
+                    pass
             services[key] = service
         return service
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from companion_v2.model_gateway.pricing import (
     DEFAULT_FALLBACK_USD_CNY,
@@ -35,9 +36,15 @@ from .quota_adapters import (
     default_registry,
     detect_station,
     exchange_newapi_login_for_token,
+    fetch_newapi_status,
+    fetch_newapi_topup_info,
+    fetch_recent_consumption_logs,
+    infer_newapi_fiat_conversion,
     normalize_station_root,
+    resolve_newapi_display_params,
 )
 from .quota_adapters.base import same_origin, validate_proxy_url
+from .quota_adapters.newapi import _known_alias_roots
 from .service_balance_provider import _catalog as _balance_provider_catalog
 
 logger = logging.getLogger(__name__)
@@ -46,6 +53,25 @@ MAX_PROBE_CONCURRENCY = 6
 MIN_MANUAL_REFRESH_COOLDOWN_SECONDS = 15.0
 AWARENESS_SNAPSHOT_FRESHNESS_CAP_SECONDS = 120.0
 DEFAULT_BACKGROUND_DEBOUNCE_SECONDS = 0.05
+UPSTREAM_LOGS_CACHE_TTL_SECONDS = 300.0
+
+
+def _origin_key(url: str) -> str:
+    try:
+        parsed = urlsplit(str(url or "").strip())
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").strip().lower()
+    if scheme not in ("http", "https") or not host:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return f"{scheme}://{host}:{port}"
 
 
 def project_legacy_service_balance(config: Any) -> QuotaStationSpec | None:
@@ -154,6 +180,8 @@ class QuotaWatchService:
         self._inflight_station: dict[str, asyncio.Task[QuotaSnapshot]] = {}
         self._bg_task: asyncio.Task[None] | None = None
         self._last_refresh_all_monotonic: float | None = None
+        self._upstream_logs_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+        self._observed_group_ratios: dict[str, dict[str, float]] = {}
 
     def _current_time(self) -> datetime:
         current = self._now()
@@ -409,6 +437,8 @@ class QuotaWatchService:
             custom_script=spec.custom_script,
             display_type=spec.display_type,
             quota_per_unit=spec.quota_per_unit,
+            fiat_currency=spec.fiat_currency,
+            fiat_per_base_unit=spec.fiat_per_base_unit,
             allow_http=spec.allow_http,
             session_factory=self._session_factory,
             now=self._current_time,
@@ -873,6 +903,335 @@ class QuotaWatchService:
             "data_url": entry.data_url(),
         }
 
+    def invalidate_upstream_logs(self, station_id: str = "") -> None:
+        sid = str(station_id or "").strip()
+        if not sid:
+            self._upstream_logs_cache.clear()
+            return
+        stale = [key for key in self._upstream_logs_cache if key[0] == sid]
+        for key in stale:
+            self._upstream_logs_cache.pop(key, None)
+
+    def resolve_station_for_origin(self, origin: str, *, session: Any = None) -> dict[str, Any] | None:
+        """Read-only memory bridge exposing matched NewAPI station metadata to PricingCatalogService.
+
+        Matches normalized origin, known syuan.org aliases, and cached /api/status server_address.
+        Credentials stay strictly in memory and MUST NEVER be persisted into pricing settings.
+        """
+        target_root = normalize_station_root(origin)
+        target_keys = {_origin_key(r) for r in _known_alias_roots(target_root)}
+        target_keys.discard("")
+        if not target_keys:
+            return None
+
+        stations, _awareness, _tok, _legacy = self._effective_stations()
+        snaps, _ = self.snapshot_cache.all()
+        _, connections = self._discover_astrbot_suppliers(session=session)
+
+        candidates: list[tuple[int, QuotaStationSpec, str, str, QuotaSnapshot | None]] = []
+        for spec in stations:
+            if not spec.enabled or spec.adapter_id not in ("newapi", "newapi_user_id"):
+                continue
+            resolved_base = spec.base_url
+            resolved_proxy = spec.proxy_url
+            if spec.source_mode == "astrbot_provider":
+                conn = connections.get(spec.astrbot_provider_id) or {}
+                resolved_base = str(conn.get("api_base") or resolved_base).strip()
+                if not resolved_proxy:
+                    resolved_proxy = str(conn.get("proxy") or "").strip()
+            if not resolved_proxy:
+                resolved_proxy = self._resolve_global_http_proxy()
+
+            snap = snaps.get(spec.id)
+            station_keys = {_origin_key(r) for r in _known_alias_roots(normalize_station_root(resolved_base))}
+            if snap is not None and snap.server_address:
+                station_keys.update(_origin_key(r) for r in _known_alias_roots(normalize_station_root(snap.server_address)))
+            station_keys.discard("")
+            if not (station_keys & target_keys):
+                continue
+            priority = 0 if spec.auth_token else 1
+            candidates.append((priority, spec, resolved_base, resolved_proxy, snap))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        _prio, spec, resolved_base, resolved_proxy, snap = candidates[0]
+        return {
+            "station_id": spec.id,
+            "station_name": spec.name,
+            "adapter_id": spec.adapter_id,
+            "base_url": normalize_station_root(resolved_base),
+            "server_address": snap.server_address if snap else "",
+            "auth_token": spec.auth_token,
+            "user_id": spec.user_id,
+            "user_id_header": spec.user_id_header or "New-Api-User",
+            "proxy_url": resolved_proxy,
+            "allow_http": spec.allow_http,
+            "group_name": snap.group_name if snap else "",
+            "observed_group_ratios": dict(self._observed_group_ratios.get(spec.id, {})),
+            "fiat_currency": spec.fiat_currency or (snap.inferred_fiat_currency if snap else ""),
+            "fiat_per_base_unit": (
+                spec.fiat_per_base_unit
+                if spec.fiat_per_base_unit is not None
+                else (snap.site_recharge_price if snap else None)
+            ),
+            "custom_currency_exchange_rate": snap.custom_exchange_rate if snap else None,
+            "custom_currency_symbol": (snap.symbol if (snap and snap.display_type == "CREDIT") else ""),
+        }
+
+    @staticmethod
+    def _summarize_upstream_log_rows(
+        raw_payload: dict[str, Any],
+        *,
+        spec: QuotaStationSpec,
+        days: int,
+        token_name: str,
+        cached: bool,
+        fetched_at: str,
+        supported_stations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        all_rows = raw_payload.get("rows") or []
+        token_names = sorted({str(r.get("token_name") or "").strip() for r in all_rows if str(r.get("token_name") or "").strip()})
+        wanted_token = str(token_name or "").strip()
+        rows = [r for r in all_rows if r.get("token_name") == wanted_token] if wanted_token else list(all_rows)
+
+        wallet_calls = 0
+        sub_calls = 0
+        wallet_cost = 0.0
+        sub_cost = 0.0
+        wallet_fiat = 0.0
+        sub_fiat = 0.0
+        has_fiat = False
+        prompt_tokens = 0
+        completion_tokens = 0
+        cache_tokens = 0
+        observed_groups: dict[str, float] = {}
+
+        for row in rows:
+            cost = float(row.get("cost") or 0.0)
+            fcost = row.get("fiat_cost")
+            if fcost is not None:
+                has_fiat = True
+            if row.get("billing_source") == "subscription":
+                sub_calls += 1
+                sub_cost += cost
+                if fcost is not None:
+                    sub_fiat += float(fcost)
+            else:
+                wallet_calls += 1
+                wallet_cost += cost
+                if fcost is not None:
+                    wallet_fiat += float(fcost)
+            prompt_tokens += int(row.get("prompt_tokens") or 0)
+            completion_tokens += int(row.get("completion_tokens") or 0)
+            cache_tokens += int(row.get("cache_tokens") or 0)
+            grp = str(row.get("group") or "").strip()
+            gratio = row.get("group_ratio")
+            if grp and gratio is not None:
+                observed_groups[grp] = float(gratio)
+
+        denom = prompt_tokens if prompt_tokens >= cache_tokens else (prompt_tokens + cache_tokens)
+        cache_hit_rate = round((cache_tokens / denom) * 100.0, 1) if denom > 0 else 0.0
+
+        return {
+            "station_id": spec.id,
+            "station_name": spec.name,
+            "stations": supported_stations,
+            "days": days,
+            "token_name": wanted_token,
+            "token_names": token_names,
+            "display_type": raw_payload.get("display_type") or "USD",
+            "symbol": raw_payload.get("symbol") or "",
+            "inferred_fiat_currency": raw_payload.get("inferred_fiat_currency") or "",
+            "fiat_per_base_unit": raw_payload.get("fiat_per_base_unit"),
+            "total_calls": len(rows),
+            "wallet_calls": wallet_calls,
+            "subscription_calls": sub_calls,
+            "wallet_cost": round(wallet_cost, 6),
+            "subscription_cost": round(sub_cost, 6),
+            "total_cost": round(wallet_cost + sub_cost, 6),
+            "wallet_fiat_cost": round(wallet_fiat, 6) if has_fiat else None,
+            "subscription_fiat_cost": round(sub_fiat, 6) if has_fiat else None,
+            "total_fiat_cost": round(wallet_fiat + sub_fiat, 6) if has_fiat else None,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cache_tokens": cache_tokens,
+            "cache_hit_rate": cache_hit_rate,
+            "observed_groups": observed_groups,
+            "pages_fetched": int(raw_payload.get("pages_fetched") or 0),
+            "truncated": bool(raw_payload.get("truncated", False)),
+            "cached": cached,
+            "fetched_at": fetched_at,
+            "items": rows[:40],
+            "counted_in_private_companion_budget": False,
+        }
+
+    async def get_upstream_logs(
+        self,
+        *,
+        station_id: str = "",
+        days: int = 7,
+        token_name: str = "",
+        force: bool = False,
+        session: Any = None,
+    ) -> dict[str, Any]:
+        """Read-only upstream NewAPI reconciliation summary with 5-min cache (<=5 pages / <=200 rows)."""
+        days_clamped = max(1, min(int(days or 7), 30))
+        stations, _awareness, _tok, _legacy = self._effective_stations()
+        newapi_stations = [
+            st for st in stations if st.enabled and st.adapter_id in ("newapi", "newapi_user_id")
+        ]
+        supported_list = [
+            {"id": st.id, "name": st.name, "adapter_id": st.adapter_id}
+            for st in newapi_stations
+        ]
+
+        wanted_id = str(station_id or "").strip()
+        if not wanted_id:
+            if not newapi_stations:
+                return {
+                    "station_id": "",
+                    "station_name": "",
+                    "stations": [],
+                    "days": days_clamped,
+                    "token_name": "",
+                    "token_names": [],
+                    "total_calls": 0,
+                    "wallet_calls": 0,
+                    "subscription_calls": 0,
+                    "wallet_cost": 0.0,
+                    "subscription_cost": 0.0,
+                    "total_cost": 0.0,
+                    "wallet_fiat_cost": None,
+                    "subscription_fiat_cost": None,
+                    "total_fiat_cost": None,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cache_tokens": 0,
+                    "cache_hit_rate": 0.0,
+                    "observed_groups": {},
+                    "pages_fetched": 0,
+                    "truncated": False,
+                    "cached": False,
+                    "fetched_at": self._current_time().isoformat(),
+                    "items": [],
+                    "counted_in_private_companion_budget": False,
+                }
+            spec = newapi_stations[0]
+        else:
+            spec = next((st for st in stations if st.id == wanted_id), None)
+            if spec is None:
+                raise QuotaSettingsError("quota_station_not_found", "未找到指定的站点")
+            if spec.adapter_id not in ("newapi", "newapi_user_id"):
+                raise QuotaSettingsError("quota_upstream_logs_unsupported", "仅 NewAPI / OneAPI 系站点支持拉取上游消费日志对照")
+
+        cache_key = (spec.id, days_clamped)
+        now_mono = monotonic()
+        cached_entry = self._upstream_logs_cache.get(cache_key)
+        if not force and cached_entry is not None:
+            ts_mono, cached_payload = cached_entry
+            if (now_mono - ts_mono) < UPSTREAM_LOGS_CACHE_TTL_SECONDS:
+                return self._summarize_upstream_log_rows(
+                    cached_payload,
+                    spec=spec,
+                    days=days_clamped,
+                    token_name=token_name,
+                    cached=True,
+                    fetched_at=str(cached_payload.get("fetched_at") or ""),
+                    supported_stations=supported_list,
+                )
+
+        _, connections = self._discover_astrbot_suppliers(session=session)
+        ctx, err_snap = self._build_probe_context(spec, connections)
+        if err_snap is not None or ctx is None:
+            raise QuotaSettingsError("quota_provider_missing", err_snap.error if err_snap else "无法解析站点连接")
+        token = ctx.auth_token.strip()
+        if not token:
+            raise QuotaSettingsError("missing_credentials", "该站点尚未填写系统访问令牌")
+
+        root = normalize_station_root(ctx.base_url)
+        site_status = await fetch_newapi_status(
+            root,
+            allow_http=ctx.allow_http,
+            proxy_url=ctx.proxy_url,
+            timeout_seconds=6.0,
+            session_factory=ctx.session_factory,
+        )
+        params = resolve_newapi_display_params(
+            site_status,
+            override_display_type=ctx.display_type,
+            override_per_unit=ctx.quota_per_unit,
+        )
+        topup_info = (
+            await fetch_newapi_topup_info(
+                root,
+                token=token,
+                user_id=ctx.user_id,
+                user_id_header=ctx.user_id_header,
+                allow_http=ctx.allow_http,
+                proxy_url=ctx.proxy_url,
+                timeout_seconds=5.0,
+                session_factory=ctx.session_factory,
+            )
+            if params.display_type == "CREDIT"
+            else None
+        )
+        inferred_fiat_cur, _site_price, effective_fiat_pbu = infer_newapi_fiat_conversion(
+            params,
+            site_status,
+            topup_info,
+            override_fiat_currency=ctx.fiat_currency,
+            override_fiat_per_base_unit=ctx.fiat_per_base_unit,
+        )
+
+        now_dt = self._current_time()
+        start_ts = int((now_dt - timedelta(days=days_clamped)).timestamp())
+        try:
+            raw_logs = await fetch_recent_consumption_logs(
+                root,
+                token=token,
+                user_id=ctx.user_id,
+                user_id_header=ctx.user_id_header,
+                per_unit=params.per_unit,
+                display_type=params.display_type,
+                display_multiplier=params.display_multiplier,
+                symbol=params.symbol,
+                inferred_fiat_currency=inferred_fiat_cur,
+                effective_fiat_pbu=effective_fiat_pbu,
+                max_pages=5,
+                page_size=40,
+                start_timestamp=start_ts,
+                allow_http=ctx.allow_http,
+                proxy_url=ctx.proxy_url,
+                timeout_seconds=ctx.timeout_seconds,
+                session_factory=ctx.session_factory,
+            )
+        except QuotaHttpError as exc:
+            raise QuotaSettingsError(exc.code, str(exc)) from exc
+
+        fetched_at = now_dt.isoformat()
+        raw_logs["fetched_at"] = fetched_at
+        self._upstream_logs_cache[cache_key] = (monotonic(), raw_logs)
+
+        obs_groups: dict[str, float] = {}
+        for row in raw_logs.get("rows") or []:
+            grp = str(row.get("group") or "").strip()
+            ratio = row.get("group_ratio")
+            if grp and ratio is not None:
+                obs_groups[grp] = float(ratio)
+        if obs_groups:
+            self._observed_group_ratios[spec.id] = obs_groups
+
+        return self._summarize_upstream_log_rows(
+            raw_logs,
+            spec=spec,
+            days=days_clamped,
+            token_name=token_name,
+            cached=False,
+            fetched_at=fetched_at,
+            supported_stations=supported_list,
+        )
+
     async def close(self) -> None:
         tasks: list[asyncio.Task[Any]] = []
         if self._bg_task is not None and not self._bg_task.done():
@@ -895,6 +1254,8 @@ class QuotaWatchService:
         self._bg_task = None
         self._inflight_all = None
         self._inflight_station.clear()
+        self._upstream_logs_cache.clear()
+        self._observed_group_ratios.clear()
 
 
 def get_quota_watch_service(
