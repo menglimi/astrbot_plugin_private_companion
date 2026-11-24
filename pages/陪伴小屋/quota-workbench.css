@@ -520,7 +520,7 @@
 .qw-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1);
   padding: 2px var(--sp-2);
   border-radius: var(--r-pill);
   border: 1px solid var(--t-line);
@@ -531,40 +531,18 @@
   white-space: nowrap;
 }
 
-.qw-pill.ok {
-  color: var(--t-ok-ink);
-  background: var(--t-ok-quiet);
-  border-color: color-mix(in srgb, var(--t-ok) 32%, var(--t-line));
-}
-
-.qw-pill.warn {
-  color: var(--t-warn-ink);
-  background: var(--t-warn-quiet);
-  border-color: color-mix(in srgb, var(--t-warn) 35%, var(--t-line));
-}
-
-.qw-pill.risk {
-  color: var(--t-risk-ink);
-  background: var(--t-risk-quiet);
-  border-color: color-mix(in srgb, var(--t-risk) 35%, var(--t-line));
-}
-
-.qw-pill.accent {
-  color: var(--t-accent-ink);
-  background: var(--t-accent-quiet);
-  border-color: color-mix(in srgb, var(--t-accent) 28%, var(--t-line));
-}
-
 .qw-status-pill {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1);
   padding: 3px var(--sp-2);
   border-radius: var(--r-pill);
   font-size: var(--fs-micro);
   font-weight: 600;
   border: 1px solid var(--t-line);
+  background: var(--t-surface-soft);
+  color: var(--t-text-soft);
   white-space: nowrap;
 }
 
@@ -574,6 +552,33 @@
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+}
+
+.qw-pill.ok,
+.qw-status-pill.ok {
+  color: var(--t-ok-ink);
+  background: var(--t-ok-quiet);
+  border-color: color-mix(in srgb, var(--t-ok) 32%, var(--t-line));
+}
+
+.qw-pill.warn,
+.qw-status-pill.warn {
+  color: var(--t-warn-ink);
+  background: var(--t-warn-quiet);
+  border-color: color-mix(in srgb, var(--t-warn) 35%, var(--t-line));
+}
+
+.qw-pill.risk,
+.qw-status-pill.risk {
+  color: var(--t-risk-ink);
+  background: var(--t-risk-quiet);
+  border-color: color-mix(in srgb, var(--t-risk) 35%, var(--t-line));
+}
+
+.qw-pill.accent {
+  color: var(--t-accent-ink);
+  background: var(--t-accent-quiet);
+  border-color: color-mix(in srgb, var(--t-accent) 28%, var(--t-line));
 }
 
 /* 余额数字与进度条 */
@@ -618,7 +623,7 @@
 
 .qw-progress-wrap {
   display: grid;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 
 .qw-progress-track {
@@ -663,7 +668,7 @@
 .qw-lastuse {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--t-line);
@@ -822,7 +827,7 @@
 .qw-step {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   font-size: var(--fs-micro);
   color: var(--t-text-faint);
   font-weight: 550;
@@ -895,8 +900,8 @@
 .qw-segment {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  padding: 4px;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
   border: 1px solid var(--t-line);
   border-radius: var(--r-sm);
   background: var(--t-surface-soft);
@@ -1011,11 +1016,12 @@
 /* 表单字段 */
 .qw-field {
   display: grid;
-  gap: 5px;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
-.qw-field > span {
+.qw-field > span,
+.qw-field > label {
   font-size: var(--fs-micro);
   font-weight: 600;
   color: var(--t-text-soft);

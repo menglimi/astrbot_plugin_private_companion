@@ -10,6 +10,7 @@ window.CompanionQuotaWorkbench = (() => {
     quota_config_unreadable: "额度看板配置文件无法读取。",
     quota_http_not_allowed: "默认仅允许 HTTPS 站点；如为内网自建站，请勾选「允许局域网 HTTP」。",
     quota_station_not_found: "未找到指定的站点，请刷新列表。",
+    quota_legacy_readonly: "旧版单站投影请前往「感知 → 余额感知」移除，或先点「编辑」保存迁移后再管理。",
     quota_provider_missing: "所选 AstrBot 供应商不存在或未配置接口地址。",
     quota_request_invalid: "额度看板请求参数无效，请刷新后重试。",
     login_2fa_required: "该站点开启了两步验证 (2FA)，请在浏览器登录后手动复制系统访问令牌。",
@@ -56,7 +57,9 @@ window.CompanionQuotaWorkbench = (() => {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[ch]));
 
-  const iconCache = new Map(); // `${id}:${version}` -> data_url
+  const SAFE_ICON_DATA_URL_RE = /^data:image\/(png|jpeg|webp|x-icon|gif);base64,[A-Za-z0-9+/=]+$/i;
+  const isSafeIconDataUrl = url => typeof url === "string" && SAFE_ICON_DATA_URL_RE.test(url);
+  const iconCache = new Map(); // `${id}:${version}` -> verified raster data_url
 
   function formatMoney(value, displayType, symbol) {
     const n = Number(value);
@@ -231,7 +234,7 @@ window.CompanionQuotaWorkbench = (() => {
       pending.push(
         ctx.api("GET", `${ctx.path}/quota/icon`, { id: st.id, v: snap.logo_version }, 8000)
           .then(res => {
-            if (res?.available && res?.data_url) iconCache.set(cacheKey, res.data_url);
+            if (res?.available && isSafeIconDataUrl(res?.data_url)) iconCache.set(cacheKey, res.data_url);
             else iconCache.set(cacheKey, "");
           })
           .catch(() => {})
@@ -385,6 +388,7 @@ window.CompanionQuotaWorkbench = (() => {
       error: "",
       focusField,
       highlightField,
+      advancedOpen: false,
       loginOpen: false,
       loginUser: "",
       loginPass: "",
@@ -835,44 +839,60 @@ window.CompanionQuotaWorkbench = (() => {
     const isRefreshing = q.refreshingId === station.id || (q.refreshingAll && station.enabled);
     const confirmingDelete = q.deleteConfirmId === station.id;
 
+    const isLegacyProjected = Boolean(data.legacy_projected && station.id === "legacy-default");
     const logoKey = snap?.logo_version ? `${station.id}:${snap.logo_version}` : "";
-    const logoUrl = logoKey ? iconCache.get(logoKey) : "";
+    const cachedLogo = logoKey ? iconCache.get(logoKey) : "";
+    const logoUrl = isSafeIconDataUrl(cachedLogo) ? cachedLogo : "";
     const avatarHtml = logoUrl
       ? `<div class="qw-avatar has-logo"><img src="${esc(logoUrl)}" alt="" loading="lazy" decoding="async"></div>`
       : `<div class="qw-avatar" title="${esc(snap?.logo_error ? "图标未加载：" + snap.logo_error : station.name)}">${esc(initials(station.name))}</div>`;
 
     let balanceHtml = "";
-    if (snap && snap.ok && snap.remaining != null) {
-      const m = formatMoney(snap.remaining, snap.display_type, snap.symbol);
-      const showConv = converted != null && snap.display_type !== summary.display_currency;
-      const valCls = health === "critical" ? "is-critical" : health === "low" ? "is-low" : "";
-      const pct = snap.remaining_percent != null
-        ? Math.max(0, Math.min(100, Number(snap.remaining_percent)))
-        : (snap.total > 0 ? Math.max(0, Math.min(100, (snap.remaining / snap.total) * 100)) : null);
-      const usedM = snap.used != null ? formatMoney(snap.used, snap.display_type, snap.symbol) : null;
-      const totalM = snap.total != null ? formatMoney(snap.total, snap.display_type, snap.symbol) : null;
+    if (snap && snap.ok) {
+      if (snap.remaining != null) {
+        const m = formatMoney(snap.remaining, snap.display_type, snap.symbol);
+        const showConv = converted != null && snap.display_type !== summary.display_currency;
+        const valCls = health === "critical" ? "is-critical" : health === "low" ? "is-low" : "";
+        const pct = snap.remaining_percent != null
+          ? Math.max(0, Math.min(100, Number(snap.remaining_percent)))
+          : (snap.total > 0 ? Math.max(0, Math.min(100, (snap.remaining / snap.total) * 100)) : null);
+        const usedM = snap.used != null ? formatMoney(snap.used, snap.display_type, snap.symbol) : null;
+        const totalM = snap.total != null ? formatMoney(snap.total, snap.display_type, snap.symbol) : null;
 
-      balanceHtml = `
-        <div class="qw-balance-block">
-          <div class="qw-balance-row">
-            <span class="qw-balance-value qw-num ${valCls}">${esc(m.unit === "¥" || m.unit === "$" ? m.unit + m.num : m.num)}</span>
-            ${m.unit !== "¥" && m.unit !== "$" ? `<span class="qw-balance-unit">${esc(m.unit)}</span>` : ""}
-            ${showConv ? `<span class="qw-balance-conv qw-num">≈ ${esc(summary.display_symbol)}${Number(converted).toFixed(2)}</span>` : ""}
-          </div>
-          ${pct !== null ? `
-            <div class="qw-progress-wrap">
-              <div class="qw-progress-track" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
-                <div class="qw-progress-fill ${valCls}" style="width:${pct.toFixed(1)}%"></div>
-              </div>
-              <div class="qw-progress-meta qw-num">
-                <span>${usedM ? `已用 ${esc(usedM.unit === "¥" || usedM.unit === "$" ? usedM.unit + usedM.num : usedM.num)}` : ""}</span>
-                <span>${totalM ? `总额 ${esc(totalM.unit === "¥" || totalM.unit === "$" ? totalM.unit + totalM.num : totalM.num)} · ` : ""}剩 ${pct.toFixed(1)}%</span>
-              </div>
+        balanceHtml = `
+          <div class="qw-balance-block">
+            <div class="qw-balance-row">
+              <span class="qw-balance-value qw-num ${valCls}">${esc(m.unit === "¥" || m.unit === "$" ? m.unit + m.num : m.num)}</span>
+              ${m.unit !== "¥" && m.unit !== "$" ? `<span class="qw-balance-unit">${esc(m.unit)}</span>` : ""}
+              ${showConv ? `<span class="qw-balance-conv qw-num">≈ ${esc(summary.display_symbol)}${Number(converted).toFixed(2)}</span>` : ""}
             </div>
-          ` : ""}
-          ${snap.extra ? `<div class="qw-extra-line">${esc(snap.extra)}</div>` : ""}
-        </div>
-      `;
+            ${pct !== null ? `
+              <div class="qw-progress-wrap">
+                <div class="qw-progress-track" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+                  <div class="qw-progress-fill ${valCls}" style="width:${pct.toFixed(1)}%"></div>
+                </div>
+                <div class="qw-progress-meta qw-num">
+                  <span>${usedM ? `已用 ${esc(usedM.unit === "¥" || usedM.unit === "$" ? usedM.unit + usedM.num : usedM.num)}` : ""}</span>
+                  <span>${totalM ? `总额 ${esc(totalM.unit === "¥" || totalM.unit === "$" ? totalM.unit + totalM.num : totalM.num)} · ` : ""}剩 ${pct.toFixed(1)}%</span>
+                </div>
+              </div>
+            ` : ""}
+            ${snap.extra ? `<div class="qw-extra-line">${esc(snap.extra)}</div>` : ""}
+          </div>
+        `;
+      } else {
+        const usedM = snap.used != null ? formatMoney(snap.used, snap.display_type, snap.symbol) : null;
+        const usedStr = usedM ? (usedM.unit === "¥" || usedM.unit === "$" ? usedM.unit + usedM.num : `${usedM.num} ${usedM.unit}`.trim()) : "";
+        balanceHtml = `
+          <div class="qw-balance-block">
+            <div class="qw-balance-row">
+              <span class="qw-balance-value">不限额</span>
+              ${usedStr ? `<span class="qw-balance-conv qw-num">已用 ${esc(usedStr)}</span>` : ""}
+            </div>
+            ${snap.extra ? `<div class="qw-extra-line">${esc(snap.extra)}</div>` : ""}
+          </div>
+        `;
+      }
     } else if (!station.enabled) {
       balanceHtml = `<div class="qw-balance-block"><span class="qw-balance-value qw-num">—</span><div class="qw-extra-line">已暂停监测</div></div>`;
     } else if (!snap) {
@@ -919,6 +939,7 @@ window.CompanionQuotaWorkbench = (() => {
             <div class="qw-card-url qw-mono" title="${esc(subtitleUrl)}">${esc(subtitleUrl)}</div>
             <div class="qw-badges">
               <span class="qw-pill">${esc(adapter?.short_name || station.adapter_id)}</span>
+              ${isLegacyProjected ? `<span class="qw-pill warn">旧版投影</span>` : ""}
               ${snap?.group_name ? `<span class="qw-pill accent">${esc(snap.group_name)}</span>` : ""}
               ${snap?.is_key_scoped ? `<span class="qw-pill warn">单 Key 限额</span>` : ""}
               ${station.participate_in_awareness ? `<span class="qw-pill ok">余额感知</span>` : ""}
@@ -936,11 +957,13 @@ window.CompanionQuotaWorkbench = (() => {
           <span class="qw-foot-meta qw-num">${snap?.checked_at ? `${esc(formatShortTime(snap.checked_at))}${snap.latency_ms ? ` · ${snap.latency_ms} ms` : ""}` : "未检查"}</span>
           <div class="qw-foot-actions">
             <button type="button" class="qw-btn small" data-qw-refresh-one="${esc(station.id)}" ${isRefreshing || !station.enabled ? "disabled" : ""}>${isRefreshing ? "刷新中…" : "刷新"}</button>
-            <button type="button" class="qw-btn small" data-qw-edit="${esc(station.id)}">编辑</button>
-            ${confirmingDelete
-              ? `<button type="button" class="qw-btn small danger" data-qw-delete-confirm="${esc(station.id)}" ${q.busy ? "disabled" : ""}>确认删除</button>
-                 <button type="button" class="qw-btn small" data-qw-delete-cancel>取消</button>`
-              : `<button type="button" class="qw-btn small" data-qw-delete-arm="${esc(station.id)}">删除</button>`}
+            <button type="button" class="qw-btn small" data-qw-edit="${esc(station.id)}">${isLegacyProjected ? "编辑并迁移" : "编辑"}</button>
+            ${isLegacyProjected
+              ? ""
+              : (confirmingDelete
+                  ? `<button type="button" class="qw-btn small danger" data-qw-delete-confirm="${esc(station.id)}" ${q.busy ? "disabled" : ""}>确认删除</button>
+                     <button type="button" class="qw-btn small" data-qw-delete-cancel>取消</button>`
+                  : `<button type="button" class="qw-btn small" data-qw-delete-arm="${esc(station.id)}">删除</button>`)}
           </div>
         </footer>
       </article>
@@ -977,14 +1000,14 @@ window.CompanionQuotaWorkbench = (() => {
           ` : `<div class="qw-notice"><span>当前未发现可用的 AstrBot 聊天供应商，请切到「手动填写站点地址」。</span></div>`}
         </div>
       ` : `
-        <label class="qw-field">
-          <span>站点根地址</span>
+        <div class="qw-field">
+          <label for="qw-step1-base-url">站点根地址</label>
           <div class="qw-detect-row">
-            <input type="url" data-qw-field="base_url" placeholder="https://api.example.com" value="${esc(d.base_url)}" autocomplete="url">
+            <input id="qw-step1-base-url" type="url" data-qw-field="base_url" placeholder="https://api.example.com" value="${esc(d.base_url)}" autocomplete="url">
             <button type="button" class="qw-btn soft" data-qw-detect ${w.detecting ? "disabled" : ""}>${w.detecting ? "识别中…" : "智能识别"}</button>
           </div>
           <span class="qw-field-hint">只需填根地址（带不带 /v1 均可），系统会自动探测站点类型、币种与是否需要用户 ID。</span>
-        </label>
+        </div>
         <label class="qw-check-row">
           <input type="checkbox" data-qw-check="allow_http" ${d.allow_http ? "checked" : ""}>
           <span>允许局域网 HTTP / 内网地址（仅限内网自建中转站）</span>
@@ -1084,12 +1107,20 @@ window.CompanionQuotaWorkbench = (() => {
 
     let testHtml = "";
     if (snap) {
-      if (snap.ok && snap.remaining != null) {
-        const m = formatMoney(snap.remaining, snap.display_type, snap.symbol);
+      if (snap.ok) {
+        let previewAmount = "不限额";
+        if (snap.remaining != null) {
+          const m = formatMoney(snap.remaining, snap.display_type, snap.symbol);
+          previewAmount = m.unit === "¥" || m.unit === "$" ? m.unit + m.num : `${m.num} ${m.unit}`.trim();
+        } else if (snap.used != null) {
+          const usedM = formatMoney(snap.used, snap.display_type, snap.symbol);
+          const usedStr = usedM.unit === "¥" || usedM.unit === "$" ? usedM.unit + usedM.num : `${usedM.num} ${usedM.unit}`.trim();
+          previewAmount = `不限额（已用 ${usedStr}）`;
+        }
         testHtml = `
           <div class="qw-test-preview" role="status">
             <div><strong>连通性测试通过</strong>${snap.latency_ms ? ` · <span class="qw-num">${snap.latency_ms} ms</span>` : ""}</div>
-            <div class="qw-test-preview-amount qw-num">${esc(m.unit === "¥" || m.unit === "$" ? m.unit + m.num : m.num + " " + m.unit)}</div>
+            <div class="qw-test-preview-amount qw-num">${esc(previewAmount)}</div>
             <div>${[snap.group_name ? `分组/套餐：${snap.group_name}` : "", snap.account_name ? `账号：${snap.account_name}` : "", snap.extra || ""].filter(Boolean).map(esc).join(" · ")}</div>
             ${snap.last_used_at ? `<div class="qw-num">最近消费：${esc(formatShortTime(snap.last_used_at))}${snap.last_used_model ? " · " + esc(snap.last_used_model) : ""}</div>` : ""}
           </div>
@@ -1150,8 +1181,8 @@ window.CompanionQuotaWorkbench = (() => {
       ` : ""}
       ${w.loginMsg ? `<div class="qw-notice ${w.loginBad ? "is-error" : "is-ok"}"><span>${esc(w.loginMsg)}</span></div>` : ""}
 
-      <details class="qw-details">
-        <summary>高级与告警设置（换算覆盖 / 刷新间隔 / 告警阈值 / 代理 / 余额感知）</summary>
+      <details class="qw-details" ${w.advancedOpen ? "open" : ""}>
+        <summary data-qw-toggle-advanced>高级与告警设置（换算覆盖 / 刷新间隔 / 告警阈值 / 代理 / 余额感知）</summary>
         <div class="qw-details-body">
           ${advancedFields.map(f => renderDynamicField(f, d, w)).join("")}
           <div class="qw-field-grid">
@@ -1448,6 +1479,10 @@ window.CompanionQuotaWorkbench = (() => {
     }
     if (t.closest("[data-qw-toggle-login]")) {
       w.loginOpen = !w.loginOpen;
+      return;
+    }
+    if (t.closest("[data-qw-toggle-advanced]")) {
+      w.advancedOpen = !w.advancedOpen;
       return;
     }
     if (t.closest("[data-qw-exchange-token]")) {

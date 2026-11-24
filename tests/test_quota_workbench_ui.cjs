@@ -541,6 +541,116 @@ test("quota-workbench.css uses 100% semantic design tokens with container querie
   assert.match(stripped, /container-name:\s*quota-wb/);
   assert.match(stripped, /@container\s+quota-wb/);
   assert.match(stripped, /prefers-reduced-motion:\s*reduce/);
+  assert.match(stripped, /\.qw-status-pill\.ok\b/);
+  assert.match(stripped, /\.qw-status-pill\.warn\b/);
+  assert.match(stripped, /\.qw-status-pill\.risk\b/);
+});
+
+test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card, advancedOpen persistence, and SVG icon defense", async () => {
+  const h = quotaHarness();
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+
+  const payload = sampleQuotaPayload({
+    legacy_projected: true,
+    stations: [
+      {
+        id: "legacy-default",
+        name: "旧版单站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://legacy.example.test",
+        enabled: true,
+        participate_in_awareness: true,
+        has_token: true,
+        has_proxy: false,
+      },
+      {
+        id: "st-or-unlim",
+        name: "OpenRouter 无限额",
+        adapter_id: "deepseek",
+        source_mode: "astrbot_provider",
+        astrbot_provider_id: "ds_official",
+        base_url: "https://openrouter.ai/api/v1",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: false,
+        has_proxy: false,
+      },
+    ],
+    snapshots: {
+      "legacy-default": {
+        station_id: "legacy-default",
+        ok: true,
+        remaining: 25.0,
+        display_type: "USD",
+        symbol: "$",
+        checked_at: "2026-11-24T12:00:00+08:00",
+        logo_version: "v-svg-attack",
+      },
+      "st-or-unlim": {
+        station_id: "st-or-unlim",
+        ok: true,
+        remaining: null,
+        used: 3.25,
+        display_type: "USD",
+        symbol: "$",
+        extra: "当前 Key 未设置消费上限",
+        checked_at: "2026-11-24T12:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      health_by_id: { "legacy-default": "normal", "st-or-unlim": "normal" },
+    },
+  });
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+  await flush();
+
+  const html = h.root.innerHTML;
+  // Legacy projected card shows badge + migrate label and hides delete button
+  assert.match(html, /旧版投影/);
+  assert.match(html, /编辑并迁移/);
+  assert.doesNotMatch(html, /data-qw-delete-arm="legacy-default"/);
+
+  // OpenRouter unlimited key renders as healthy "不限额" + used + extra (never is-error)
+  assert.match(html, /不限额/);
+  assert.match(html, /已用 \$3\.25/);
+  assert.match(html, /当前 Key 未设置消费上限/);
+  assert.doesNotMatch(html, /qw-balance-value is-error/);
+
+  // Malicious SVG data URL from /quota/icon must be rejected by frontend allowlist
+  const iconReq = h.requests.find(r => r.route === "model/quota/icon");
+  assert.ok(iconReq);
+  iconReq.resolve({ available: true, data_url: "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+PC9zdmc+" });
+  await flush();
+  assert.doesNotMatch(h.root.innerHTML, /data:image\/svg\+xml/i);
+
+  // Step 1 manual URL uses <label for="qw-step1-base-url"> (not wrapping button/div)
+  h.root.click("[data-qw-open-wizard]", { qwOpenWizard: "manual" });
+  assert.match(h.root.innerHTML, /<label for="qw-step1-base-url">站点根地址<\/label>/);
+  assert.doesNotMatch(h.root.innerHTML, /<label[^>]*>(?:(?!<\/label>)[\s\S])*data-qw-detect(?:(?!<\/label>)[\s\S])*<\/label>/);
+
+  // Step 2: advancedOpen persists across inner checkbox render + unlimited draft test preview succeeds
+  h.root.input("[data-qw-field]", "https://openrouter.ai/api/v1", { dataset: { qwField: "base_url" }, type: "input" });
+  h.root.click("[data-qw-step]", { qwStep: "2" });
+  h.root.click("[data-qw-toggle-advanced]");
+  h.root.input("[data-qw-check]", "", { dataset: { qwCheck: "allow_http" }, checked: true, type: "change" });
+  assert.match(h.root.innerHTML, /<details class="qw-details" open>/);
+
+  h.root.click("[data-qw-test-draft]");
+  await flush();
+  h.requests.find(r => r.route === "model/quota/test").resolve({
+    snapshot: { ok: true, remaining: null, used: 3.25, display_type: "USD", symbol: "$", extra: "无限额 Key", latency_ms: 95 },
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /连通性测试通过/);
+  assert.match(h.root.innerHTML, /不限额（已用 \$3\.25）/);
+  assert.doesNotMatch(h.root.innerHTML, /qw-test-preview is-fail/);
+
+  h.page.unmount();
 });
 
 test("XSS payloads in station names, URLs, error text, and models are 100% HTML-escaped", async () => {
