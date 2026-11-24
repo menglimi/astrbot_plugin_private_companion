@@ -37,6 +37,7 @@ REQUIRED_ARCHIVE_FILES = (
     "plugin_bootstrap.py",
     "unified_person_registry.py",
     "persona_config.py",
+    "upgrade_preflight.py",
 )
 IGNORED_NAMES = {
     ".DS_Store",

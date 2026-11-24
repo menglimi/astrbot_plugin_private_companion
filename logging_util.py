@@ -11,17 +11,15 @@ the AstrBot plugin logger, so the per-plugin log level and the
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 
 def _get_plugin_logger() -> Any:
     """Resolve AstrBot's logger at call time so hot-loaded replacements work."""
-    try:
-        from astrbot.api import logger as plugin_logger
-    except Exception:  # pragma: no cover - isolated import fallback
-        return logging.getLogger("astrbot_plugin_private_companion")
-    return plugin_logger
+    from astrbot.api import logger
+
+    return logger
+
 
 _PACKAGE_PREFIXES = (
     "data.plugins.astrbot_plugin_private_companion.",

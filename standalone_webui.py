@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import logging
 import re
 import secrets
 import time
@@ -13,10 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
-try:
-    from astrbot.api import logger
-except Exception:  # pragma: no cover - only used by isolated import checks
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 try:
     from quart import Quart as _Quart

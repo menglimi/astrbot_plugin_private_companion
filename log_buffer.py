@@ -12,11 +12,23 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
 import threading
 from typing import Any
 
+from astrbot.api import logger
+
+from .plugin_identity import PLUGIN_ID
+
 MAX_RECORDS = 2000
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+_PLUGIN_ROOT = Path(__file__).absolute().parent
+_PLUGIN_LOGGER = f"astrbot.plugin.{PLUGIN_ID}"
+_HANDLER_MARKER = "_private_companion_v1_log_buffer"
+
+
+def _belongs_to_plugin(record: logging.LogRecord) -> bool:
+    return record.name == _PLUGIN_LOGGER or Path(record.pathname).absolute().is_relative_to(_PLUGIN_ROOT)
 
 
 def _record_payload(record: logging.LogRecord) -> dict[str, Any]:
@@ -85,17 +97,13 @@ def install_log_buffer() -> LogRingBuffer:
         if _BUFFER is not None:
             return _BUFFER
         buffer = LogRingBuffer()
-        logger = logging.getLogger("astrbot_plugin_private_companion")
+        buffer.addFilter(_belongs_to_plugin)
+        setattr(buffer, _HANDLER_MARKER, True)
+        for existing in tuple(logger.handlers):
+            if getattr(existing, _HANDLER_MARKER, False):
+                logger.removeHandler(existing)
+                existing.close()
         logger.addHandler(buffer)
-        try:
-            from astrbot.api import logger as host_logger
-        except Exception:
-            host_logger = None
-        if host_logger is not None and host_logger is not logger:
-            try:
-                host_logger.addHandler(buffer)
-            except Exception:
-                pass
         _BUFFER = buffer
         return buffer
 

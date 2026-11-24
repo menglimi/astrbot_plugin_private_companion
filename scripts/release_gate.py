@@ -235,7 +235,7 @@ def exercise_installs(current: Path, previous: Path | None, plugin_name: str, as
 
     # Keep the extraction root itself below MAX_PATH so CreateProcess and
     # directory setup remain valid, while packaged deep members exceed it.
-    long_runtime = base / ("windows-long-path-" + "x" * 20) / ("nested-" + "y" * 20)
+    long_runtime = base / ("windows-long-path-" + "x" * 20) / ("nested-" + "y" * 52)
     install_archive(current, plugin_name, astrbot_root, long_runtime)
     import_installed(plugin_name, astrbot_root, long_runtime)
     longest = max(len(str(path)) for path in long_runtime.rglob("*"))

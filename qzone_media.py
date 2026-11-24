@@ -192,7 +192,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
             image_type, content_type = self._qzone_guess_image_type(str(path), data)
             return data, path.name or f"image.{image_type}", content_type
         if re.match(r"^https?://", text, flags=re.I):
-            if not self._qzone_remote_media_url_allowed(text):
+            if not await asyncio.to_thread(self._qzone_remote_media_url_allowed, text):
                 raise QzoneIntegrationError("图片读取失败", "图片 URL 指向本机、内网或不可安全解析的地址")
             timeout = aiohttp.ClientTimeout(total=30)
             headers = {
@@ -206,7 +206,7 @@ class QzoneMediaMixin(QzoneAuthMixin):
                     async with session.get(current_url, allow_redirects=False) as response:
                         if response.status in {301, 302, 303, 307, 308}:
                             location = response.headers.get("Location") or response.headers.get("location") or ""
-                            redirected = self._qzone_safe_redirect_url(current_url, location)
+                            redirected = await asyncio.to_thread(self._qzone_safe_redirect_url, current_url, location)
                             if not redirected:
                                 raise QzoneIntegrationError("图片读取失败", "图片重定向目标不安全，已拒绝下载")
                             current_url = redirected

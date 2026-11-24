@@ -1,7 +1,10 @@
 import logging
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 
-from log_buffer import LogRingBuffer, install_log_buffer, snapshot
+from astrbot_plugin_private_companion import log_buffer
+from astrbot_plugin_private_companion.log_buffer import LogRingBuffer, snapshot
 
 
 class LogBufferTests(unittest.TestCase):
@@ -18,11 +21,22 @@ class LogBufferTests(unittest.TestCase):
         rows, _ = buffer.snapshot(query="主动")
         self.assertEqual(len(rows), 1)
 
-    def test_install_is_idempotent(self):
-        first = install_log_buffer()
-        second = install_log_buffer()
-        self.assertIs(first, second)
-        self.assertGreaterEqual(len(logging.getLogger("astrbot_plugin_private_companion").handlers), 1)
+    def test_install_is_idempotent_and_filters_shared_host_logs(self):
+        host = logging.Logger("astrbot")
+        with patch.object(log_buffer, "logger", host), patch.object(log_buffer, "_BUFFER", None):
+            first = log_buffer.install_log_buffer()
+            self.assertIs(first, log_buffer.install_log_buffer())
+            self.assertEqual(host.handlers, [first])
+
+            root = Path(log_buffer.__file__).parent
+            for path, message in (
+                (root / "main.py", "current plugin"),
+                (root.parent / "other_plugin" / "main.py", "another plugin"),
+            ):
+                host.handle(host.makeRecord(host.name, logging.INFO, str(path), 1, message, (), None))
+
+            rows, _ = first.snapshot()
+            self.assertEqual([row["message"] for row in rows], ["current plugin"])
 
     def test_empty_before_install(self):
         rows, cursor = snapshot(limit=10)

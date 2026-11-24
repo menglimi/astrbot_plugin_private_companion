@@ -1,2 +1,5 @@
 pages/** text eol=lf
 *.py whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+metadata.yaml whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+
+/tests export-ignore
