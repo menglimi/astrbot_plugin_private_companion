@@ -1676,7 +1676,16 @@ window.CompanionPricingWorkbench = (() => {
     p.pulseTimer = setTimeout(() => {
       p.pulseProvider = "";
       p.pulseTimer = null;
-      if (!isCurrent || isCurrent(t)) render();
+      if (isCurrent && !isCurrent(t)) return;
+      try {
+        const container = root();
+        const cards = container?.querySelectorAll ? [...container.querySelectorAll("[data-pw-card]")] : [];
+        for (const el of cards) {
+          if (el.dataset?.pwCard === pid || el.classList?.contains?.("is-pulse")) {
+            el.classList?.remove?.("is-pulse");
+          }
+        }
+      } catch {}
     }, 1600);
   }
 

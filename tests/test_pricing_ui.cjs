@@ -311,6 +311,7 @@ function modelsHarness() {
   const localStore = makeStorage();
   const sessionStore = makeStorage();
   const scrolled = [];
+  const removedPulse = [];
   const timers = [];
   const window = {
     CompanionProduct: {
@@ -362,6 +363,10 @@ function modelsHarness() {
         return matches.map(m => ({
           dataset: {pwCard: m[1]},
           scrollIntoView: opts => scrolled.push({id: m[1], opts}),
+          classList: {
+            contains: cls => cls === "is-pulse",
+            remove: cls => { if (cls === "is-pulse") removedPulse.push(m[1]); },
+          },
         }));
       }
       return [];
@@ -383,7 +388,7 @@ function modelsHarness() {
   return {
     page: window.CompanionModelsPage,
     wb: window.CompanionPricingWorkbench,
-    root, requests, localStore, sessionStore, scrolled, timers,
+    root, requests, localStore, sessionStore, scrolled, removedPulse, timers,
   };
 }
 
@@ -1056,7 +1061,21 @@ test("regressions: failed cluster multiplier keeps draft clean, non-per_token ba
   assert.doesNotMatch(h.root.innerHTML, /data-pricing-tier-base="input"/, "secondary model must not inherit primary model's per_tier editor");
   assert.match(h.root.innerHTML, /data-pricing-rate-field="input"/, "secondary model renders its own per_token editor");
 
-  // Regression 3: pulseTimer callback after unmount must not invoke stale render
+  // Regression 3A: mounted pulseTimer clears is-pulse IN PLACE without full render() so input focus is never stolen
+  h.root.click("[data-pricing-jump-provider]", {
+    pricingJumpProvider: "relay-custom",
+    pricingJumpCluster: "relay-src",
+    pricingJumpDeleted: "0",
+    pricingJumpModel: "my-unpriced-model",
+  });
+  const mountedPulseTimer = h.timers.filter(t => t.ms === 1600 && !t.cleared).at(-1);
+  assert.ok(mountedPulseTimer, "jump should schedule 1600ms pulse timeout");
+  const htmlBeforePulseEnd = h.root.innerHTML;
+  mountedPulseTimer.fn();
+  assert.equal(h.root.innerHTML, htmlBeforePulseEnd, "pulse end must NOT rebuild root.innerHTML / steal input focus");
+  assert.ok(h.removedPulse.includes("relay-custom"), "pulse end must remove is-pulse class in place");
+
+  // Regression 3B: pulseTimer callback after unmount must not touch DOM or invoke stale render
   h.root.click("[data-pricing-jump-provider]", {
     pricingJumpProvider: "relay-custom",
     pricingJumpCluster: "relay-src",
@@ -1064,11 +1083,13 @@ test("regressions: failed cluster multiplier keeps draft clean, non-per_token ba
     pricingJumpModel: "my-unpriced-model",
   });
   const pulseTimer = h.timers.filter(t => t.ms === 1600 && !t.cleared).at(-1);
-  assert.ok(pulseTimer, "jump should schedule 1600ms pulse timeout");
+  assert.ok(pulseTimer, "second jump should schedule 1600ms pulse timeout");
+  const removedCountBeforeUnmount = h.removedPulse.length;
   h.page.unmount();
   h.root.innerHTML = "<sentinel-unmounted />";
   pulseTimer.fn();
   assert.equal(h.root.innerHTML, "<sentinel-unmounted />", "pulse timer must not render after unmount");
+  assert.equal(h.removedPulse.length, removedCountBeforeUnmount, "pulse timer must not touch DOM after unmount");
 });
 
 test("New API gateway bar: enriched probe notice, recommended group ratio chip, custom-rules hint, group dropdown, and source currency override", async () => {
