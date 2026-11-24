@@ -14657,12 +14657,11 @@ body.room-editing .product-scope{display:none}
 
 @media (max-width: 900px) {
   .setup-shell { grid-template-columns: minmax(0, 1fr); row-gap:var(--sp-4); max-width:none; }
-  .setup-progress { display:none; }
   .setup-stage-banner { display:none; }
   .setup-question-card { padding:var(--sp-3); }
   .setup-content { max-width:none; }
   .setup-header { grid-column: 1; }
-  .setup-content { grid-column: 1; grid-row: 2; }
+  .setup-content { grid-column: 1; grid-row: 3; }
   .setup-mode-options { grid-template-columns: minmax(0, 1fr); }
   .setup-mode-option { min-height: 62px; }
   .setup-legacy-scope { grid-template-columns: minmax(0, 1fr); }
@@ -16960,6 +16959,94 @@ body.room-editing .product-scope{display:none}
   .setup-health-item { grid-template-columns: auto minmax(0, 1fr); }
   .setup-health-item > .button { grid-column: 2; justify-self: start; }
 }
+@media (max-width: 900px) {
+  .setup-progress {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    max-width: 100%;
+    padding: var(--sp-1) 0 var(--sp-2);
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .setup-progress > .setup-progress-group {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0;
+    min-height: 0;
+  }
+  .setup-progress-group > strong { display: none; }
+  .setup-progress-steps {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .setup-progress-step {
+    flex: 0 0 auto;
+    display: flex;
+    min-height: 0;
+    scroll-snap-align: center;
+  }
+  .setup-progress-btn {
+    width: auto;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: var(--sp-1);
+    min-height: 36px;
+    padding: var(--sp-1) var(--sp-3);
+    border: 1px solid var(--t-line);
+    border-radius: var(--r-pill);
+    background: var(--t-surface);
+    font-size: var(--fs-tiny);
+    white-space: nowrap;
+  }
+  .setup-progress-btn > span:last-child {
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  .setup-progress-marker {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+  }
+  .setup-progress-step.current .setup-progress-btn {
+    border-color: var(--t-accent);
+    background: var(--t-accent-quiet);
+    color: var(--t-accent-ink);
+  }
+  .setup-progress-step.complete .setup-progress-btn {
+    border-color: color-mix(in srgb, var(--t-ok) 38%, var(--t-line));
+  }
+}
+@media (max-width: 600px) {
+  .setup-header { flex-wrap: wrap; gap: var(--sp-2); padding-bottom: var(--sp-3); }
+  .setup-header-actions { width: 100%; justify-content: flex-start; }
+  .setup-content:not(.setup-question-mode) > .setup-stage { padding: var(--sp-3); }
+  .setup-model-select-row { grid-template-columns: minmax(0, 1fr); }
+  .setup-model-select-row > .button { width: 100%; min-height: 40px; }
+  .setup-actions > .button { min-height: 38px; }
+  .setup-migration-source-manual[open] {
+    position: static;
+    top: auto;
+    right: auto;
+    width: 100%;
+    margin-top: var(--sp-2);
+    box-shadow: none;
+  }
+}
 :root[data-motion="off"] .setup-progress-btn { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .setup-progress-btn { transition: none; }
@@ -17052,6 +17139,7 @@ body.room-editing .product-scope{display:none}
 .mc-hint-dialog {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 32px);
   padding: 0;
   border: 1px solid var(--t-line-firm);
   border-radius: var(--r-lg);
@@ -17186,11 +17274,37 @@ body.room-editing .product-scope{display:none}
 }
 
 @media (max-width: 640px) {
+  .mc-hint-dialog {
+    width: min(640px, calc(100vw - var(--sp-4)));
+    max-height: calc(100dvh - 32px);
+  }
+  .mc-dialog-surface {
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .mc-dialog-head {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
   .mc-dialog-compare {
     grid-template-columns: minmax(0, 1fr);
   }
   .mc-dialog-copy-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-dialog-copy-row .button {
+    width: 100%;
+    min-height: 38px;
+  }
+  .mc-dialog-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    padding-bottom: calc(var(--sp-1) + env(safe-area-inset-bottom));
+  }
+  .mc-dialog-actions .button {
+    width: 100%;
+    min-height: 40px;
+    justify-content: center;
   }
 }
 

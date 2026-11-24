@@ -11,6 +11,8 @@ const setupSource = fs.readFileSync(path.join(PAGES, "setup-guide.js"), "utf8");
 const migrationReviewSource = fs.readFileSync(path.join(PAGES, "migration-config-review.js"), "utf8");
 const migrationTableSource = fs.readFileSync(path.join(PAGES, "migration-config-table.js"), "utf8");
 const appearanceSource = fs.readFileSync(path.join(PAGES, "appearance-page.js"), "utf8");
+const setupCssSource = fs.readFileSync(path.join(PAGES, "setup-guide.css"), "utf8");
+const hintCssSource = fs.readFileSync(path.join(PAGES, "memory-companion-hint.css"), "utf8");
 const hostSource = fs.readFileSync(path.resolve(__dirname, "../pages/宿主管理/app.js"), "utf8");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -418,4 +420,90 @@ test("host management shared model card distinguishes immediate hot apply from r
   assert.match(hostSource, /陪伴通用模型（全局默认）已保存并即时生效/);
   assert.match(hostSource, /已保存，需重载插件后生效/);
   assert.doesNotMatch(hostSource, /宿主已在运行，保存后将在下次启动或重载时生效/);
+});
+
+test("setup wizard and memory companion dialog provide mobile capsule rail, auto-scroll, and narrow-screen stacking", async () => {
+  // 1. Mobile capsule rail replaces display:none at <=900px and places content on row 3.
+  assert.doesNotMatch(setupCssSource, /\.setup-progress\s*\{\s*display\s*:\s*none/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-content\s*\{[^}]*grid-row\s*:\s*3/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-progress\s*\{[\s\S]*display:\s*flex;[\s\S]*overflow-x:\s*auto;/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*900px\)[\s\S]*\.setup-progress-btn\s*\{[\s\S]*flex:\s*0 0 auto;[\s\S]*border-radius:\s*var\(--r-pill\);[\s\S]*white-space:\s*nowrap;/);
+
+  // 2. <=600px stacks model select row, wraps header, tightens stage padding, and keeps manual source disclosure static.
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*600px\)[\s\S]*\.setup-header\s*\{[^}]*flex-wrap:\s*wrap;/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*600px\)[\s\S]*\.setup-stage\s*\{[^}]*padding:\s*var\(--sp-3\);/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*600px\)[\s\S]*\.setup-model-select-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(setupCssSource, /@media\s*\(max-width:\s*600px\)[\s\S]*\.setup-migration-source-manual\[open\]\s*\{[\s\S]*position:\s*static;[\s\S]*width:\s*100%;/);
+
+  // 3. Memory companion dialog uses dvh cap and compact mobile surface/actions.
+  assert.match(hintCssSource, /max-height:\s*calc\(100dvh - 32px\)/);
+  assert.match(hintCssSource, /@media\s*\(max-width:\s*640px\)[\s\S]*\.mc-dialog-surface\s*\{[\s\S]*padding:\s*var\(--sp-3\);/);
+  assert.match(hintCssSource, /@media\s*\(max-width:\s*640px\)[\s\S]*\.mc-dialog-actions\s+\.button\s*\{[\s\S]*width:\s*100%;/);
+
+  // 4. Header copy works on both desktop and mobile and switching steps auto-scrolls the active pill into view.
+  const scrollCalls = [];
+  const listeners = {};
+  let html = "";
+  const activePill = {offsetLeft: 420, offsetWidth: 140};
+  const railEl = {
+    scrollWidth: 920,
+    clientWidth: 360,
+    scrollLeft: 0,
+    querySelector: sel => sel === '.setup-progress-btn[aria-current="step"]' ? activePill : null,
+    scrollTo: opts => { scrollCalls.push(opts); },
+  };
+  const node = {
+    addEventListener: (name, fn) => { listeners[name] = fn; },
+    removeEventListener: name => { delete listeners[name]; },
+    querySelector: sel => sel === ".setup-progress" ? railEl : null,
+    querySelectorAll: () => [],
+  };
+  Object.defineProperty(node, "innerHTML", {get: () => html, set: v => { html = v; }});
+  const status = {
+    step: "model",
+    binding_confirmed: true,
+    prepared: true,
+    ready: false,
+    completed: ["binding"],
+    skipped: [],
+    binding: {bound: true, confirmed: true, platform_id: "qq", account_id: "100", participant_id: "200"},
+    model: {provider_id: "p1", fallback_provider_id: "", providers: [{id: "p1", name: "P1", capabilities: ["text", "image"]}]},
+    host: {state: "running", accepting: true},
+  };
+  const product = {
+    request: (method, route) => Promise.resolve(method === "GET" && route === "setup/status" ? status : {}),
+    targets: () => [],
+    accounts: () => [],
+    personas: () => [],
+    refreshDirectory: async () => {},
+    role: () => null,
+    scopeKey: () => "",
+    unwrap: v => v,
+    relative: addr => addr.replace("/astrbot_plugin_private_companion/", ""),
+  };
+  const sandbox = {
+    window: {CompanionProduct: product, AstrBotPluginPage: {}, matchMedia: () => ({matches: false})},
+    document: {documentElement: {dataset: {motion: "full"}}, querySelector: () => null},
+    Promise, Set, Map, String, Number, Object, Array, RegExp, Error, Date, JSON, Math,
+    setTimeout, clearTimeout,
+  };
+  vm.runInNewContext(hintSource, sandbox);
+  vm.runInNewContext(migrationReviewSource, sandbox);
+  vm.runInNewContext(migrationTableSource, sandbox);
+  vm.runInNewContext(setupSource, sandbox);
+
+  sandbox.window.CompanionSetup.mount(node);
+  await settle();
+  assert.match(html, /点击步骤可随时来回切换/);
+  assert.doesNotMatch(html, /点击左侧步骤可随时来回切换/);
+  assert.ok(scrollCalls.length >= 1, "expected horizontal step rail to auto-scroll active pill");
+  assert.equal(scrollCalls.at(-1).behavior, "smooth");
+  assert.equal(scrollCalls.at(-1).left, 310);
+
+  // Reduced motion switches scroll behavior to "auto".
+  sandbox.document.documentElement.dataset.motion = "off";
+  listeners.click({target: {closest: sel => sel === "[data-setup-goto-step]" ? {dataset: {setupGotoStep: "knowledge"}} : null}});
+  await settle();
+  assert.equal(scrollCalls.at(-1).behavior, "auto");
+  sandbox.window.CompanionSetup.unmount();
 });

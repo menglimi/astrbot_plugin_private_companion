@@ -84,6 +84,7 @@
 .mc-hint-dialog {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 32px);
   padding: 0;
   border: 1px solid var(--t-line-firm);
   border-radius: var(--r-lg);
@@ -218,11 +219,37 @@
 }
 
 @media (max-width: 640px) {
+  .mc-hint-dialog {
+    width: min(640px, calc(100vw - var(--sp-4)));
+    max-height: calc(100dvh - 32px);
+  }
+  .mc-dialog-surface {
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .mc-dialog-head {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
   .mc-dialog-compare {
     grid-template-columns: minmax(0, 1fr);
   }
   .mc-dialog-copy-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-dialog-copy-row .button {
+    width: 100%;
+    min-height: 38px;
+  }
+  .mc-dialog-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    padding-bottom: calc(var(--sp-1) + env(safe-area-inset-bottom));
+  }
+  .mc-dialog-actions .button {
+    width: 100%;
+    min-height: 40px;
+    justify-content: center;
   }
 }
 

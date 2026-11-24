@@ -3573,13 +3573,36 @@ window.CompanionSetup = (() => {
     root.innerHTML = `<div class="setup-shell">
       <header class="setup-header">
         <div class="setup-header-copy"><span class="setup-kicker">我会永远陪着你</span><h2>开始使用${wizardReopened ? " · 配置向导" : ""}</h2>
-          <p class="setup-header-sub">第 ${current + 1} 步 / 共 ${ORDER.length} 步 · ${escape((STEP_GROUPS.find(group => group.steps.includes(step)) || {}).title || "")} · 点击左侧步骤可随时来回切换</p></div>
+          <p class="setup-header-sub">第 ${current + 1} 步 / 共 ${ORDER.length} 步 · ${escape((STEP_GROUPS.find(group => group.steps.includes(step)) || {}).title || "")} · 点击步骤可随时来回切换</p></div>
         <div class="setup-header-actions">${wizardReopened ? `<button type="button" class="button" data-setup-action="close-wizard">返回导览总览</button>` : ""}${state.prepared ? `<button type="button" class="button" data-setup-action="advanced-open">快速配置</button>` : ""}<span class="setup-step-count">${String(current + 1).padStart(2, "0")} / ${String(ORDER.length).padStart(2, "0")}</span></div>
         <div class="setup-header-progress" aria-hidden="true"><i style="width:${((current + 1) / ORDER.length * 100).toFixed(1)}%"></i></div>
       </header>
       ${renderRail(step)}<div class="setup-content${step === "model" ? " setup-question-mode" : ""}">${upgradeCard()}${stageBanner(step)}${content}${nextStepPreview(step)}</div>
     </div>`;
+    scrollActiveStepIntoView();
     if (STEP_EDITORS[step] && state.prepared) mountStepEditor(step);
+  }
+
+  function scrollActiveStepIntoView() {
+    const rail = root?.querySelector?.(".setup-progress");
+    const active = rail?.querySelector?.('.setup-progress-btn[aria-current="step"]');
+    if (!rail || !active || !(rail.scrollWidth > rail.clientWidth + 2)) return;
+    let targetLeft = 0;
+    if (typeof rail.getBoundingClientRect === "function" && typeof active.getBoundingClientRect === "function") {
+      const railRect = rail.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      targetLeft = Math.max(0, rail.scrollLeft + (activeRect.left - railRect.left) - (railRect.width - activeRect.width) / 2);
+    } else if (typeof active.offsetLeft === "number") {
+      targetLeft = Math.max(0, active.offsetLeft - (rail.clientWidth - (active.offsetWidth || 0)) / 2);
+    }
+    const motion = typeof document !== "undefined" ? document.documentElement?.dataset?.motion : "";
+    const reduce = motion === "off"
+      || (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true);
+    if (typeof rail.scrollTo === "function") {
+      rail.scrollTo({left: targetLeft, behavior: reduce ? "auto" : "smooth"});
+    } else {
+      rail.scrollLeft = targetLeft;
+    }
   }
 
   async function loadSetupTargets({force = false} = {}) {
