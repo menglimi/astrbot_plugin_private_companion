@@ -896,3 +896,15 @@ test("重复条目排查与安全合并支持预览与确认合并并刷新规�
   assert.match(root.innerHTML, /5 次注入/);
   page.unmount();
 });
+
+test("窄屏移动端表达规则库顶栏与查重面板顶栏允许自然折行不挤压标题", () => {
+  const css = fs.readFileSync(path.join(__dirname, "..", "pages", "陪伴小屋", "learning-hub.css"), "utf8");
+  const headRule = css.match(/\.lh-signal-head\{[^}]*\}/);
+  const headTitleGroupRule = css.match(/\.lh-signal-head>div\{[^}]*\}/);
+  const dedupeHeadRule = css.match(/\.lh-expression-dedupe-head\{[^}]*\}/);
+  const capacityRule = css.match(/\.lh-signal-capacity\{[^}]*\}/);
+  assert.ok(headRule && /flex-wrap:\s*wrap/.test(headRule[0]) && /gap:\s*var\(--sp-2\)/.test(headRule[0]));
+  assert.ok(headTitleGroupRule && /flex-wrap:\s*wrap/.test(headTitleGroupRule[0]));
+  assert.ok(dedupeHeadRule && /flex-wrap:\s*wrap/.test(dedupeHeadRule[0]) && /gap:\s*var\(--sp-2\)/.test(dedupeHeadRule[0]));
+  assert.ok(capacityRule && !/white-space:\s*nowrap/.test(capacityRule[0]));
+});

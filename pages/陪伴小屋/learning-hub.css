@@ -209,8 +209,8 @@
 :root:is([data-motion="off"],[data-motion="low"]) .lh-refresh.is-loading svg{animation:none!important}
 
 .lh-signal-list{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
-.lh-signal-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0}
-.lh-signal-head>div{display:flex;align-items:baseline;gap:var(--sp-2);min-width:0}
+.lh-signal-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-2);min-width:0}
+.lh-signal-head>div{display:flex;align-items:baseline;flex-wrap:wrap;gap:var(--sp-2);min-width:0}
 .lh-signal-head-tools{display:flex!important;align-items:center!important;flex-wrap:wrap;gap:var(--sp-2)!important}
 .lh-signal-head-tools .lh-command{min-height:34px}
 .lh-signal-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650}
@@ -239,7 +239,7 @@
 .lh-signal-card-meta{flex-wrap:wrap}
 .lh-signal-dimension{color:var(--t-accent-ink);font-weight:650}
 .lh-signal-source{color:var(--t-text-soft)}
-.lh-signal-capacity{font-variant-numeric:tabular-nums;white-space:nowrap}
+.lh-signal-capacity{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .lh-signal-state{padding:2px var(--sp-1);border-radius:var(--r-xs);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro)}
 .is-retired .lh-signal-state{background:var(--t-surface-soft);color:var(--t-text-faint)}
 .lh-signal-uses{font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -267,7 +267,7 @@
 .lh-signal-more{align-self:center;min-width:120px}
 .lh-signal-loaded-hint{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;white-space:nowrap}
 .lh-expression-dedupe{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
-.lh-expression-dedupe-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line)}
+.lh-expression-dedupe-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-2);padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line)}
 .lh-expression-dedupe-head strong{color:var(--t-text-strong);font-size:var(--fs-body)}
 .lh-expression-dedupe-desc{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
 .lh-expression-dedupe-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-2)}
