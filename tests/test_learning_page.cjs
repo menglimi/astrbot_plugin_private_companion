@@ -771,3 +771,18 @@ test('深链补读到多页后，重新读取的请求数有上限', async () =>
   await drive(h, pagedAnswer(pages));
   assert.equal(listReads(h, second).length, 1, '第二次刷新也只重读一页');
 });
+
+test('桥接 reject 机器错误码时映射为中文业务提示', async () => {
+  const h = harness();
+  const pages = {list: [{items: [record('g-1', 'proposed')], next: null}],
+    reviews: [{items: [], next: null}]};
+  await mountPaged(h, pages);
+  const before = h.requests.length;
+  click(h, {act: 'confirm', id: 'g-1'});
+  await h.settle();
+  const post = h.requests.slice(before).find(request => request.method === 'POST');
+  assert.ok(post, '点击确认应发出 POST 请求');
+  post.reject(new Error('growth_record_unavailable'));
+  await h.settle();
+  assert.match(h.page.state.data.notice, /不在当前授权范围/);
+});

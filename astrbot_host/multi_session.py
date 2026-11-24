@@ -565,6 +565,19 @@ class MultiHostSession:
             defaults=self._model_defaults, tariff_resolver=self._tariff_resolver)
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
+        local_providers = tuple((model.binding.provider, model.local_provider()) for model in self.models)
+        image_provider = next(
+            (provider_id for provider_id, local in local_providers if "image" in local.capabilities),
+            None,
+        )
+        # Resolve native video before relay lazily: passing an inner next() as
+        # the outer next() default evaluates eagerly and raises StopIteration on
+        # native-only (e.g. Gemini-only) deployments, turning into a PEP 479
+        # RuntimeError at the coroutine boundary.
+        video_provider = (
+            next((provider_id for provider_id, local in local_providers if "video" in local.capabilities), None)
+            or next((provider_id for provider_id, local in local_providers if local.supports_video_relay), None)
+        )
         profiles = (ModelTaskProfile(REPLY_KIND, Lane.FOREGROUND, common.provider_id, common.task_prompt,
                     default_fallback=fallback_provider_id, replacement_rules=replacement_rules,
                     fallback_on_refusal=common.fallback_on_refusal,
@@ -590,18 +603,8 @@ class MultiHostSession:
                     reality_text_profile(common.provider_id),
                     *authoring_profiles(common.provider_id, draft_tokens=common.max_output_tokens),
                     *writing_profiles(common.provider_id, max_output_tokens=common.max_output_tokens),
-                    *((image_narration_profile(next(model.binding.provider for model in self.models
-                        if "image" in model.local_provider().capabilities)),)
-                      if any("image" in model.local_provider().capabilities for model in self.models) else ()),
-                    *((video_narration_profile(next(
-                        (model.binding.provider for model in self.models
-                         if "video" in model.local_provider().capabilities),
-                        next(model.binding.provider for model in self.models
-                             if model.local_provider().supports_video_relay),
-                    )),)
-                      if any("video" in model.local_provider().capabilities
-                             or model.local_provider().supports_video_relay
-                             for model in self.models) else ()))
+                    *((image_narration_profile(image_provider),) if image_provider is not None else ()),
+                    *((video_narration_profile(video_provider),) if video_provider is not None else ()))
         # The host budget is a reply budget; structural tasks register a larger default.
         profiles = with_thinking_margins(profiles)
         modes = ["onebot_private", "onebot_group"]

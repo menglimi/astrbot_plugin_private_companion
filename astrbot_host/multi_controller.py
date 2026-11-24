@@ -728,15 +728,57 @@ class AstrBotMultiController:
         logger.info("[CompanionV2] 核心管理员窗口已重置为待确认 target=%s", parked.participant_id)
         return {"reset": True, "binding": self.binding_state()}
 
+    @staticmethod
+    def _exception_chain(error, *, max_depth=4):
+        """Walk ``__cause__`` / ``__context__`` links without cycles or value reads."""
+        chain = []
+        seen = set()
+        current = error
+        relation = "error"
+        while current is not None and id(current) not in seen and len(chain) <= max_depth:
+            seen.add(id(current))
+            chain.append((relation, current))
+            if current.__cause__ is not None:
+                relation = "cause"
+                current = current.__cause__
+            elif current.__context__ is not None and not current.__suppress_context__:
+                relation = "context"
+                current = current.__context__
+            else:
+                break
+        return chain
+
+    @classmethod
+    def _format_failure_trace(cls, error, *, max_depth=4, max_cause_frames=6):
+        """Format source locations across the exception chain without exception values."""
+        chain = cls._exception_chain(error, max_depth=max_depth)
+        sections = []
+        for index, (relation, exc) in enumerate(chain):
+            formatted = traceback.format_tb(exc.__traceback__) if exc.__traceback__ else []
+            if index == 0:
+                if formatted:
+                    sections.append("".join(formatted).rstrip("\n"))
+            else:
+                trimmed = formatted[-max_cause_frames:] if formatted else []
+                header = "[{} #{}] {}".format(relation, index, type(exc).__name__)
+                body = "".join(trimmed).rstrip("\n")
+                sections.append(header + ("\n" + body if body else ""))
+        return "\n".join(part for part in sections if part), chain
+
     def _failure(self, error, *, operation=""):
         code = (error.code if isinstance(error, (TaskError, HostControlError)) else
                 "host_module_unavailable" if isinstance(error, ImportError) else "host_control_failed")
+        trace_text, chain = ("", [("error", error)])
         if code in ("host_control_failed", "host_module_unavailable"):
-            # Keep the failing source locations, without logging exception values
-            # or locals that may contain native credentials or conversation text.
-            logger.error("[CompanionV2] 宿主操作异常 operation=%s code=%s error_type=%s\n%s",
-                         operation or "control", code, type(error).__name__,
-                         "".join(traceback.format_tb(error.__traceback__)))
+            # Keep the failing source locations across __cause__/__context__
+            # (such as PEP 479 RuntimeError <- StopIteration), without logging
+            # exception values or locals that may contain credentials or text.
+            trace_text, chain = self._format_failure_trace(error)
+            cause_suffix = ""
+            if len(chain) > 1:
+                cause_suffix = " cause_chain=" + "->".join(type(exc).__name__ for _, exc in chain[1:])
+            logger.error("[CompanionV2] 宿主操作异常 operation=%s code=%s error_type=%s%s\n%s",
+                         operation or "control", code, type(error).__name__, cause_suffix, trace_text)
         reason = ("插件模块未能导入，请重新加载 V2 插件；若仍失败，请检查安装包是否完整并查看 AstrBot 日志。"
                   if code == "host_module_unavailable" else
                   str(error) if code.split("__", 1)[0] == "host_native_lookup_timeout"
@@ -746,14 +788,26 @@ class AstrBotMultiController:
                               "host_account_unavailable", "host_platform_unavailable") else
                   "shared host configuration, native route or authority could not be verified")
         if code == "host_control_failed":
-            # 把“在哪一层炸的”带回来：只有位置，不含任何配置值或会话内容。
+            # 把“在哪一层炸的”带回来：优先定位异常链最深根因的最后 1 帧，不含任何配置值或会话内容。
+            root_exc = error
             frames = traceback.extract_tb(error.__traceback__) if error.__traceback__ else []
+            for _, candidate in reversed(chain):
+                candidate_frames = traceback.extract_tb(candidate.__traceback__) if candidate.__traceback__ else []
+                if candidate_frames:
+                    root_exc = candidate
+                    frames = candidate_frames
+                    break
+            else:
+                if len(chain) > 1:
+                    root_exc = chain[-1][1]
             origin = ""
             if frames:
                 last = frames[-1]
                 origin = " @ {} ({}:{})".format(last.name, last.filename.replace("\\", "/").rsplit("/", 1)[-1], last.lineno)
+            type_label = (f"{type(error).__name__} (cause={type(root_exc).__name__})"
+                          if root_exc is not error else type(error).__name__)
             reason = "宿主操作异常中断：{} | operation={}{}；请把日志里「宿主操作异常」这一整段发出来。".format(
-                type(error).__name__, operation or "control", origin)
+                type_label, operation or "control", origin)
         self.last_failure = {"code": code, "reason": reason}
         if operation:
             self.last_failure["operation"] = operation

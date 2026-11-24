@@ -532,3 +532,63 @@ test('事实与经历跟随小屋的 Bot 和角色，未选窗口不借私聊读
   h.page.unmount();
   for (const request of h.requests) request.resolve({});
 });
+
+test('桥接 reject 机器错误码时映射为业务提示，且单卡详情失败不清空语料列表', async () => {
+  const h = harness();
+  const inactive = {
+    atom_id: 'a-old', revision: 2, state: 'invalidated', context_mode: 'default',
+    predicate: '旧偏好', representation: null, unavailable_reason: 'memory_inactive',
+  };
+  const archived = {
+    atom_id: 'a-arc', revision: 1, state: 'archived', context_mode: 'default',
+    predicate: '归档偏好', representation: null, unavailable_reason: 'memory_inactive',
+  };
+  await boot(h, [fact('a-1', 1), inactive, archived]);
+  assert.match(h.element.innerHTML, /已失效/, 'invalidated 状态必须显示为已失效而非被取代');
+  assert.match(h.element.innerHTML, /已归档/, 'archived 状态必须显示为已归档而非被取代');
+
+  /* 模拟宿主桥直接 reject Error("memory_inactive")（无 error.code 属性） */
+  const card = {disabled: false, id: '', dataset: {factId: 'a-old'}};
+  card.closest = () => card;
+  h.element.__inside.add(card);
+  h.element.dispatch('click', {target: {closest: () => card}});
+  await h.settle();
+  const detailReq = h.requests.find(r => r.route === 'memory/detail');
+  assert.ok(detailReq, '点击事实卡片应请求 memory/detail');
+  detailReq.reject(new Error('memory_inactive'));
+  await h.settle();
+
+  assert.equal(h.page.state.data.corpus.length, 3, '单卡详情失败绝不能清空左侧语料列表');
+  assert.match(h.page.state.data.notice, /不再有效|只读/);
+  assert.doesNotMatch(h.page.state.data.notice, /连接中断/);
+});
+
+test('只读降级详情渲染不可读原因并自动加载版本历史', async () => {
+  const h = harness();
+  const degraded = {
+    atom_id: 'a-old', revision: 2, state: 'superseded', context_mode: 'default',
+    predicate: '旧偏好', representation: null, unavailable_reason: 'memory_inactive',
+  };
+  await boot(h, [degraded]);
+  const card = {disabled: false, id: '', dataset: {factId: 'a-old'}};
+  card.closest = () => card;
+  h.element.__inside.add(card);
+  h.element.dispatch('click', {target: {closest: () => card}});
+  await h.settle();
+  const detailReq = h.requests.find(r => r.route === 'memory/detail');
+  h.reply(detailReq, {
+    item: {
+      atom_id: 'a-old', revision: 2, state: 'superseded',
+      representation: null, object: null, unavailable_reason: 'memory_inactive', read_only: true,
+    },
+    sources: [],
+    session_id: null,
+  });
+  await h.settle();
+  const revReq = h.requests.find(r => r.route === 'memory/revisions');
+  assert.ok(revReq, '只读降级详情仍应加载版本历史');
+  h.reply(revReq, {items: [{revision: 1, state: 'active', representation: '第一版内容'}, {revision: 2, state: 'superseded', unavailable_reason: 'memory_inactive'}]});
+  await h.settle();
+  assert.match(h.element.innerHTML, /不再有效|只读/);
+  assert.match(h.element.innerHTML, /第一版内容/);
+});

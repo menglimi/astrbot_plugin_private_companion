@@ -114,6 +114,10 @@ class ExpressionStyleManagement:
         from .sample_management import ExpressionSampleManagement
         return ExpressionSampleManagement(self).learn(**arguments)
 
+    def prepare_learn(self, **arguments):
+        from .sample_management import ExpressionSampleManagement
+        return ExpressionSampleManagement(self).prepare_learn(**arguments)
+
     def revise(self, **arguments):
         from .rule_management import revise
         return revise(self, **arguments)
