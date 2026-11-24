@@ -315,7 +315,10 @@ class ContactSchedule:
 
     def _post_reply_idle_seconds(self, preferences):
         """Effective post-reply idle wait, respecting explicit short overrides."""
-        configured = int(preferences.values["idle_seconds"])
+        values = getattr(preferences, "values", None)
+        if not isinstance(values, Mapping) or "idle_seconds" not in values:
+            return 0
+        configured = int(values["idle_seconds"])
         if configured <= 0:
             return 0
         scaled = self.rhythm.idle_seconds(preferences)
@@ -477,7 +480,8 @@ class ContactSchedule:
                             "the latest private conversation has no stable identity")
         origin, batch, event = self._origin(context, batch_id, at)
         preferences = require(self.contacts.preferences.read(context, observed_at=at))
-        if not preferences.values["automatic_enabled"]:
+        values = getattr(preferences, "values", None)
+        if isinstance(values, Mapping) and not values.get("automatic_enabled", True):
             raise TaskError("contact_automatic_disabled", "automatic opportunities are disabled")
         idle = self._post_reply_idle_seconds(preferences)
         if at < self._conversation_activity_at(context, event, batch, at=at) + timedelta(seconds=idle):

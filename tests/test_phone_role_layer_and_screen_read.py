@@ -418,5 +418,57 @@ class PhoneNonShoppingNoticeTests(HostFixture, unittest.IsolatedAsyncioTestCase)
             self.assertIn("音乐播放列表", self.sent[0].text)
 
 
+class MobileGatewayTelemetryAndPersonaTests(unittest.TestCase):
+    def _make_gateway(self, cfg, *, health_enabled=False, health_ttl_seconds=3600):
+        from astrbot_host.native_extensions.reality.mobile_gateway import MobileGatewayMixin
+
+        class _FakeGateway(MobileGatewayMixin):
+            def __init__(self, data):
+                self._data = data
+                self.health_enabled = health_enabled
+                self.health_ttl_seconds = health_ttl_seconds
+
+            def _cfg_bool(self, key, default=False):
+                return bool(self._data.get(key, default))
+
+            def _cfg_int(self, key, default=0, low=0, high=10**9):
+                val = int(self._data.get(key, default))
+                return max(low, min(high, val))
+
+        return _FakeGateway(cfg)
+
+    def test_mobile_telemetry_enabled_honors_mobile_flag_even_when_health_enabled_false(self):
+        gw = self._make_gateway(
+            {"mobile.telemetry_enabled": True, "mobile.telemetry_ttl_seconds": 1800},
+            health_enabled=False,
+            health_ttl_seconds=3600,
+        )
+        self.assertTrue(gw._mobile_telemetry_enabled())
+        self.assertEqual(gw._mobile_telemetry_ttl(), 1800)
+
+        gw_health_only = self._make_gateway(
+            {"mobile.telemetry_enabled": False, "mobile.telemetry_ttl_seconds": 1800},
+            health_enabled=True,
+            health_ttl_seconds=7200,
+        )
+        self.assertTrue(gw_health_only._mobile_telemetry_enabled())
+        self.assertEqual(gw_health_only._mobile_telemetry_ttl(), 7200)
+
+        gw_off = self._make_gateway(
+            {"mobile.telemetry_enabled": False},
+            health_enabled=False,
+        )
+        self.assertFalse(gw_off._mobile_telemetry_enabled())
+
+    def test_mobile_persona_display_name_strips_long_parenthetical_aliases_cleanly(self):
+        from astrbot_host.native_extensions.reality.mobile_gateway import _mobile_persona_display_name
+
+        self.assertEqual(_mobile_persona_display_name("星野凛（Rin Hoshino / 凛）", 12), "星野凛")
+        self.assertEqual(_mobile_persona_display_name("白河汐 / Shirakawa Shio", 12), "白河汐")
+        self.assertEqual(_mobile_persona_display_name("小星", 12), "小星")
+        self.assertEqual(_mobile_persona_display_name("一二三四五六七八九十甲（超长别名）", 12), "一二三四五六七八九十甲")
+        self.assertFalse(_mobile_persona_display_name("A Very Long Name (Alias)", 12).endswith(("(", "（", "/", " ")))
+
+
 if __name__ == "__main__":
     unittest.main()
