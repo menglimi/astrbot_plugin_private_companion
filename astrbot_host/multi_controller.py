@@ -993,7 +993,12 @@ class AstrBotMultiController:
                 deepseek_provider_resolver=search_provider_resolver,
                 search_priority_resolver=search_settings.source_priority),
             search_port_factory=search_port_factory,
-            balance_port=configured_balance_port(self.config, context=self.context),
+            balance_port=configured_balance_port(
+                self.config,
+                context=self.context,
+                runtime_root=self.data_root,
+                controller=self,
+            ),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
             solar_term_port=configured_solar_term_port(
@@ -1964,6 +1969,7 @@ class AstrBotMultiController:
                     logger.warning("[CompanionV2] 停机取消设置测试任务失败 error_type=%s", type(error).__name__)
             from .exchange_rate import close_exchange_rate_services
             from .pricing_sources import close_pricing_catalog_services
+            from .quota_service import close_quota_watch_services
             try:
                 await close_exchange_rate_services(self)
             except Exception as error:
@@ -1972,6 +1978,10 @@ class AstrBotMultiController:
                 await close_pricing_catalog_services(self)
             except Exception as error:
                 logger.warning("[CompanionV2] 计价服务停机清理失败 error_type=%s", type(error).__name__)
+            try:
+                await close_quota_watch_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 多站点额度服务停机清理失败 error_type=%s", type(error).__name__)
             self.unregister_routes()
 
     async def _release_runtime(self):

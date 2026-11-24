@@ -50,6 +50,7 @@ from .native_extensions.image_settings import read_image_settings, write_image_s
 from .settings import HostControlError
 from .native_extensions.images import IMAGE_ACTIONS
 from .reply_api import ReplyWebAPI
+from .quota_api import QuotaWebEndpoints
 from .service_balance import configured_balance_port, display_amount
 from .token_sources import read_token_sources
 from .host_token_usage import read_astrbot_token_usage
@@ -519,6 +520,7 @@ class ModelWebAPI:
         self.controller = controller
         self._balance_lock = asyncio.Lock()
         self._laya_lock = asyncio.Lock()
+        self._quota_api = QuotaWebEndpoints(self)
 
     def routes(self):
         return [
@@ -568,6 +570,7 @@ class ModelWebAPI:
             (PREFIX + "/image/output/reconnect", self.image_output_reconnect, ["POST"], "Reload the active V2 session's native providers"),
             (PREFIX + "/image/observability", self.image_observability, ["GET"], "Read image invocation outcomes and Content dashboard counts"),
             (PREFIX + "/image/review/providers", self.image_review_providers, ["GET"], "List loaded image-capable V2 providers"),
+            *self._quota_api.routes(PREFIX),
         ]
 
     async def catalog(self):
@@ -812,10 +815,17 @@ class ModelWebAPI:
 
     async def balance(self):
         try:
-            await self._run_authorized_read()
+            session, _op, _mgr, _status = await self._run_authorized_read()
+            runtime = getattr(getattr(session, "application", None), "runtime", None) or getattr(self.controller, "runtime", None)
+            runtime_root = getattr(runtime, "data_root", None)
             async with self._balance_lock:
                 try:
-                    port = configured_balance_port(self.controller.config, context=getattr(self.controller, "context", None))
+                    port = configured_balance_port(
+                        self.controller.config,
+                        context=getattr(self.controller, "context", None),
+                        runtime_root=runtime_root,
+                        controller=self.controller,
+                    )
                 except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
                     return self._response(Outcome.success({
                         "configured": True, "available": False, "provider": "unknown",
