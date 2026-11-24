@@ -544,6 +544,16 @@ test("quota-workbench.css uses 100% semantic design tokens with container querie
   assert.match(stripped, /\.qw-status-pill\.ok\b/);
   assert.match(stripped, /\.qw-status-pill\.warn\b/);
   assert.match(stripped, /\.qw-status-pill\.risk\b/);
+  // Mobile responsive polish contract (360px–600px)
+  assert.match(stripped, /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.qw-modal-backdrop\s*\{[^}]*padding:\s*var\(--sp-2\)/);
+  assert.match(stripped, /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.qw-modal\s*\{[^}]*max-height:\s*92dvh/);
+  assert.match(stripped, /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.qw-detect-row\s*\{[^}]*flex-direction:\s*column/);
+  assert.match(stripped, /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.qw-field-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(stripped, /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.qw-modal-foot\s*\{[^}]*env\(safe-area-inset-bottom\)/);
+  assert.match(stripped, /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.qw-modal-foot-right\s*\{[^}]*flex-wrap:\s*wrap/);
+  assert.match(stripped, /@media\s*\(max-width:\s*560px\)\s*\{[\s\S]*?\.qw-card\s*\{[^}]*padding:\s*var\(--sp-3\)/);
+  assert.match(stripped, /@media\s*\(max-width:\s*560px\)\s*\{[\s\S]*?\.qw-card-head\s*\{[^}]*flex-wrap:\s*wrap/);
+  assert.match(stripped, /@media\s*\(max-width:\s*420px\)\s*\{[\s\S]*?\.qw-segment\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
 });
 
 test("OpenRouter unlimited key (ok=true, remaining=null), legacy projection card, advancedOpen persistence, and SVG icon defense", async () => {
