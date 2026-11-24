@@ -517,3 +517,42 @@ test("tuning page patches range drag in-place, uses backend auto baseline, handl
   window.CompanionTuningPage.unmount();
   assert.equal(root.listenerCount("click"), 0);
 });
+
+test("mobile responsive CSS covers scrollable data nav, full-width tuning range slider, and 2x2 storage health KPIs", () => {
+  const maintCss = fs.readFileSync(path.join(PAGE_DIR, "maintenance-page.css"), "utf8");
+  const tuningCss = fs.readFileSync(path.join(PAGE_DIR, "tuning-page.css"), "utf8");
+  const storageCss = fs.readFileSync(path.join(PAGE_DIR, "storage-page.css"), "utf8");
+
+  // 1. maintenance-page.css: <=560px .data-page-nav becomes horizontal scrollable tab bar
+  assert.match(
+    maintCss,
+    /@media\s*\(\s*max-width:\s*560px\s*\)\s*\{[\s\S]*?\.data-page-nav\s*\{[^}]*display:\s*flex[^}]*overflow-x:\s*auto/
+  );
+  assert.match(
+    maintCss,
+    /@media\s*\(\s*max-width:\s*560px\s*\)\s*\{[\s\S]*?\.data-page-nav\s+a\s*\{[^}]*flex:\s*0\s+0\s+auto[^}]*white-space:\s*nowrap/
+  );
+
+  // 2. tuning-page.css: <=520px container & <=560px media full-width .tuning-range + min-height >= 32px + wrappable shortcut head
+  assert.match(tuningCss, /\.tuning-shortcut-head\s*\{[^}]*flex-wrap:\s*wrap/);
+  assert.match(
+    tuningCss,
+    /@container\s+tuning-dashboard\s*\(\s*max-width:\s*520px\s*\)\s*\{[\s\S]*?\.tuning-range\s*\{[^}]*flex:\s*1\s+0\s+100%[^}]*min-height:\s*32px/
+  );
+  assert.match(
+    tuningCss,
+    /@media\s*\(\s*max-width:\s*560px\s*\)\s*\{[\s\S]*?\.tuning-range\s*\{[^}]*flex:\s*1\s+0\s+100%[^}]*min-height:\s*32px/
+  );
+
+  // 3. storage-page.css: 2x2 KPI grid kept through 360-430px (only <=340px single-col), hint min-width:0, wrappable compaction buttons
+  assert.match(storageCss, /\.storage-health-hint\s*\{[^}]*min-width:\s*0/);
+  assert.match(storageCss, /\.storage-health-buttons\s+\.button\s*\{[^}]*white-space:\s*normal/);
+  assert.doesNotMatch(
+    storageCss,
+    /@media\s*\(\s*max-width:\s*420px\s*\)\s*\{[^}]*\.storage-health-kpis/
+  );
+  assert.match(
+    storageCss,
+    /@media\s*\(\s*max-width:\s*340px\s*\)\s*\{[^}]*\.storage-health-kpis\s*\{\s*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\}/
+  );
+});
