@@ -561,6 +561,8 @@ class AdapterProbeContext:
     custom_script: str = ""
     display_type: str = ""
     quota_per_unit: float = 0.0
+    fiat_currency: str = ""
+    fiat_per_base_unit: float | None = None
     allow_http: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     session_factory: Callable[..., Any] | None = None

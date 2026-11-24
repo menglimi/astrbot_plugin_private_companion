@@ -35,6 +35,7 @@ from astrbot_host.quota_adapters import (
     detect_station,
     exchange_newapi_login_for_token,
     extract_html_icon_links,
+    fetch_recent_consumption_logs,
     http_request_public_bytes,
     sanitize_safe_svg,
     sniff_safe_logo,
@@ -1003,6 +1004,249 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertTrue(ver_fb)
             self.assertEqual(err_fb, "")
             self.assertTrue(cache.get("api-fb").data_url().startswith("data:image/x-icon;base64,"))
+
+        asyncio.run(run())
+
+    def test_dual_unit_fiat_conversion_topup_subscriptions_and_paginated_logs(self):
+        async def run():
+            reg = default_registry()
+            adapter = reg.get("newapi")
+            now_dt = datetime(2026, 11, 25, 0, 0, tzinfo=timezone.utc)
+
+            f_sta1n, _ = _mock_factory({
+                ("GET", "https://cookie.example.test/api/status"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "system_name": "STA1N",
+                            "server_address": "https://cookie.example.test",
+                            "quota_display_type": "CUSTOM",
+                            "quota_per_unit": 500000,
+                            "custom_currency_symbol": "🍪",
+                            "custom_currency_exchange_rate": 10,
+                            "usd_exchange_rate": 10,
+                            "price": 1,
+                        },
+                    },
+                ),
+                ("GET", "https://cookie.example.test/api/user/self"): _FakeResponse(
+                    200,
+                    {"success": True, "data": {"quota": 36649000, "used_quota": 130736000, "group": "default"}},
+                ),
+                ("GET", "https://cookie.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(
+                    200,
+                    {"success": True, "data": {"items": [{"created_at": 1795470000, "model_name": "gemini-4", "quota": 2500}]}},
+                ),
+                ("GET", "https://cookie.example.test/api/user/topup/info"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "price": 1,
+                            "enable_stripe_topup": False,
+                            "pay_methods": [{"type": "alipay", "name": "支付宝"}, {"type": "wxpay", "name": "微信"}],
+                        },
+                    },
+                ),
+                ("GET", "https://cookie.example.test/api/subscription/self"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": [
+                            {
+                                "plan": {"title": "Pro"},
+                                "subscription": {
+                                    "status": "active",
+                                    "amount_total": 70_000_000,
+                                    "amount_used": 11_000_000,
+                                    "end_time": int(now_dt.timestamp()) + 86400 * 10,
+                                },
+                            },
+                            {
+                                "plan": {"title": "Max"},
+                                "subscription": {
+                                    "status": "active",
+                                    "amount_total": 225_000_000,
+                                    "amount_used": 75_000_000,
+                                    "end_time": int(now_dt.timestamp()) + 86400 * 20,
+                                },
+                            },
+                            {
+                                "plan": {"title": "ExpiredOld"},
+                                "subscription": {
+                                    "status": "expired",
+                                    "amount_total": 50_000_000,
+                                    "amount_used": 0,
+                                    "end_time": int(now_dt.timestamp()) - 3600,
+                                },
+                            },
+                        ],
+                    },
+                ),
+            })
+
+            # 1) Auto conversion (10 🍪 = ¥1) + active subscriptions (4180 🍪 / ¥418)
+            spec = QuotaStationSpec(
+                id="sta1n",
+                name="STA1N",
+                adapter_id="newapi",
+                base_url="https://cookie.example.test",
+                display_unit_mode="fiat",
+            )
+            snap = await adapter.probe(
+                spec,
+                AdapterProbeContext(base_url=spec.base_url, auth_token="tok-1", now=lambda: now_dt, session_factory=f_sta1n),
+            )
+            self.assertTrue(snap.ok)
+            self.assertEqual(snap.inferred_fiat_currency, "CNY")
+            self.assertAlmostEqual(snap.custom_exchange_rate, 10.0)
+            self.assertAlmostEqual(snap.site_recharge_price, 1.0)
+            self.assertAlmostEqual(snap.remaining, 732.98, places=4)
+            self.assertAlmostEqual(snap.fiat_remaining, 73.298, places=4)
+            self.assertAlmostEqual(snap.fiat_used, 261.472, places=4)
+            self.assertAlmostEqual(snap.fiat_total, 334.77, places=4)
+            self.assertAlmostEqual(snap.fiat_last_used_cost, 0.005, places=6)
+            self.assertIn("10 🍪 = ¥1", snap.extra)
+            self.assertEqual(snap.server_address, "https://cookie.example.test")
+            self.assertEqual(len(snap.subscriptions), 2)
+            sub_rem_sum = sum(s["remaining"] for s in snap.subscriptions)
+            sub_fiat_sum = sum(s["fiat_remaining"] for s in snap.subscriptions)
+            self.assertAlmostEqual(sub_rem_sum, 4180.0, places=2)
+            self.assertAlmostEqual(sub_fiat_sum, 418.0, places=2)
+
+            # Portfolio keeps pure fiat_remaining untouched while exposing fiat_remaining_including_custom
+            s_cny = QuotaStationSpec(id="cny1", name="纯人民币站", adapter_id="deepseek", base_url="https://api.deepseek.com")
+            snap_cny = QuotaSnapshot(station_id="cny1", ok=True, remaining=100.0, display_type="CNY", checked_at=now_dt.isoformat())
+            summary = summarize_quota_portfolio([s_cny, spec], {"cny1": snap_cny, "sta1n": snap}, display_currency="CNY", usd_cny_rate=7.2)
+            self.assertAlmostEqual(summary["fiat_remaining"], 100.0, places=3)
+            self.assertAlmostEqual(summary["fiat_remaining_including_custom"], 173.298, places=3)
+            self.assertEqual(summary["custom_converted_count"], 1)
+
+            # 2) User 0.8x recharge override (12.5 🍪 = ¥1)
+            spec_disc = QuotaStationSpec(
+                id="sta1n",
+                name="STA1N",
+                adapter_id="newapi",
+                base_url="https://cookie.example.test",
+                fiat_currency="CNY",
+                fiat_per_base_unit=0.8,
+                display_unit_mode="fiat",
+            )
+            snap_disc = await adapter.probe(
+                spec_disc,
+                AdapterProbeContext(
+                    base_url=spec_disc.base_url,
+                    auth_token="tok-1",
+                    fiat_currency=spec_disc.fiat_currency,
+                    fiat_per_base_unit=spec_disc.fiat_per_base_unit,
+                    now=lambda: now_dt,
+                    session_factory=f_sta1n,
+                ),
+            )
+            self.assertAlmostEqual(snap_disc.fiat_remaining, 73.298 * 0.8, places=4)
+            self.assertIn("12.5 🍪 = ¥1", snap_disc.extra)
+
+            # 3) Disk roundtrip preserves subscriptions & fiat derived fields
+            with tempfile.TemporaryDirectory() as tmp:
+                scache = QuotaSnapshotCache(Path(tmp))
+                scache.put(snap)
+                reloaded = QuotaSnapshotCache(Path(tmp)).get("sta1n")
+                self.assertIsNotNone(reloaded)
+                self.assertAlmostEqual(reloaded.fiat_remaining, 73.298, places=4)
+                self.assertEqual(len(reloaded.subscriptions), 2)
+
+                st_store = QuotaStationStore(Path(tmp))
+                _, _, tok0 = st_store.read()
+                created, _, _, tok1 = st_store.upsert_station(
+                    tok0,
+                    {
+                        "id": "sta1n",
+                        "name": "STA1N",
+                        "adapter_id": "newapi",
+                        "base_url": "https://cookie.example.test",
+                        "fiat_currency": "CNY",
+                        "fiat_per_base_unit": 0.8,
+                        "display_unit_mode": "fiat",
+                    },
+                )
+                self.assertEqual(created.display_unit_mode, "fiat")
+                self.assertAlmostEqual(created.fiat_per_base_unit, 0.8)
+                # Partial edit without dual-unit fields preserves existing settings
+                edited, _, _, _ = st_store.upsert_station(
+                    tok1,
+                    {"id": "sta1n", "name": "STA1N 改名", "adapter_id": "newapi", "base_url": "https://cookie.example.test"},
+                )
+                self.assertEqual(edited.display_unit_mode, "fiat")
+                self.assertAlmostEqual(edited.fiat_per_base_unit, 0.8)
+
+            # 4) Paginated read-only consumption logs parse billing_source, cache_tokens, group_ratio & token_name
+            f_logs, _ = _mock_factory({
+                ("GET", "https://cookie.example.test/api/log/self?p=1&page_size=2&type=2&start_timestamp=1795000000"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "items": [
+                                {
+                                    "created_at": 1795470000,
+                                    "model_name": "gemini-4-hydrogen",
+                                    "token_name": "companion-key",
+                                    "group": "default",
+                                    "prompt_tokens": 10000,
+                                    "completion_tokens": 500,
+                                    "quota": 50000,
+                                    "other": json.dumps({
+                                        "billing_source": "subscription",
+                                        "cache_tokens": 8000,
+                                        "group_ratio": 1.0,
+                                        "user_group_ratio": -1,
+                                    }),
+                                },
+                                {
+                                    "created_at": 1795460000,
+                                    "model_name": "claude-sonnet",
+                                    "token_name": "other-key",
+                                    "group": "vip",
+                                    "prompt_tokens": 2000,
+                                    "completion_tokens": 1000,
+                                    "quota": 100000,
+                                    "other": json.dumps({
+                                        "billing_source": "wallet",
+                                        "cache_tokens": 500,
+                                        "group_ratio": 0.65,
+                                    }),
+                                },
+                            ]
+                        },
+                    },
+                ),
+                ("GET", "https://cookie.example.test/api/log/self?p=2&page_size=2&type=2&start_timestamp=1795000000"): _FakeResponse(
+                    200, {"success": True, "data": {"items": []}}
+                ),
+            })
+            logs_res = await fetch_recent_consumption_logs(
+                "https://cookie.example.test",
+                token="tok-1",
+                per_unit=500000.0,
+                display_type="CREDIT",
+                display_multiplier=10.0,
+                symbol="🍪",
+                inferred_fiat_currency="CNY",
+                effective_fiat_pbu=1.0,
+                max_pages=3,
+                page_size=2,
+                start_timestamp=1795000000,
+                session_factory=f_logs,
+            )
+            self.assertFalse(logs_res["counted_in_private_companion_budget"])
+            self.assertEqual(len(logs_res["rows"]), 2)
+            self.assertEqual(logs_res["rows"][0]["billing_source"], "subscription")
+            self.assertEqual(logs_res["rows"][0]["cache_tokens"], 8000)
+            self.assertAlmostEqual(logs_res["rows"][0]["cost"], 1.0, places=4)
+            self.assertAlmostEqual(logs_res["rows"][0]["fiat_cost"], 0.1, places=4)
+            self.assertEqual(logs_res["rows"][1]["billing_source"], "wallet")
+            self.assertAlmostEqual(logs_res["rows"][1]["group_ratio"], 0.65, places=4)
 
         asyncio.run(run())
 

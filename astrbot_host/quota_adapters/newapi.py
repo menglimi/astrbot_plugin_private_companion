@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import math
 import re
 import time
@@ -159,7 +160,103 @@ def convert_newapi_quota(
     return max(0.0, (float(raw_quota) / float(per_unit)) * mult)
 
 
-def _format_newapi_custom_extra(params: NewApiDisplayParams, quota_raw: float) -> str:
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_CNY_PAY_HINTS = ("alipay", "wxpay", "wechat", "epay", "支付宝", "微信", "易支付")
+_USD_PAY_HINTS = ("stripe", "creem", "paypal")
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(str(text or "")))
+
+
+def _pay_methods_text(topup_info: dict[str, Any] | None) -> str:
+    if not isinstance(topup_info, dict):
+        return ""
+    methods = topup_info.get("pay_methods")
+    parts: list[str] = []
+    if isinstance(methods, list):
+        for item in methods:
+            if isinstance(item, dict):
+                parts.append(str(item.get("type") or ""))
+                parts.append(str(item.get("name") or ""))
+            elif isinstance(item, str):
+                parts.append(item)
+    return " ".join(parts).lower()
+
+
+def infer_newapi_fiat_conversion(
+    params: NewApiDisplayParams,
+    site_status: dict[str, Any] | None,
+    topup_info: dict[str, Any] | None = None,
+    *,
+    override_fiat_currency: str = "",
+    override_fiat_per_base_unit: float | None = None,
+) -> tuple[str, float | None, float | None]:
+    """Return ``(inferred_fiat_currency, site_recharge_price, effective_fiat_per_base_unit)``.
+
+    Zero false positives on genuine USD sites: only infers CNY on CUSTOM stations when
+    confirmed by /api/user/topup/info CNY rails or unambiguous price + non-USD symbol/CJK signals.
+    """
+    status = site_status if isinstance(site_status, dict) else {}
+    topup = topup_info if isinstance(topup_info, dict) else {}
+
+    topup_price = safe_number(topup.get("price"))
+    if topup_price is not None and topup_price <= 0:
+        topup_price = None
+    site_price = topup_price if topup_price is not None else params.site_price
+
+    override_cur = str(override_fiat_currency or "").strip().upper()
+    if override_cur not in ("CNY", "USD"):
+        override_cur = ""
+
+    override_pbu = (
+        float(override_fiat_per_base_unit)
+        if (
+            override_fiat_per_base_unit is not None
+            and not isinstance(override_fiat_per_base_unit, bool)
+            and math.isfinite(override_fiat_per_base_unit)
+            and override_fiat_per_base_unit > 0
+        )
+        else None
+    )
+
+    if params.display_type in ("CNY", "USD"):
+        return params.display_type, site_price, params.display_multiplier
+
+    if params.display_type != "CREDIT":
+        return "", site_price, None
+
+    inferred_cur = override_cur
+    if not inferred_cur:
+        methods_text = _pay_methods_text(topup)
+        has_cny_pay = any(hint in methods_text for hint in _CNY_PAY_HINTS)
+        has_usd_pay = (
+            topup.get("enable_stripe_topup") is True
+            or topup.get("enable_creem_topup") is True
+            or any(hint in methods_text for hint in _USD_PAY_HINTS)
+        )
+        if has_cny_pay and not has_usd_pay:
+            inferred_cur = "CNY"
+        elif has_usd_pay and not has_cny_pay:
+            inferred_cur = "USD"
+        elif site_price is not None and 0 < site_price < 4.5:
+            sym = params.symbol.strip()
+            non_usd_symbol = bool(sym) and sym != "$" and (any(ord(ch) > 127 for ch in sym) or _has_cjk(sym))
+            sys_name = str(status.get("system_name") or "")
+            if non_usd_symbol or _has_cjk(sys_name):
+                inferred_cur = "CNY"
+
+    effective_pbu = override_pbu if override_pbu is not None else (site_price if inferred_cur else None)
+    return inferred_cur, site_price, effective_pbu
+
+
+def _format_newapi_custom_extra(
+    params: NewApiDisplayParams,
+    quota_raw: float,
+    *,
+    inferred_fiat_currency: str = "",
+    effective_fiat_pbu: float | None = None,
+) -> str:
     """Build subtle conversion reference metadata for non-fiat CUSTOM currency stations."""
     if params.display_type != "CREDIT":
         return ""
@@ -167,12 +264,20 @@ def _format_newapi_custom_extra(params: NewApiDisplayParams, quota_raw: float) -
         return ""
     parts: list[str] = []
     unit_label = params.symbol or "积分"
-    if params.custom_rate is not None and params.custom_rate > 0 and params.custom_rate != 1.0:
-        rate_txt = str(int(params.custom_rate)) if params.custom_rate.is_integer() else f"{params.custom_rate:g}"
-        parts.append(f"站内换算 {rate_txt} {unit_label} = 1 基准单位")
-    if params.site_price is not None and params.site_price > 0 and params.per_unit > 0:
-        ref_recharge = max(0.0, (float(quota_raw) / float(params.per_unit)) * params.site_price)
-        parts.append(f"参考充值约 ¥{ref_recharge:,.2f}")
+    fiat_sym = normalize_currency_symbol(inferred_fiat_currency) if inferred_fiat_currency in ("CNY", "USD") else "¥"
+    pbu = effective_fiat_pbu if (effective_fiat_pbu is not None and effective_fiat_pbu > 0) else params.site_price
+
+    if params.custom_rate is not None and params.custom_rate > 0:
+        if pbu is not None and pbu > 0:
+            per_fiat = params.custom_rate / pbu
+            rate_txt = str(int(per_fiat)) if abs(per_fiat - round(per_fiat)) < 1e-6 else f"{per_fiat:g}"
+            parts.append(f"站内换算 {rate_txt} {unit_label} = {fiat_sym}1")
+        elif params.custom_rate != 1.0:
+            rate_txt = str(int(params.custom_rate)) if params.custom_rate.is_integer() else f"{params.custom_rate:g}"
+            parts.append(f"站内换算 {rate_txt} {unit_label} = 1 基准单位")
+    if pbu is not None and pbu > 0 and params.per_unit > 0:
+        ref_recharge = max(0.0, (float(quota_raw) / float(params.per_unit)) * pbu)
+        parts.append(f"参考充值约 {fiat_sym}{ref_recharge:,.2f}")
     return " · ".join(parts)
 
 
@@ -184,18 +289,24 @@ def _safe_user_id_header(header_name: object) -> str:
 
 
 def _known_alias_roots(root: str) -> tuple[str, ...]:
-    """Preserve existing syuan.org host-alias compatibility from service_balance.py."""
+    """Preserve syuan.org host-alias compatibility (aiapi/api/ai.syuan.org)."""
     try:
         parsed = urlsplit(root)
     except ValueError:
         return (root,)
     hostname = (parsed.hostname or "").lower()
-    if hostname not in ("api.syuan.org", "ai.syuan.org"):
+    syuan_aliases = ("aiapi.syuan.org", "api.syuan.org", "ai.syuan.org")
+    if hostname not in syuan_aliases:
         return (root,)
-    alt_host = "ai.syuan.org" if hostname == "api.syuan.org" else "api.syuan.org"
-    netloc = f"{alt_host}:{parsed.port}" if parsed.port is not None else alt_host
-    alt_root = parsed._replace(netloc=netloc).geturl().rstrip("/")
-    return (root, alt_root)
+    roots = [root]
+    for alt_host in syuan_aliases:
+        if alt_host == hostname:
+            continue
+        netloc = f"{alt_host}:{parsed.port}" if parsed.port is not None else alt_host
+        alt_root = parsed._replace(netloc=netloc).geturl().rstrip("/")
+        if alt_root not in roots:
+            roots.append(alt_root)
+    return tuple(roots)
 
 
 def detect_required_user_header(text: str) -> str:
@@ -285,11 +396,11 @@ async def _fetch_last_consumption(
     proxy_url: str,
     timeout_seconds: float,
     session_factory: Any,
-) -> tuple[str, str, float | None, str]:
-    """Read newest consumption log (type=2); independent of balance probe with 1x retry."""
+) -> tuple[str, str, float | None, float | None, str]:
+    """Read newest consumption log (type=2); returns ``(used_at, model, cost, raw_quota, error)``."""
     headers = {"Authorization": f"Bearer {token}"}
     if user_id:
-        headers[user_id_header or "New-Api-User"] = user_id
+        headers[_safe_user_id_header(user_id_header)] = user_id
     url = f"{root}/api/log/self?p=1&page_size=1&type=2"
     secrets = (token,)
 
@@ -317,14 +428,14 @@ async def _fetch_last_consumption(
             break
 
     if last_exc is not None:
-        return "", "", None, str(last_exc)
+        return "", "", None, None, str(last_exc)
     if status < 200 or status >= 300:
-        return "", "", None, f"HTTP {status}"
+        return "", "", None, None, f"HTTP {status}"
     if not isinstance(payload, dict):
-        return "", "", None, f"日志返回非 JSON：{preview[:60]}"
+        return "", "", None, None, f"日志返回非 JSON：{preview[:60]}"
     if payload.get("success") is not True:
         msg = str(payload.get("message") or "").strip()
-        return "", "", None, msg or "日志接口返回失败"
+        return "", "", None, None, msg or "日志接口返回失败"
 
     data = payload.get("data")
     items: list[Any] = []
@@ -333,12 +444,12 @@ async def _fetch_last_consumption(
     elif isinstance(data, list):
         items = data
     if not items or not isinstance(items[0], dict):
-        return "", "", None, ""
+        return "", "", None, None, ""
 
     item = items[0]
     ts = safe_number(item.get("created_at"))
     if ts is None or ts <= 0:
-        return "", "", None, ""
+        return "", "", None, None, ""
     if ts > 1e12:
         ts = ts / 1000.0
     used_at = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -350,7 +461,363 @@ async def _fetch_last_consumption(
         display_type=display_type,
         display_multiplier=display_multiplier,
     )
-    return used_at, model_name, cost, ""
+    return used_at, model_name, cost, raw_quota, ""
+
+
+async def fetch_newapi_topup_info(
+    root: str,
+    *,
+    token: str,
+    user_id: str = "",
+    user_id_header: str = "New-Api-User",
+    allow_http: bool = False,
+    proxy_url: str = "",
+    timeout_seconds: float = 5.0,
+    session_factory: Any = None,
+) -> dict[str, Any] | None:
+    """Read optional authenticated GET /api/user/topup/info to confirm fiat currency and price."""
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    if user_id:
+        headers[_safe_user_id_header(user_id_header)] = user_id
+    try:
+        status, _h, payload, _p = await http_request_json(
+            "GET",
+            f"{root}/api/user/topup/info",
+            headers=headers,
+            allow_http=allow_http,
+            proxy_url=proxy_url,
+            timeout_seconds=min(timeout_seconds, 5.0),
+            secrets=(token,),
+            session_factory=session_factory,
+        )
+    except QuotaHttpError:
+        return None
+    if status != 200 or not isinstance(payload, dict) or payload.get("success") is not True:
+        return None
+    data = payload.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def _parse_timestamp_iso(raw_ts: Any) -> tuple[float | None, str]:
+    num = safe_number(raw_ts)
+    if num is not None and num > 0:
+        if num > 1e12:
+            num = num / 1000.0
+        try:
+            return num, datetime.fromtimestamp(num, tz=timezone.utc).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return num, ""
+    if isinstance(raw_ts, str) and raw_ts.strip():
+        text = raw_ts.strip()
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp(), dt.isoformat()
+        except ValueError:
+            return None, ""
+    return None, ""
+
+
+async def fetch_newapi_subscriptions(
+    root: str,
+    *,
+    token: str,
+    user_id: str = "",
+    user_id_header: str = "New-Api-User",
+    allow_http: bool = False,
+    proxy_url: str = "",
+    timeout_seconds: float = 5.0,
+    session_factory: Any = None,
+) -> list[dict[str, Any]]:
+    """Read optional GET /api/subscription/self; silently returns [] when unsupported (e.g. 404)."""
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}"}
+    if user_id:
+        headers[_safe_user_id_header(user_id_header)] = user_id
+    try:
+        status, _h, payload, _p = await http_request_json(
+            "GET",
+            f"{root}/api/subscription/self",
+            headers=headers,
+            allow_http=allow_http,
+            proxy_url=proxy_url,
+            timeout_seconds=min(timeout_seconds, 5.0),
+            secrets=(token,),
+            session_factory=session_factory,
+        )
+    except QuotaHttpError:
+        return []
+    if status != 200 or not isinstance(payload, dict) or payload.get("success") is not True:
+        return []
+    data = payload.get("data")
+    raw_items: list[Any] = []
+    if isinstance(data, list):
+        raw_items = data
+    elif isinstance(data, dict):
+        for key in ("subscriptions", "items", "list", "active_subscriptions"):
+            if isinstance(data.get(key), list):
+                raw_items = data[key]
+                break
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _normalize_subscriptions(
+    raw_items: list[dict[str, Any]],
+    *,
+    now_ts: float,
+    per_unit: float,
+    display_type: str,
+    display_multiplier: float,
+    effective_fiat_pbu: float | None,
+) -> tuple[dict[str, Any], ...]:
+    normalized: list[dict[str, Any]] = []
+    inactive_states = frozenset({"expired", "cancelled", "canceled", "inactive", "disabled", "revoked", "0", "false"})
+    for item in raw_items:
+        sub_obj = item.get("subscription") if isinstance(item.get("subscription"), dict) else item
+        plan_obj = item.get("plan") if isinstance(item.get("plan"), dict) else {}
+
+        status_raw = sub_obj.get("status")
+        if status_raw is not None and str(status_raw).strip().lower() in inactive_states:
+            continue
+        if sub_obj.get("is_active") is False or sub_obj.get("active") is False:
+            continue
+
+        end_ts, end_iso = _parse_timestamp_iso(
+            sub_obj.get("end_time") or sub_obj.get("expired_time") or sub_obj.get("expires_at")
+        )
+        if end_ts is not None and end_ts > 0 and end_ts < now_ts:
+            continue
+
+        raw_total = None
+        for key in ("amount_total", "total_amount", "total_quota", "quota", "limit"):
+            raw_total = safe_number(sub_obj.get(key))
+            if raw_total is not None:
+                break
+        raw_used = None
+        for key in ("amount_used", "used_amount", "used_quota", "used"):
+            raw_used = safe_number(sub_obj.get(key))
+            if raw_used is not None:
+                break
+        raw_rem = None
+        for key in ("amount_remaining", "remaining_quota", "remain_quota", "remaining"):
+            raw_rem = safe_number(sub_obj.get(key))
+            if raw_rem is not None:
+                break
+        if raw_rem is None and raw_total is not None:
+            raw_rem = max(0.0, raw_total - (raw_used or 0.0))
+        if raw_rem is None and raw_total is None:
+            continue
+        if raw_rem is not None and raw_rem <= 0 and (raw_total is None or raw_total > 0):
+            continue
+
+        name = str(
+            plan_obj.get("title")
+            or plan_obj.get("name")
+            or sub_obj.get("plan_name")
+            or sub_obj.get("title")
+            or sub_obj.get("name")
+            or "订阅套餐"
+        ).strip()[:80]
+
+        rem_disp = convert_newapi_quota(raw_rem, per_unit=per_unit, display_type=display_type, display_multiplier=display_multiplier)
+        used_disp = convert_newapi_quota(raw_used, per_unit=per_unit, display_type=display_type, display_multiplier=display_multiplier)
+        total_disp = convert_newapi_quota(raw_total, per_unit=per_unit, display_type=display_type, display_multiplier=display_multiplier)
+
+        fiat_rem = None
+        fiat_total = None
+        if display_type in ("CNY", "USD"):
+            fiat_rem = rem_disp
+            fiat_total = total_disp
+        elif effective_fiat_pbu is not None and effective_fiat_pbu > 0 and per_unit > 0 and display_type != "TOKENS":
+            fiat_rem = max(0.0, (raw_rem / per_unit) * effective_fiat_pbu) if raw_rem is not None else None
+            fiat_total = max(0.0, (raw_total / per_unit) * effective_fiat_pbu) if raw_total is not None else None
+
+        normalized.append({
+            "name": name,
+            "remaining": round(rem_disp, 6) if rem_disp is not None else None,
+            "used": round(used_disp, 6) if used_disp is not None else None,
+            "total": round(total_disp, 6) if total_disp is not None else None,
+            "fiat_remaining": round(fiat_rem, 6) if fiat_rem is not None else None,
+            "fiat_total": round(fiat_total, 6) if fiat_total is not None else None,
+            "expires_at": end_iso,
+        })
+    return tuple(normalized[:12])
+
+
+def _parse_log_other(raw_other: Any) -> dict[str, Any]:
+    if isinstance(raw_other, dict):
+        return raw_other
+    if isinstance(raw_other, str) and raw_other.strip():
+        try:
+            parsed = json.loads(raw_other)
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            return {}
+    return {}
+
+
+async def fetch_recent_consumption_logs(
+    root: str,
+    *,
+    token: str,
+    user_id: str = "",
+    user_id_header: str = "New-Api-User",
+    per_unit: float = DEFAULT_NEWAPI_PER_UNIT,
+    display_type: str = "USD",
+    display_multiplier: float = 1.0,
+    symbol: str = "",
+    inferred_fiat_currency: str = "",
+    effective_fiat_pbu: float | None = None,
+    max_pages: int = 5,
+    page_size: int = 40,
+    start_timestamp: int | None = None,
+    allow_http: bool = False,
+    proxy_url: str = "",
+    timeout_seconds: float = 10.0,
+    session_factory: Any = None,
+) -> dict[str, Any]:
+    """Read-only paginated fetch of NewAPI consumption logs (type=2, bounded <=5 pages / <=200 rows)."""
+    clean_root = normalize_station_root(root)
+    if not clean_root or not token:
+        raise QuotaHttpError("missing_credentials", "缺少站点地址或系统访问令牌")
+
+    pages_cap = max(1, min(int(max_pages), 5))
+    size_cap = max(1, min(int(page_size), 50))
+    total_cap = min(200, pages_cap * size_cap)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    if user_id:
+        headers[_safe_user_id_header(user_id_header)] = user_id
+
+    rows: list[dict[str, Any]] = []
+    pages_fetched = 0
+    truncated = False
+
+    for page in range(1, pages_cap + 1):
+        query = f"p={page}&page_size={size_cap}&type=2"
+        if start_timestamp is not None and start_timestamp > 0:
+            query += f"&start_timestamp={int(start_timestamp)}"
+        status, _h, payload, preview = await http_request_json(
+            "GET",
+            f"{clean_root}/api/log/self?{query}",
+            headers=headers,
+            allow_http=allow_http,
+            proxy_url=proxy_url,
+            timeout_seconds=min(timeout_seconds, 8.0),
+            secrets=(token,),
+            session_factory=session_factory,
+        )
+        if status < 200 or status >= 300 or not isinstance(payload, dict):
+            if page == 1:
+                raise QuotaHttpError("http_error", f"上游日志接口返回异常 (HTTP {status})：{preview[:80]}", status=status)
+            break
+        if payload.get("success") is not True:
+            if page == 1:
+                msg = redact_quota_text(str(payload.get("message") or "").strip(), (token,))
+                raise QuotaHttpError("invalid_response", msg or "上游日志接口返回失败")
+            break
+
+        pages_fetched += 1
+        data = payload.get("data")
+        items: list[Any] = []
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            items = data["items"]
+        elif isinstance(data, list):
+            items = data
+        if not items:
+            break
+
+        reached_older = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ts_val, used_at = _parse_timestamp_iso(item.get("created_at"))
+            if start_timestamp is not None and start_timestamp > 0 and ts_val is not None and ts_val < start_timestamp:
+                reached_older = True
+                continue
+
+            other = _parse_log_other(item.get("other"))
+            raw_quota = safe_number(item.get("quota")) or 0.0
+            cost = convert_newapi_quota(
+                raw_quota,
+                per_unit=per_unit,
+                display_type=display_type,
+                display_multiplier=display_multiplier,
+            ) or 0.0
+            fiat_cost: float | None = None
+            if display_type in ("CNY", "USD"):
+                fiat_cost = cost
+            elif effective_fiat_pbu is not None and effective_fiat_pbu > 0 and per_unit > 0 and display_type != "TOKENS":
+                fiat_cost = max(0.0, (raw_quota / per_unit) * effective_fiat_pbu)
+
+            wallet_ded = safe_number(other.get("wallet_quota_deducted"))
+            sub_ded = safe_number(other.get("subscription_quota_deducted"))
+            raw_source = str(other.get("billing_source") or "").strip().lower()
+            if raw_source == "subscription" or other.get("use_subscription") is True or (sub_ded is not None and sub_ded > 0):
+                billing_source = "subscription"
+            elif wallet_ded == 0 and raw_quota > 0 and "subscription" in str(other).lower():
+                billing_source = "subscription"
+            else:
+                billing_source = "wallet"
+
+            prompt_tokens = int(max(0.0, safe_number(item.get("prompt_tokens")) or 0.0))
+            completion_tokens = int(max(0.0, safe_number(item.get("completion_tokens")) or 0.0))
+            cache_tokens = int(
+                max(
+                    0.0,
+                    safe_number(other.get("cache_tokens"))
+                    or safe_number(other.get("cached_tokens"))
+                    or safe_number(other.get("cache_read_tokens"))
+                    or 0.0,
+                )
+            )
+            group_name = str(item.get("group") or other.get("group") or "").strip()[:64]
+            user_group_ratio = safe_number(other.get("user_group_ratio"))
+            base_group_ratio = safe_number(other.get("group_ratio"))
+            effective_group_ratio = (
+                user_group_ratio
+                if (user_group_ratio is not None and user_group_ratio > 0)
+                else (base_group_ratio if (base_group_ratio is not None and base_group_ratio > 0) else None)
+            )
+
+            rows.append({
+                "created_at": used_at,
+                "timestamp": int(ts_val) if ts_val is not None else 0,
+                "model_name": str(item.get("model_name") or "").strip()[:160],
+                "token_name": str(item.get("token_name") or "").strip()[:120],
+                "group": group_name,
+                "group_ratio": round(effective_group_ratio, 6) if effective_group_ratio is not None else None,
+                "billing_source": billing_source,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cache_tokens": cache_tokens,
+                "cost": round(cost, 6),
+                "fiat_cost": round(fiat_cost, 6) if fiat_cost is not None else None,
+            })
+            if len(rows) >= total_cap:
+                truncated = True
+                break
+
+        if len(rows) >= total_cap or reached_older or len(items) < size_cap:
+            if len(items) >= size_cap and page == pages_cap:
+                truncated = True
+            break
+
+    return {
+        "display_type": display_type,
+        "symbol": symbol,
+        "inferred_fiat_currency": inferred_fiat_currency,
+        "fiat_per_base_unit": effective_fiat_pbu,
+        "pages_fetched": pages_fetched,
+        "truncated": truncated,
+        "rows": rows,
+        "counted_in_private_companion_budget": False,
+    }
 
 
 async def exchange_newapi_login_for_token(
@@ -638,10 +1105,49 @@ class _BaseNewApiAdapter(QuotaAdapter):
                 session_factory=ctx.session_factory,
             )
         )
-        (user_data, bal_err), (last_at, last_model, last_cost, last_err) = await asyncio.gather(
+        sub_task = asyncio.create_task(
+            fetch_newapi_subscriptions(
+                active_root,
+                token=token,
+                user_id=user_id,
+                user_id_header=user_id_header,
+                allow_http=ctx.allow_http,
+                proxy_url=ctx.proxy_url,
+                timeout_seconds=min(ctx.timeout_seconds, 5.0),
+                session_factory=ctx.session_factory,
+            )
+        )
+
+        async def _noop_topup() -> dict[str, Any] | None:
+            return None
+
+        topup_task = asyncio.create_task(
+            fetch_newapi_topup_info(
+                active_root,
+                token=token,
+                user_id=user_id,
+                user_id_header=user_id_header,
+                allow_http=ctx.allow_http,
+                proxy_url=ctx.proxy_url,
+                timeout_seconds=min(ctx.timeout_seconds, 5.0),
+                session_factory=ctx.session_factory,
+            )
+            if display_type == "CREDIT"
+            else _noop_topup()
+        )
+        (
+            (user_data, bal_err),
+            (last_at, last_model, last_cost, last_raw_quota, last_err),
+            raw_subs,
+            topup_info,
+        ) = await asyncio.gather(
             balance_task,
             log_task,
+            sub_task,
+            topup_task,
         )
+
+        server_address = str((site_status_found or {}).get("server_address") or "").strip()
 
         if bal_err is not None or user_data is None:
             err_code, err_msg, repair_hint, detected_header = bal_err or (
@@ -660,6 +1166,7 @@ class _BaseNewApiAdapter(QuotaAdapter):
                 display_type=display_type,
                 symbol=symbol,
                 quota_per_unit=per_unit,
+                server_address=server_address,
                 checked_at=checked_at,
                 latency_ms=ctx.elapsed_ms(started),
                 last_used_at=last_at,
@@ -682,6 +1189,7 @@ class _BaseNewApiAdapter(QuotaAdapter):
                 display_type=display_type,
                 symbol=symbol,
                 quota_per_unit=per_unit,
+                server_address=server_address,
                 checked_at=checked_at,
                 latency_ms=ctx.elapsed_ms(started),
                 last_used_at=last_at,
@@ -706,9 +1214,60 @@ class _BaseNewApiAdapter(QuotaAdapter):
             display_multiplier=display_multiplier,
         )
         total = (remaining + used) if used is not None else None
+
+        inferred_fiat_cur, site_recharge_price, effective_fiat_pbu = infer_newapi_fiat_conversion(
+            params,
+            site_status_found,
+            topup_info,
+            override_fiat_currency=ctx.fiat_currency or spec.fiat_currency,
+            override_fiat_per_base_unit=(
+                ctx.fiat_per_base_unit if ctx.fiat_per_base_unit is not None else spec.fiat_per_base_unit
+            ),
+        )
+
+        fiat_remaining: float | None = None
+        fiat_used: float | None = None
+        fiat_total: float | None = None
+        fiat_last_cost: float | None = None
+        if display_type in ("CNY", "USD"):
+            fiat_remaining = remaining
+            fiat_used = used
+            fiat_total = total
+            fiat_last_cost = last_cost
+        elif (
+            display_type == "CREDIT"
+            and inferred_fiat_cur in ("CNY", "USD")
+            and effective_fiat_pbu is not None
+            and effective_fiat_pbu > 0
+            and per_unit > 0
+        ):
+            fiat_remaining = max(0.0, (quota_raw / per_unit) * effective_fiat_pbu)
+            fiat_used = max(0.0, (used_raw / per_unit) * effective_fiat_pbu) if used_raw is not None else None
+            fiat_total = (fiat_remaining + fiat_used) if fiat_used is not None else None
+            fiat_last_cost = (
+                max(0.0, (last_raw_quota / per_unit) * effective_fiat_pbu) if last_raw_quota is not None else None
+            )
+
+        now_dt = ctx.now()
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        subscriptions = _normalize_subscriptions(
+            raw_subs,
+            now_ts=now_dt.timestamp(),
+            per_unit=per_unit,
+            display_type=display_type,
+            display_multiplier=display_multiplier,
+            effective_fiat_pbu=effective_fiat_pbu,
+        )
+
         account_name = str(user_data.get("display_name") or user_data.get("username") or "").strip()
         group_name = str(user_data.get("group") or "").strip()
-        extra = _format_newapi_custom_extra(params, quota_raw)
+        extra = _format_newapi_custom_extra(
+            params,
+            quota_raw,
+            inferred_fiat_currency=inferred_fiat_cur,
+            effective_fiat_pbu=effective_fiat_pbu,
+        )
 
         return QuotaSnapshot(
             station_id=spec.id,
@@ -719,6 +1278,15 @@ class _BaseNewApiAdapter(QuotaAdapter):
             display_type=display_type,
             symbol=symbol,
             quota_per_unit=per_unit,
+            custom_exchange_rate=params.custom_rate if display_type == "CREDIT" else None,
+            site_recharge_price=site_recharge_price,
+            inferred_fiat_currency=inferred_fiat_cur,
+            fiat_remaining=round(fiat_remaining, 6) if fiat_remaining is not None else None,
+            fiat_used=round(fiat_used, 6) if fiat_used is not None else None,
+            fiat_total=round(fiat_total, 6) if fiat_total is not None else None,
+            fiat_last_used_cost=round(fiat_last_cost, 6) if fiat_last_cost is not None else None,
+            subscriptions=subscriptions,
+            server_address=server_address,
             account_name=account_name,
             group_name=group_name,
             extra=extra,

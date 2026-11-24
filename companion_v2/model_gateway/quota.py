@@ -40,9 +40,12 @@ DEFAULT_LOW_PERCENT = 10.0
 
 DISPLAY_TYPES = ("", "CNY", "USD", "CREDIT", "TOKENS")
 SNAPSHOT_DISPLAY_TYPES = ("CNY", "USD", "CREDIT", "TOKENS")
+FIAT_CURRENCIES = ("", "CNY", "USD")
+DISPLAY_UNIT_MODES = ("native", "fiat")
 SOURCE_MODES = ("manual", "astrbot_provider")
 AWARENESS_MODES = ("primary", "aggregate_sum", "any_low")
 VALID_HEALTH_STATES = ("normal", "low", "critical", "error", "disabled", "pending")
+MAX_SUBSCRIPTIONS_PER_STATION = 12
 
 _STATION_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _ADAPTER_ID_RE = re.compile(r"[a-z][a-z0-9_]{0,47}\Z")
@@ -282,6 +285,9 @@ class QuotaStationSpec:
     proxy_url: str = ""
     display_type: str = ""
     quota_per_unit: float = 0.0
+    fiat_currency: str = ""
+    fiat_per_base_unit: float | None = None
+    display_unit_mode: str = "native"
     interval_sec: int = DEFAULT_INTERVAL_SEC
     low_threshold: float | None = None
     low_percent: float = DEFAULT_LOW_PERCENT
@@ -345,6 +351,21 @@ class QuotaStationSpec:
         per_unit = _validate_finite_nonneg(self.quota_per_unit, field="每单位额度换算", max_value=1e12)
         object.__setattr__(self, "quota_per_unit", per_unit)
 
+        fiat_cur = str(self.fiat_currency or "").strip().upper()
+        if fiat_cur not in FIAT_CURRENCIES:
+            raise QuotaSettingsError("quota_config_invalid", "折算法币币种必须为空、CNY 或 USD")
+        object.__setattr__(self, "fiat_currency", fiat_cur)
+
+        fiat_pbu = _optional_nonneg(self.fiat_per_base_unit, field="基准单位法币折算", max_value=1e6)
+        if fiat_pbu is not None and fiat_pbu <= 0:
+            fiat_pbu = None
+        object.__setattr__(self, "fiat_per_base_unit", fiat_pbu)
+
+        unit_mode = str(self.display_unit_mode or "native").strip().lower()
+        if unit_mode not in DISPLAY_UNIT_MODES:
+            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native 或 fiat")
+        object.__setattr__(self, "display_unit_mode", unit_mode)
+
         if isinstance(self.interval_sec, bool) or type(self.interval_sec) is not int:
             raise QuotaSettingsError("quota_config_invalid", "刷新间隔必须是整数秒")
         if not (MIN_INTERVAL_SEC <= self.interval_sec <= MAX_INTERVAL_SEC):
@@ -383,6 +404,9 @@ class QuotaStationSpec:
             "proxy_url": self.proxy_url,
             "display_type": self.display_type,
             "quota_per_unit": self.quota_per_unit,
+            "fiat_currency": self.fiat_currency,
+            "fiat_per_base_unit": self.fiat_per_base_unit,
+            "display_unit_mode": self.display_unit_mode,
             "interval_sec": self.interval_sec,
             "low_threshold": self.low_threshold,
             "low_percent": self.low_percent,
@@ -409,6 +433,9 @@ class QuotaStationSpec:
             "has_proxy": bool(self.proxy_url),
             "display_type": self.display_type,
             "quota_per_unit": self.quota_per_unit,
+            "fiat_currency": self.fiat_currency,
+            "fiat_per_base_unit": self.fiat_per_base_unit,
+            "display_unit_mode": self.display_unit_mode,
             "interval_sec": self.interval_sec,
             "low_threshold": self.low_threshold,
             "low_percent": self.low_percent,
@@ -441,6 +468,9 @@ class QuotaStationSpec:
                 "proxy_hash": hashlib.sha256(self.proxy_url.encode("utf-8")).hexdigest()[:16] if self.proxy_url else "",
                 "display_type": self.display_type,
                 "quota_per_unit": self.quota_per_unit,
+                "fiat_currency": self.fiat_currency,
+                "fiat_per_base_unit": self.fiat_per_base_unit,
+                "display_unit_mode": self.display_unit_mode,
                 "low_threshold": self.low_threshold,
                 "low_percent": self.low_percent,
                 "critical_threshold": self.critical_threshold,
@@ -496,6 +526,9 @@ class QuotaStationSpec:
             proxy_url=str(raw.get("proxy_url") or ""),
             display_type=str(raw.get("display_type") or ""),
             quota_per_unit=raw_per_unit,
+            fiat_currency=str(raw.get("fiat_currency") or ""),
+            fiat_per_base_unit=raw.get("fiat_per_base_unit"),
+            display_unit_mode=str(raw.get("display_unit_mode") or "native"),
             interval_sec=raw_interval,
             low_threshold=raw.get("low_threshold"),
             low_percent=raw_low_pct,
@@ -503,6 +536,40 @@ class QuotaStationSpec:
             participate_in_awareness=raw.get("participate_in_awareness", False),
             sort_order=raw_sort,
         )
+
+
+def _sanitize_subscription_items(raw: object) -> tuple[dict[str, Any], ...]:
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        def _num(key: str) -> float | None:
+            val = item.get(key)
+            if val is None or isinstance(val, bool):
+                return None
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                return None
+            return round(num, 6) if math.isfinite(num) and num >= 0 else None
+
+        entry = {
+            "name": _clean_line(str(item.get("name") or ""), max_len=80),
+            "remaining": _num("remaining"),
+            "used": _num("used"),
+            "total": _num("total"),
+            "fiat_remaining": _num("fiat_remaining"),
+            "fiat_total": _num("fiat_total"),
+            "expires_at": _clean_line(str(item.get("expires_at") or ""), max_len=64),
+        }
+        if entry["remaining"] is None and entry["total"] is None:
+            continue
+        out.append(entry)
+        if len(out) >= MAX_SUBSCRIPTIONS_PER_STATION:
+            break
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -522,6 +589,15 @@ class QuotaSnapshot:
     display_type: str = "CREDIT"
     symbol: str = ""
     quota_per_unit: float = 0.0
+    custom_exchange_rate: float | None = None
+    site_recharge_price: float | None = None
+    inferred_fiat_currency: str = ""
+    fiat_remaining: float | None = None
+    fiat_used: float | None = None
+    fiat_total: float | None = None
+    fiat_last_used_cost: float | None = None
+    subscriptions: tuple[dict[str, Any], ...] = ()
+    server_address: str = ""
     account_name: str = ""
     group_name: str = ""
     extra: str = ""
@@ -541,6 +617,12 @@ class QuotaSnapshot:
             dtype = "CREDIT"
         object.__setattr__(self, "display_type", dtype)
         object.__setattr__(self, "symbol", normalize_currency_symbol(dtype, self.symbol))
+        fiat_cur = str(self.inferred_fiat_currency or "").strip().upper()
+        if fiat_cur not in FIAT_CURRENCIES:
+            fiat_cur = ""
+        object.__setattr__(self, "inferred_fiat_currency", fiat_cur)
+        object.__setattr__(self, "subscriptions", _sanitize_subscription_items(self.subscriptions))
+        object.__setattr__(self, "server_address", _clean_line(self.server_address, max_len=256))
         object.__setattr__(self, "error", _clean_line(self.error, max_len=MAX_ERROR_CHARS))
         object.__setattr__(self, "error_code", _clean_line(self.error_code, max_len=64))
         object.__setattr__(self, "repair_hint", _clean_line(self.repair_hint, max_len=MAX_ERROR_CHARS))
@@ -574,6 +656,15 @@ class QuotaSnapshot:
             "display_type": self.display_type,
             "symbol": self.symbol,
             "quota_per_unit": self.quota_per_unit,
+            "custom_exchange_rate": self.custom_exchange_rate,
+            "site_recharge_price": self.site_recharge_price,
+            "inferred_fiat_currency": self.inferred_fiat_currency,
+            "fiat_remaining": self.fiat_remaining,
+            "fiat_used": self.fiat_used,
+            "fiat_total": self.fiat_total,
+            "fiat_last_used_cost": self.fiat_last_used_cost,
+            "subscriptions": [dict(item) for item in self.subscriptions],
+            "server_address": self.server_address,
             "account_name": self.account_name,
             "group_name": self.group_name,
             "extra": self.extra,
@@ -616,6 +707,15 @@ class QuotaSnapshot:
             display_type=str(raw.get("display_type") or "CREDIT"),
             symbol=str(raw.get("symbol") or ""),
             quota_per_unit=_opt_float("quota_per_unit") or 0.0,
+            custom_exchange_rate=_opt_float("custom_exchange_rate"),
+            site_recharge_price=_opt_float("site_recharge_price"),
+            inferred_fiat_currency=str(raw.get("inferred_fiat_currency") or ""),
+            fiat_remaining=_opt_float("fiat_remaining"),
+            fiat_used=_opt_float("fiat_used"),
+            fiat_total=_opt_float("fiat_total"),
+            fiat_last_used_cost=_opt_float("fiat_last_used_cost"),
+            subscriptions=_sanitize_subscription_items(raw.get("subscriptions")),
+            server_address=str(raw.get("server_address") or ""),
             account_name=str(raw.get("account_name") or ""),
             group_name=str(raw.get("group_name") or ""),
             extra=str(raw.get("extra") or ""),
@@ -726,6 +826,8 @@ def summarize_quota_portfolio(
     counts = {state: 0 for state in VALID_HEALTH_STATES}
     fiat_remaining_converted = 0.0
     fiat_used_converted = 0.0
+    custom_converted_remaining = 0.0
+    custom_converted_count = 0
     cny_remaining = 0.0
     usd_remaining = 0.0
     cny_count = 0
@@ -755,6 +857,12 @@ def summarize_quota_portfolio(
             usd_remaining += snap.remaining
         else:
             non_fiat_count += 1
+            custom_cur = spec.fiat_currency or snap.inferred_fiat_currency
+            if snap.fiat_remaining is not None and custom_cur in ("CNY", "USD"):
+                conv_custom = convert_currency_amount(snap.fiat_remaining, custom_cur, target, rate)
+                if conv_custom is not None:
+                    custom_converted_remaining += conv_custom
+                    custom_converted_count += 1
             continue
 
         conv_rem = convert_currency_amount(snap.remaining, snap.display_type, target, rate)
@@ -781,6 +889,9 @@ def summarize_quota_portfolio(
         "pending_count": counts["pending"],
         "fiat_remaining": round(fiat_remaining_converted, 4),
         "fiat_used": round(fiat_used_converted, 4),
+        "fiat_remaining_including_custom": round(fiat_remaining_converted + custom_converted_remaining, 4),
+        "custom_converted_remaining": round(custom_converted_remaining, 4),
+        "custom_converted_count": custom_converted_count,
         "cny_remaining": round(cny_remaining, 4),
         "usd_remaining": round(usd_remaining, 4),
         "cny_station_count": cny_count,
@@ -990,6 +1101,12 @@ class QuotaStationStore:
                     raw["proxy_url"] = existing.proxy_url
                 if "sort_order" not in raw:
                     raw["sort_order"] = existing.sort_order
+                if "fiat_currency" not in raw:
+                    raw["fiat_currency"] = existing.fiat_currency
+                if "fiat_per_base_unit" not in raw:
+                    raw["fiat_per_base_unit"] = existing.fiat_per_base_unit
+                if "display_unit_mode" not in raw:
+                    raw["display_unit_mode"] = existing.display_unit_mode
             else:
                 if "sort_order" not in raw:
                     raw["sort_order"] = len(stations)
