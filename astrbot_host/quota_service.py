@@ -36,6 +36,7 @@ from .quota_adapters import (
     exchange_newapi_login_for_token,
     normalize_station_root,
 )
+from .quota_adapters.base import same_origin
 from .service_balance_provider import _catalog as _balance_provider_catalog
 
 logger = logging.getLogger(__name__)
@@ -307,14 +308,44 @@ class QuotaWatchService:
         public_list = sorted(grouped_public.values(), key=lambda x: (not x["enabled"], x["label"].lower(), x["id"]))
         return public_list, grouped_conn
 
+    def legacy_seed_stations(self) -> tuple[QuotaStationSpec, ...]:
+        """Return projected legacy station as an atomic seed when stations.json has not yet been written."""
+        if self.store.exists():
+            return ()
+        base = self._base_controller()
+        legacy = project_legacy_service_balance(getattr(base, "config", None))
+        return (legacy,) if legacy is not None else ()
+
+    def upsert_station(
+        self,
+        edit_token: object,
+        payload: object,
+    ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        return self.store.upsert_station(
+            edit_token,
+            payload,
+            seed_stations=self.legacy_seed_stations(),
+        )
+
+    def update_awareness(
+        self,
+        edit_token: object,
+        patch: object,
+    ) -> tuple[list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        return self.store.update_awareness(
+            edit_token,
+            patch,
+            seed_stations=self.legacy_seed_stations(),
+        )
+
     def _effective_stations(self) -> tuple[list[QuotaStationSpec], QuotaAwarenessPolicy, str, bool]:
         """Return ``(stations, awareness, edit_token, legacy_projected)``."""
         stations, awareness, token = self.store.read_safe()
         if stations or self.store.exists():
             return stations, awareness, token, False
-        base = self._base_controller()
-        legacy = project_legacy_service_balance(getattr(base, "config", None))
-        if legacy is not None:
+        seed = self.legacy_seed_stations()
+        if seed:
+            legacy = seed[0]
             return [legacy], QuotaAwarenessPolicy(mode="primary", primary_station_id=legacy.id), token, True
         return [], awareness, token, False
 
@@ -623,13 +654,32 @@ class QuotaWatchService:
         data["astrbot_provider_id"] = astrbot_provider_id
         return data
 
+    @staticmethod
+    def _can_reuse_stored_token(existing: QuotaStationSpec, raw: dict[str, Any]) -> bool:
+        """Allow reusing a persisted auth_token in test_draft only on same source/origin without script escalation."""
+        next_source_mode = str(raw.get("source_mode") or existing.source_mode or "manual").strip() or "manual"
+        next_adapter = str(raw.get("adapter_id") or existing.adapter_id or "").strip()
+        if next_source_mode != existing.source_mode:
+            return False
+        if existing.adapter_id != "custom_script" and next_adapter == "custom_script":
+            return False
+        if existing.adapter_id == "custom_script" and next_adapter == "custom_script":
+            if str(raw.get("custom_script") or "").strip() != existing.custom_script.strip():
+                return False
+        if next_source_mode == "astrbot_provider":
+            return str(raw.get("astrbot_provider_id") or "").strip() == existing.astrbot_provider_id
+        next_url = str(raw.get("base_url") or "").strip()
+        if not existing.base_url and not next_url and existing.adapter_id == "custom_script":
+            return True
+        return same_origin(existing.base_url, next_url)
+
     async def test_draft(
         self,
         payload: dict[str, Any],
         *,
         session: Any = None,
     ) -> dict[str, Any]:
-        """Step 2 draft test without saving; reuses stored secrets when editing an existing station."""
+        """Step 2 draft test without saving; reuses stored secrets only on same origin/source."""
         if type(payload) is not dict:
             raise QuotaSettingsError("quota_config_invalid", "测试参数无效")
         raw = dict(payload)
@@ -638,7 +688,11 @@ class QuotaWatchService:
             stations, _, _, _ = self._effective_stations()
             existing = next((st for st in stations if st.id == station_id), None)
             if existing is not None:
-                if not str(raw.get("auth_token") or "").strip() and not raw.get("clear_auth_token"):
+                if (
+                    not str(raw.get("auth_token") or "").strip()
+                    and not raw.get("clear_auth_token")
+                    and self._can_reuse_stored_token(existing, raw)
+                ):
                     raw["auth_token"] = existing.auth_token
                 if not str(raw.get("proxy_url") or "").strip() and not raw.get("clear_proxy_url"):
                     raw["proxy_url"] = existing.proxy_url

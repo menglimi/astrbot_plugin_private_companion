@@ -195,7 +195,7 @@ class QuotaWebEndpoints:
                 raise QuotaSettingsError("quota_request_invalid", "保存站点请求缺少 edit_token 或 station 字段")
             service, runtime = self._service(session)
             spec, _stations, _awareness, _token = await asyncio.to_thread(
-                service.store.upsert_station,
+                service.upsert_station,
                 body["edit_token"],
                 body["station"],
             )
@@ -222,6 +222,11 @@ class QuotaWebEndpoints:
                 raise QuotaSettingsError("quota_request_invalid", "删除站点请求参数无效")
             service, runtime = self._service(session)
             sid = str(body.get("station_id") or "").strip()
+            if not service.store.exists() and any(st.id == sid for st in service.legacy_seed_stations()):
+                raise QuotaSettingsError(
+                    "quota_legacy_readonly",
+                    "旧版单站投影请前往「感知 → 余额感知」移除，或先编辑保存迁移后再管理",
+                )
             await asyncio.to_thread(service.store.delete_station, body["edit_token"], sid)
             service.snapshot_cache.delete(sid)
             service.logo_cache.forget(sid)
@@ -264,7 +269,7 @@ class QuotaWebEndpoints:
             if set(body) != {"edit_token", "awareness"} or type(body.get("awareness")) is not dict:
                 raise QuotaSettingsError("quota_request_invalid", "余额感知策略请求参数无效")
             service, runtime = self._service(session)
-            await asyncio.to_thread(service.store.update_awareness, body["edit_token"], body["awareness"])
+            await asyncio.to_thread(service.update_awareness, body["edit_token"], body["awareness"])
             self._sync_live_balance_port(runtime)
             payload = await asyncio.to_thread(service.get_dashboard_payload, runtime=runtime, session=session)
             return self._response(Outcome.success({"saved": True, **payload}))
