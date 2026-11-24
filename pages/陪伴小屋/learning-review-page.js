@@ -30,7 +30,7 @@ window.CompanionLearningReviewPage = (() => {
   const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const relative = value => typeof value === "string" && value.startsWith(PREFIX) ? value.slice(PREFIX.length) : "";
   const MAX_REFRESH_PAGES = 10;
-  let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, pages = [], data = null;
+  let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, pages = [], data = null, lastRenderedSelected = "";
   const live = current => root?.isConnected && current === ticket;
   function routeFor(source, base, suffix) {
     return base + suffix;
@@ -318,11 +318,20 @@ window.CompanionLearningReviewPage = (() => {
     if (item._type === "self" && action === "accept") return "采纳指导";
     return ACTION[action] || "处理";
   }
+  function detailBodyNode() {
+    return root?.querySelector?.(".lh-review-detail-body") || null;
+  }
   function render(options = {}) {
     if (!root || !data) return;
     const savedScroll = options.resetScroll ? undefined : queueNode()?.scrollTop;
+    const prevDetailScroll = options.resetScroll ? undefined : detailBodyNode()?.scrollTop;
+    const prevSelected = lastRenderedSelected;
     const visible = data.items.filter(item => data.filter === "all" || item._type === data.filter);
     if(!visible.some(item=>keyFor(item)===data.selected))data.selected=visible[0]?._key||"";
+    const savedDetailScroll = (!options.resetScroll && prevSelected && prevSelected === data.selected)
+      ? prevDetailScroll
+      : undefined;
+    lastRenderedSelected = data.selected;
     const current = selectedItem();
     const currentIndex = current ? visible.findIndex(item => keyFor(item) === keyFor(current)) : -1;
     const position = currentIndex + 1;
@@ -460,6 +469,10 @@ window.CompanionLearningReviewPage = (() => {
     if (Number.isFinite(savedScroll)) {
       const node = queueNode();
       if (node) node.scrollTop = savedScroll;
+    }
+    if (Number.isFinite(savedDetailScroll)) {
+      const detailNode = detailBodyNode();
+      if (detailNode) detailNode.scrollTop = savedDetailScroll;
     }
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
@@ -672,6 +685,6 @@ window.CompanionLearningReviewPage = (() => {
     const current=++ticket;
     if (sources.length) void read(current); else render();
   }
-  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null; }
+  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null;lastRenderedSelected=""; }
   return {mount,unmount,get state(){return data;}};
 })();

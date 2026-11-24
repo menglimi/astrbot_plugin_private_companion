@@ -313,11 +313,13 @@
 .state-home-settings .state-feature-close svg{width:18px;height:18px}
 .state-home-settings .state-home-settings-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;overflow:hidden;overflow:clip}
 .state-home-settings .state-home-settings-body:not(:has(#state-edit-form)){overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);gap:var(--sp-3)}
+.state-home-settings .state-home-settings-body:not(:has(#state-edit-form))>*{flex:0 0 auto}
 .state-home-settings .state-home-settings-fallback{display:grid;gap:var(--sp-3);justify-items:start}
 .state-home-settings .state-feature-editor{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;margin:0;padding:0;border:0;background:transparent;box-shadow:none}
 .state-home-settings .state-feature-editor>:is(.memory-notice,.state-pending){flex:0 0 auto;margin:var(--sp-4) var(--sp-5) 0}
 .state-home-settings .state-config-form{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:0;min-width:0}
 .state-home-settings .state-config-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:var(--sp-4);overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.state-home-settings .state-config-body>*{flex:0 0 auto}
 .state-home-settings .state-config-body::-webkit-scrollbar{width:6px}
 .state-home-settings .state-config-body::-webkit-scrollbar-track{background:transparent}
 .state-home-settings .state-config-body::-webkit-scrollbar-thumb{border-radius:var(--r-pill);background:var(--t-line-firm)}

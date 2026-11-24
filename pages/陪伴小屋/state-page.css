@@ -503,7 +503,8 @@ body.state-connected{min-width:320px}
 .state-settings-zone .state-feature-scope{margin:0 0 var(--sp-2);color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
 .state-settings-zone .state-edit-help{margin:var(--sp-1) 0 var(--sp-2);font-size:var(--fs-micro);line-height:1.5}
 .state-settings-zone .memory-button{min-height:34px;padding:var(--sp-1) var(--sp-3);font-size:var(--fs-tiny)}
-.state-feature-detail{min-width:0;margin:var(--sp-3) 0 var(--sp-3);padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-left:3px solid var(--t-accent);border-radius:var(--r-xs);background:var(--t-surface);animation:state-feature-enter .2s cubic-bezier(.2,.75,.25,1) both;scroll-margin:14px}
+.state-feature-detail{min-width:0;margin:var(--sp-3) 0 var(--sp-3);padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-left:3px solid var(--t-accent);border-radius:var(--r-xs);background:var(--t-surface);scroll-margin:14px}
+.state-feature-detail.is-entering{animation:state-feature-enter .2s cubic-bezier(.2,.75,.25,1) both}
 @keyframes state-feature-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 .state-feature-detail>header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
 .state-feature-head-main{display:grid;gap:3px;min-width:0}
@@ -590,7 +591,7 @@ body.state-connected{min-width:320px}
   .state-sleep-summary dl{grid-template-columns:minmax(0,1fr);gap:3px}
   .state-conditions-inline li{grid-template-columns:minmax(0,1fr);gap:2px}
 }
-@media(prefers-reduced-motion:reduce){.state-feature-detail,.state-board-point,.state-extra-nav button{animation:none;transition:none}}
+@media(prefers-reduced-motion:reduce){.state-feature-detail,.state-feature-detail.is-entering,.state-board-point,.state-extra-nav button{animation:none;transition:none}}
 
 /* 窄屏排版（2026-11-12）
  * 原来的状态看板是 repeat(auto-fit,minmax(118px,1fr))：窗口一窄就挤成五六列，

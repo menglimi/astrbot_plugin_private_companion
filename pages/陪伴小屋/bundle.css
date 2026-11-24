@@ -3038,6 +3038,8 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
   min-width:0;min-height:72px;
   padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);
   background:var(--t-surface);box-shadow:var(--t-shadow);
+}
+.ct-gates.is-entering .ct-gate{
   animation:ct-gate-in .42s cubic-bezier(.16,1,.3,1) both;
   animation-delay:calc(var(--i,0) * 38ms);
 }
@@ -3697,7 +3699,7 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
    只压时长的话会先空白一段再「啪」地出现——那不是减弱动效，是闪烁。 */
 @media (prefers-reduced-motion:reduce){
   .ct-dial.is-entering,.ct-dial.is-scanning .ct-bar.is-on,
-  .ct-dial.is-scanning .ct-cursor-dot,.ct-gate,.ct-verdict.is-open .ct-dot,
+  .ct-dial.is-scanning .ct-cursor-dot,.ct-gates.is-entering .ct-gate,.ct-verdict.is-open .ct-dot,
   .ct-center.is-open::before,.ct-spinner,
   .ct-dial-stage.is-pulse-quiet .ct-quiet path,
   .ct-dial-stage.is-pulse-curve .ct-bar.is-on,
@@ -4823,6 +4825,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-meta-grid dt{color:var(--t-text-faint);font-size:var(--fs-micro)}
 .learning-review-workspace .lh-review-meta-grid dd{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.45;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-detail-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:auto;display:flex;flex-direction:column;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5)}
+.learning-review-workspace .lh-review-detail-body>*{flex:0 0 auto}
 .learning-review-workspace .lh-review-detail-title h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-head);font-weight:650;line-height:1.4;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-detail-title p{margin:var(--sp-1) 0 0;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.6;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-quote{margin:0;padding:var(--sp-3) var(--sp-4);border-inline-start:3px solid var(--t-accent);border-radius:0 var(--r-xs) var(--r-xs) 0;background:var(--t-surface-soft)}
@@ -5447,7 +5450,8 @@ body.state-connected{min-width:320px}
 .state-settings-zone .state-feature-scope{margin:0 0 var(--sp-2);color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
 .state-settings-zone .state-edit-help{margin:var(--sp-1) 0 var(--sp-2);font-size:var(--fs-micro);line-height:1.5}
 .state-settings-zone .memory-button{min-height:34px;padding:var(--sp-1) var(--sp-3);font-size:var(--fs-tiny)}
-.state-feature-detail{min-width:0;margin:var(--sp-3) 0 var(--sp-3);padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-left:3px solid var(--t-accent);border-radius:var(--r-xs);background:var(--t-surface);animation:state-feature-enter .2s cubic-bezier(.2,.75,.25,1) both;scroll-margin:14px}
+.state-feature-detail{min-width:0;margin:var(--sp-3) 0 var(--sp-3);padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-left:3px solid var(--t-accent);border-radius:var(--r-xs);background:var(--t-surface);scroll-margin:14px}
+.state-feature-detail.is-entering{animation:state-feature-enter .2s cubic-bezier(.2,.75,.25,1) both}
 @keyframes state-feature-enter{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 .state-feature-detail>header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
 .state-feature-head-main{display:grid;gap:3px;min-width:0}
@@ -5534,7 +5538,7 @@ body.state-connected{min-width:320px}
   .state-sleep-summary dl{grid-template-columns:minmax(0,1fr);gap:3px}
   .state-conditions-inline li{grid-template-columns:minmax(0,1fr);gap:2px}
 }
-@media(prefers-reduced-motion:reduce){.state-feature-detail,.state-board-point,.state-extra-nav button{animation:none;transition:none}}
+@media(prefers-reduced-motion:reduce){.state-feature-detail,.state-feature-detail.is-entering,.state-board-point,.state-extra-nav button{animation:none;transition:none}}
 
 /* 窄屏排版（2026-11-12）
  * 原来的状态看板是 repeat(auto-fit,minmax(118px,1fr))：窗口一窄就挤成五六列，
@@ -5920,11 +5924,13 @@ body.state-connected{min-width:320px}
 .state-home-settings .state-feature-close svg{width:18px;height:18px}
 .state-home-settings .state-home-settings-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;overflow:hidden;overflow:clip}
 .state-home-settings .state-home-settings-body:not(:has(#state-edit-form)){overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);gap:var(--sp-3)}
+.state-home-settings .state-home-settings-body:not(:has(#state-edit-form))>*{flex:0 0 auto}
 .state-home-settings .state-home-settings-fallback{display:grid;gap:var(--sp-3);justify-items:start}
 .state-home-settings .state-feature-editor{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;margin:0;padding:0;border:0;background:transparent;box-shadow:none}
 .state-home-settings .state-feature-editor>:is(.memory-notice,.state-pending){flex:0 0 auto;margin:var(--sp-4) var(--sp-5) 0}
 .state-home-settings .state-config-form{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:0;min-width:0}
 .state-home-settings .state-config-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:var(--sp-4);overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.state-home-settings .state-config-body>*{flex:0 0 auto}
 .state-home-settings .state-config-body::-webkit-scrollbar{width:6px}
 .state-home-settings .state-config-body::-webkit-scrollbar-track{background:transparent}
 .state-home-settings .state-config-body::-webkit-scrollbar-thumb{border-radius:var(--r-pill);background:var(--t-line-firm)}

@@ -906,6 +906,8 @@
   min-width:0;min-height:72px;
   padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);
   background:var(--t-surface);box-shadow:var(--t-shadow);
+}
+.ct-gates.is-entering .ct-gate{
   animation:ct-gate-in .42s cubic-bezier(.16,1,.3,1) both;
   animation-delay:calc(var(--i,0) * 38ms);
 }
@@ -1565,7 +1567,7 @@
    只压时长的话会先空白一段再「啪」地出现——那不是减弱动效，是闪烁。 */
 @media (prefers-reduced-motion:reduce){
   .ct-dial.is-entering,.ct-dial.is-scanning .ct-bar.is-on,
-  .ct-dial.is-scanning .ct-cursor-dot,.ct-gate,.ct-verdict.is-open .ct-dot,
+  .ct-dial.is-scanning .ct-cursor-dot,.ct-gates.is-entering .ct-gate,.ct-verdict.is-open .ct-dot,
   .ct-center.is-open::before,.ct-spinner,
   .ct-dial-stage.is-pulse-quiet .ct-quiet path,
   .ct-dial-stage.is-pulse-curve .ct-bar.is-on,

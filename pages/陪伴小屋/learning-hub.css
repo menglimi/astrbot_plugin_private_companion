@@ -431,6 +431,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-meta-grid dt{color:var(--t-text-faint);font-size:var(--fs-micro)}
 .learning-review-workspace .lh-review-meta-grid dd{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.45;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-detail-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:auto;display:flex;flex-direction:column;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5)}
+.learning-review-workspace .lh-review-detail-body>*{flex:0 0 auto}
 .learning-review-workspace .lh-review-detail-title h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-head);font-weight:650;line-height:1.4;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-detail-title p{margin:var(--sp-1) 0 0;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.6;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-quote{margin:0;padding:var(--sp-3) var(--sp-4);border-inline-start:3px solid var(--t-accent);border-radius:0 var(--r-xs) var(--r-xs) 0;background:var(--t-surface-soft)}

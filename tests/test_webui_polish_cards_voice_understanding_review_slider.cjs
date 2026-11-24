@@ -465,3 +465,417 @@ test("移动端响应式：语音脏态取消吸底、外壳留白收紧、状�
     page.unmount();
   }
 });
+
+test("状态弹窗与详情卡动效：#state-home-settings 持久化复用且保留滚动焦点，.state-feature-detail 仅切卡入场", async () => {
+  const stateCss = read("state-page.css");
+  const stateConfigCss = read("state-config.css");
+  const stateJs = read("state-page.js");
+  const editorJs = read("state-editor.js");
+
+  assert.doesNotMatch(stateCss, /\.state-feature-detail\{[^}]*animation:state-feature-enter/);
+  assert.match(stateCss, /\.state-feature-detail\.is-entering\{animation:state-feature-enter/);
+  assert.match(stateCss, /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.state-feature-detail\.is-entering/);
+  assert.match(stateConfigCss, /\.state-home-settings \.state-config-body>\*\{flex:0 0 auto\}/);
+  assert.match(stateConfigCss, /\.state-home-settings \.state-home-settings-body:not\(:has\(#state-edit-form\)\)>\*\{flex:0 0 auto\}/);
+
+  // 最小化 Live DOM 宿主，用于验证持久化 <dialog> 节点引用、showModal 调用次数、scrollTop 与焦点恢复
+  let activeEl = null;
+  const makeNode = tag => {
+    const attrs = {};
+    const node = {
+      tagName: tag.toUpperCase(),
+      id: "",
+      className: "",
+      parentNode: null,
+      children: [],
+      isConnected: true,
+      open: false,
+      scrollTop: 0,
+      showModalCalls: 0,
+      closeCalls: 0,
+      _html: "",
+      _scrollBody: null,
+      _fieldNodes: new Map(),
+      listeners: {},
+      setAttribute(k, v) { attrs[k] = String(v); },
+      getAttribute(k) { return Object.hasOwn(attrs, k) ? attrs[k] : null; },
+      hasAttribute(k) { return Object.hasOwn(attrs, k); },
+      addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+      removeEventListener(type, fn) { this.listeners[type] = (this.listeners[type] || []).filter(h => h !== fn); },
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+      showModal() { this.open = true; this.showModalCalls += 1; },
+      close() { this.open = false; this.closeCalls += 1; },
+      getBoundingClientRect: () => ({left: 0, top: 0, right: 600, bottom: 500}),
+      contains(target) {
+        if (!target) return false;
+        if (target === this) return true;
+        if (this._fieldNodes && [...this._fieldNodes.values()].includes(target)) return true;
+        return this.children.some(child => child.contains(target));
+      },
+      querySelector(sel) {
+        if (sel === "#state-home-settings") {
+          if (this.id === "state-home-settings") return this;
+          for (const child of this.children) { const hit = child.querySelector(sel); if (hit) return hit; }
+          return null;
+        }
+        if (sel === ".state-config-body") {
+          if (this._scrollBody) return this._scrollBody;
+          for (const child of this.children) { const hit = child.querySelector(sel); if (hit) return hit; }
+          return null;
+        }
+        if (sel === ".state-home-settings-body") {
+          if (this.className.includes("state-home-settings-body")) return this;
+          for (const child of this.children) { const hit = child.querySelector(sel); if (hit) return hit; }
+          return null;
+        }
+        const fieldMatch = /^\[data-state-field="([^"]+)"\]$/.exec(sel);
+        if (fieldMatch) {
+          const name = fieldMatch[1];
+          if (this._fieldNodes?.has(name)) return this._fieldNodes.get(name);
+          for (const child of this.children) { const hit = child.querySelector(sel); if (hit) return hit; }
+          return null;
+        }
+        return null;
+      },
+      querySelectorAll: () => [],
+      get innerHTML() { return this._html; },
+      set innerHTML(val) {
+        this._html = String(val ?? "");
+        this._scrollBody = this._html.includes('class="state-config-body"') ? {scrollTop: 0} : null;
+        this._fieldNodes = new Map();
+        for (const match of this._html.matchAll(/data-state-field="([^"]+)"/g)) {
+          const field = match[1];
+          if (!this._fieldNodes.has(field)) {
+            const ctrl = {
+              dataset: {stateField: field},
+              getAttribute: k => k === "data-state-field" ? field : null,
+              hasAttribute: k => k === "data-state-field",
+              focusCalls: 0,
+              focus() { this.focusCalls += 1; activeEl = this; },
+            };
+            this._fieldNodes.set(field, ctrl);
+          }
+        }
+      },
+    };
+    return node;
+  };
+
+  const targets = [{
+    target_id: "t1", bot_id: "bot-1", scope_kind: "private",
+    roles: [{role_id: "r1", state_api: `${PREFIX}state/t1`}],
+  }];
+  let revision = 1;
+  const makeStatus = () => ({
+    role_edit_token: "role-tok", edit_token: "win-tok",
+    sleep_schedule: {}, effective: {}, presentation: {}, presentation_diagnostics: {},
+    settings: {
+      enabled: true, energy_enabled: true, hunger_enabled: true, health_enabled: true, mood_enabled: true,
+      humanized_state_intensity: 60, hunger_expression_prompt: "",
+    },
+    state: {
+      state: "active", revision, updated_at: "2026-11-24T12:00:00Z",
+      values: {energy: 78, hunger: "有点饿了", mood: {description: "心情挺安稳", joy: 7, anger: 1, sorrow: 2, fear: 1}},
+    },
+  });
+  const bridge = {
+    ready: async () => ({pluginName: HOST}),
+    apiGet: async () => ({status: "ok", data: makeStatus()}),
+  };
+  const win = {
+    CompanionProduct: {
+      hosted: () => true, scopeKey: () => "t1:r1", bridgeNow: () => bridge,
+      directory: () => ({installation_id: "i1", operator_id: "op1", targets}),
+      selection: () => ({target_id: "t1", bot_id: "bot-1", role_id: "r1"}),
+      roleTarget: () => targets[0],
+    },
+    CompanionStateMaintenance: {
+      fields: kind => kind === "home" ? ["enabled", "hunger_enabled"] : kind === "hunger" ? ["hunger_enabled"] : [],
+      normalized: (_kind, values) => ({...values}),
+      validField: () => true,
+      canAlign: () => false,
+      titles: {home: "状态与首页展示", hunger: "饥饿模拟", mood: "心情模拟"},
+      actionSummary: () => "已启用",
+      form: () => '<fieldset class="state-config-fields"><input type="checkbox" data-state-field="hunger_enabled" checked></fieldset>',
+      weatherLocationParts: () => ({}),
+    },
+    CompanionStateContact: {},
+    matchMedia: () => ({matches: false}),
+  };
+  const doc = {
+    hidden: false,
+    documentElement: {dataset: {}},
+    body: {classList: {contains: () => false, toggle() {}}},
+    get activeElement() { return activeEl; },
+    createElement: tag => makeNode(tag),
+    addEventListener() {},
+    querySelector: () => null,
+    getElementById: () => null,
+  };
+  const ctx = vm.createContext({
+    window: win, document: doc, Promise, Intl, Date, console, structuredClone, JSON,
+    setTimeout: () => 1, clearTimeout() {},
+  });
+  vm.runInContext(editorJs, ctx);
+  vm.runInContext(stateJs, ctx);
+
+  const root = makeNode("div");
+  await win.CompanionStatePage.mount(root, {section: "state"});
+  for (let i = 0; i < 6; i++) await flush();
+
+  // 打开 #state-home-settings：首次打开调用一次 showModal()
+  win.CompanionStatePage.openSettings();
+  const dialog = root.querySelector("#state-home-settings");
+  assert.ok(dialog, "Live DOM 模式下应挂载持久化 #state-home-settings");
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.showModalCalls, 1);
+  assert.equal(dialog.closeCalls, 0);
+
+  // 点击弹窗内「配置状态与首页展示」触发重渲染：同一 <dialog> 实例不关闭、不重播 showModal
+  root.listeners.click[0]({
+    target: {closest: sel => sel === "[data-state-edit]" ? {dataset: {stateEdit: "home"}, disabled: false} : null},
+  });
+  assert.equal(root.querySelector("#state-home-settings"), dialog, "重渲染后必须保持同一个 <dialog> DOM 实例");
+  assert.equal(dialog.showModalCalls, 1, "已打开的弹窗在内容重渲染时不得重调 showModal()");
+  assert.equal(dialog.closeCalls, 0, "已打开的弹窗在内容重渲染时不得先 close() 再打开");
+
+  // 模拟在弹窗内滚动到 210px 并聚焦开关，再触发刷新重渲染，验证 scrollTop 和焦点完整保留
+  const scrollBody = dialog.querySelector(".state-config-body");
+  assert.ok(scrollBody);
+  scrollBody.scrollTop = 210;
+  const fieldNode = dialog.querySelector('[data-state-field="hunger_enabled"]');
+  assert.ok(fieldNode);
+  activeEl = fieldNode;
+  revision = 2;
+  root.listeners.click[0]({
+    target: {closest: sel => sel === "#state-refresh, #state-home-settings-refresh" ? {} : null},
+  });
+  for (let i = 0; i < 6; i++) await flush();
+  assert.equal(root.querySelector("#state-home-settings"), dialog);
+  assert.equal(dialog.showModalCalls, 1);
+  assert.equal(dialog.closeCalls, 0);
+  assert.equal(dialog.querySelector(".state-config-body").scrollTop, 210, "弹窗滚动条位置必须保留");
+  assert.equal(activeEl?.dataset?.stateField, "hunger_enabled", "弹窗内当前聚焦控件必须保留焦点");
+
+  // 关闭弹窗，测试 .state-feature-detail.is-entering 仅在切换详情卡首帧挂上
+  root.listeners.click[0]({target: {closest: sel => sel === "[data-state-close-home-settings]" ? {} : null}});
+  assert.equal(dialog.open, false);
+  assert.equal(dialog.closeCalls, 1);
+
+  const mainSlot = root.children[0];
+  assert.equal(win.CompanionStatePage.openFeature("hunger"), true);
+  assert.match(mainSlot.innerHTML, /class="state-feature-detail state-config-page is-entering"/, "首次展开饥饿卡应带 is-entering");
+
+  // 同卡内触发刷新重渲染，不得重播入场动效
+  revision = 3;
+  root.listeners.click[0]({
+    target: {closest: sel => sel === "#state-refresh, #state-home-settings-refresh" ? {} : null},
+  });
+  for (let i = 0; i < 6; i++) await flush();
+  assert.match(mainSlot.innerHTML, /class="state-feature-detail state-config-page" data-state-config-feature="hunger"/);
+  assert.doesNotMatch(mainSlot.innerHTML, /state-feature-detail[^"]*is-entering/, "同卡重渲染不得重挂 is-entering");
+
+  // 切换到新卡「心情」时再次播放一次入场动效
+  assert.equal(win.CompanionStatePage.openFeature("mood"), true);
+  assert.match(mainSlot.innerHTML, /class="state-feature-detail state-config-page is-entering" data-state-config-feature="mood"/);
+  win.CompanionStatePage.unmount();
+});
+
+test("主动联系闸门与测试弹窗：.ct-gate 仅进页播放，[data-test-confirm-dialog] 持久化复用且不重播 showModal", async () => {
+  const contactCss = read("contact-page.css");
+  const contactJs = read("contact-page.js");
+
+  assert.doesNotMatch(contactCss, /(^|\n)\.ct-gate\{[^}]*animation:ct-gate-in/);
+  assert.match(contactCss, /\.ct-gates\.is-entering \.ct-gate\{[^}]*animation:ct-gate-in/);
+  assert.match(contactCss, /@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?\.ct-gates\.is-entering \.ct-gate/);
+
+  const makeNode = tag => {
+    const attrs = {};
+    return {
+      tagName: tag.toUpperCase(),
+      className: "",
+      parentNode: null,
+      children: [],
+      isConnected: true,
+      open: false,
+      showModalCalls: 0,
+      closeCalls: 0,
+      innerHTML: "",
+      listeners: {},
+      setAttribute(k, v) { attrs[k] = String(v); },
+      getAttribute(k) { return Object.hasOwn(attrs, k) ? attrs[k] : null; },
+      hasAttribute(k) { return Object.hasOwn(attrs, k); },
+      addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+      removeEventListener(type, fn) { this.listeners[type] = (this.listeners[type] || []).filter(h => h !== fn); },
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+      showModal() { this.open = true; this.showModalCalls += 1; },
+      close() { this.open = false; this.closeCalls += 1; },
+      getBoundingClientRect: () => ({left: 0, top: 0, right: 500, bottom: 400}),
+      contains: () => true,
+      querySelector(sel) {
+        if (sel === "[data-test-confirm-dialog]") {
+          if (this.hasAttribute("data-test-confirm-dialog")) return this;
+          for (const child of this.children) { const hit = child.querySelector(sel); if (hit) return hit; }
+          return null;
+        }
+        return null;
+      },
+      querySelectorAll: () => [],
+    };
+  };
+
+  const win = {
+    navigator: {clipboard: {writeText: async () => {}}},
+    CompanionProduct: {
+      hosted: () => true,
+      scopeKey: () => "scope-live",
+      identity: () => ({installation_id: "install-1", operator_id: "admin-1"}),
+      role: () => ({role_id: "role-1", perception_native_api: `${PREFIX}perception-native`, config_api: `${PREFIX}config`}),
+      bridgeNow: () => win.AstrBotPluginPage,
+      bridgeFor: () => Promise.resolve(win.AstrBotPluginPage),
+    },
+    AstrBotPluginPage: {
+      ready: () => Promise.resolve({pluginName: HOST}),
+      apiGet: async route => {
+        if (route === "config") {
+          return {status: "ok", data: {sections: {"proactive.contact": {
+            edit_token: "a".repeat(64), scope: "installation", fields: {},
+            settings: {enabled: true, automatic_enabled: true, quiet_enabled: false, note: ""},
+          }}}};
+        }
+        if (route === "setup/proactive-recipients") {
+          return {status: "ok", data: {
+            selected_target_id: "target-1",
+            candidates: [{target_id: "target-1", label: "核心管理员"}],
+          }};
+        }
+        return {status: "ok", data: {state: "ready", items: [], count: 0}};
+      },
+      apiPost: async () => ({status: "ok", data: {}}),
+    },
+    document: {
+      createElement: tag => makeNode(tag),
+      addEventListener() {}, querySelector: () => null, querySelectorAll: () => [],
+      getElementById: () => null, documentElement: {dataset: {}},
+      body: {classList: {contains: () => false, add() {}, remove() {}, toggle() {}}}, title: "",
+    },
+    history: {state: null, replaceState() {}},
+    matchMedia: () => ({matches: false}),
+    localStorage: {getItem: () => null, setItem() {}, removeItem() {}},
+  };
+  vm.runInNewContext(contactJs, {
+    window: win, document: win.document, navigator: win.navigator, console, Intl, Date, JSON, Math,
+    Number, Object, Array, String, Set, Map, Boolean, Error, Promise,
+    localStorage: win.localStorage, sessionStorage: win.localStorage, URL,
+    matchMedia: win.matchMedia, setTimeout, clearTimeout, setInterval, clearInterval,
+  });
+
+  const root = makeNode("div");
+  await win.CompanionContactPage.mount(root);
+  for (let i = 0; i < 6; i++) await flush();
+  const mainSlot = root.children[0];
+
+  // 首次切到「当前状态与闸门」：带 is-entering 播放入场动效
+  root.listeners.click[0]({target: {closest: s => s === "[data-view]" ? {dataset: {view: "gates"}} : null}});
+  assert.match(mainSlot.innerHTML, /class="ct-gates is-entering"/);
+
+  // 同页内改字段/触发重渲染：不再带 is-entering，避免 5 张闸门卡反复滑入
+  root.listeners.change[0]({
+    target: {
+      type: "textarea", value: "新备注", dataset: {field: "note"},
+      closest: s => s === "[data-field]" ? {type: "textarea", value: "新备注", dataset: {field: "note"}} : null,
+    },
+  });
+  assert.match(mainSlot.innerHTML, /class="ct-gates">/);
+  assert.doesNotMatch(mainSlot.innerHTML, /ct-gates is-entering/);
+
+  // 切到「消息测试」并打开确认弹窗：验证持久化 <dialog> 在多次重渲染间复用且不重调 showModal
+  root.listeners.click[0]({target: {closest: s => s === "[data-view]" ? {dataset: {view: "tests"}} : null}});
+  for (let i = 0; i < 6; i++) await flush();
+  root.listeners.click[0]({target: {closest: s => s === "[data-test-run]" ? {dataset: {testRun: "care"}} : null}});
+
+  const dialog = root.querySelector("[data-test-confirm-dialog]");
+  assert.ok(dialog, "Live DOM 模式下应挂载持久化 [data-test-confirm-dialog]");
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.showModalCalls, 1);
+  assert.equal(dialog.closeCalls, 0);
+  assert.match(dialog.innerHTML, /运行「/);
+
+  // 弹窗开启期间触发重渲染（例如关闭提示横幅）：同一节点、不关闭、不重调 showModal
+  root.listeners.click[0]({target: {closest: s => s === "[data-action]" ? {dataset: {action: "dismiss"}} : null}});
+  assert.equal(root.querySelector("[data-test-confirm-dialog]"), dialog);
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.showModalCalls, 1);
+  assert.equal(dialog.closeCalls, 0);
+
+  // 点击取消关闭弹窗
+  root.listeners.click[0]({target: {closest: s => s === "[data-test-action]" ? {dataset: {testAction: "cancel"}} : null}});
+  assert.equal(dialog.open, false);
+  assert.equal(dialog.closeCalls, 1);
+  win.CompanionContactPage.unmount();
+});
+
+test("审阅中心详情滚动保留：同条二次确认与取消保持 .lh-review-detail-body 位置，切条回顶且子项防压缩", async () => {
+  const hubCss = read("learning-hub.css");
+  const reviewJs = read("learning-review-page.js");
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-detail-body>\*\{flex:0 0 auto\}/);
+
+  const handlers = {};
+  let detailBody = {scrollTop: 0};
+  const bridge = {
+    apiGet: async route => ({
+      status: "ok",
+      data: {
+        items: route.endsWith("/progress") ? [
+          {review_id: "g1", growth_title: "第一条", progress_note: "进展一", base_revision: 1, created_at: "2026-11-24T10:00:00Z", actions: ["accept", "reject"], view_token: "t1", evidence: ["依据一"]},
+          {review_id: "g2", growth_title: "第二条", progress_note: "进展二", base_revision: 1, created_at: "2026-11-24T09:00:00Z", actions: ["accept", "reject"], view_token: "t2", evidence: ["依据二"]},
+        ] : [],
+        next_cursor: null,
+      },
+    }),
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  let html = "";
+  const root = {
+    isConnected: true,
+    get innerHTML() { return html; },
+    set innerHTML(val) {
+      html = String(val ?? "");
+      // 模拟浏览器重写 innerHTML 后生成全新 .lh-review-detail-body 节点（初始 scrollTop = 0）
+      detailBody = {scrollTop: 0};
+    },
+    ownerDocument: {documentElement: {dataset: {}}, querySelector: () => null},
+    addEventListener(type, fn) { handlers[type] = fn; },
+    removeEventListener() {},
+    querySelector(sel) {
+      if (sel === ".lh-review-detail-body") return detailBody;
+      return null;
+    },
+    querySelectorAll: () => [],
+  };
+  const win = {
+    CompanionProduct: {bridgeNow: () => bridge, unwrap: v => v},
+    lucide: {createIcons() {}},
+    matchMedia: () => ({matches: false}),
+    addEventListener() {}, removeEventListener() {},
+  };
+  const ctx = vm.createContext({window: win, setTimeout, clearTimeout, Date, Math, Number, Object, Array, String, Set, Map});
+  vm.runInContext(reviewJs, ctx);
+  const page = ctx.window.CompanionLearningReviewPage;
+  page.mount(root, {sources: [{key: "r1", label: "角色 A", growthApi: `${PREFIX}t/r/growth`, replyApi: `${PREFIX}t/r/reply`}]});
+  for (let i = 0; i < 40 && page.state?.loading; i++) await flush();
+
+  // 滚动详情区至 260px，点击「确认申报」展开确认条：滚动位置保留
+  detailBody.scrollTop = 260;
+  handlers.click({target: {closest: s => s === "[data-review-stage]" ? {dataset: {reviewKey: "r1::growth::g1", reviewStage: "accept"}} : null}});
+  assert.equal(detailBody.scrollTop, 260, "展开二次确认条后详情正文 scrollTop 必须保留");
+
+  // 点击「取消」收起确认条：滚动位置仍保留
+  handlers.click({target: {closest: s => s === "[data-review-confirm]" ? {dataset: {reviewConfirm: "no"}} : null}});
+  assert.equal(detailBody.scrollTop, 260, "取消确认条后详情正文 scrollTop 必须保留");
+
+  // 切换到另一条记录：详情正文自动回顶
+  handlers.click({target: {closest: s => s === "[data-review-select]" ? {dataset: {reviewSelect: "r1::growth::g2"}} : null}});
+  assert.equal(detailBody.scrollTop, 0, "切换到新记录时详情正文应回到顶部");
+  page.unmount();
+});

@@ -35,8 +35,75 @@ window.CompanionStatePage = (() => {
     ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "未安排";
   const reason = code => errors[code] || (code ? "当前状态未能确认，请刷新核对。" : "暂时无法读取角色状态。请刷新核对。");
   let root = null, bridge = null, version = 0, timer = null, data = null, editor = null, calendarEditor = null, backgroundLoading = false;
-  let section = "state", activeFeature = null, pendingEditor = null;
+  let section = "state", activeFeature = null, pendingEditor = null, lastPaintedFeature = null, suppressEditorEmit = false;
   let settingsOpen=false,settingsReturnFeature=null,settingsReturnFocus=null;
+  let mainSlot=null,settingsDialogHost=null,settingsDialogHeader=null,settingsDialogBody=null,lastSettingsHeaderHtml="";
+  function withSuppressedEditorEmit(fn) {
+    suppressEditorEmit=true;
+    try { return fn(); }
+    finally { suppressEditorEmit=false; }
+  }
+  function useLiveDom() {
+    return Boolean(
+      root
+      &&typeof document!=="undefined"
+      &&typeof document.createElement==="function"
+      &&typeof root.appendChild==="function"
+    );
+  }
+  function ensureSlots() {
+    if(!useLiveDom())return false;
+    if(!mainSlot||mainSlot.parentNode!==root) {
+      root.innerHTML="";
+      mainSlot=document.createElement("div");
+      mainSlot.className="state-page-main-slot";
+      root.appendChild(mainSlot);
+    }
+    if(!settingsDialogHost||settingsDialogHost.parentNode!==root) {
+      settingsDialogHost=document.createElement("dialog");
+      settingsDialogHost.id="state-home-settings";
+      settingsDialogHost.className="state-home-settings state-config-page";
+      settingsDialogHost.setAttribute("aria-labelledby","state-home-settings-title");
+      settingsDialogHeader=document.createElement("header");
+      settingsDialogHeader.className="state-home-settings-header";
+      settingsDialogBody=document.createElement("div");
+      settingsDialogBody.className="state-home-settings-body";
+      settingsDialogHost.appendChild(settingsDialogHeader);
+      settingsDialogHost.appendChild(settingsDialogBody);
+      settingsDialogHost.addEventListener("cancel",event=>{event.preventDefault();closeSettings();});
+      settingsDialogHost.addEventListener("click",event=>{
+        if(event.target!==settingsDialogHost)return;
+        const box=settingsDialogHost.getBoundingClientRect();
+        if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeSettings();
+      });
+      lastSettingsHeaderHtml="";
+      root.appendChild(settingsDialogHost);
+    }
+    return true;
+  }
+  function escapeAttr(value) {
+    return globalThis.CSS?.escape?.(value)||String(value).replace(/["\\]/g,"\\$&");
+  }
+  function captureFocusTarget(container) {
+    const active=typeof document!=="undefined"?document.activeElement:null;
+    if(!container||!active||!container.contains?.(active))return null;
+    if(active.id)return {kind:"id",value:active.id};
+    const field=active.dataset?.stateField||active.getAttribute?.("data-state-field");
+    if(field)return {kind:"field",value:field};
+    const edit=active.dataset?.stateEdit||active.getAttribute?.("data-state-edit");
+    if(edit)return {kind:"edit",value:edit};
+    if(active.hasAttribute?.("data-state-close-home-settings"))return {kind:"close"};
+    return null;
+  }
+  function restoreFocusTarget(container,token) {
+    if(!container||!token)return;
+    const node=token.kind==="id"?container.querySelector(`#${escapeAttr(token.value)}`)
+      :token.kind==="field"?container.querySelector(`[data-state-field="${escapeAttr(token.value)}"]`)
+        :token.kind==="edit"?container.querySelector(`[data-state-edit="${escapeAttr(token.value)}"]`)
+          :token.kind==="close"?container.querySelector("[data-state-close-home-settings]")
+            :null;
+    node?.focus?.({preventScroll:true});
+  }
   const CYCLE_PHASE_FIELD_RE=/^cycle_(menstrual|follicular|pre_ovulation|ovulation|luteal|pms)_(energy|mood|prompt)$/;
 
   /* 状态页切换到其它工作区时会被卸载。最近一次成功状态只在当前页面
@@ -301,7 +368,7 @@ window.CompanionStatePage = (() => {
   };
   function openFeatureEditor(feature) {
     const kind=featureEditors[feature];
-    if(kind)editor?.open(kind);
+    if(kind)withSuppressedEditorEmit(()=>editor?.open(kind));
   }
   function dashboardItem(feature,label,value,icon,detail="",tone="") {
     const energy=feature==="energy"&&typeof value==="number";
@@ -386,7 +453,7 @@ window.CompanionStatePage = (() => {
     return `<nav class="state-extra-nav" aria-label="日程与环境状态设置">${cards.map(({name,label,icon,value,help,action})=>
       `<button type="button" id="state-extra-${name}" class="state-extra-card" ${action||`data-state-feature="${name}" aria-expanded="${activeFeature===name}" aria-controls="state-feature-detail"`}><i data-lucide="${icon}" aria-hidden="true"></i><span class="state-extra-copy"><strong>${label}</strong><span>${e(value)}</span><small>${e(help)}</small></span><i class="state-extra-arrow" data-lucide="chevron-right" aria-hidden="true"></i></button>`).join("")}</nav>`;
   }
-  function featurePanelMarkup(status,feature=activeFeature) {
+  function featurePanelMarkup(status,feature=activeFeature,{entering=false}={}) {
     if(!feature||!featureInfo[feature])return "";
     const [title,icon]=featureInfo[feature],values=status.state?.values||{},settings=status.settings||{};
     let body="";
@@ -435,7 +502,7 @@ window.CompanionStatePage = (() => {
     const scopePill=featureScopes[feature]||"当前角色";
     const subtitle=featureSubtitles[feature]||"";
     const tone=featureTones[feature]||"accent";
-    return `<section id="state-feature-detail" class="state-feature-detail state-config-page" data-state-config-feature="${feature}" data-feature-tone="${tone}" aria-labelledby="state-feature-title">
+    return `<section id="state-feature-detail" class="state-feature-detail state-config-page${entering?" is-entering":""}" data-state-config-feature="${feature}" data-feature-tone="${tone}" aria-labelledby="state-feature-title">
       <header><span class="state-feature-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><div class="state-feature-head-main">
           <span class="state-eyebrow">状态 · ${title}</span>
           <h3 id="state-feature-title">${title}</h3>
@@ -454,10 +521,16 @@ window.CompanionStatePage = (() => {
     button.disabled=!root?.isConnected||section!=="state"||!data?.status||data.loading||!!editor?.busy;
     button.setAttribute("aria-expanded",String(settingsOpen));
   }
+  function homeSettingsHeaderMarkup() {
+    return `<div class="state-home-settings-title"><span class="state-eyebrow">${e(personaLabel())} · 人格共享</span><h3 id="state-home-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i><span>状态功能与首页展示</span></h3></div><button type="button" class="state-feature-close" data-state-close-home-settings aria-label="关闭" title="关闭" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button>`;
+  }
+  function homeSettingsBodyMarkup() {
+    return data?.status?editor?.markup({feature:"home"})||"":`<div class="state-home-settings-fallback"><p class="memory-notice" role="status">${e(data?.notice||"正在读取状态设置…")}</p><button type="button" class="memory-button" id="state-home-settings-refresh" ${data?.loading?"disabled":""}>重新读取状态</button></div>`;
+  }
   function homeSettingsMarkup() {
     return `<dialog id="state-home-settings" class="state-home-settings state-config-page" aria-labelledby="state-home-settings-title">
-      <header class="state-home-settings-header"><div class="state-home-settings-title"><span class="state-eyebrow">${e(personaLabel())} · 人格共享</span><h3 id="state-home-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i><span>状态功能与首页展示</span></h3></div><button type="button" class="state-feature-close" data-state-close-home-settings aria-label="关闭" title="关闭" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button></header>
-      <div class="state-home-settings-body">${data?.status?editor?.markup({feature:"home"})||"":`<div class="state-home-settings-fallback"><p class="memory-notice" role="status">${e(data?.notice||"正在读取状态设置…")}</p><button type="button" class="memory-button" id="state-home-settings-refresh" ${data?.loading?"disabled":""}>重新读取状态</button></div>`}</div>
+      <header class="state-home-settings-header">${homeSettingsHeaderMarkup()}</header>
+      <div class="state-home-settings-body">${homeSettingsBodyMarkup()}</div>
     </dialog>`;
   }
   /* 地址栏的落点：`#life/state/<feature>` 进来时只切图块，不打开编辑表单
@@ -518,18 +591,18 @@ window.CompanionStatePage = (() => {
     if(targetKind==="home"){
       if(!settingsOpen){settingsReturnFeature=activeFeature;settingsReturnFocus=document.activeElement;}
       settingsOpen=true;activeFeature=null;
-      editor?.open("home");
+      withSuppressedEditorEmit(()=>editor?.open("home"));
     }else{
       if(settingsOpen){
         clearTimeout(settingsCloseTimer);settingsCloseTimer=null;
-        const dialog=root.querySelector("#state-home-settings");
+        const dialog=settingsDialogHost||root.querySelector("#state-home-settings");
         if(dialog?.open)dialog.close();
         settingsOpen=false;settingsReturnFeature=null;settingsReturnFocus=null;
       }
       const feature=Object.keys(featureEditors).find(name=>featureEditors[name]===targetKind)
         ||(Object.hasOwn(featureInfo,targetKind)?targetKind:null);
       if(feature)activeFeature=feature;
-      editor?.open(targetKind);
+      withSuppressedEditorEmit(()=>editor?.open(targetKind));
       if(targetKind==="cycle"&&field){
         const phaseMatch=CYCLE_PHASE_FIELD_RE.exec(field);
         if(phaseMatch){
@@ -596,7 +669,7 @@ window.CompanionStatePage = (() => {
   function closeSettings() {
     if(!settingsOpen||settingsCloseTimer)return;
     if(editor&&!editor.discardIfPristine())return;
-    const dialog=root?.querySelector("#state-home-settings");
+    const dialog=settingsDialogHost||root?.querySelector("#state-home-settings");
     const myTicket=version;
     const finalize=()=>{
       settingsCloseTimer=null;
@@ -627,31 +700,39 @@ window.CompanionStatePage = (() => {
       if(required==="home"){settingsOpen=true;activeFeature=null;}
       else activeFeature=required==="health"&&activeFeature==="hunger"?"hunger":required;
     }
-    const oldDialog=root.querySelector("#state-home-settings");
-    const dialogScroll=oldDialog?.querySelector(".state-config-body, .state-home-settings-body")?.scrollTop||0;
-    const focused=root.contains(document.activeElement)?document.activeElement.id:null;
-    const expanded=new Set([...root.querySelectorAll(".state-receipt-reference[open]")].map(item=>item.dataset.receipt));
+    const liveDom=ensureSlots();
+    const oldDialog=liveDom?settingsDialogHost:root.querySelector("#state-home-settings");
+    const dialogScroll=(oldDialog?.querySelector(".state-config-body")||oldDialog?.querySelector(".state-home-settings-body"))?.scrollTop||0;
+    const focusInDialog=liveDom?captureFocusTarget(settingsDialogHost):null;
+    const focusInMain=liveDom?(focusInDialog?null:captureFocusTarget(mainSlot)):null;
+    const focused=!liveDom&&root.contains(document.activeElement)?document.activeElement.id:null;
+    const receiptHost=liveDom?mainSlot:root;
+    const expanded=new Set([...receiptHost.querySelectorAll(".state-receipt-reference[open]")].map(item=>item.dataset.receipt));
     const available=!!role()?.state_api;
+    const renderedFeature=data.ready&&available&&status&&!contactView
+      ?(weatherView?"weather":patrolView?"patrol":activeFeature)
+      :null;
+    const featureEntering=Boolean(renderedFeature&&renderedFeature!==lastPaintedFeature);
+    lastPaintedFeature=renderedFeature;
     let content;
     if (!data.ready) content=`<div class="panel state-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看角色状态。"}</div>`;
     else if(contactView&&!data.windowSelected)content='<div class="panel state-empty">请先选择当前角色的私聊窗口，再查看联系安排。</div>';
     else if (!available) content=`<div class="panel state-empty"><h3>当前角色尚未绑定状态工作区</h3><p>请在账号与会话中核对 Bot 账号和人格映射。</p></div>`;
     else if (!status) content=`<div class="panel state-empty">${data.loading?"正在读取状态…":"尚未读取状态。"}</div>`;
     else if(contactView)content=editor?.markup({section:"contact"})||"";
-    else if(weatherView)content=featurePanelMarkup(status,"weather");
-    else if(patrolView)content=featurePanelMarkup(status,"patrol");
+    else if(weatherView)content=featurePanelMarkup(status,"weather",{entering:featureEntering});
+    else if(patrolView)content=featurePanelMarkup(status,"patrol",{entering:featureEntering});
     else {
       const values=status.state?.values||{};
       const temporary=Array.isArray(values.conditions)&&values.conditions.length
         ?`<section class="state-conditions-inline"><h3>当前临时状态</h3><ul>${values.conditions.map(item=>`<li><strong>${e(item.kind)}</strong><span>${e(item.text)}</span><small>${item.expires_at?`记录至 ${when(item.expires_at)}`:"未设结束时间"}</small></li>`).join("")}</ul></section>`:"";
       content=`${dashboardMarkup(status)}${extraButtons(status)}
-        ${activeFeature?featurePanelMarkup(status):""}${temporary}`;
+        ${activeFeature?featurePanelMarkup(status,activeFeature,{entering:featureEntering}):""}${temporary}`;
     }
     const selectedScope=window.CompanionProduct?.selection?.();
     const accessScope=data.windowSelected&&roleTarget ? (window.CompanionProduct?.targetLabel?.(roleTarget) || "当前私聊窗口") : "未选择私聊窗口";
     const scopeMarkup=contactView?`<div class="panel memory-scope state-scope"><div class="state-scope-current"><span>当前会话</span><strong>${e(accessScope)}</strong><small>联系安排适用于当前会话。</small></div>${!selectedScope?`<button type="button" class="button small" data-go="manage" data-manage="host">去账号与会话选择</button>`:""}</div>`
       :"";
-    if(oldDialog?.open)oldDialog.close();
     const pending=data.pendingMaintenance,maintenanceOff=status?.settings?.enabled===false;
     const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy;
     const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?"重试更新"
@@ -662,23 +743,49 @@ window.CompanionStatePage = (() => {
       :weatherView?"设置天气来源与时效，日程会参考所在地实况。"
       :patrolView?"设置每日巡视的时刻与保留时长。"
       :"点按任意状态查看设置；下方入口可调整 QQ 展示、日程、天气与时间。";
-    root.innerHTML=`<div class="state-page-heading"><div><span class="state-badge">${contactView?"联系安排":weatherView?"天气感知":patrolView?"维护设置":"角色状态"}</span><p class="state-page-hint">${e(pageHint)}</p></div><div class="state-page-actions">${section==="state"?`<button type="button" class="memory-button state-maintain-button" id="state-maintain" ${maintainDisabled?"disabled":""} ${maintenanceOff?`title="在状态设置中启用后台状态维护"`:""}><i data-lucide="${maintainIcon}" aria-hidden="true"></i><span>${maintainLabel}</span></button>`:""}<button type="button" class="memory-button" id="state-refresh" title="重新读取当前状态" ${data.loading||editor?.busy?"disabled":""}>${contactView?"刷新联系设置":weatherView?"刷新天气设置":patrolView?"刷新巡视设置":"刷新状态"}</button></div></div>
-      ${scopeMarkup}<div class="memory-notice ${data.error?"error":""}" id="state-notice" role="status" aria-live="polite" ${noticeText?"":"hidden"}>${e(noticeText)}</div>${content}${settingsOpen?homeSettingsMarkup():""}`;
-    root.querySelectorAll(".state-receipt-reference").forEach(item=>{item.open=expanded.has(item.dataset.receipt);});
-    const settingsDialog=root.querySelector("#state-home-settings");
-    if(settingsDialog){
-      settingsDialog.addEventListener("cancel",event=>{event.preventDefault();closeSettings();});
-      settingsDialog.addEventListener("click",event=>{
-        if(event.target!==settingsDialog)return;
-        const box=settingsDialog.getBoundingClientRect();
-        if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeSettings();
-      });
-      settingsDialog.showModal();
-      const dialogScrollBody=settingsDialog.querySelector(".state-config-body")||settingsDialog.querySelector(".state-home-settings-body");
-      if(dialogScrollBody)dialogScrollBody.scrollTop=dialogScroll;
-      settingsDialog.scrollTop=0;
+    const mainMarkup=`<div class="state-page-heading"><div><span class="state-badge">${contactView?"联系安排":weatherView?"天气感知":patrolView?"维护设置":"角色状态"}</span><p class="state-page-hint">${e(pageHint)}</p></div><div class="state-page-actions">${section==="state"?`<button type="button" class="memory-button state-maintain-button" id="state-maintain" ${maintainDisabled?"disabled":""} ${maintenanceOff?`title="在状态设置中启用后台状态维护"`:""}><i data-lucide="${maintainIcon}" aria-hidden="true"></i><span>${maintainLabel}</span></button>`:""}<button type="button" class="memory-button" id="state-refresh" title="重新读取当前状态" ${data.loading||editor?.busy?"disabled":""}>${contactView?"刷新联系设置":weatherView?"刷新天气设置":patrolView?"刷新巡视设置":"刷新状态"}</button></div></div>
+      ${scopeMarkup}<div class="memory-notice ${data.error?"error":""}" id="state-notice" role="status" aria-live="polite" ${noticeText?"":"hidden"}>${e(noticeText)}</div>${content}`;
+    if(liveDom){
+      mainSlot.innerHTML=mainMarkup;
+      mainSlot.querySelectorAll(".state-receipt-reference").forEach(item=>{item.open=expanded.has(item.dataset.receipt);});
+      if(settingsOpen&&!settingsCloseTimer){
+        const nextHeaderHtml=homeSettingsHeaderMarkup();
+        if(nextHeaderHtml!==lastSettingsHeaderHtml){
+          settingsDialogHeader.innerHTML=nextHeaderHtml;
+          lastSettingsHeaderHtml=nextHeaderHtml;
+        }
+        settingsDialogBody.innerHTML=homeSettingsBodyMarkup();
+        if(!settingsDialogHost.open&&typeof settingsDialogHost.showModal==="function"){
+          settingsDialogHost.showModal();
+        }
+        const dialogScrollBody=settingsDialogHost.querySelector(".state-config-body")||settingsDialogBody;
+        if(dialogScrollBody)dialogScrollBody.scrollTop=dialogScroll;
+        settingsDialogHost.scrollTop=0;
+        restoreFocusTarget(settingsDialogHost,focusInDialog);
+      }else if(!settingsOpen){
+        if(settingsDialogHost.open&&typeof settingsDialogHost.close==="function")settingsDialogHost.close();
+        if(!settingsCloseTimer&&settingsDialogBody.innerHTML)settingsDialogBody.innerHTML="";
+      }
+      restoreFocusTarget(mainSlot,focusInMain);
+    }else{
+      if(oldDialog?.open)oldDialog.close();
+      root.innerHTML=`${mainMarkup}${settingsOpen?homeSettingsMarkup():""}`;
+      root.querySelectorAll(".state-receipt-reference").forEach(item=>{item.open=expanded.has(item.dataset.receipt);});
+      const settingsDialog=root.querySelector("#state-home-settings");
+      if(settingsDialog){
+        settingsDialog.addEventListener("cancel",event=>{event.preventDefault();closeSettings();});
+        settingsDialog.addEventListener("click",event=>{
+          if(event.target!==settingsDialog)return;
+          const box=settingsDialog.getBoundingClientRect();
+          if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeSettings();
+        });
+        settingsDialog.showModal();
+        const dialogScrollBody=settingsDialog.querySelector(".state-config-body")||settingsDialog.querySelector(".state-home-settings-body");
+        if(dialogScrollBody)dialogScrollBody.scrollTop=dialogScroll;
+        settingsDialog.scrollTop=0;
+      }
+      if(focused)root.querySelector("#"+focused)?.focus({preventScroll:true});
     }
-    if(focused)root.querySelector("#"+focused)?.focus({preventScroll:true});
     syncSettingsButton();
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
@@ -958,7 +1065,7 @@ window.CompanionStatePage = (() => {
     root.addEventListener("input",input);root.addEventListener("submit",submit);
     calendarEditor=section==="state"?window.CompanionCalendarEditor?.create({api,changed:()=>{render();schedule();},refresh:refreshAfterSave,
       failed:error=>{failure(error);render();}}):null;
-    editor=window.CompanionStateEditor?.create({api,calendarEditor,changed:()=>{render();schedule();},refresh:refreshAfterSave,
+    editor=window.CompanionStateEditor?.create({api,calendarEditor,changed:()=>{if(!suppressEditorEmit){render();schedule();}},refresh:refreshAfterSave,
       failed:error=>{failure(error);render();}});
     const ticket=version;
     try {
@@ -976,7 +1083,7 @@ window.CompanionStatePage = (() => {
       setChrome(true);await directory();
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  function unmount() { rememberState();++version;stopTimer();clearTimeout(settingsCloseTimer);settingsCloseTimer=null;backgroundLoading=false;pendingEditor=null;root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
+  function unmount() { rememberState();++version;stopTimer();clearTimeout(settingsCloseTimer);settingsCloseTimer=null;backgroundLoading=false;pendingEditor=null;(settingsDialogHost||root?.querySelector("#state-home-settings"))?.close?.();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;lastPaintedFeature=null;suppressEditorEmit=false;mainSlot=null;settingsDialogHost=null;settingsDialogHeader=null;settingsDialogBody=null;lastSettingsHeaderHtml="";editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
   document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!backgroundLoading&&!editor?.interacting)load(data.cursor,{silent:true});});
   window.addEventListener?.("beforeunload",event=>{if(editor?.dirty){event.preventDefault();event.returnValue="";}});
   return {mount,unmount,openSettings,openEditor,openFeature,currentFeature:()=>activeFeature,

@@ -1645,7 +1645,7 @@ window.CompanionContactPage = (() => {
       </div>
       <div class="ct-tests-grid">${cards}</div>
       <p class="ct-test-empty" hidden>没有匹配的消息类型</p>
-      ${testConfirmationMarkup()}
+      ${useLiveDom() ? "" : testConfirmationMarkup()}
     </div>`;
   }
   const TEST_STAGE_LABELS = {
@@ -1808,10 +1808,9 @@ window.CompanionContactPage = (() => {
       ${technical}
     </section>`;
   }
-  function testConfirmationMarkup() {
+  function testConfirmationBodyMarkup() {
     if (!data.confirmTest) return "";
-    if (data.confirmTest === TEST_GUARD_RESET) return `<dialog class="ct-test-dialog" data-test-confirm-dialog aria-labelledby="ct-test-confirm-title">
-      <div class="ct-test-dialog-body">
+    if (data.confirmTest === TEST_GUARD_RESET) return `<div class="ct-test-dialog-body">
         <p class="ct-test-dialog-kicker">上一轮结果未确认</p>
         <h2 id="ct-test-confirm-title">解除主动测试锁？</h2>
         <p>请先核对核心管理员私聊，并确认上一轮测试已经结束。解除后可以重新发起测试，仍可能产生另一条真实消息。</p>
@@ -1819,8 +1818,7 @@ window.CompanionContactPage = (() => {
           <button type="button" class="ct-btn" data-test-action="cancel">继续等待</button>
           <button type="button" class="ct-btn is-primary" data-test-action="confirm-unlock">我已核实，解除锁定</button>
         </div>
-      </div>
-    </dialog>`;
+      </div>`;
     const item = TEST_INSTRUCTIONS.find(candidate => candidate.id === data.confirmTest);
     if (!item) return "";
     const synthetic = testUsesSynthetic(item.id);
@@ -1830,8 +1828,7 @@ window.CompanionContactPage = (() => {
       : item.id === "news" || data.testVariants?.environment === "external_news" ? "即时抓取当前配置的真实资讯源，使用带日期和原链接的有效条目"
       : item.id === "environment" && (data.testVariants?.environment || "weather") === "weather" ? "即时获取已配置角色所在地的真实天气观测"
       : "读取所选环境来源的当前真实事件";
-    return `<dialog class="ct-test-dialog" data-test-confirm-dialog aria-labelledby="ct-test-confirm-title">
-      <div class="ct-test-dialog-body">
+    return `<div class="ct-test-dialog-body">
         <p class="ct-test-dialog-kicker">${synthetic ? "合成事件" : "真实来源"} · 真实投递</p>
         <h2 id="ct-test-confirm-title">运行「${e(item.label)}」测试？</h2>
         <p>${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。来源获取失败会显示失败阶段。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递${data.testAllowLinkedAccounts ? `，以 ${e(recipientLabel())} 为起点按关联账号策略选择目标，可能转发到关联账号` : `到所选核心管理员私聊：${e(recipientLabel())}`}。消息正文按正式效果呈现，测试标识只保留在本页。</p>
@@ -1840,8 +1837,11 @@ window.CompanionContactPage = (() => {
           <button type="button" class="ct-btn" data-test-action="cancel">取消</button>
           <button type="button" class="ct-btn is-primary" data-test-action="confirm">确认并运行</button>
         </div>
-      </div>
-    </dialog>`;
+      </div>`;
+  }
+  function testConfirmationMarkup() {
+    const bodyMarkup = testConfirmationBodyMarkup();
+    return bodyMarkup ? `<dialog class="ct-test-dialog" data-test-confirm-dialog aria-labelledby="ct-test-confirm-title">${bodyMarkup}</dialog>` : "";
   }
   function testMatches(id) {
     const item = TEST_INSTRUCTIONS.find(candidate => candidate.id === id);
@@ -1976,7 +1976,7 @@ window.CompanionContactPage = (() => {
     ];
     const blocked = gates.filter(g => !g.ok).length;
     const paused = Date.parse(pauseUntil) > Date.now();
-    return `<div class="ct-gates">
+    return `<div class="ct-gates${data.gatesEnteringNow ? " is-entering" : ""}">
       <p class="ct-gates-sum${paused || value("enabled") === false ? " is-shut" : blocked ? " is-shut" : " is-open"}">${paused ? "全局暂停生效中" : value("enabled") === false ? "全局主动联系默认关闭" : "全局默认配置已读取"}</p>
       ${gates.map((g, i) => `<article class="ct-gate${g.ok ? " is-ok" : " is-shut"}" style="--i:${i}">
         <span class="ct-gate-mark">${g.ok ? ICON.check : ICON.alert}</span>
@@ -2504,6 +2504,39 @@ window.CompanionContactPage = (() => {
     if (next === "tests") void loadRecipients();
   }
   let testDialogCloseTimer = null;
+  let ctMainSlot = null, ctTestDialogHost = null, lastRenderedGatesReady = false, lastRenderedTestDialogHtml = "";
+  function useLiveDom() {
+    return Boolean(
+      root
+      && typeof document !== "undefined"
+      && typeof document.createElement === "function"
+      && typeof root.appendChild === "function"
+    );
+  }
+  function ensureContactSlots() {
+    if (!useLiveDom()) return false;
+    if (!ctMainSlot || ctMainSlot.parentNode !== root) {
+      root.innerHTML = "";
+      ctMainSlot = document.createElement("div");
+      ctMainSlot.className = "ct-main-slot";
+      root.appendChild(ctMainSlot);
+    }
+    if (!ctTestDialogHost || ctTestDialogHost.parentNode !== root) {
+      ctTestDialogHost = document.createElement("dialog");
+      ctTestDialogHost.className = "ct-test-dialog";
+      ctTestDialogHost.setAttribute("data-test-confirm-dialog", "");
+      ctTestDialogHost.setAttribute("aria-labelledby", "ct-test-confirm-title");
+      ctTestDialogHost.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+      ctTestDialogHost.addEventListener("click", event => {
+        if (event.target !== ctTestDialogHost) return;
+        const box = ctTestDialogHost.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+      });
+      lastRenderedTestDialogHtml = "";
+      root.appendChild(ctTestDialogHost);
+    }
+    return true;
+  }
   function canAnimateTestDialog(dialog) {
     return Boolean(
       dialog
@@ -2526,7 +2559,7 @@ window.CompanionContactPage = (() => {
       if (typeof afterClose === "function") afterClose();
       render();
     };
-    const dialog = root?.querySelector?.("[data-test-confirm-dialog]");
+    const dialog = ctTestDialogHost || root?.querySelector?.("[data-test-confirm-dialog]");
     if (dialog && typeof dialog.close === "function" && dialog.open) {
       dialog.close();
       if (canAnimateTestDialog(dialog)) {
@@ -2547,10 +2580,16 @@ window.CompanionContactPage = (() => {
     /* 换页方向同样在这一帧消费掉：下一次渲染（比如改一个开关）不该重放
        入场动画，否则每动一下整屏都要再滑一次。 */
     data.viewShiftNow = data.viewShift; data.viewShift = null;
+    const gatesReadyNow = data.view === "gates" && settingsAvailable();
+    data.gatesEnteringNow = gatesReadyNow && (!lastRenderedGatesReady || Boolean(data.viewShiftNow));
+    lastRenderedGatesReady = gatesReadyNow;
     const shift = data.viewShiftNow;
     const enter = shift ? (shift > 0 ? " is-from-next" : " is-from-prev") : "";
-    root.innerHTML = `<div class="ct-app">${railMarkup()}<div class="ct-main">`
+    const liveDom = ensureContactSlots();
+    const appMarkup = `<div class="ct-app">${railMarkup()}<div class="ct-main">`
       + `<div class="ct-view${enter}">${headMarkup()}${noticeMarkup()}${body()}</div></div></div>`;
+    if (liveDom) ctMainSlot.innerHTML = appMarkup;
+    else root.innerHTML = appMarkup;
     if (data.pendingWrite) for (const field of root.querySelectorAll("[data-field]")) field.disabled = true;
     const gateSettingsArea = document.getElementById("contact-gate-settings-area");
     if (gateSettingsArea) gateSettingsArea.hidden = data.view !== "gates";
@@ -2560,15 +2599,36 @@ window.CompanionContactPage = (() => {
     const screenObservationHost = root.querySelector?.("[data-screen-observation]");
     if (screenObservationHost) window.CompanionScreenObservation?.mount(screenObservationHost);
     else window.CompanionScreenObservation?.unmount();
-    const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
-    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
-      testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
-      testDialog.addEventListener("click", event => {
-        if (event.target !== testDialog) return;
-        const box = testDialog.getBoundingClientRect();
-        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
-      });
-      testDialog.showModal();
+    if (liveDom) {
+      const dialogBody = data.view === "tests" ? testConfirmationBodyMarkup() : "";
+      if (dialogBody && !testDialogCloseTimer) {
+        if (dialogBody !== lastRenderedTestDialogHtml) {
+          ctTestDialogHost.innerHTML = dialogBody;
+          lastRenderedTestDialogHtml = dialogBody;
+        }
+        if (typeof ctTestDialogHost.showModal === "function" && !ctTestDialogHost.open) {
+          ctTestDialogHost.showModal();
+        }
+      } else {
+        if (ctTestDialogHost.open && typeof ctTestDialogHost.close === "function") {
+          ctTestDialogHost.close();
+        }
+        if (!testDialogCloseTimer && lastRenderedTestDialogHtml) {
+          ctTestDialogHost.innerHTML = "";
+          lastRenderedTestDialogHtml = "";
+        }
+      }
+    } else {
+      const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
+      if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
+        testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+        testDialog.addEventListener("click", event => {
+          if (event.target !== testDialog) return;
+          const box = testDialog.getBoundingClientRect();
+          if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+        });
+        testDialog.showModal();
+      }
     }
     if (data.scanning && data.ready) {
       data.scanning = false;
@@ -3193,6 +3253,11 @@ window.CompanionContactPage = (() => {
     pendingFocus = null;
     clearTimeout(testDialogCloseTimer);
     testDialogCloseTimer = null;
+    if (ctTestDialogHost?.open && typeof ctTestDialogHost.close === "function") ctTestDialogHost.close();
+    ctMainSlot = null;
+    ctTestDialogHost = null;
+    lastRenderedGatesReady = false;
+    lastRenderedTestDialogHtml = "";
     if (autoRecoveryTimer !== null) clearTimeout(autoRecoveryTimer);
     autoRecoveryTimer = null;
     autoRecoveryKey = "";
