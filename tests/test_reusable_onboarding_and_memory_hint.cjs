@@ -511,3 +511,195 @@ test("setup wizard and memory companion dialog provide mobile capsule rail, auto
   assert.equal(scrollCalls.at(-1).behavior, "auto");
   sandbox.window.CompanionSetup.unmount();
 });
+
+test("probe-model updates button and result slot in place with zero full-page redraws and watchProactive dedupes identical polls", async () => {
+  const listeners = {};
+  let html = "";
+  let innerHtmlWrites = 0;
+  let scrollCalls = 0;
+  let resolveProbe = null;
+  const probeBtn = {
+    disabled: false,
+    textContent: "测一下",
+    attrs: new Map(),
+    setAttribute(k, v) { this.attrs.set(k, v); },
+    removeAttribute(k) { this.attrs.delete(k); },
+  };
+  const probeSlot = {innerHTML: ""};
+  const railEl = {
+    scrollWidth: 920,
+    clientWidth: 360,
+    scrollLeft: 0,
+    querySelector: sel => sel === '.setup-progress-btn[aria-current="step"]' ? {offsetLeft: 200, offsetWidth: 100} : null,
+    scrollTo: () => { scrollCalls += 1; },
+  };
+  const node = {
+    addEventListener: (name, fn) => { listeners[name] = fn; },
+    removeEventListener: name => { delete listeners[name]; },
+    querySelector(sel) {
+      if (sel === '[data-setup-action="probe-model"]') return probeBtn;
+      if (sel === "[data-setup-probe-slot]") return probeSlot;
+      if (sel === ".setup-progress") return railEl;
+      return null;
+    },
+    querySelectorAll: () => [],
+  };
+  Object.defineProperty(node, "innerHTML", {
+    get: () => html,
+    set: v => { html = v; innerHtmlWrites += 1; },
+  });
+
+  const status = {
+    step: "model",
+    binding_confirmed: true,
+    prepared: true,
+    ready: false,
+    completed: ["binding"],
+    skipped: [],
+    binding: {bound: true, confirmed: true, platform_id: "qq", account_id: "100", participant_id: "200"},
+    model: {provider_id: "p1", fallback_provider_id: "", providers: [{id: "p1", name: "P1", capabilities: ["text", "image"]}]},
+    host: {state: "running", accepting: true},
+  };
+  const pollResponses = [
+    {ready: false, proactive_test: {attempt_id: "att-1", state: "started", stages: [{stage: "model_route", state: "running"}]}},
+    {ready: false, proactive_test: {attempt_id: "att-1", state: "started", stages: [{stage: "model_route", state: "running"}]}},
+    {ready: false, proactive_test: {attempt_id: "att-1", state: "started", stages: [{stage: "model_route", state: "passed"}]}},
+    {ready: false, proactive_test: {attempt_id: "att-1", state: "delivered", stages: [{stage: "delivery", state: "passed"}]}},
+  ];
+  const product = {
+    request(method, route) {
+      if (method === "GET" && route === "setup/status") return Promise.resolve(status);
+      if (method === "POST" && route === "setup/model/probe") {
+        return new Promise(resolve => { resolveProbe = resolve; });
+      }
+      if (method === "POST" && route === "setup/proactive-test") {
+        return Promise.resolve({ready: false, state: "started", attempt_id: "att-1"});
+      }
+      if (method === "GET" && route === "setup/proactive-test/status") {
+        return Promise.resolve(pollResponses.shift() || {ready: false, proactive_test: {attempt_id: "att-1", state: "delivered"}});
+      }
+      return Promise.resolve({});
+    },
+    targets: () => [],
+    accounts: () => [],
+    personas: () => [],
+    refreshDirectory: async () => {},
+    role: () => null,
+    scopeKey: () => "",
+    unwrap: v => v,
+    relative: addr => addr.replace("/astrbot_plugin_private_companion/", ""),
+  };
+  const immediateTimeout = fn => { fn(); return 1; };
+  const sandbox = {
+    window: {CompanionProduct: product, AstrBotPluginPage: {}, matchMedia: () => ({matches: false})},
+    document: {documentElement: {dataset: {motion: "full"}}, querySelector: () => null},
+    Promise, Set, Map, String, Number, Object, Array, RegExp, Error, Date, JSON, Math,
+    setTimeout: immediateTimeout, clearTimeout: () => {},
+  };
+  vm.runInNewContext(hintSource, sandbox);
+  vm.runInNewContext(migrationReviewSource, sandbox);
+  vm.runInNewContext(migrationTableSource, sandbox);
+  vm.runInNewContext(setupSource, sandbox);
+
+  sandbox.window.CompanionSetup.mount(node);
+  await settle();
+  const writesBeforeProbe = innerHtmlWrites;
+  const scrollsBeforeProbe = scrollCalls;
+
+  listeners.click({target: {closest: sel => sel === "[data-setup-action]" ? {dataset: {setupAction: "probe-model"}} : null}});
+  assert.equal(probeBtn.disabled, true);
+  assert.equal(probeBtn.textContent, "测试中…");
+  assert.equal(innerHtmlWrites, writesBeforeProbe, "probe start must not rebuild full root.innerHTML");
+  assert.equal(scrollCalls, scrollsBeforeProbe, "probe start must not re-scroll step rail");
+
+  resolveProbe({provider_id: "p1", ok: true, status: "ok", latency_ms: 95, model: "gpt-4o"});
+  await settle();
+  assert.equal(probeBtn.disabled, false);
+  assert.equal(probeBtn.textContent, "测一下");
+  assert.match(probeSlot.innerHTML, /连通正常 · 耗时 95ms/);
+  assert.equal(innerHtmlWrites, writesBeforeProbe, "probe completion must not rebuild full root.innerHTML");
+  assert.equal(scrollCalls, scrollsBeforeProbe, "probe completion must not re-scroll step rail");
+
+  // Trigger proactive-test and verify identical started polls do NOT cause extra redraws.
+  status.step = "proactive_test";
+  listeners.click({target: {closest: sel => sel === "[data-setup-goto-step]" ? {dataset: {setupGotoStep: "proactive_test"}} : null}});
+  await settle();
+  listeners.change({target: {checked: true, dataset: {setupProactiveOptIn: ""}}});
+  const writesBeforeTest = innerHtmlWrites;
+  listeners.click({target: {closest: sel => sel === "[data-setup-action]" ? {dataset: {setupAction: "proactive-test"}} : null}});
+  await settle();
+  // Breakdown: 1 (act busy) + 1 (started notice) + 1 (poll #1 first stage snapshot) + 0 (poll #2 identical!)
+  //            + 1 (poll #3 stage passed) + 1 (poll #4 delivered terminal) + 1 (act finally) = 6 writes total
+  // (Previously: poll #2 re-rendered AND poll #4 double-rendered -> >= 8 writes).
+  assert.equal(innerHtmlWrites - writesBeforeTest, 6, "identical poll skipped and terminal poll renders once");
+  sandbox.window.CompanionSetup.unmount();
+});
+
+test("memory companion dialog recheck preserves scrollTop and updates in place when state is unchanged", async () => {
+  let stateToReturn = "missing";
+  let dialogInnerHtmlWrites = 0;
+  let dialogHtml = "";
+  let dialogClick = null;
+  const statusEl = {textContent: ""};
+  const recheckBtn = {
+    dataset: {mcDialogAction: "recheck"},
+    disabled: false,
+    textContent: "我已安装 / 启用，重新检测",
+    closest: sel => sel === "[data-mc-dialog-action]" ? recheckBtn : null,
+  };
+  const dialogNode = {
+    className: "",
+    isConnected: true,
+    open: false,
+    scrollTop: 0,
+    setAttribute() {},
+    addEventListener(type, fn) { if (type === "click") dialogClick = fn; },
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    querySelector: sel => sel === "[data-mc-dialog-status]" ? statusEl : null,
+  };
+  Object.defineProperty(dialogNode, "innerHTML", {
+    get: () => dialogHtml,
+    set: v => { dialogHtml = v; dialogInnerHtmlWrites += 1; },
+  });
+  const sandbox = {
+    window: {
+      CompanionProduct: {
+        request: () => Promise.resolve({
+          state: stateToReturn,
+          plugin_id: "astrbot_plugin_memory_companion",
+          display_name: "我会牢牢记住你",
+          repo_url: "https://github.com/menglimi/astrbot_plugin_memory_companion",
+          hint_dismissed: false,
+        }),
+      },
+    },
+    document: {
+      createElement: () => dialogNode,
+      body: {appendChild() {}},
+    },
+    Promise, Set, Map, String, Number, Object, Array, RegExp, Error, Date, JSON,
+  };
+  vm.runInNewContext(hintSource, sandbox);
+
+  const hint = sandbox.window.CompanionMemoryCompanionHint;
+  await hint.load();
+  hint.openGuideDialog();
+  assert.equal(dialogInnerHtmlWrites, 1);
+
+  // Scroll down inside the dialog, then recheck when state is still "missing".
+  dialogNode.scrollTop = 180;
+  await dialogClick({target: recheckBtn});
+  assert.equal(dialogInnerHtmlWrites, 1, "unchanged state recheck must not rewrite dialogNode.innerHTML");
+  assert.equal(dialogNode.scrollTop, 180);
+  assert.equal(recheckBtn.disabled, false);
+  assert.equal(recheckBtn.textContent, "我已安装 / 启用，重新检测");
+  assert.match(statusEl.textContent, /暂未检测到/);
+
+  // Now simulate plugin becoming connected: innerHTML updates once and scrollTop is restored.
+  stateToReturn = "connected";
+  await dialogClick({target: recheckBtn});
+  assert.equal(dialogInnerHtmlWrites, 2, "state transition updates dialog markup once");
+  assert.equal(dialogNode.scrollTop, 180, "dialog scrollTop must be restored across state transition");
+  assert.match(statusEl.textContent, /成功接通/);
+});

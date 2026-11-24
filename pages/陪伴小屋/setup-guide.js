@@ -3182,6 +3182,13 @@ window.CompanionSetup = (() => {
     </section>`;
   }
 
+  function renderProbeResultMarkup(probe) {
+    if (!probe) return "";
+    return `<p class="setup-probe-result ${probe.ok ? "is-ok" : "is-error"}" role="status">${probe.ok
+      ? `✓ 连通正常 · 耗时 ${probe.latency_ms}ms${probe.model ? ` · 模型 ${escape(probe.model)}` : ""}`
+      : `✗ 连通检测未通过（${escape(probe.status === "timeout" ? "超时" : probe.error || "失败")}）：${escape(probe.hint || "请核对 AstrBot 中的 Provider 配置。")}`}</p>`;
+  }
+
   function renderModel() {
     const model = state?.model || {};
     const providers = Array.isArray(model.providers) ? model.providers : [];
@@ -3226,9 +3233,7 @@ window.CompanionSetup = (() => {
             </select>
             <button type="button" class="button small" data-setup-action="probe-model" ${busy || modelProbeBusy || !providerId ? "disabled" : ""}>${modelProbeBusy ? "测试中…" : "测一下"}</button>
           </div></label>
-          ${probeForCurrent ? `<p class="setup-probe-result ${probeForCurrent.ok ? "is-ok" : "is-error"}" role="status">${probeForCurrent.ok
-            ? `✓ 连通正常 · 耗时 ${probeForCurrent.latency_ms}ms${probeForCurrent.model ? ` · 模型 ${escape(probeForCurrent.model)}` : ""}`
-            : `✗ 连通检测未通过（${escape(probeForCurrent.status === "timeout" ? "超时" : probeForCurrent.error || "失败")}）：${escape(probeForCurrent.hint || "请核对 AstrBot 中的 Provider 配置。")}`}</p>` : ""}
+          <div class="setup-probe-slot" data-setup-probe-slot>${renderProbeResultMarkup(probeForCurrent)}</div>
           <label class="setup-model-field"><span>全局备用模型（可选，主模型波动时自动回退）</span>
           <select name="setup-fallback-provider" ${busy ? "disabled" : ""}>
             <option value="">不使用备用模型</option>
@@ -3805,11 +3810,19 @@ window.CompanionSetup = (() => {
     const currentWatch = () => root && proactiveWatcher === watcher && mountGeneration === watcher.generation
       && !state?.ready && state?.proactive_test?.attempt_id === watcher.attemptId;
     try {
+      let lastSnapshot = JSON.stringify({
+        ready: Boolean(state?.ready),
+        proactive_test: state?.proactive_test || null,
+      });
       for (let attempt = 0; attempt < 205 && currentWatch(); attempt += 1) {
         const result = await product().request("GET", PREFIX + "/proactive-test/status", undefined, {timeoutMs: 10000});
         if (!currentWatch() || result?.proactive_test?.attempt_id !== watcher.attemptId) return;
+        const nextSnapshot = JSON.stringify({
+          ready: Boolean(result?.ready),
+          proactive_test: result?.proactive_test || null,
+        });
+        const changed = nextSnapshot !== lastSnapshot;
         state = {...state, ...result, ...(result.ready ? {step: "complete"} : {})};
-        render();
         const current = result?.proactive_test?.state;
         if (result?.ready || current !== "started") {
           if (current === "failed") proactiveOptIn = false;
@@ -3818,6 +3831,10 @@ window.CompanionSetup = (() => {
             : "投递结果未知；请核对目标私聊，不要再次发送。";
           render();
           return;
+        }
+        if (changed) {
+          lastSnapshot = nextSnapshot;
+          render();
         }
         await new Promise(resolve => setTimeout(resolve, 750));
       }
@@ -4266,6 +4283,57 @@ window.CompanionSetup = (() => {
     }
   }
 
+  function syncProbeSlotInPlace() {
+    const providerId = modelDraft || state?.model?.provider_id || "";
+    const probeForCurrent = modelProbeState && modelProbeState.provider_id === providerId ? modelProbeState : null;
+    const btn = root?.querySelector?.('[data-setup-action="probe-model"]');
+    const slot = root?.querySelector?.("[data-setup-probe-slot]");
+    if (!btn && !slot) return false;
+    if (btn) {
+      const disabled = Boolean(busy || modelProbeBusy || !providerId);
+      btn.disabled = disabled;
+      if (disabled) btn.setAttribute?.("disabled", "");
+      else btn.removeAttribute?.("disabled");
+      btn.textContent = modelProbeBusy ? "测试中…" : "测一下";
+    }
+    if (slot) {
+      slot.innerHTML = renderProbeResultMarkup(probeForCurrent);
+    }
+    return true;
+  }
+
+  async function probeSelectedModel() {
+    if (busy || modelProbeBusy) return;
+    const providerId = modelDraft || state?.model?.provider_id || "";
+    if (!providerId) {
+      notice = "请先选择一个 Provider 再测试连通性。";
+      render();
+      return;
+    }
+    const activeGeneration = mountGeneration;
+    modelProbeBusy = true;
+    if (!syncProbeSlotInPlace()) render();
+    try {
+      const result = await api("POST", "/model/probe", {provider_id: providerId});
+      if (mountGeneration !== activeGeneration) return;
+      modelProbeState = result;
+    } catch (error) {
+      if (mountGeneration !== activeGeneration) return;
+      modelProbeState = {
+        provider_id: providerId,
+        ok: false,
+        status: "failed",
+        error: error?.code || "Error",
+        hint: errorText(error, "连通检测失败，请核对 AstrBot 中的 Provider 配置。"),
+      };
+    } finally {
+      if (mountGeneration === activeGeneration) {
+        modelProbeBusy = false;
+        if (!syncProbeSlotInPlace()) render();
+      }
+    }
+  }
+
   async function saveSelectedModel({silentNotice = false} = {}) {
     const providerId = modelDraft || state?.model?.provider_id || "";
     const payload = {provider_id: providerId};
@@ -4341,18 +4409,6 @@ window.CompanionSetup = (() => {
         return;
       } else if (action === "prepare") {
         await api("POST", "/prepare", {});
-      } else if (action === "probe-model") {
-        const providerId = modelDraft || state?.model?.provider_id || "";
-        if (!providerId) throw new Error("请先选择一个 Provider 再测试连通性。");
-        modelProbeBusy = true;
-        render();
-        try {
-          modelProbeState = await api("POST", "/model/probe", {provider_id: providerId});
-        } finally {
-          modelProbeBusy = false;
-        }
-        render();
-        return;
       } else if (action === "save-model") {
         await saveSelectedModel();
         setupHealth = null;
@@ -4781,6 +4837,10 @@ window.CompanionSetup = (() => {
     }
     if (action === "save-inline-role") {
       void saveInlineRole();
+      return;
+    }
+    if (action === "probe-model") {
+      void probeSelectedModel();
       return;
     }
     if (action === "advanced-open" && (state?.ready || state?.prepared)) {

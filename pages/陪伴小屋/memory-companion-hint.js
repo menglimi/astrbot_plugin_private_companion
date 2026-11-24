@@ -315,18 +315,31 @@ window.CompanionMemoryCompanionHint = (() => {
         }
         if (action === "recheck") {
           button.disabled = true;
+          const prevLabel = button.textContent;
+          button.textContent = "检测中…";
           if (statusEl) statusEl.textContent = "正在重新检测「我会牢牢记住你」连接状态…";
+          const prevScroll = typeof dialogNode.scrollTop === "number" ? dialogNode.scrollTop : 0;
+          const prevState = info.state;
           const next = await load({force: true});
-          dialogNode.innerHTML = renderDialogBody(next || info);
-          const refreshedStatus = dialogNode.querySelector("[data-mc-dialog-status]");
-          if (refreshedStatus) {
-            refreshedStatus.textContent = next?.state === "connected"
-              ? "已检测到「我会牢牢记住你」成功接通！"
-              : next?.state === "disabled"
-              ? "检测到插件已安装但尚未启用，请到 AstrBot 插件管理启用后再测。"
-              : next?.state === "bridge_disabled"
-              ? "插件已启用，但协作桥接尚未打开，请检查记忆插件桥接开关。"
-              : "暂未检测到「我会牢牢记住你」，安装并重载插件后再点击重新检测。";
+          const resolved = next || info;
+          const statusText = resolved.state === "connected"
+            ? "已检测到「我会牢牢记住你」成功接通！"
+            : resolved.state === "external_other"
+            ? `已接入外部记忆插件〈${resolved.external_name || "外部记忆插件"}〉！`
+            : resolved.state === "disabled"
+            ? "检测到插件已安装但尚未启用，请到 AstrBot 插件管理启用后再测。"
+            : resolved.state === "bridge_disabled"
+            ? "插件已启用，但协作桥接尚未打开，请检查记忆插件桥接开关。"
+            : "暂未检测到「我会牢牢记住你」，安装并重载插件后再点击重新检测。";
+          if (resolved.state === prevState) {
+            button.disabled = false;
+            button.textContent = prevLabel || "我已安装 / 启用，重新检测";
+            if (statusEl) statusEl.textContent = statusText;
+          } else {
+            dialogNode.innerHTML = renderDialogBody(resolved);
+            const refreshedStatus = dialogNode.querySelector("[data-mc-dialog-status]");
+            if (refreshedStatus) refreshedStatus.textContent = statusText;
+            if (typeof dialogNode.scrollTop === "number") dialogNode.scrollTop = prevScroll;
           }
         }
       });
