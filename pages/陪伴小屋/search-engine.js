@@ -1101,6 +1101,17 @@
         aliases: ["模型单价", "汇率", "计价", "费用统计", "费率", "Token 价格"],
         location: { next: "manage", tab: "models", modelsTab: "pricing", root: "#modelWorkspace" },
       },
+      {
+        group: "models.tab",
+        groupTitle: "模型与连接",
+        section: "quota",
+        sectionTitle: "额度看板",
+        field: "model_quota_dashboard",
+        label: "多站点额度看板、自动识别接入与余额感知联动",
+        help: "统一监控多个中转站与官方 API 剩余余额，支持自动识别站点协议、汇率汇总以及多站点余额感知联动策略。",
+        aliases: ["额度看板", "多站点余额", "中转站余额", "NewAPI 额度", "神人站", "quota", "余额监控", "余额看板"],
+        location: { next: "manage", tab: "models", modelsTab: "quota", root: "#modelWorkspace" },
+      },
 
       /* 4. 8 Independent Standalone Pages */
       /* 4a. appearance-page.js */
