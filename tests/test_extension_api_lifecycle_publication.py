@@ -10,6 +10,7 @@ import threading
 import types
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from astrbot_plugin_private_companion.storage.json_backend import JsonStoreBackend
 from astrbot_plugin_private_companion.storage.path_generation import (
@@ -139,6 +140,7 @@ def _load_lifecycle_source() -> tuple[dict[str, Any], ast.ClassDef]:
         type_ignores=[],
     )
     namespace: dict[str, Any] = {
+        "__name__": "astrbot_plugin_private_companion.lifecycle_fixture",
         "_private_companion_plugin": None,
         "_private_companion_runtime": types.SimpleNamespace(
             lock=threading.RLock(),
@@ -205,6 +207,9 @@ def _prepare_for_termination(plugin: Any) -> None:
 
 class ExtensionApiLifecyclePublicationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        log_buffer = patch("astrbot_plugin_private_companion.log_buffer.install_log_buffer")
+        log_buffer.start()
+        self.addCleanup(log_buffer.stop)
         LIFECYCLE["_private_companion_plugin"] = None
         LIFECYCLE["_private_companion_runtime"].active_plugin = None
 
