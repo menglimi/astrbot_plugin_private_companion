@@ -685,6 +685,11 @@
 }
 .shell-panel-body { padding:var(--sp-4); }
 .shell-panel-body > :first-child { margin-top:0; }
+@media (max-width: 560px) {
+  :root { --shell-pad: var(--sp-2); }
+  #homeShell .shell-body { gap: var(--sp-2); }
+  .shell-panel-body { padding: var(--sp-3); }
+}
 
 /* 閰嶇疆缂栬緫鍣ㄥ湪闈㈡澘閲屼笉闇€瑕佸啀鑷甫涓€灞傚崱鐗囪竟妗嗏€斺€?   闈㈡澘鏈韩灏辨槸瀹瑰櫒锛屽弻灞傚崱鐗囦細璁╁眰绾у彉绯娿€?*/
 .shell-panel-body .config-section,

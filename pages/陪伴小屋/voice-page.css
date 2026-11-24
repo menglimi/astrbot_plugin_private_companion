@@ -188,8 +188,12 @@
   .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:760px){
-  /* 手机上常驻底部保存条会遮住字段，改成随内容排在最后。 */
-  #replyWorkspace.expression-voice-focus .wb-actions{position:static;bottom:auto}
+  /* 手机上常驻底部保存条会遮住字段，脏态也统一随内容排在最后。 */
+  #replyWorkspace.expression-voice-focus .wb-actions,
+  #replyWorkspace.expression-voice-focus .wb-actions.is-dirty{position:static;bottom:auto}
+}
+@media(pointer:coarse),(max-width:760px){
+  #replyWorkspace.expression-voice-focus .wb-label .wb-context-toggle{width:32px;height:32px;opacity:.82}
 }
 @media(max-width:560px){
   #replyWorkspace.expression-voice-focus .wb-fields,
@@ -233,7 +237,8 @@
 .voice-global-body{padding:var(--sp-3) var(--sp-4) var(--sp-4);border-top:1px solid var(--t-line)}
 .voice-global-body .host-options-jumps{margin:0 0 var(--sp-3)}
 @media(max-width:560px){
-  .voice-global-summary{align-items:flex-start;flex-direction:column;gap:var(--sp-1)}
+  .voice-global-summary{position:relative;align-items:flex-start;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) calc(var(--sp-5) + var(--sp-3)) var(--sp-3) var(--sp-3)}
+  .voice-global-summary::after{position:absolute;top:var(--sp-3);right:var(--sp-3)}
   .voice-global-body{padding:var(--sp-3)}
 }
 

@@ -121,7 +121,7 @@
   padding:var(--sp-4) var(--sp-5);margin:0 0 var(--sp-4);
   border:1px solid var(--t-line);border-radius:var(--r-lg);background:var(--t-surface);
 }
-.state-config-page .state-feature-action-copy{display:grid;gap:3px;flex:1;min-width:200px}
+.state-config-page .state-feature-action-copy{display:grid;gap:3px;flex:1;min-width:min(200px,100%)}
 .state-config-page .state-feature-action-kicker{font-size:var(--fs-micro);font-weight:600;color:var(--t-text-faint)}
 .state-config-page .state-feature-action-copy .state-feature-scope{margin:0;font-size:var(--fs-body);line-height:1.6;color:var(--t-text)}
 .state-config-page .state-feature-action-copy .state-edit-help{margin:2px 0 0;font-size:var(--fs-tiny);color:var(--t-text-faint)}
@@ -261,7 +261,9 @@
   .state-feature-detail.state-config-page{padding:var(--sp-3)}
   .state-config-page>header{display:grid;grid-template-columns:36px minmax(0,1fr);gap:var(--sp-2);padding:0 0 var(--sp-3);margin:0 0 var(--sp-3)}
   .state-config-page .state-feature-icon{width:36px;height:36px}
-  .state-config-page .state-feature-head-aside{grid-column:2;order:initial;max-width:none;width:100%;margin-left:0;justify-content:space-between}
+  .state-config-page .state-feature-head-aside{grid-column:2;order:initial;flex-wrap:wrap;min-width:0;max-width:none;width:100%;margin-left:0;justify-content:space-between}
+  .state-config-page .state-feature-scope-pill{white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%;line-height:1.4}
+  .state-config-page .state-feature-back,.state-config-page .state-feature-close{width:38px;height:38px}
   .state-config-page .state-workspace-overview{grid-template-columns:minmax(0,1fr);gap:var(--sp-3);padding:var(--sp-3);margin-bottom:var(--sp-3)}
   .state-config-page .state-workspace-overview[data-value-kind="narrative"] .state-workspace-current{padding:var(--sp-3) var(--sp-4)}
   .state-config-page .state-workspace-overview[data-value-kind="metric"] .state-workspace-current{padding:0 0 var(--sp-2);border-right:0}
@@ -352,4 +354,8 @@
   .state-home-settings .state-home-feature-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3) var(--sp-5)}
   .state-home-settings .state-home-display-policy,.state-home-settings .state-home-display-policy-note{grid-column:1/-1;text-align:left}
   .state-home-settings .state-home-feature-controls .state-config-row{flex-wrap:nowrap}
+}
+@media(max-width:420px){
+  .state-home-settings .state-home-feature-controls{gap:var(--sp-2) var(--sp-3)}
+  .state-home-settings .state-home-feature-controls .state-config-copy{white-space:normal}
 }

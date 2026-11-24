@@ -372,3 +372,96 @@ test("感知总览未选私聊窗口：感知总览未选择私聊窗口时，�
     win.CompanionPerceptionOverviewPage.unmount();
   }
 });
+
+test("移动端响应式：语音脏态取消吸底、外壳留白收紧、状态胶囊折行、滑条触控扩大与审阅单列平滑定位", async () => {
+  const voiceCss = read("voice-page.css");
+  const shellCss = read("shell.css");
+  const stateCss = read("state-config.css");
+  const contactCss = read("contact-page.css");
+  const understandingCss = read("understanding-page.css");
+  const hostCss = read("host-options.css");
+  const hubCss = read("learning-hub.css");
+  const reviewJs = read("learning-review-page.js");
+
+  // 语音页：手机端同时覆盖脏态 .wb-actions.is-dirty、箭头右上固定、触屏放大 ⓘ 热区
+  assert.match(voiceCss, /@media\(max-width:760px\)\{[\s\S]*?#replyWorkspace\.expression-voice-focus \.wb-actions\.is-dirty\{position:static;bottom:auto\}/);
+  assert.match(voiceCss, /@media\(pointer:coarse\),\(max-width:760px\)\{[\s\S]*?\.wb-context-toggle\{width:32px;height:32px/);
+  assert.match(voiceCss, /\.voice-global-summary::after\{position:absolute;top:var\(--sp-3\);right:var\(--sp-3\)\}/);
+
+  // 全局外壳：<=560px 收紧内边距与间距（全 token）
+  assert.match(shellCss, /@media \(max-width: 560px\)\s*\{\s*:root\s*\{\s*--shell-pad:\s*var\(--sp-2\);\s*\}\s*#homeShell \.shell-body\s*\{\s*gap:\s*var\(--sp-2\);\s*\}\s*\.shell-panel-body\s*\{\s*padding:\s*var\(--sp-3\);\s*\}\s*\}/);
+
+  // 状态详情卡：长胶囊安全折行、min(200px,100%)、38px 关闭按钮、<=420px 紧凑间距
+  assert.match(stateCss, /\.state-feature-action-copy\{[^}]*min-width:min\(200px,100%\)/);
+  assert.match(stateCss, /@media\(max-width:700px\)\{[\s\S]*?\.state-feature-scope-pill\{white-space:normal;overflow-wrap:anywhere/);
+  assert.match(stateCss, /@media\(max-width:700px\)\{[\s\S]*?\.state-feature-close\{width:38px;height:38px\}/);
+  assert.match(stateCss, /@media\(max-width:420px\)\{[\s\S]*?\.state-home-feature-controls\{gap:var\(--sp-2\) var\(--sp-3\)\}/);
+
+  // 主动联系滑条：触屏/手机 36px 热区 + 18px 圆点（居中公式沿用）、<=520px 单列满宽
+  assert.match(contactCss, /@media \(pointer:coarse\),\(max-width:760px\)\{\s*\.ct-weight-track\{--ct-thumb:18px;height:36px\}\s*\.ct-weight input\[type="range"\]\{height:36px\}\s*\.ct-quota input\[type="range"\]\{--ct-thumb:18px;height:36px\}\s*\}/);
+  assert.match(contactCss, /@media \(max-width:520px\)\{[\s\S]*?\.ct-purpose\{grid-template-columns:minmax\(0,1fr\)/);
+
+  // 理解页 & 宿主选项：长 badge 窄屏安全折行左对齐
+  assert.match(understandingCss, /\.understanding-scope-badge\{white-space:normal;text-align:left;max-width:100%;overflow-wrap:anywhere\}/);
+  assert.match(hostCss, /@media \(max-width: 560px\)\s*\{\s*\.host-options-scope-badge\s*\{[^}]*white-space:\s*normal;[^}]*text-align:\s*left/);
+
+  // 审阅中心 CSS：手机/触屏隐藏 kbd、显示返回队列按钮、底栏 2 列触控优化
+  assert.match(hubCss, /\.lh-review-back-queue\{display:inline-flex\}/);
+  assert.match(hubCss, /\.lh-review-nav-btn kbd\{display:none\}/);
+  assert.match(hubCss, /@media\(pointer:coarse\)\{[\s\S]*?min-height:40px/);
+
+  // 审阅中心运行时：390px 单列点击队列项平滑滚向详情卡，点击「返回队列」滚回队列，减弱动效降级 auto
+  for (const reduced of [false, true]) {
+    const scrolls = [];
+    const handlers = {};
+    const detailNode = {scrollIntoView: opts => scrolls.push({target: "detail", ...opts})};
+    const queueNode = {scrollIntoView: opts => scrolls.push({target: "queue", ...opts})};
+    const bridge = {
+      apiGet: async route => ({
+        status: "ok",
+        data: {
+          items: route.endsWith("/progress") ? [
+            {review_id: "g1", growth_title: "第一条", progress_note: "进展一", base_revision: 1, created_at: "2026-11-24T10:00:00Z", actions: ["accept", "reject"], view_token: "t1", evidence: []},
+            {review_id: "g2", growth_title: "第二条", progress_note: "进展二", base_revision: 1, created_at: "2026-11-24T09:00:00Z", actions: ["accept", "reject"], view_token: "t2", evidence: []},
+          ] : [],
+          next_cursor: null,
+        },
+      }),
+      apiPost: async () => ({status: "ok", data: {}}),
+    };
+    const root = {
+      isConnected: true, innerHTML: "", clientWidth: 390,
+      ownerDocument: {
+        documentElement: {dataset: {}},
+        querySelector: () => null,
+      },
+      addEventListener(type, fn) { handlers[type] = fn; },
+      removeEventListener() {},
+      querySelector(sel) {
+        if (sel === ".lh-review-detail") return detailNode;
+        if (sel === ".lh-review-queue") return queueNode;
+        return null;
+      },
+      querySelectorAll: () => [],
+    };
+    const win = {
+      CompanionProduct: {bridgeNow: () => bridge, unwrap: v => v},
+      lucide: {createIcons() {}},
+      matchMedia: q => ({matches: q.includes("max-width: 820px") ? true : q.includes("prefers-reduced-motion") ? reduced : false}),
+      addEventListener() {}, removeEventListener() {},
+    };
+    const ctx = vm.createContext({window: win, setTimeout, clearTimeout, Date, Math, Number, Object, Array, String, Set, Map});
+    vm.runInContext(reviewJs, ctx);
+    const page = ctx.window.CompanionLearningReviewPage;
+    page.mount(root, {sources: [{key: "r1", label: "角色 A", growthApi: `${PREFIX}t/r/growth`, replyApi: `${PREFIX}t/r/reply`}]});
+    for (let i = 0; i < 40 && page.state?.loading; i++) await flush();
+
+    assert.match(root.innerHTML, /data-review-back-queue/);
+    handlers.click({target: {closest: s => s === "[data-review-select]" ? {dataset: {reviewSelect: "r1::growth::g2"}} : null}});
+    assert.deepEqual(scrolls[0], {target: "detail", behavior: reduced ? "auto" : "smooth", block: "start"});
+
+    handlers.click({target: {closest: s => s === "[data-review-back-queue]" ? {dataset: {}} : null}});
+    assert.deepEqual(scrolls[1], {target: "queue", behavior: reduced ? "auto" : "smooth", block: "start"});
+    page.unmount();
+  }
+});

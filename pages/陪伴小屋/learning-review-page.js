@@ -384,7 +384,10 @@ window.CompanionLearningReviewPage = (() => {
               <span class="lh-review-chip is-type is-${current._type}">${typeFor(current)}</span>
               ${metric?`<span class="lh-review-chip is-metric">${e(metric)}</span>`:""}
             </div>
-            <span class="lh-review-position">第 ${String(position).padStart(2,"0")} / ${String(visible.length).padStart(2,"0")} 条</span>
+            <div class="lh-review-detail-head-meta">
+              <span class="lh-review-position">第 ${String(position).padStart(2,"0")} / ${String(visible.length).padStart(2,"0")} 条</span>
+              <button type="button" class="lh-review-back-queue" data-review-back-queue aria-label="返回待批阅队列">↑ 返回队列</button>
+            </div>
           </header>
           <dl class="lh-review-meta-grid">
             <div><dt>归属</dt><dd>${e(source)}</dd></div>
@@ -542,6 +545,28 @@ window.CompanionLearningReviewPage = (() => {
     data.error=!!failed;render();
   }
 
+  function isStackedLayout() {
+    try {
+      if (typeof window?.matchMedia === "function" && window.matchMedia("(max-width: 820px)").matches) return true;
+      const width = Number(root?.getBoundingClientRect?.().width || root?.clientWidth || 0);
+      if (width > 0 && width <= 820) return true;
+    } catch (_) {}
+    return false;
+  }
+  function prefersReducedMotion() {
+    try {
+      if (root?.ownerDocument?.documentElement?.dataset?.motion === "off") return true;
+      if (typeof window?.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return true;
+    } catch (_) {}
+    return false;
+  }
+  function scrollTargetIntoView(selector) {
+    if (!root?.querySelector) return;
+    try {
+      const node = root.querySelector(selector);
+      node?.scrollIntoView?.({behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start"});
+    } catch (_) { /* 精简测试 DOM 无需滚动 */ }
+  }
   function scrollSelectedIntoView() {
     if (!root?.querySelectorAll || !data?.selected) return;
     try {
@@ -602,6 +627,7 @@ window.CompanionLearningReviewPage = (() => {
     if (event.target.closest("[data-review-more]")) { void read(ticket, "append"); return; }
     if (event.target.closest("[data-review-prev]")) { selectStep(-1); return; }
     if (event.target.closest("[data-review-next]")) { selectStep(1); return; }
+    if (event.target.closest("[data-review-back-queue]")) { scrollTargetIntoView(".lh-review-queue"); return; }
     const bulk=event.target.closest("[data-review-bulk]");
     if(bulk){
       const action=bulk.dataset.reviewBulk;
@@ -612,7 +638,13 @@ window.CompanionLearningReviewPage = (() => {
       data.confirming={bulk:true,action};render();return;
     }
     const select = event.target.closest("[data-review-select]");
-    if (select) { data.selected=select.dataset.reviewSelect; data.confirming=null; render(); return; }
+    if (select) {
+      data.selected=select.dataset.reviewSelect;
+      data.confirming=null;
+      render();
+      if (isStackedLayout()) scrollTargetIntoView(".lh-review-detail");
+      return;
+    }
     const staged = event.target.closest("[data-review-stage]");
     if (staged) { data.confirming={key:staged.dataset.reviewKey,action:staged.dataset.reviewStage}; render(); return; }
     const confirm = event.target.closest("[data-review-confirm]");
