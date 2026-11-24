@@ -633,6 +633,152 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_global_http_proxy_priority_and_awareness_refresh_preserves_logo_version(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                from datetime import timedelta
+
+                now_box = [datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)]
+                seen_proxies: list[tuple[str, str]] = []
+
+                def factory(**session_kwargs):
+                    proxy_used = str(session_kwargs.get("proxy_url") or "")
+
+                    def handler(method, url, _kw):
+                        seen_proxies.append((url, proxy_used))
+                        if url.endswith("/api/status"):
+                            return _FakeResponse(
+                                200,
+                                {"success": True, "data": {"system_name": "示例站", "quota_display_type": "CNY", "quota_per_unit": 500000, "logo": "/brand/cat.svg"}},
+                            )
+                        if url.endswith("/brand/cat.svg"):
+                            return _FakeResponse(
+                                200,
+                                b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" fill="#3a8"/></svg>',
+                                {"Content-Type": "image/svg+xml"},
+                            )
+                        if url.endswith("/api/user/self"):
+                            return _FakeResponse(200, {"success": True, "data": {"quota": 2500000, "used_quota": 500000}})
+                        if url.endswith("/user/balance"):
+                            return _FakeResponse(200, {"is_available": True, "balance_infos": [{"currency": "CNY", "total_balance": "50.00"}]})
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+
+                    from tests.test_quota_domain_and_adapters import _FakeSession
+
+                    return _FakeSession(handler)
+
+                providers = [
+                    {
+                        "id": "prov_with_proxy",
+                        "name": "DeepSeek 代理",
+                        "provider_type": "chat_completion",
+                        "enable": True,
+                        "api_base": "https://api.deepseek.com/v1",
+                        "key": ["ds-key-1"],
+                        "proxy": "http://127.0.0.1:7891",
+                    },
+                    {
+                        "id": "prov_no_proxy",
+                        "name": "DeepSeek 默认",
+                        "provider_type": "chat_completion",
+                        "enable": True,
+                        "api_base": "https://api.deepseek.com/v1",
+                        "key": ["ds-key-2"],
+                        "proxy": "",
+                    },
+                ]
+                ctrl = _make_controller(tmp, providers=providers)
+                ctrl.now = lambda: now_box[0]
+                ctrl.context.get_config = lambda: {
+                    "provider_sources": providers,
+                    "provider": [],
+                    "http_proxy": "http://127.0.0.1:7890",
+                }
+                svc = QuotaWatchService(Path(tmp), ctrl, now=lambda: now_box[0], session_factory=factory)
+                _, _, tok = svc.store.read()
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "st-station-proxy",
+                        "name": "站级代理",
+                        "adapter_id": "deepseek",
+                        "source_mode": "astrbot_provider",
+                        "astrbot_provider_id": "prov_with_proxy",
+                        "proxy_url": "http://127.0.0.1:7892",
+                    },
+                )
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "st-prov-proxy",
+                        "name": "供应商代理",
+                        "adapter_id": "deepseek",
+                        "source_mode": "astrbot_provider",
+                        "astrbot_provider_id": "prov_with_proxy",
+                    },
+                )
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "st-global-proxy",
+                        "name": "全局代理",
+                        "adapter_id": "newapi",
+                        "base_url": "https://cat.example.test",
+                        "auth_token": "tok-cat",
+                        "participate_in_awareness": True,
+                    },
+                )
+
+                # Priority 1: station proxy_url beats provider proxy and global http_proxy
+                seen_proxies.clear()
+                await svc.refresh_station("st-station-proxy")
+                bal_proxies = [p for u, p in seen_proxies if u.endswith("/user/balance")]
+                self.assertEqual(bal_proxies, ["http://127.0.0.1:7892"])
+
+                # Priority 2: bound provider proxy beats global http_proxy
+                seen_proxies.clear()
+                await svc.refresh_station("st-prov-proxy")
+                bal_proxies = [p for u, p in seen_proxies if u.endswith("/user/balance")]
+                self.assertEqual(bal_proxies, ["http://127.0.0.1:7891"])
+
+                # Priority 3: global AstrBot http_proxy used when both station & provider proxy are empty
+                seen_proxies.clear()
+                snap_cat = await svc.refresh_station("st-global-proxy")
+                self.assertTrue(snap_cat.ok)
+                self.assertTrue(snap_cat.logo_version)
+                self.assertTrue(any(p == "http://127.0.0.1:7890" for u, p in seen_proxies if "cat.example.test" in u))
+                icon_payload = svc.get_icon_payload("st-global-proxy")
+                self.assertTrue(icon_payload["available"])
+                self.assertEqual(icon_payload["mime_type"], "image/svg+xml")
+                self.assertTrue(icon_payload["data_url"].startswith("data:image/svg+xml;base64,"))
+
+                # detect() also inherits AstrBot global http_proxy when proxy_url is empty
+                seen_proxies.clear()
+                await svc.detect(base_url="https://cat.example.test")
+                self.assertTrue(any(p == "http://127.0.0.1:7890" for u, p in seen_proxies if "cat.example.test" in u))
+
+                # Awareness refresh after snapshot becomes stale MUST preserve cached logo_version!
+                saved_logo_ver = snap_cat.logo_version
+                now_box[0] = now_box[0] + timedelta(minutes=10)
+                stations, _, _, _ = svc._effective_stations()
+                cat_spec = next(st for st in stations if st.id == "st-global-proxy")
+                refreshed_map = await svc.refresh_for_awareness([cat_spec])
+                self.assertEqual(refreshed_map["st-global-proxy"].logo_version, saved_logo_ver)
+                persisted_snaps, _ = svc.snapshot_cache.all()
+                self.assertEqual(persisted_snaps["st-global-proxy"].logo_version, saved_logo_ver)
+
+                # Metadata global http_proxy is safely ignored instead of crashing probes
+                ctrl.context.get_config = lambda: {
+                    "provider_sources": providers,
+                    "provider": [],
+                    "http_proxy": "http://169.254.169.254:8080",
+                }
+                self.assertEqual(svc._resolve_global_http_proxy(), "")
+
+                await svc.close()
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

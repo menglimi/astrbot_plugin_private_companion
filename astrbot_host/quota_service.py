@@ -25,6 +25,7 @@ from companion_v2.model_gateway.quota import (
     summarize_quota_portfolio,
 )
 
+from .exchange_rate import read_astrbot_http_proxy
 from .pricing_inventory import collect_provider_inventory, collect_usage_consumption
 from .quota_adapters import (
     AdapterProbeContext,
@@ -36,7 +37,7 @@ from .quota_adapters import (
     exchange_newapi_login_for_token,
     normalize_station_root,
 )
-from .quota_adapters.base import same_origin
+from .quota_adapters.base import same_origin, validate_proxy_url
 from .service_balance_provider import _catalog as _balance_provider_catalog
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,27 @@ class QuotaWatchService:
 
     def _base_controller(self) -> Any:
         return getattr(self.controller, "controller", self.controller)
+
+    def _resolve_global_http_proxy(self) -> str:
+        """Read optional AstrBot global ``http_proxy`` as lowest-priority fallback (SSRF-validated)."""
+        base = self._base_controller()
+        raw_proxy = read_astrbot_http_proxy(base) or ""
+        if not raw_proxy:
+            context = getattr(base, "context", None)
+            getter = getattr(context, "get_config", None) if context is not None else None
+            if callable(getter):
+                try:
+                    cfg = getter()
+                    if isinstance(cfg, dict):
+                        raw_proxy = str(cfg.get("http_proxy") or "").strip()
+                except Exception:
+                    raw_proxy = ""
+        if not raw_proxy:
+            return ""
+        try:
+            return validate_proxy_url(raw_proxy)
+        except QuotaHttpError:
+            return ""
 
     def _pricing_fx(self) -> tuple[str, float]:
         try:
@@ -375,6 +397,9 @@ class QuotaWatchService:
             if not proxy_url:
                 proxy_url = str(conn.get("proxy") or "").strip()
 
+        if not proxy_url:
+            proxy_url = self._resolve_global_http_proxy()
+
         ctx = AdapterProbeContext(
             base_url=base_url,
             auth_token=spec.auth_token,
@@ -560,8 +585,30 @@ class QuotaWatchService:
                 *(self.probe_spec(st, connections=connections, session=session, use_logo_cache=False) for st in to_probe),
                 return_exceptions=False,
             )
-            self.snapshot_cache.put_many(results, updated_at=now.isoformat())
+            merged_results: list[QuotaSnapshot] = []
             for snap in results:
+                prev = cached.get(snap.station_id)
+                if not snap.logo_version:
+                    preserved_ver = ""
+                    preserved_err = ""
+                    if prev is not None and (prev.logo_version or prev.logo_error):
+                        preserved_ver = prev.logo_version
+                        preserved_err = prev.logo_error
+                    else:
+                        mem_logo = self.logo_cache.get(snap.station_id)
+                        if mem_logo is not None and mem_logo.usable:
+                            preserved_ver = mem_logo.version
+                    if preserved_ver or preserved_err:
+                        snap = QuotaSnapshot(
+                            **{
+                                **snap.to_dict(),
+                                "logo_version": preserved_ver,
+                                "logo_error": preserved_err,
+                            }
+                        )
+                merged_results.append(snap)
+            self.snapshot_cache.put_many(merged_results, updated_at=now.isoformat())
+            for snap in merged_results:
                 cached[snap.station_id] = snap
         return cached
 
@@ -638,6 +685,9 @@ class QuotaWatchService:
                 effective_proxy = str(conn.get("proxy") or "").strip()
             pub = next((item for item in public_list if item["id"] == astrbot_provider_id), None)
             suggested_provider_label = str(pub["label"]) if pub else astrbot_provider_id
+
+        if not effective_proxy:
+            effective_proxy = self._resolve_global_http_proxy()
 
         result = await detect_station(
             target_url,
@@ -726,14 +776,18 @@ class QuotaWatchService:
         """One-time login exchange returning access_token & user_id; password is never persisted."""
         target_url = str(base_url or "").strip()
         effective_proxy = str(proxy_url or "").strip()
-        if astrbot_provider_id and not target_url:
+        if astrbot_provider_id:
             _, connections = self._discover_astrbot_suppliers(session=session)
             conn = connections.get(astrbot_provider_id)
-            if conn is None or not str(conn.get("api_base") or "").strip():
-                raise QuotaSettingsError("quota_provider_missing", "所选 AstrBot 供应商不存在或未配置接口地址")
-            target_url = str(conn.get("api_base") or "").strip()
-            if not effective_proxy:
+            if not target_url:
+                if conn is None or not str(conn.get("api_base") or "").strip():
+                    raise QuotaSettingsError("quota_provider_missing", "所选 AstrBot 供应商不存在或未配置接口地址")
+                target_url = str(conn.get("api_base") or "").strip()
+            if not effective_proxy and conn is not None:
                 effective_proxy = str(conn.get("proxy") or "").strip()
+
+        if not effective_proxy:
+            effective_proxy = self._resolve_global_http_proxy()
 
         try:
             return await exchange_newapi_login_for_token(

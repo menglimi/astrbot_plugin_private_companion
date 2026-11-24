@@ -62,7 +62,7 @@ class QuotaWebEndpoints:
             (prefix + "/quota/stations/delete", self.delete_station, ["POST"], "Delete one monitored quota station"),
             (prefix + "/quota/refresh", self.refresh, ["POST"], "Refresh all or one monitored quota station"),
             (prefix + "/quota/awareness", self.save_awareness, ["POST"], "Save multi-station balance awareness aggregation policy"),
-            (prefix + "/quota/icon", self.icon, ["GET"], "Read cached same-origin raster logo data URL for one station"),
+            (prefix + "/quota/icon", self.icon, ["GET"], "Read cached same-origin station logo data URL for one station"),
         ]
 
     @staticmethod
