@@ -63,7 +63,9 @@ class GroupReplyWebAPI:
                 (prefix + "/style/import/preview", self.style_import_preview, ["POST"], "Preview group rule import"),
                 (prefix + "/style/import/apply", self.style_import_apply, ["POST"], "Import group rules for review"),
                 (prefix + "/style/command", self.style_command, ["POST"],
-                 "Decide a group expression signal")]
+                 "Decide a group expression signal"),
+                (prefix + "/style/dedupe", self.style_dedupe, ["POST"],
+                 "Preview or consolidate duplicate group expression rules")]
         if not dynamic:
             return routes
 
@@ -315,7 +317,8 @@ class GroupReplyWebAPI:
         readable source instead of leaving the block undefined. Commands still
         require a real context.
         """
-        page = {"items": [], "counts": {}, "next_cursor": None, "unavailable_reason": reason}
+        page = {"items": [], "counts": {}, "kind_counts": {"style": 0, "grammar": 0}, "total_count": 0,
+                "next_cursor": None, "unavailable_reason": reason}
         if samples:
             # Stable defaults for a source whose session cannot be read yet.
             # The field names align with the runtime contract the samples page
@@ -401,9 +404,10 @@ class GroupReplyWebAPI:
         try:
             method = method or ("command" if command else "list")
             query = request.query
-            allowed = {"session_id"} if command else {"session_id", "state", "dimension", "limit", "after_id"}
+            allowed = {"session_id"} if command else {"session_id", "state", "dimension", "kind", "limit", "after_id"}
             if method == "list_samples":
                 allowed.discard("dimension")
+                allowed.discard("kind")
             if set(query.keys()) - allowed or any(len(query.getlist(key)) != 1 for key in query.keys()):
                 raise ValueError("unexpected or repeated style query fields")
             data = None
@@ -424,16 +428,23 @@ class GroupReplyWebAPI:
                     raise ValueError("nonfinite value")
 
                 data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique, parse_constant=finite)
-                fields = {
-                    "command": {"signal_id", "action", "view_token", "operation_key"},
-                    "sample_command": {"handle", "action", "view_token", "operation_key"},
-                    "revise": {"signal_id", "view_token", "operation_key", "changes"},
-                    "learn": set(), "export_pack": {"signal_ids"},
-                    "preview_import": {"package_json"},
-                    "import_pack": {"package_json", "preview_token", "operation_key"},
-                }[method]
-                if type(data) is not dict or (set(data) != fields and not (method == "export_pack" and not data)):
-                    raise ValueError("unexpected style decision fields")
+                if method == "dedupe_rules":
+                    if type(data) is not dict or type(data.get("dry_run")) is not bool:
+                        raise ValueError("unexpected style dedupe fields")
+                    expected = {"dry_run"} if data["dry_run"] else {"dry_run", "operation_key"}
+                    if set(data) != expected:
+                        raise ValueError("unexpected style dedupe fields")
+                else:
+                    fields = {
+                        "command": {"signal_id", "action", "view_token", "operation_key"},
+                        "sample_command": {"handle", "action", "view_token", "operation_key"},
+                        "revise": {"signal_id", "view_token", "operation_key", "changes"},
+                        "learn": set(), "export_pack": {"signal_ids"},
+                        "preview_import": {"package_json"},
+                        "import_pack": {"package_json", "preview_token", "operation_key"},
+                    }[method]
+                    if type(data) is not dict or (set(data) != fields and not (method == "export_pack" and not data)):
+                        raise ValueError("unexpected style decision fields")
                 if method in ("preview_import", "import_pack"):
                     package = data.pop("package_json")
                     if type(package) is not str or len(package.encode("utf-8")) > 250000:
@@ -505,6 +516,7 @@ class GroupReplyWebAPI:
                                      "limit": limit, "after_id": query.get("after_id") or None}
                         if method == "list":
                             arguments["dimension"] = query.get("dimension") or None
+                            arguments["kind"] = query.get("kind") or None
                         else:
                             result = getattr(manager, method)(operator=operator, context=context, **arguments)
                             return outcome_response(result)
@@ -548,3 +560,6 @@ class GroupReplyWebAPI:
 
     async def style_import_apply(self):
         return await self._style(command=True, method="import_pack")
+
+    async def style_dedupe(self):
+        return await self._style(command=True, method="dedupe_rules")

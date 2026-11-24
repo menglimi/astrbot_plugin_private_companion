@@ -211,7 +211,7 @@
 .lh-signal-list{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
 .lh-signal-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0}
 .lh-signal-head>div{display:flex;align-items:baseline;gap:var(--sp-2);min-width:0}
-.lh-signal-head-tools{display:flex!important;align-items:center!important;gap:var(--sp-2)!important}
+.lh-signal-head-tools{display:flex!important;align-items:center!important;flex-wrap:wrap;gap:var(--sp-2)!important}
 .lh-signal-head-tools .lh-command{min-height:34px}
 .lh-signal-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650}
 .lh-signal-head>div>span{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
@@ -265,6 +265,24 @@
 .lh-signal-confirm button{min-height:30px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
 .lh-signal-empty{padding:var(--sp-5) var(--sp-3);border:1px dashed var(--t-line);border-radius:var(--r-sm);color:var(--t-text-faint);text-align:center}
 .lh-signal-more{align-self:center;min-width:120px}
+.lh-signal-loaded-hint{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;white-space:nowrap}
+.lh-expression-dedupe{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.lh-expression-dedupe-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line)}
+.lh-expression-dedupe-head strong{color:var(--t-text-strong);font-size:var(--fs-body)}
+.lh-expression-dedupe-desc{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
+.lh-expression-dedupe-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-2)}
+.lh-expression-dedupe-empty{margin:0;color:var(--t-text-faint);font-size:var(--fs-tiny)}
+.lh-expression-dedupe-summary{display:flex;flex-direction:column;gap:var(--sp-2);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.lh-expression-dedupe-metrics{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-2)}
+.lh-expression-dedupe-metrics strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums}
+.lh-expression-dedupe-chips{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1)}
+.lh-expression-dedupe-chip{display:inline-flex;align-items:center;gap:var(--sp-1);padding:2px var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
+.lh-expression-dedupe-chip b{color:var(--t-text-strong);font-weight:650}
+.lh-expression-dedupe-groups{display:flex;flex-direction:column;gap:var(--sp-2);max-height:280px;overflow:auto;margin:0;padding:0;list-style:none}
+.lh-expression-dedupe-groups li{display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft)}
+.lh-expression-dedupe-group-head{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);font-size:var(--fs-micro)}
+.lh-expression-dedupe-groups p{margin:0;color:var(--t-text-strong);font-size:var(--fs-tiny);line-height:1.45;overflow-wrap:anywhere}
+.lh-expression-dedupe-groups small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.45;overflow-wrap:anywhere}
 .lh-expression-transfer{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
 .lh-expression-transfer-head{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line)}
 .lh-expression-transfer-head strong{color:var(--t-text-strong);font-size:var(--fs-body)}

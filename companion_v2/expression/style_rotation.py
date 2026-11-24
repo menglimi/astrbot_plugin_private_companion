@@ -179,3 +179,29 @@ def record(runtime, *, owner_key, scope_key, signal_ids, at, connection=None):
     else:
         with runtime.transaction() as active_connection:
             write(active_connection)
+
+
+def add_usage(runtime, *, owner_key, scope_key, signal_id, delta, last_injected_at=None, connection=None):
+    """Merge injection counts and latest injection time into a surviving rule."""
+    if type(delta) is not int or delta < 0 or (delta == 0 and last_injected_at is None):
+        return
+
+    def write(active_connection):
+        key = metadata_key(owner_key, scope_key, signal_id)
+        row = active_connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (key,)).fetchone()
+        entry = _entry(row["value"]) if row is not None else None
+        current_injections = entry[1] if entry is not None and entry[0] == scope_key else 0
+        current_last = entry[2] if entry is not None and entry[0] == scope_key else None
+        latest = max((item for item in (current_last, last_injected_at) if item is not None), default=None)
+        active_connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (key, json.dumps({"signal_id": signal_id, "scope_key": scope_key,
+                              "injections": current_injections + delta,
+                              "last_injected_at": stamp(latest) if latest is not None else None},
+                             ensure_ascii=False, sort_keys=True, separators=(",", ":"))))
+
+    if connection is not None:
+        write(connection)
+    else:
+        with runtime.transaction() as active_connection:
+            write(active_connection)
