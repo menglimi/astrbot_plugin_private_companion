@@ -24,7 +24,7 @@ window.CompanionStoragePage = (() => {
     native_image: "生图制品库",
     configuration: "配置库",
   };
-  let root = null, bridge = null, version = 0;
+  let root = null, bridge = null, version = 0, listenerAbort = null, boundListeners = [];
   let state = emptyState();
 
   function emptyState() {
@@ -53,7 +53,21 @@ window.CompanionStoragePage = (() => {
   }
 
   function live(ticket) { return ticket === version && root?.isConnected; }
-  function stop() { version += 1; root = null; bridge = null; }
+  function stop() {
+    version += 1;
+    if (listenerAbort) {
+      try { listenerAbort.abort(); } catch {}
+      listenerAbort = null;
+    }
+    if (root && boundListeners.length && typeof root.removeEventListener === "function") {
+      for (const [type, fn] of boundListeners) {
+        try { root.removeEventListener(type, fn); } catch {}
+      }
+    }
+    boundListeners = [];
+    root = null;
+    bridge = null;
+  }
 
   function sizeBar(status) {
     const categories = status?.inventory?.categories || {};
@@ -151,7 +165,7 @@ window.CompanionStoragePage = (() => {
           <span class="storage-health-badge${recommended ? " is-warn" : ""}">${recommended ? "建议瘦身" : "状态良好"}</span>
         </div>
         <div class="storage-health-head-actions">
-          <button class="button small" type="button" data-db-health-refresh${disabled ? " disabled" : ""}>重新体检</button>
+          <button class="button small" type="button" data-db-health-refresh${disabled || state.healthLoading ? " disabled" : ""}>${state.healthLoading ? "正在体检…" : "重新体检"}</button>
           <a class="button small" href="#manage/data/tuning">性能调优</a>
         </div>
       </div>
@@ -202,6 +216,41 @@ window.CompanionStoragePage = (() => {
     </section>`;
   }
 
+  function renderUsageCardBody() {
+    const status = state.status;
+    const inventory = status?.inventory || {};
+    const diskFree = (status?.restart_required ? status.destination_free_bytes : inventory.free_bytes) == null
+      ? "—" : formatBytes(status?.restart_required ? status.destination_free_bytes : inventory.free_bytes);
+    return `<header class="storage-usage-header"><div><span>插件资料占用</span><strong>${formatBytes(inventory.total_bytes)}</strong></div><div><span>${status?.restart_required ? "目标磁盘可用" : "所在磁盘可用"}</span><strong>${diskFree}</strong></div></header>
+        ${sizeBar(status)}`;
+  }
+
+  function renderMessageHtml() {
+    return state.message
+      ? `<p class="storage-message${state.error ? " is-error" : ""}" role="status">${text(state.message)}</p>` : "";
+  }
+
+  function renderHealthSlot() {
+    const slot = root?.querySelector?.("[data-storage-health-slot]");
+    if (!slot) return false;
+    slot.innerHTML = renderHealthCard();
+    return true;
+  }
+
+  function renderUsageSlot() {
+    const slot = root?.querySelector?.("[data-storage-usage-card]");
+    if (!slot) return false;
+    slot.innerHTML = renderUsageCardBody();
+    return true;
+  }
+
+  function renderMessageSlot() {
+    const slot = root?.querySelector?.("[data-storage-message-slot]");
+    if (!slot) return false;
+    slot.innerHTML = renderMessageHtml();
+    return true;
+  }
+
   function render() {
     if (!root) return;
     if (state.loading) {
@@ -209,10 +258,7 @@ window.CompanionStoragePage = (() => {
       return;
     }
     const status = state.status;
-    const inventory = status?.inventory || {};
     const preview = status?.cleanup_preview || {};
-    const message = state.message
-      ? `<p class="storage-message${state.error ? " is-error" : ""}" role="status">${text(state.message)}</p>` : "";
     const locationState = status?.restart_required
       ? `<p class="storage-location-note is-pending" role="status">待重启生效 · ${text(status.desired_root)}</p>`
       : `<p class="storage-location-note">当前目录 · ${text(status?.active_root || "")}</p>`;
@@ -225,14 +271,11 @@ window.CompanionStoragePage = (() => {
     const futureBackups = Number(preview.future_count) || 0;
     const futureNotice = futureBackups > 0
       ? `<p class="storage-location-note is-pending">${futureBackups} 份快照的时间晚于当前时间，暂不参与轮转；请核对系统时钟。</p>` : "";
-    const diskFree = (status?.restart_required ? status.destination_free_bytes : inventory.free_bytes) == null
-      ? "—" : formatBytes(status?.restart_required ? status.destination_free_bytes : inventory.free_bytes);
     root.innerHTML = `<div class="storage-dashboard">
-      <section class="storage-usage-card" aria-label="插件资料占用">
-        <header class="storage-usage-header"><div><span>插件资料占用</span><strong>${formatBytes(inventory.total_bytes)}</strong></div><div><span>${status?.restart_required ? "目标磁盘可用" : "所在磁盘可用"}</span><strong>${diskFree}</strong></div></header>
-        ${sizeBar(status)}
+      <section class="storage-usage-card" data-storage-usage-card aria-label="插件资料占用">
+        ${renderUsageCardBody()}
       </section>
-      ${renderHealthCard()}
+      <div class="storage-health-slot" data-storage-health-slot>${renderHealthCard()}</div>
       <form class="storage-settings" data-storage-form>
         <section class="storage-panel"><h4>存储位置</h4><div class="storage-location-grid">
           <label class="storage-path-field"><span class="storage-field-label">运行资料位置 <em>重启生效</em></span><input name="path" type="text" autocomplete="off" spellcheck="false" placeholder="留空使用 AstrBot 默认目录" value="${text(state.form.path)}"><small>填写其他磁盘上的绝对目录。</small>${locationState}</label>
@@ -267,7 +310,7 @@ window.CompanionStoragePage = (() => {
           </div>
         </section>
       </form>
-      ${message}
+      <div class="storage-message-slot" data-storage-message-slot>${renderMessageHtml()}</div>
     </div>`;
   }
 
@@ -336,7 +379,7 @@ window.CompanionStoragePage = (() => {
 
   async function loadHealth(ticket = version, {silent = false} = {}) {
     state.healthLoading = true;
-    if (!silent) render();
+    if (!silent && !renderHealthSlot()) render();
     try {
       const report = await call("GET", null, HEALTH_ROUTE);
       if (!live(ticket)) return;
@@ -356,7 +399,7 @@ window.CompanionStoragePage = (() => {
         : "数据库体检暂不可用，请稍后重试。";
     }
     state.healthLoading = false;
-    render();
+    if (!renderHealthSlot()) render();
   }
 
   async function load(ticket = version) {
@@ -375,6 +418,7 @@ window.CompanionStoragePage = (() => {
         auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? 1440,
       };
       state.loading = false;
+      state.healthLoading = true;
       state.error = false;
       state.message = "";
       render();
@@ -419,7 +463,9 @@ window.CompanionStoragePage = (() => {
     state.confirmingVacuum = false;
     state.message = "";
     state.error = false;
-    render();
+    const patchedStart = renderHealthSlot();
+    renderMessageSlot();
+    if (!patchedStart) render();
     try {
       const result = await call("POST", {
         vacuum: Boolean(vacuum),
@@ -463,7 +509,10 @@ window.CompanionStoragePage = (() => {
       if (code && !state.message.includes(code)) state.message += `（${code}）`;
     }
     state.compacting = false;
-    render();
+    const patchedEnd = renderHealthSlot();
+    renderUsageSlot();
+    renderMessageSlot();
+    if (!patchedEnd) render();
   }
 
   async function update(body, ticket = version) {
@@ -517,16 +566,29 @@ window.CompanionStoragePage = (() => {
     root = node;
     const ticket = version;
     state = emptyState();
-    root.addEventListener("input", event => {
+    const signal = typeof AbortController === "function"
+      ? (listenerAbort = new AbortController()).signal
+      : null;
+    const listen = (type, handler) => {
+      if (signal) {
+        root.addEventListener(type, handler, {signal});
+      } else {
+        root.addEventListener(type, handler);
+      }
+      boundListeners.push([type, handler]);
+    };
+    listen("input", event => {
+      if (!live(ticket)) return;
       if (event.target?.name === "auto_backup_interval_minutes") state.form.auto_backup_interval_minutes = event.target.value;
       if (event.target?.name === "path") state.form.path = event.target.value;
       if (event.target?.name === "backup_path") state.form.backup_path = event.target.value;
       if (event.target?.name === "retention_count") state.form.retention_count = event.target.value;
       if (event.target?.name === "retention_days") state.form.retention_days = event.target.value;
     });
-    root.addEventListener("submit", event => {
-      if (!event.target?.matches("[data-storage-form]")) return;
+    listen("submit", event => {
+      if (!live(ticket) || !event.target?.matches("[data-storage-form]")) return;
       event.preventDefault();
+      if (state.busy || state.compacting) return;
       update({
         action: "save",
         path: String(state.form.path || "").trim(),
@@ -537,7 +599,8 @@ window.CompanionStoragePage = (() => {
         auto_backup_interval_minutes: Number(state.form.auto_backup_interval_minutes),
       }, ticket);
     });
-    root.addEventListener("click", event => {
+    listen("click", event => {
+      if (!live(ticket)) return;
       const button = event.target?.closest("button");
       if (!button || state.busy || state.compacting) return;
       if (button.hasAttribute("data-storage-auto-toggle")) {
@@ -551,8 +614,14 @@ window.CompanionStoragePage = (() => {
       else if (button.hasAttribute("data-storage-clean-confirm")) update({action: "clean"}, ticket);
       else if (button.hasAttribute("data-db-health-refresh")) loadHealth(ticket);
       else if (button.hasAttribute("data-db-compact-normal")) runCompaction({vacuum: false}, ticket);
-      else if (button.hasAttribute("data-db-compact-vacuum-review")) { state.confirmingVacuum = true; render(); }
-      else if (button.hasAttribute("data-db-compact-vacuum-cancel")) { state.confirmingVacuum = false; render(); }
+      else if (button.hasAttribute("data-db-compact-vacuum-review")) {
+        state.confirmingVacuum = true;
+        if (!renderHealthSlot()) render();
+      }
+      else if (button.hasAttribute("data-db-compact-vacuum-cancel")) {
+        state.confirmingVacuum = false;
+        if (!renderHealthSlot()) render();
+      }
       else if (button.hasAttribute("data-db-compact-vacuum-confirm")) runCompaction({vacuum: true}, ticket);
     });
     render();

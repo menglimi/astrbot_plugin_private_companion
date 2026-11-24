@@ -21,7 +21,14 @@ function fakeButton(attrs = {}) {
   };
 }
 
-function mountStorage({canFullVacuum = true, compactError = null, healthError = null} = {}) {
+function mountStorage({
+  canFullVacuum = true,
+  compactError = null,
+  healthError = null,
+  delayHealthMs = 0,
+  querySelectorImpl = null,
+  useAbortController = true,
+} = {}) {
   const calls = [];
   let healthState = {
     status: "compact_recommended",
@@ -56,6 +63,7 @@ function mountStorage({canFullVacuum = true, compactError = null, healthError = 
       async apiGet(route) {
         calls.push(["GET", route]);
         if (route === "storage/health") {
+          if (delayHealthMs > 0) await new Promise(resolve => setTimeout(resolve, delayHealthMs));
           if (healthError instanceof Error) throw healthError;
           if (healthError) return healthError;
           return {status: "ok", data: healthState};
@@ -124,9 +132,44 @@ function mountStorage({canFullVacuum = true, compactError = null, healthError = 
       },
     },
   };
-  vm.runInNewContext(STORAGE_JS, {window, document: {}, setTimeout, clearTimeout, Promise, Number, String, Object, Array, Error, Math});
-  const handlers = {};
-  const root = {isConnected: true, innerHTML: "", addEventListener(name, fn) { handlers[name] = fn; }};
+  const sandbox = {window, document: {}, setTimeout, clearTimeout, Promise, Number, String, Object, Array, Error, Math};
+  if (useAbortController && typeof AbortController === "function") {
+    sandbox.AbortController = AbortController;
+  }
+  vm.runInNewContext(STORAGE_JS, sandbox);
+  const listeners = new Map();
+  let html = "";
+  let renderWrites = 0;
+  const root = {
+    isConnected: true,
+    get innerHTML() { return html; },
+    set innerHTML(val) { html = val; renderWrites += 1; },
+    get renderWrites() { return renderWrites; },
+    resetRenderWrites() { renderWrites = 0; },
+    querySelector: querySelectorImpl ? (selector => querySelectorImpl(selector, html)) : undefined,
+    addEventListener(name, fn, opts) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      const bucket = listeners.get(name);
+      bucket.add(fn);
+      if (opts && opts.signal && typeof opts.signal.addEventListener === "function") {
+        opts.signal.addEventListener("abort", () => bucket.delete(fn), {once: true});
+      }
+    },
+    removeEventListener(name, fn) {
+      listeners.get(name)?.delete(fn);
+    },
+    listenerCount(name) {
+      return listeners.get(name)?.size || 0;
+    },
+    dispatch(name, event) {
+      for (const fn of [...(listeners.get(name) || [])]) fn(event);
+    },
+  };
+  const handlers = {
+    input: event => root.dispatch("input", event),
+    submit: event => root.dispatch("submit", event),
+    click: event => root.dispatch("click", event),
+  };
   window.CompanionStoragePage.mount(root);
   return {window, root, handlers, calls};
 }
@@ -430,11 +473,26 @@ test("storage and tuning pages unpack rejected Error(machineCode) from host brid
   assert.match(tuningDenied.root.innerHTML, /请从 AstrBot 管理界面登录后查看性能调优/);
 });
 
-test("tuning page patches range drag in-place, uses backend auto baseline, handles async focusField, and cleans up listeners", async () => {
+test("tuning page patches range drag, numeric change, and advanced collapse in-place without rebuilding DOM or losing focus", async () => {
   const numberEl = {value: "64"};
+  const rangeEl = {value: "64"};
   const badgeEl = {textContent: ""};
   const statusEl = {textContent: ""};
   const saveBtnEl = {disabled: true};
+  const dotSlot = {innerHTML: ""};
+  const badgeSlot = {innerHTML: ""};
+  const resetSlot = {innerHTML: ""};
+  const resetAllSlot = {innerHTML: ""};
+  const discardSlot = {innerHTML: ""};
+  const panelClasses = new Set(["is-open"]);
+  const panelEl = {
+    classList: {toggle(name, force) { force ? panelClasses.add(name) : panelClasses.delete(name); }},
+  };
+  const toggleAttrs = {};
+  const toggleBtnEl = {
+    setAttribute(name, val) { toggleAttrs[name] = String(val); },
+  };
+  const toggleLabelEl = {textContent: "收起高级性能微调"};
   const fieldClasses = new Set();
   const barClasses = new Set();
   const fieldEl = {
@@ -447,12 +505,21 @@ test("tuning page patches range drag in-place, uses backend auto baseline, handl
   };
   const queriedSelectors = [];
   const queryMap = {
+    "[data-tuning-advanced]": panelEl,
+    "[data-tuning-advanced-toggle]": toggleBtnEl,
+    "[data-tuning-advanced-label]": toggleLabelEl,
     '[data-tuning-number="cache_size_mb"]': numberEl,
+    '[data-tuning-range="cache_size_mb"]': rangeEl,
     '[data-tuning-field="cache_size_mb"]': fieldEl,
+    '[data-tuning-field-dot="cache_size_mb"]': dotSlot,
+    '[data-tuning-field-badge="cache_size_mb"]': badgeSlot,
+    '[data-tuning-field-reset-slot="cache_size_mb"]': resetSlot,
     "[data-tuning-active-badge]": badgeEl,
+    "[data-tuning-reset-all-slot]": resetAllSlot,
     "[data-tuning-actions-bar]": barEl,
     "[data-tuning-actions-status]": statusEl,
     "[data-tuning-save]": saveBtnEl,
+    "[data-tuning-discard-slot]": discardSlot,
   };
 
   // Start on compat with delayed GET to test async focusField race + switching back to auto.
@@ -481,8 +548,21 @@ test("tuning page patches range drag in-place, uses backend auto baseline, handl
   assert.match(root.innerHTML, /档位默认 64 MB/);
   assert.match(root.innerHTML, /当前生效：自动推荐（平衡推荐）/);
 
-  // Range drag (`input` event) must update paired number input & dirty indicators IN PLACE with ZERO innerHTML rebuilds.
+  // Toggling advanced collapse must toggle .is-open / aria-expanded / label IN PLACE with ZERO innerHTML rebuilds.
   root.resetRenderWrites();
+  handlers.click({target: fakeButton({"data-tuning-advanced-toggle": ""})});
+  assert.equal(root.renderWrites, 0, "collapsing advanced panel must not rebuild root.innerHTML");
+  assert.equal(panelClasses.has("is-open"), false);
+  assert.equal(toggleAttrs["aria-expanded"], "false");
+  assert.equal(toggleLabelEl.textContent, "展开高级性能微调");
+
+  handlers.click({target: fakeButton({"data-tuning-advanced-toggle": ""})});
+  assert.equal(root.renderWrites, 0, "expanding advanced panel must not rebuild root.innerHTML");
+  assert.equal(panelClasses.has("is-open"), true);
+  assert.equal(toggleAttrs["aria-expanded"], "true");
+  assert.equal(toggleLabelEl.textContent, "收起高级性能微调");
+
+  // Range drag (`input` event) must update paired number input & dirty indicators IN PLACE with ZERO innerHTML rebuilds.
   handlers.input({
     target: {
       type: "range",
@@ -493,11 +573,15 @@ test("tuning page patches range drag in-place, uses backend auto baseline, handl
   assert.equal(root.renderWrites, 0, "range input must not rebuild root.innerHTML during drag");
   assert.equal(numberEl.value, "128");
   assert.equal(fieldClasses.has("is-overridden"), true);
+  assert.match(badgeSlot.innerHTML, /已微调/);
+  assert.match(resetSlot.innerHTML, /data-tuning-reset-field="cache_size_mb"/);
+  assert.match(resetAllSlot.innerHTML, /全部恢复档位默认（1）/);
+  assert.match(discardSlot.innerHTML, /data-tuning-discard/);
   assert.equal(barClasses.has("is-dirty"), true);
   assert.equal(saveBtnEl.disabled, false);
   assert.match(badgeEl.textContent, /已微调 1 项/);
 
-  // Committing via `change` triggers a single full render.
+  // Committing via `change` on range OR number input must ALSO stay in-place so Tab focus is never lost.
   handlers.change({
     target: {
       type: "range",
@@ -505,8 +589,41 @@ test("tuning page patches range drag in-place, uses backend auto baseline, handl
       getAttribute: name => (name === "data-tuning-input" ? "cache_size_mb" : null),
     },
   });
-  assert.equal(root.renderWrites, 1);
-  assert.match(root.innerHTML, /已微调 1 项/);
+  assert.equal(root.renderWrites, 0, "range change commit must not rebuild root.innerHTML");
+
+  // Number input `change` clamps out-of-range value to max (512) in-place without rebuilding DOM.
+  handlers.change({
+    target: {
+      type: "number",
+      value: "9999",
+      getAttribute: name => (name === "data-tuning-input" ? "cache_size_mb" : null),
+    },
+  });
+  assert.equal(root.renderWrites, 0, "number input change must not rebuild root.innerHTML or kick Tab focus");
+  assert.equal(numberEl.value, "512");
+  assert.equal(rangeEl.value, "512");
+  assert.equal(fieldClasses.has("is-overridden"), true);
+
+  // Invalid/empty number input `change` restores current effective value (512) in-place without rebuilding DOM.
+  handlers.change({
+    target: {
+      type: "number",
+      value: "",
+      getAttribute: name => (name === "data-tuning-input" ? "cache_size_mb" : null),
+    },
+  });
+  assert.equal(root.renderWrites, 0, "empty number change must restore value in-place");
+  assert.equal(numberEl.value, "512");
+
+  // Single-field reset updates in-place with ZERO innerHTML rebuilds.
+  handlers.click({target: fakeButton({"data-tuning-reset-field": "cache_size_mb"})});
+  assert.equal(root.renderWrites, 0, "single-field reset must not rebuild root.innerHTML");
+  assert.equal(numberEl.value, "64");
+  assert.equal(rangeEl.value, "64");
+  assert.equal(fieldClasses.has("is-overridden"), false);
+  assert.equal(resetSlot.innerHTML, "");
+  assert.equal(resetAllSlot.innerHTML, "");
+  assert.match(badgeEl.textContent, /当前生效：自动推荐/);
 
   // Remounting on the same root must abort prior listeners so listener count stays 1 per event type.
   assert.equal(root.listenerCount("click"), 1);
@@ -515,6 +632,73 @@ test("tuning page patches range drag in-place, uses backend auto baseline, handl
   assert.equal(root.listenerCount("input"), 1);
   assert.equal(root.listenerCount("change"), 1);
   window.CompanionTuningPage.unmount();
+  assert.equal(root.listenerCount("click"), 0);
+});
+
+test("storage page updates DB health card, refresh, vacuum confirm, and compaction in dedicated local slots without rebuilding form", async () => {
+  const healthSlot = {innerHTML: ""};
+  const usageSlot = {innerHTML: ""};
+  const messageSlot = {innerHTML: ""};
+  const slotMap = {
+    "[data-storage-health-slot]": healthSlot,
+    "[data-storage-usage-card]": usageSlot,
+    "[data-storage-message-slot]": messageSlot,
+  };
+
+  const {window, root, handlers} = mountStorage({
+    delayHealthMs: 20,
+    querySelectorImpl: selector => slotMap[selector] || null,
+  });
+
+  // Wait for GET storage to paint form & initial loading health slot, BEFORE delayed GET storage/health returns.
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.match(root.innerHTML, /data-storage-health-slot/);
+  assert.match(root.innerHTML, /正在体检…/);
+  assert.match(root.innerHTML, /name="path"/);
+
+  // User starts typing a path while background silent health check is still in flight.
+  handlers.input({target: {name: "path", value: "E:\\NewAstrBotData"}});
+  root.resetRenderWrites();
+
+  // Wait for silent loadHealth() to complete -> must ONLY patch healthSlot, NEVER rewrite root.innerHTML!
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(root.renderWrites, 0, "silent loadHealth must not rebuild root.innerHTML or drop path input focus");
+  assert.match(healthSlot.innerHTML, /建议瘦身/);
+  assert.match(healthSlot.innerHTML, /1670 条可优化/);
+
+  // Manual health refresh -> patches ONLY healthSlot (loading state -> refreshed card), ZERO root.innerHTML rebuilds.
+  handlers.click({target: fakeButton({"data-db-health-refresh": ""})});
+  assert.equal(root.renderWrites, 0, "manual health refresh start must not rebuild root.innerHTML");
+  assert.match(healthSlot.innerHTML, /正在体检…/);
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(root.renderWrites, 0, "manual health refresh completion must not rebuild root.innerHTML");
+  assert.match(healthSlot.innerHTML, /重新体检/);
+
+  // VACUUM review / cancel toggles ONLY healthSlot.
+  handlers.click({target: fakeButton({"data-db-compact-vacuum-review": ""})});
+  assert.equal(root.renderWrites, 0, "VACUUM confirm open must not rebuild root.innerHTML");
+  assert.match(healthSlot.innerHTML, /确认执行深度整理压缩（全量 VACUUM）/);
+  handlers.click({target: fakeButton({"data-db-compact-vacuum-cancel": ""})});
+  assert.equal(root.renderWrites, 0, "VACUUM confirm cancel must not rebuild root.innerHTML");
+  assert.doesNotMatch(healthSlot.innerHTML, /确认执行深度整理压缩（全量 VACUUM）/);
+
+  // Normal compaction updates healthSlot + usageSlot + messageSlot, ZERO root.innerHTML rebuilds.
+  handlers.click({target: fakeButton({"data-db-compact-normal": ""})});
+  assert.equal(root.renderWrites, 0, "compaction start must not rebuild root.innerHTML");
+  assert.match(healthSlot.innerHTML, /正在瘦身…/);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(root.renderWrites, 0, "compaction finish must not rebuild root.innerHTML or drop form focus");
+  assert.match(healthSlot.innerHTML, /常规无损瘦身完成/);
+  assert.match(usageSlot.innerHTML, /210\.0 MB/);
+  assert.match(messageSlot.innerHTML, /数据库瘦身完成/);
+
+  // Remounting cleans up prior listeners cleanly.
+  assert.equal(root.listenerCount("click"), 1);
+  window.CompanionStoragePage.mount(root);
+  assert.equal(root.listenerCount("click"), 1);
+  assert.equal(root.listenerCount("input"), 1);
+  assert.equal(root.listenerCount("submit"), 1);
+  window.CompanionStoragePage.unmount();
   assert.equal(root.listenerCount("click"), 0);
 });
 

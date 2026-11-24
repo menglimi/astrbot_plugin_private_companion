@@ -338,6 +338,9 @@
   padding:var(--sp-4);
   border-top:1px solid var(--t-line);
 }
+.tuning-inline-slot{
+  display:contents;
+}
 
 .tuning-group{
   display:grid;

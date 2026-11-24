@@ -169,6 +169,32 @@ window.CompanionTuningPage = (() => {
     return found ? found.label : profileId;
   }
 
+  function renderFieldOverrideDot(overridden) {
+    return overridden ? `<span class="tuning-override-dot" title="已手动微调"></span>` : "";
+  }
+
+  function renderFieldOverrideBadge(overridden) {
+    return overridden ? `<span class="tuning-badge">已微调</span>` : "";
+  }
+
+  function renderFieldResetButton(key, overridden) {
+    return overridden
+      ? `<button type="button" class="tuning-reset-link" data-tuning-reset-field="${text(key)}"${state.busy ? " disabled" : ""}>恢复默认</button>`
+      : "";
+  }
+
+  function renderResetAllButton(overrideCount) {
+    return overrideCount > 0
+      ? `<button type="button" class="tuning-reset-link" data-tuning-reset-all${state.busy ? " disabled" : ""}>全部恢复档位默认（${overrideCount}）</button>`
+      : "";
+  }
+
+  function renderDiscardButton(dirty) {
+    return dirty
+      ? `<button type="button" class="button small" data-tuning-discard${state.busy ? " disabled" : ""}>撤销更改</button>`
+      : "";
+  }
+
   function renderField(spec, baseline, effective, overridden, clampInfo) {
     const value = overridden ? state.draftOverrides[spec.key] : baseline[spec.key];
     const displayValue = value ?? effective[spec.key];
@@ -209,13 +235,13 @@ window.CompanionTuningPage = (() => {
     return `<div class="${classes}" data-tuning-field="${text(spec.key)}">
       <div class="tuning-field-top">
         <div class="tuning-field-label-wrap">
-          ${overridden ? `<span class="tuning-override-dot" title="已手动微调"></span>` : ""}
+          <span class="tuning-inline-slot" data-tuning-field-dot="${text(spec.key)}">${renderFieldOverrideDot(overridden)}</span>
           <span class="tuning-field-label">${text(spec.label)}</span>
-          ${overridden ? `<span class="tuning-badge">已微调</span>` : ""}
+          <span class="tuning-inline-slot" data-tuning-field-badge="${text(spec.key)}">${renderFieldOverrideBadge(overridden)}</span>
         </div>
         <div class="tuning-field-tags">
           <span class="tuning-apply-tag">${text(spec.apply_mode || (spec.hot_reload ? "立即热生效" : "下次打开副库生效"))}</span>
-          ${overridden ? `<button type="button" class="tuning-reset-link" data-tuning-reset-field="${text(spec.key)}"${state.busy ? " disabled" : ""}>恢复默认</button>` : ""}
+          <span class="tuning-inline-slot" data-tuning-field-reset-slot="${text(spec.key)}">${renderFieldResetButton(spec.key, overridden)}</span>
         </div>
       </div>
       <p class="tuning-field-hint">${text(spec.effect_hint)}</p>
@@ -347,11 +373,11 @@ window.CompanionTuningPage = (() => {
         <div class="tuning-advanced-header">
           <button type="button" class="tuning-advanced-toggle" aria-expanded="${state.advancedOpen}" data-tuning-advanced-toggle>
             <span class="tuning-chevron" aria-hidden="true">▸</span>
-            <span>${state.advancedOpen ? "收起高级性能微调" : "展开高级性能微调"}</span>
+            <span data-tuning-advanced-label>${state.advancedOpen ? "收起高级性能微调" : "展开高级性能微调"}</span>
           </button>
           <div class="tuning-advanced-meta">
             <span>共 ${(data.fields || []).length} 项参数 · 仅保存你改过的项，其余始终跟随档位</span>
-            ${overrideCount > 0 ? `<button type="button" class="tuning-reset-link" data-tuning-reset-all${state.busy ? " disabled" : ""}>全部恢复档位默认（${overrideCount}）</button>` : ""}
+            <span class="tuning-inline-slot" data-tuning-reset-all-slot>${renderResetAllButton(overrideCount)}</span>
           </div>
         </div>
         <div class="tuning-advanced-collapse">
@@ -365,7 +391,7 @@ window.CompanionTuningPage = (() => {
         <span class="tuning-actions-status" data-tuning-actions-status>${dirtyStatusText(dirty)}</span>
         <div class="tuning-actions-buttons">
           <button type="button" class="button primary small" data-tuning-save${state.busy || !dirty ? " disabled" : ""}>${state.busy ? "正在应用…" : "保存并立即生效"}</button>
-          ${dirty ? `<button type="button" class="button small" data-tuning-discard${state.busy ? " disabled" : ""}>撤销更改</button>` : ""}
+          <span class="tuning-inline-slot" data-tuning-discard-slot>${renderDiscardButton(dirty)}</span>
           <button type="button" class="button small" data-tuning-reload${state.busy ? " disabled" : ""}>刷新状态</button>
         </div>
       </div>
@@ -478,67 +504,156 @@ window.CompanionTuningPage = (() => {
     }
   }
 
+  function syncAdvancedPanelOpen() {
+    const panel = root?.querySelector?.("[data-tuning-advanced]");
+    if (!panel) return false;
+    panel.classList?.toggle?.("is-open", state.advancedOpen);
+    const toggleBtn = root.querySelector("[data-tuning-advanced-toggle]");
+    if (toggleBtn?.setAttribute) {
+      toggleBtn.setAttribute("aria-expanded", String(state.advancedOpen));
+    }
+    const labelEl = root.querySelector("[data-tuning-advanced-label]");
+    if (labelEl) {
+      labelEl.textContent = state.advancedOpen ? "收起高级性能微调" : "展开高级性能微调";
+    }
+    return true;
+  }
+
   function focusField(fieldKey) {
     const validKey = normalizeFieldKey(fieldKey);
     if (!validKey) return;
     state.advancedOpen = true;
     state.highlightField = validKey;
     if (!state.loading && state.data) {
-      render();
+      if (syncAdvancedPanelOpen()) {
+        if (typeof root?.querySelectorAll === "function") {
+          for (const el of root.querySelectorAll("[data-tuning-field]")) {
+            el.classList?.toggle?.("is-highlighted", el.getAttribute?.("data-tuning-field") === validKey);
+          }
+        }
+      } else {
+        render();
+      }
       scrollToHighlightedField();
     }
   }
 
-  function syncDraftIndicators(changedKey, numericValue, sourceType) {
-    if (!root?.querySelector) return;
+  function syncDraftIndicators(changedKey, value, sourceType, {commit = false} = {}) {
+    if (!root?.querySelector) return false;
+    let touched = false;
     const validKey = normalizeFieldKey(changedKey);
     if (validKey) {
-      if (sourceType === "range") {
+      if (sourceType === "range" || (commit && sourceType !== "enum")) {
         const numberEl = root.querySelector(`[data-tuning-number="${validKey}"]`);
-        if (numberEl) numberEl.value = String(numericValue);
-      } else if (sourceType === "number") {
-        const rangeEl = root.querySelector(`[data-tuning-range="${validKey}"]`);
-        if (rangeEl) rangeEl.value = String(numericValue);
+        if (numberEl) {
+          numberEl.value = String(value);
+          touched = true;
+        }
       }
+      if (sourceType === "number" || (commit && sourceType !== "enum")) {
+        const rangeEl = root.querySelector(`[data-tuning-range="${validKey}"]`);
+        if (rangeEl) {
+          rangeEl.value = String(value);
+          touched = true;
+        }
+      }
+      if (sourceType === "enum" && typeof root.querySelectorAll === "function") {
+        const radios = root.querySelectorAll(`[data-tuning-enum-key="${validKey}"]`);
+        for (const radio of radios) {
+          const active = String(radio.getAttribute?.("data-tuning-enum-val")) === String(value);
+          radio.classList?.toggle?.("is-active", active);
+          radio.setAttribute?.("aria-checked", String(active));
+          touched = true;
+        }
+      }
+      const base = baselineFor(state.draftProfile);
+      const isOverridden = base[validKey] !== value;
       const fieldEl = root.querySelector(`[data-tuning-field="${validKey}"]`);
       if (fieldEl?.classList?.toggle) {
-        const base = baselineFor(state.draftProfile);
-        fieldEl.classList.toggle("is-overridden", base[validKey] !== numericValue);
+        fieldEl.classList.toggle("is-overridden", isOverridden);
+        touched = true;
+      }
+      const dotSlot = root.querySelector(`[data-tuning-field-dot="${validKey}"]`);
+      if (dotSlot) {
+        dotSlot.innerHTML = renderFieldOverrideDot(isOverridden);
+        touched = true;
+      }
+      const badgeSlot = root.querySelector(`[data-tuning-field-badge="${validKey}"]`);
+      if (badgeSlot) {
+        badgeSlot.innerHTML = renderFieldOverrideBadge(isOverridden);
+        touched = true;
+      }
+      const resetSlot = root.querySelector(`[data-tuning-field-reset-slot="${validKey}"]`);
+      if (resetSlot) {
+        resetSlot.innerHTML = renderFieldResetButton(validKey, isOverridden);
+        touched = true;
       }
     }
     const overrideCount = activeOverrideCount();
     const dirty = isDirty();
     const badge = root.querySelector("[data-tuning-active-badge]");
-    if (badge) badge.textContent = computeActiveBadgeLabel(overrideCount);
+    if (badge) {
+      badge.textContent = computeActiveBadgeLabel(overrideCount);
+      touched = true;
+    }
+    const resetAllSlot = root.querySelector("[data-tuning-reset-all-slot]");
+    if (resetAllSlot) {
+      resetAllSlot.innerHTML = renderResetAllButton(overrideCount);
+      touched = true;
+    }
     const bar = root.querySelector("[data-tuning-actions-bar]");
-    if (bar?.classList?.toggle) bar.classList.toggle("is-dirty", dirty);
+    if (bar?.classList?.toggle) {
+      bar.classList.toggle("is-dirty", dirty);
+      touched = true;
+    }
     const status = root.querySelector("[data-tuning-actions-status]");
-    if (status) status.textContent = dirtyStatusText(dirty);
+    if (status) {
+      status.textContent = dirtyStatusText(dirty);
+      touched = true;
+    }
     const saveBtn = root.querySelector("[data-tuning-save]");
     if (saveBtn) {
       saveBtn.disabled = state.busy || !dirty;
       if (typeof saveBtn.toggleAttribute === "function") {
         saveBtn.toggleAttribute("disabled", state.busy || !dirty);
       }
+      touched = true;
     }
+    const discardSlot = root.querySelector("[data-tuning-discard-slot]");
+    if (discardSlot) {
+      discardSlot.innerHTML = renderDiscardButton(dirty);
+      touched = true;
+    }
+    return touched;
   }
 
-  function handleNumericInput(key, rawValue, {inPlace = false, sourceType = ""} = {}) {
+  function handleNumericInput(key, rawValue, {inPlace = true, sourceType = "", commit = false} = {}) {
     const spec = (state.data?.fields || []).find(item => item.key === key);
     if (!spec) return;
+    const base = baselineFor(state.draftProfile);
     const parsed = Number.parseInt(String(rawValue), 10);
-    if (!Number.isFinite(parsed)) return;
+    if (!Number.isFinite(parsed)) {
+      if (commit) {
+        const current = Object.prototype.hasOwnProperty.call(state.draftOverrides, key)
+          ? state.draftOverrides[key]
+          : (base[key] ?? state.data?.values?.[key]);
+        if (current !== undefined && !syncDraftIndicators(key, current, sourceType, {commit: true})) {
+          render();
+        }
+      }
+      return;
+    }
     const min = spec.minimum ?? parsed;
     const max = spec.maximum ?? parsed;
-    if (inPlace && sourceType === "number" && (parsed < min || parsed > max)) {
+    if (inPlace && !commit && sourceType === "number" && (parsed < min || parsed > max)) {
       return;
     }
     const clamped = Math.min(max, Math.max(min, parsed));
-    const base = baselineFor(state.draftProfile);
     if (base[key] === clamped) delete state.draftOverrides[key];
     else state.draftOverrides[key] = clamped;
     if (inPlace) {
-      syncDraftIndicators(key, clamped, sourceType);
+      const synced = syncDraftIndicators(key, clamped, sourceType, {commit});
+      if (!synced && commit) render();
     } else {
       render();
     }
@@ -582,7 +697,8 @@ window.CompanionTuningPage = (() => {
       if (!live(ticket) || state.busy) return;
       const key = event.target?.getAttribute?.("data-tuning-input");
       if (!key) return;
-      handleNumericInput(key, event.target.value, {inPlace: false});
+      const sourceType = event.target.type === "range" ? "range" : "number";
+      handleNumericInput(key, event.target.value, {inPlace: true, sourceType, commit: true});
     });
 
     listen("click", event => {
@@ -634,7 +750,7 @@ window.CompanionTuningPage = (() => {
       }
       if (button.hasAttribute("data-tuning-advanced-toggle")) {
         state.advancedOpen = !state.advancedOpen;
-        render();
+        if (!syncAdvancedPanelOpen()) render();
         return;
       }
       const enumKey = button.getAttribute?.("data-tuning-enum-key");
@@ -643,13 +759,18 @@ window.CompanionTuningPage = (() => {
         const base = baselineFor(state.draftProfile);
         if (base[enumKey] === enumVal) delete state.draftOverrides[enumKey];
         else state.draftOverrides[enumKey] = enumVal;
-        render();
+        if (!syncDraftIndicators(enumKey, enumVal, "enum", {commit: true})) render();
         return;
       }
       const resetKey = button.getAttribute?.("data-tuning-reset-field");
       if (resetKey) {
         delete state.draftOverrides[resetKey];
-        render();
+        const spec = (state.data?.fields || []).find(item => item.key === resetKey);
+        const baseVal = baselineFor(state.draftProfile)[resetKey];
+        const srcType = spec?.kind === "enum" ? "enum" : "number";
+        if (baseVal === undefined || !syncDraftIndicators(resetKey, baseVal, srcType, {commit: true})) {
+          render();
+        }
         return;
       }
       if (button.hasAttribute("data-tuning-reset-all")) {

@@ -17306,6 +17306,7 @@ body.room-editing .product-scope{display:none}
 .storage-message.is-error{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
 
 /* 数据库体检与一键瘦身卡 */
+.storage-health-slot,.storage-message-slot{display:contents}
 .storage-health-card{display:grid;gap:var(--sp-3);min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
 .storage-health-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
 .storage-health-title{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
@@ -17682,6 +17683,9 @@ body.room-editing .product-scope{display:none}
   gap:var(--sp-4);
   padding:var(--sp-4);
   border-top:1px solid var(--t-line);
+}
+.tuning-inline-slot{
+  display:contents;
 }
 
 .tuning-group{
