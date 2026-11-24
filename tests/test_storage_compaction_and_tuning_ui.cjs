@@ -343,22 +343,40 @@ test("storage page renders DB health card, runs lossless compaction, and confirm
   assert.match(root.innerHTML, /1670 条可优化/);
   assert.match(root.innerHTML, /href="#manage\/data\/tuning"/);
 
-  // One-click lossless compaction
+  // One-click lossless compaction (must not enable full-vacuum incremental upgrade)
+  assert.match(root.innerHTML, /绝不删除聊天记录、记忆、人物、日记、表达规则、衣橱、书架、配置或备份快照/);
   handlers.click({target: fakeButton({"data-db-compact-normal": ""})});
   await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(calls.some(c => c[0] === "POST" && c[1] === "storage/compact" && c[2].vacuum === false), true);
+  assert.equal(
+    calls.some(
+      c => c[0] === "POST"
+        && c[1] === "storage/compact"
+        && c[2].vacuum === false
+        && c[2].enable_incremental_vacuum === false
+    ),
+    true
+  );
   assert.match(root.innerHTML, /常规无损瘦身完成/);
   assert.match(root.innerHTML, /882\.0 MB → 瘦身后 210\.0 MB/);
 
-  // Full VACUUM requires explicit confirmation
+  // Full VACUUM requires explicit confirmation, states business-data safety guarantee, and enables incremental vacuum
   const postsBefore = calls.filter(c => c[0] === "POST").length;
   handlers.click({target: fakeButton({"data-db-compact-vacuum-review": ""})});
   assert.match(root.innerHTML, /确认执行深度整理压缩（全量 VACUUM）/);
+  assert.match(root.innerHTML, /绝不删除聊天记录、记忆、人物、日记、表达规则、衣橱、书架、配置或备份快照/);
   assert.equal(calls.filter(c => c[0] === "POST").length, postsBefore);
 
   handlers.click({target: fakeButton({"data-db-compact-vacuum-confirm": ""})});
   await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(calls.some(c => c[0] === "POST" && c[1] === "storage/compact" && c[2].vacuum === true), true);
+  assert.equal(
+    calls.some(
+      c => c[0] === "POST"
+        && c[1] === "storage/compact"
+        && c[2].vacuum === true
+        && c[2].enable_incremental_vacuum === true
+    ),
+    true
+  );
 });
 
 test("storage page blocks full VACUUM confirmation when disk space is insufficient", async () => {

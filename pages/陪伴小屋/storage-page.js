@@ -141,8 +141,10 @@ window.CompanionStoragePage = (() => {
     const vacuumConfirm = state.confirmingVacuum
       ? `<div class="storage-vacuum-confirm" role="region" aria-label="深度重组确认">
           <p><strong>确认执行深度整理压缩（全量 VACUUM）？</strong></p>
-          <p>该操作会将已释放的空闲页彻底压缩为更小的硬盘文件，执行期间会短暂暂停写入数秒；所在磁盘需预留至少 <strong>${text(vacuumReqText)}</strong>（约为当前主库的 2.2 倍）。</p>
-          ${!canVacuum ? `<p>当前可用磁盘空间（${text(diskFreeText)}）低于安全要求，请先释放磁盘空间或改用「一键常规无损瘦身」。</p>` : ""}
+          <p>该操作会将已释放的空闲页彻底压缩为更小的硬盘文件并顺带启用增量回收，执行期间会短暂暂停写入数秒；绝不删除聊天记录、记忆、人物、日记、表达规则、衣橱、书架、配置或备份快照（超期遥测明细先完整归档至独立冷库并保留每日统计）。所在磁盘需预留至少 <strong>${text(vacuumReqText)}</strong>（约为当前最大数据库的 2.2 倍）。</p>
+          ${!canVacuum ? (health.disk_free_bytes == null
+            ? `<p>当前无法获取所在磁盘可用空间，出于安全保护已暂停全量深度重组；请改用「一键常规无损瘦身」。</p>`
+            : `<p>当前可用磁盘空间（${text(diskFreeText)}）低于安全要求，请先释放磁盘空间或改用「一键常规无损瘦身」。</p>`) : ""}
           <div class="storage-health-buttons">
             <button class="button primary small" type="button" data-db-compact-vacuum-confirm${disabled || !canVacuum ? " disabled" : ""}>确认执行深度重组</button>
             <button class="button small" type="button" data-db-compact-vacuum-cancel${state.compacting ? " disabled" : ""}>取消</button>
@@ -207,7 +209,7 @@ window.CompanionStoragePage = (() => {
       ${vacuumConfirm}
 
       <div class="storage-health-actions">
-        <p class="storage-health-hint">常规无损瘦身全程在线执行、不中断聊天且零数据丢失；需要进一步缩小硬盘文件体积时，再使用全量深度重组。</p>
+        <p class="storage-health-hint">常规无损瘦身全程在线执行、不中断聊天，绝不删除聊天记录、记忆、人物、日记、表达规则、衣橱、书架、配置或备份快照（超期遥测明细先完整归档至独立冷库并保留每日统计）；需要进一步缩小硬盘文件体积时，再使用全量深度重组。</p>
         <div class="storage-health-buttons">
           <button class="button primary small" type="button" data-db-compact-normal${disabled ? " disabled" : ""}>${state.compacting ? "正在瘦身…" : "一键常规无损瘦身（推荐）"}</button>
           <button class="button small" type="button" data-db-compact-vacuum-review${disabled ? " disabled" : ""}>深度整理压缩（全量重组）</button>
@@ -469,6 +471,7 @@ window.CompanionStoragePage = (() => {
     try {
       const result = await call("POST", {
         vacuum: Boolean(vacuum),
+        enable_incremental_vacuum: Boolean(vacuum),
         dedup_native: true,
         archive_telemetry: true,
         offload_media: true,
