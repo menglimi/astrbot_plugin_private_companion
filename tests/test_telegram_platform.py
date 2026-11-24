@@ -140,6 +140,20 @@ class TelegramPrivateAdmissionTests(TelegramHostFixture, unittest.IsolatedAsynci
         await self.connect_late(plugin)
         self.assertEqual(await self.admitted(plugin, 1), f"telegram-user:{OWNER}")
 
+    async def test_first_start_with_disabled_channel_keeps_the_telegram_person(self):
+        del self.native.platforms["tg-main"]
+        self.native.get_config = lambda umo=None: {"platform": [dict(id="tg-main", type="telegram", enable=False)]}
+        self.assertTrue(await self.started_plugin()._try_start_host())
+        self.assertEqual(self.bound_person(), f"telegram-user:{OWNER}")
+
+    def test_disabled_telegram_row_does_not_claim_another_platform(self):
+        del self.native.platforms["tg-main"]
+        rows = [dict(id="tg-main", type="telegram", enable=False),
+                dict(id="tg-main", type="aiocqhttp", enable=True)]
+        self.native.get_config = lambda umo=None: {"platform": rows}
+        self.assertEqual(self.controller._configured_platform_name("tg-main"), "")
+        self.assertEqual(self.controller._configured_platform_name("other"), "")
+
     async def test_restart_before_the_channel_loads_keeps_the_telegram_person(self):
         await self.start_host()
         await self.controller.terminate()

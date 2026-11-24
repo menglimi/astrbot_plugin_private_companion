@@ -956,9 +956,12 @@ class AstrBotMultiController:
         # AstrBot loads plugins before platforms. Until a Telegram channel is loaded its name
         # comes from AstrBot's own configuration, so its people are never taken for QQ numbers.
         try:
-            return "telegram" if any(
-                row.get("id") == platform_id and row.get("type") == "telegram" and row.get("enable") is True
-                for row in self.context.get_config().get("platform", ())) else ""
+            matches = [row for row in self.context.get_config().get("platform", ())
+                       if row.get("id") == platform_id]
+            if len(matches) == 1 and matches[0].get("enable") is False:
+                return "telegram" if matches[0].get("type") == "telegram" else ""
+            return "telegram" if any(row.get("type") == "telegram" and row.get("enable") is True
+                                     for row in matches) else ""
         except (AttributeError, TypeError):
             return ""
 
