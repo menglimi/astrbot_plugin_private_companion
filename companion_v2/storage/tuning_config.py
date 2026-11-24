@@ -467,6 +467,10 @@ class PerformancePlan:
         effective_lite = bool(lite_page_enabled if lite_page_effective is None else lite_page_effective)
         selected_meta = PROFILE_META_BY_ID[self.selected_profile]
         resolved_meta = PROFILE_META_BY_ID[self.resolved_profile]
+        baselines = {
+            profile_id: dict(_baseline_for_profile(profile_id, self.hardware)[1])
+            for profile_id in PROFILE_IDS
+        }
         return {
             "profile": self.selected_profile,
             "profile_label": selected_meta.label,
@@ -475,6 +479,7 @@ class PerformancePlan:
             "overrides": dict(self.overrides),
             "override_count": self.override_count,
             "baseline": dict(self.baseline),
+            "baselines": baselines,
             "values": dict(self.values),
             "clamped_fields": [item.to_dict() for item in self.clamped_fields],
             "hardware": self.hardware.to_dict(),

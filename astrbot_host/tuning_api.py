@@ -15,6 +15,8 @@ from companion_v2.storage.tuning_config import (
     DEFAULT_PROFILE,
     PROFILE_IDS,
     PerformancePlan,
+    active_performance_plan,
+    clear_active_performance_plan,
     compact_sparse_overrides,
     normalize_tuning_config,
     resolve_performance_plan,
@@ -51,14 +53,23 @@ def apply_host_performance_tuning(
     *,
     runtime: Any = None,
     config: Any = None,
+    total_memory_bytes: int | None = None,
+    cpu_count: int | None = None,
+    is_32bit: bool | None = None,
 ) -> tuple[PerformancePlan, dict[str, Any]]:
     """Resolve and hot-apply performance settings to runtime, batcher, sidecars, and task slots."""
     effective_config = config if config is not None else getattr(controller, "config", None)
-    plan = resolve_performance_plan(effective_config)
-    if plan.selected_profile == DEFAULT_PROFILE and not plan.overrides:
-        set_active_performance_plan(None)
-    else:
-        set_active_performance_plan(plan)
+    plan = resolve_performance_plan(
+        effective_config,
+        total_memory_bytes=total_memory_bytes,
+        cpu_count=cpu_count,
+        is_32bit=is_32bit,
+    )
+    set_active_performance_plan(plan)
+    try:
+        setattr(controller, "_active_performance_plan", plan)
+    except AttributeError:
+        pass
 
     applied: dict[str, Any] = {
         "sqlite_applied": False,
@@ -102,6 +113,19 @@ def apply_host_performance_tuning(
                 pass
 
     return plan, applied
+
+
+def release_host_performance_tuning(controller: Any) -> None:
+    """Clear the process-wide performance plan if this controller published it."""
+    published = getattr(controller, "_active_performance_plan", None)
+    if published is None:
+        return
+    try:
+        setattr(controller, "_active_performance_plan", None)
+    except AttributeError:
+        pass
+    if active_performance_plan() is published:
+        clear_active_performance_plan()
 
 
 class TuningWebAPI:

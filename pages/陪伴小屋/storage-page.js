@@ -4,6 +4,7 @@ window.CompanionStoragePage = (() => {
   const ROUTE = "storage";
   const HEALTH_ROUTE = "storage/health";
   const COMPACT_ROUTE = "storage/compact";
+  const MACHINE_CODE_RE = /^[a-z][a-z0-9_]{2,80}$/;
   const text = value => String(value ?? "").replace(/[&<>"']/g,
     character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[character]));
   const formatBytes = value => {
@@ -270,26 +271,59 @@ window.CompanionStoragePage = (() => {
     </div>`;
   }
 
+  function extractMachineCode(error) {
+    const candidates = [error?.code, error?.data?.code, error?.message];
+    for (const raw of candidates) {
+      if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (MACHINE_CODE_RE.test(trimmed)) return trimmed;
+      }
+    }
+    return "";
+  }
+
+  function normalizeBridgeError(error) {
+    const code = extractMachineCode(error);
+    const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
+    const detail = rawMessage && !MACHINE_CODE_RE.test(rawMessage) ? rawMessage : "";
+    const normalized = error instanceof Error ? error : new Error(rawMessage || code || "storage_request_invalid");
+    if (code && !normalized.code) {
+      try { normalized.code = code; } catch {}
+    }
+    if (code && normalized.code !== code) {
+      return Object.assign(new Error(detail || code), {code, detail});
+    }
+    try { normalized.detail = detail; } catch {}
+    return normalized;
+  }
+
   async function getBridge() {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       if (window.AstrBotPluginPage?.apiGet) return window.AstrBotPluginPage;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
-    throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable"});
+    throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable", detail: ""});
   }
 
   async function call(method, body, route = ROUTE) {
     bridge = bridge || await getBridge();
-    const response = await (method === "GET" ? bridge.apiGet(route) : bridge.apiPost(route, body));
+    let response;
+    try {
+      response = await (method === "GET" ? bridge.apiGet(route) : bridge.apiPost(route, body));
+    } catch (error) {
+      throw normalizeBridgeError(error);
+    }
     const wrapped = ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
       : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
     if (wrapped?.status === "error") {
-      throw Object.assign(new Error(wrapped.reason || wrapped.message || "storage_request_invalid"),
-        {code: wrapped.data?.code || wrapped.message || "storage_request_invalid"});
+      const code = extractMachineCode({code: wrapped.data?.code || wrapped.message}) || "storage_request_invalid";
+      const rawMsg = wrapped.reason || wrapped.message || code;
+      const detail = typeof rawMsg === "string" && !MACHINE_CODE_RE.test(rawMsg.trim()) ? rawMsg.trim() : "";
+      throw Object.assign(new Error(detail || code), {code, detail});
     }
     const result = wrapped ? wrapped.data : response;
     if (!result || typeof result !== "object" || Array.isArray(result)) {
-      throw Object.assign(new Error("invalid_response"), {code: "invalid_response"});
+      throw Object.assign(new Error("invalid_response"), {code: "invalid_response", detail: ""});
     }
     return result;
   }
@@ -316,7 +350,8 @@ window.CompanionStoragePage = (() => {
     } catch (error) {
       if (!live(ticket)) return;
       state.health = null;
-      state.healthError = error.code === "staging_not_initialized"
+      const code = extractMachineCode(error);
+      state.healthError = code === "staging_not_initialized"
         ? "插件运行档尚未加载，启动后即可执行数据库体检与瘦身。"
         : "数据库体检暂不可用，请稍后重试。";
     }
@@ -348,8 +383,9 @@ window.CompanionStoragePage = (() => {
       if (!live(ticket)) return;
       state.loading = false;
       state.error = true;
-      state.message = error.code === "dashboard_identity_required" ? "请从 AstrBot 管理界面登录后查看。"
-        : error.code === "storage_location_unavailable" ? "存储磁盘暂不可用；资料不会自动写回默认位置。"
+      const code = extractMachineCode(error);
+      state.message = code === "dashboard_identity_required" ? "请从 AstrBot 管理界面登录后查看。"
+        : code === "storage_location_unavailable" ? "存储磁盘暂不可用；资料不会自动写回默认位置。"
         : "插件存储读取失败，请重试并检查管理界面连接。";
       render();
     }
@@ -415,9 +451,10 @@ window.CompanionStoragePage = (() => {
     } catch (error) {
       if (!live(ticket)) return;
       state.error = true;
-      const code = error.code || "";
+      const code = extractMachineCode(error);
+      const humanDetail = typeof error?.detail === "string" && error.detail ? error.detail : "";
       const messages = {
-        storage_insufficient_disk_for_vacuum: error.message || "磁盘剩余空间不足（需至少 2.2 倍主库空间），无法执行全量深度重组；请改用常规无损瘦身或先清理磁盘。",
+        storage_insufficient_disk_for_vacuum: humanDetail || "磁盘剩余空间不足（需至少 2.2 倍主库空间），无法执行全量深度重组；请改用常规无损瘦身或先清理磁盘。",
         staging_not_initialized: "插件运行档尚未加载，请先初始化后再执行数据库瘦身。",
         dashboard_identity_required: "请从已登录的 AstrBot 管理页面执行数据库瘦身。",
         core_access_required: "当前管理身份没有执行数据库瘦身的权限。",
@@ -460,8 +497,7 @@ window.CompanionStoragePage = (() => {
     } catch (error) {
       if (!live(ticket)) return;
       state.error = true;
-      const candidate = error.code || error.message;
-      const code = typeof candidate === "string" && /^[a-z][a-z0-9_]{2,80}$/.test(candidate) ? candidate : "";
+      const code = extractMachineCode(error);
       const messages = {
         storage_config_save_failed: "存储设置未能保存，请检查配置文件是否可写。",
         storage_request_invalid: "存储设置不合法，请核对绝对路径、保留范围和备份间隔。",
@@ -470,7 +506,7 @@ window.CompanionStoragePage = (() => {
         core_access_required: "当前管理身份没有修改存储设置的权限。",
       };
       state.message = messages[code] || "操作未完成，请核对存储目录与清理设置后重试。";
-      if (code) state.message += `（${code}）`;
+      if (code && !state.message.includes(code)) state.message += `（${code}）`;
     }
     state.busy = false;
     render();

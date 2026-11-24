@@ -2,10 +2,12 @@
 
 window.CompanionTuningPage = (() => {
   const ROUTE = "performance/tuning";
+  const MACHINE_CODE_RE = /^[a-z][a-z0-9_]{2,80}$/;
+  const FIELD_KEY_RE = /^[a-z][a-z0-9_]{1,64}$/;
   const text = value => String(value ?? "").replace(/[&<>"']/g,
     character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[character]));
 
-  let root = null, bridge = null, version = 0;
+  let root = null, bridge = null, version = 0, listenerAbort = null, boundListeners = [];
   let state = emptyState();
 
   function emptyState() {
@@ -24,28 +26,75 @@ window.CompanionTuningPage = (() => {
   }
 
   function live(ticket) { return ticket === version && root?.isConnected; }
-  function stop() { version += 1; root = null; bridge = null; }
+  function stop() {
+    version += 1;
+    if (listenerAbort) {
+      try { listenerAbort.abort(); } catch {}
+      listenerAbort = null;
+    }
+    if (root && boundListeners.length && typeof root.removeEventListener === "function") {
+      for (const [type, fn] of boundListeners) {
+        try { root.removeEventListener(type, fn); } catch {}
+      }
+    }
+    boundListeners = [];
+    root = null;
+    bridge = null;
+  }
+
+  function extractMachineCode(error) {
+    const candidates = [error?.code, error?.data?.code, error?.message];
+    for (const raw of candidates) {
+      if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (MACHINE_CODE_RE.test(trimmed)) return trimmed;
+      }
+    }
+    return "";
+  }
+
+  function normalizeBridgeError(error) {
+    const code = extractMachineCode(error);
+    const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
+    const detail = rawMessage && !MACHINE_CODE_RE.test(rawMessage) ? rawMessage : "";
+    const normalized = error instanceof Error ? error : new Error(rawMessage || code || "tuning_request_invalid");
+    if (code && !normalized.code) {
+      try { normalized.code = code; } catch {}
+    }
+    if (code && normalized.code !== code) {
+      return Object.assign(new Error(detail || code), {code, detail});
+    }
+    try { normalized.detail = detail; } catch {}
+    return normalized;
+  }
 
   async function getBridge() {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       if (window.AstrBotPluginPage?.apiGet) return window.AstrBotPluginPage;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
-    throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable"});
+    throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable", detail: ""});
   }
 
   async function call(method, body) {
     bridge = bridge || await getBridge();
-    const response = await (method === "GET" ? bridge.apiGet(ROUTE) : bridge.apiPost(ROUTE, body));
+    let response;
+    try {
+      response = await (method === "GET" ? bridge.apiGet(ROUTE) : bridge.apiPost(ROUTE, body));
+    } catch (error) {
+      throw normalizeBridgeError(error);
+    }
     const wrapped = ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
       : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
     if (wrapped?.status === "error") {
-      throw Object.assign(new Error(wrapped.reason || wrapped.message || "tuning_request_invalid"),
-        {code: wrapped.data?.code || wrapped.message || "tuning_request_invalid"});
+      const code = extractMachineCode({code: wrapped.data?.code || wrapped.message}) || "tuning_request_invalid";
+      const rawMsg = wrapped.reason || wrapped.message || code;
+      const detail = typeof rawMsg === "string" && !MACHINE_CODE_RE.test(rawMsg.trim()) ? rawMsg.trim() : "";
+      throw Object.assign(new Error(detail || code), {code, detail});
     }
     const result = wrapped ? wrapped.data : response;
     if (!result || typeof result !== "object" || Array.isArray(result)) {
-      throw Object.assign(new Error("invalid_response"), {code: "invalid_response"});
+      throw Object.assign(new Error("invalid_response"), {code: "invalid_response", detail: ""});
     }
     return result;
   }
@@ -53,37 +102,42 @@ window.CompanionTuningPage = (() => {
   function baselineFor(profileId) {
     const data = state.data;
     if (!data) return {};
-    if (profileId === data.profile) return data.baseline || {};
+    if (data.baselines && typeof data.baselines === "object" && data.baselines[profileId]) {
+      return data.baselines[profileId];
+    }
+    if (profileId === data.profile && data.baseline) return data.baseline;
+    return data.baseline || {};
+  }
+
+  function normalizeFieldKey(rawKey) {
+    if (typeof rawKey !== "string") return "";
+    const trimmed = rawKey.trim();
+    if (!FIELD_KEY_RE.test(trimmed)) return "";
+    if (state.data && Array.isArray(state.data.fields)) {
+      return state.data.fields.some(spec => spec.key === trimmed) ? trimmed : "";
+    }
+    return trimmed;
+  }
+
+  function computeActiveBadgeLabel(overrideCount) {
+    const data = state.data || {};
     const hw = data.hardware || {};
-    const cpus = Number(hw.cpu_count) || 2;
-    const memBytes = Number(hw.effective_memory_bytes) || 0;
-    const presets = {
-      eco: {
-        cache_size_mb: 8, sidecar_cache_size_mb: 4, mmap_size_mb: 0, sidecar_mmap_size_mb: 0,
-        reader_pool_size: 2, journal_size_limit_mb: 16, synchronous: "NORMAL",
-        write_batch_window_ms: 80, background_slots: 2, tts_max_concurrency: 1, telemetry_ttl_days: 7,
-      },
-      balanced: {
-        cache_size_mb: 32, sidecar_cache_size_mb: 8, mmap_size_mb: 128, sidecar_mmap_size_mb: 32,
-        reader_pool_size: 4, journal_size_limit_mb: 32, synchronous: "NORMAL",
-        write_batch_window_ms: 50, background_slots: 3, tts_max_concurrency: 3, telemetry_ttl_days: 14,
-      },
-      turbo: {
-        cache_size_mb: 128, sidecar_cache_size_mb: 32,
-        mmap_size_mb: memBytes >= 20 * 1024 ** 3 ? 1024 : 512,
-        sidecar_mmap_size_mb: 256,
-        reader_pool_size: Math.min(8, Math.max(6, Math.floor(cpus / 2))),
-        journal_size_limit_mb: 64, synchronous: "NORMAL",
-        write_batch_window_ms: 30, background_slots: 5, tts_max_concurrency: 4, telemetry_ttl_days: 30,
-      },
-      compat: {
-        cache_size_mb: 16, sidecar_cache_size_mb: 8, mmap_size_mb: 0, sidecar_mmap_size_mb: 0,
-        reader_pool_size: 2, journal_size_limit_mb: 16, synchronous: "FULL",
-        write_batch_window_ms: 100, background_slots: 2, tts_max_concurrency: 2, telemetry_ttl_days: 14,
-      },
-    };
-    const key = profileId === "auto" ? (hw.recommended_profile || "balanced") : profileId;
-    return presets[key] || presets.balanced;
+    if (overrideCount > 0) {
+      return `基于「${profileLabel(state.draftProfile)}」· 已微调 ${overrideCount} 项`;
+    }
+    if (state.draftProfile === "auto") {
+      const autoLabel = hw.recommended_profile_label
+        || profileLabel(hw.recommended_profile || "balanced")
+        || data.resolved_profile_label;
+      return `当前生效：自动推荐（${autoLabel}）`;
+    }
+    return `当前生效：${profileLabel(state.draftProfile)}`;
+  }
+
+  function dirtyStatusText(dirty) {
+    return dirty
+      ? "有未保存的调优更改，保存后大部分参数立即热生效。"
+      : "当前性能配置已生效，随时可切换档位或微调单项。";
   }
 
   function compactOverrides(profileId, overrides) {
@@ -139,9 +193,9 @@ window.CompanionTuningPage = (() => {
       const max = spec.maximum ?? 100;
       const step = spec.step ?? 1;
       control = `<div class="tuning-field-control">
-        <input class="tuning-range" type="range" min="${min}" max="${max}" step="${step}" value="${text(displayValue)}" data-tuning-input="${text(spec.key)}" aria-label="${text(spec.label)} 滑块"${state.busy ? " disabled" : ""}>
+        <input class="tuning-range" type="range" min="${min}" max="${max}" step="${step}" value="${text(displayValue)}" data-tuning-input="${text(spec.key)}" data-tuning-range="${text(spec.key)}" aria-label="${text(spec.label)} 滑块"${state.busy ? " disabled" : ""}>
         <label class="tuning-number-wrap">
-          <input type="number" min="${min}" max="${max}" step="${step}" value="${text(displayValue)}" data-tuning-input="${text(spec.key)}" aria-label="${text(spec.label)} 数值"${state.busy ? " disabled" : ""}>
+          <input type="number" min="${min}" max="${max}" step="${step}" value="${text(displayValue)}" data-tuning-input="${text(spec.key)}" data-tuning-number="${text(spec.key)}" aria-label="${text(spec.label)} 数值"${state.busy ? " disabled" : ""}>
           ${spec.unit ? `<span class="tuning-unit">${text(spec.unit)}</span>` : ""}
         </label>
         <span class="tuning-field-baseline">档位默认 ${text(baseline[spec.key])}${spec.unit ? ` ${text(spec.unit)}` : ""}</span>
@@ -193,11 +247,7 @@ window.CompanionTuningPage = (() => {
     const dirty = isDirty();
     const baseline = baselineFor(state.draftProfile);
     const effective = data.values || {};
-    const activeBadgeLabel = overrideCount > 0
-      ? `基于「${profileLabel(state.draftProfile)}」· 已微调 ${overrideCount} 项`
-      : state.draftProfile === "auto"
-        ? `当前生效：自动推荐（${data.resolved_profile_label || profileLabel(hw.recommended_profile || "balanced")}）`
-        : `当前生效：${profileLabel(state.draftProfile)}`;
+    const activeBadgeLabel = computeActiveBadgeLabel(overrideCount);
 
     const memText = hw.effective_memory_gib != null ? `${hw.effective_memory_gib} GB` : "未识别";
     const clampBanner = clampedList.length
@@ -311,8 +361,8 @@ window.CompanionTuningPage = (() => {
         </div>
       </section>
 
-      <div class="tuning-actions-bar${dirty ? " is-dirty" : ""}">
-        <span class="tuning-actions-status">${dirty ? "有未保存的调优更改，保存后大部分参数立即热生效。" : "当前性能配置已生效，随时可切换档位或微调单项。"}</span>
+      <div class="tuning-actions-bar${dirty ? " is-dirty" : ""}" data-tuning-actions-bar>
+        <span class="tuning-actions-status" data-tuning-actions-status>${dirtyStatusText(dirty)}</span>
         <div class="tuning-actions-buttons">
           <button type="button" class="button primary small" data-tuning-save${state.busy || !dirty ? " disabled" : ""}>${state.busy ? "正在应用…" : "保存并立即生效"}</button>
           ${dirty ? `<button type="button" class="button small" data-tuning-discard${state.busy ? " disabled" : ""}>撤销更改</button>` : ""}
@@ -366,6 +416,9 @@ window.CompanionTuningPage = (() => {
       const result = await call("GET");
       if (!live(ticket)) return;
       applyServerData(result);
+      if (state.highlightField) {
+        state.highlightField = normalizeFieldKey(state.highlightField);
+      }
       state.loading = false;
       state.error = false;
       state.message = "";
@@ -373,11 +426,15 @@ window.CompanionTuningPage = (() => {
       if (!live(ticket)) return;
       state.loading = false;
       state.error = true;
-      state.message = error.code === "dashboard_identity_required"
+      const code = extractMachineCode(error);
+      state.message = code === "dashboard_identity_required"
         ? "请从 AstrBot 管理界面登录后查看性能调优。"
         : "性能调优数据读取失败，请检查管理界面连接后重试。";
     }
     render();
+    if (!state.error && state.highlightField) {
+      scrollToHighlightedField();
+    }
   }
 
   async function save(payload, successMessage, ticket = version) {
@@ -396,7 +453,7 @@ window.CompanionTuningPage = (() => {
     } catch (error) {
       if (!live(ticket)) return;
       state.error = true;
-      const code = error.code || "";
+      const code = extractMachineCode(error);
       const messages = {
         tuning_request_invalid: "调优参数超出安全范围，请核对数值后重试。",
         tuning_config_save_failed: "性能配置未能写入配置文件，请检查文件权限。",
@@ -405,31 +462,86 @@ window.CompanionTuningPage = (() => {
         core_access_required: "当前管理身份没有修改性能调优的权限。",
       };
       state.message = messages[code] || "保存未完成，请稍后重试。";
-      if (code) state.message += `（${code}）`;
+      if (code && !state.message.includes(code)) state.message += `（${code}）`;
     }
     state.busy = false;
     render();
   }
 
-  function focusField(fieldKey) {
-    if (!fieldKey) return;
-    state.advancedOpen = true;
-    state.highlightField = String(fieldKey);
-    render();
-    const target = root?.querySelector?.(`[data-tuning-field="${fieldKey}"]`);
-    target?.scrollIntoView?.({behavior: "smooth", block: "center"});
+  function scrollToHighlightedField() {
+    const validKey = normalizeFieldKey(state.highlightField);
+    if (!validKey || !root?.querySelector) return;
+    const target = root.querySelector(`[data-tuning-field="${validKey}"]`);
+    if (target) {
+      target.scrollIntoView?.({behavior: "smooth", block: "center"});
+      target.querySelector?.("input, button")?.focus?.({preventScroll: true});
+    }
   }
 
-  function handleNumericInput(key, rawValue) {
+  function focusField(fieldKey) {
+    const validKey = normalizeFieldKey(fieldKey);
+    if (!validKey) return;
+    state.advancedOpen = true;
+    state.highlightField = validKey;
+    if (!state.loading && state.data) {
+      render();
+      scrollToHighlightedField();
+    }
+  }
+
+  function syncDraftIndicators(changedKey, numericValue, sourceType) {
+    if (!root?.querySelector) return;
+    const validKey = normalizeFieldKey(changedKey);
+    if (validKey) {
+      if (sourceType === "range") {
+        const numberEl = root.querySelector(`[data-tuning-number="${validKey}"]`);
+        if (numberEl) numberEl.value = String(numericValue);
+      } else if (sourceType === "number") {
+        const rangeEl = root.querySelector(`[data-tuning-range="${validKey}"]`);
+        if (rangeEl) rangeEl.value = String(numericValue);
+      }
+      const fieldEl = root.querySelector(`[data-tuning-field="${validKey}"]`);
+      if (fieldEl?.classList?.toggle) {
+        const base = baselineFor(state.draftProfile);
+        fieldEl.classList.toggle("is-overridden", base[validKey] !== numericValue);
+      }
+    }
+    const overrideCount = activeOverrideCount();
+    const dirty = isDirty();
+    const badge = root.querySelector("[data-tuning-active-badge]");
+    if (badge) badge.textContent = computeActiveBadgeLabel(overrideCount);
+    const bar = root.querySelector("[data-tuning-actions-bar]");
+    if (bar?.classList?.toggle) bar.classList.toggle("is-dirty", dirty);
+    const status = root.querySelector("[data-tuning-actions-status]");
+    if (status) status.textContent = dirtyStatusText(dirty);
+    const saveBtn = root.querySelector("[data-tuning-save]");
+    if (saveBtn) {
+      saveBtn.disabled = state.busy || !dirty;
+      if (typeof saveBtn.toggleAttribute === "function") {
+        saveBtn.toggleAttribute("disabled", state.busy || !dirty);
+      }
+    }
+  }
+
+  function handleNumericInput(key, rawValue, {inPlace = false, sourceType = ""} = {}) {
     const spec = (state.data?.fields || []).find(item => item.key === key);
     if (!spec) return;
     const parsed = Number.parseInt(String(rawValue), 10);
     if (!Number.isFinite(parsed)) return;
-    const clamped = Math.min(spec.maximum ?? parsed, Math.max(spec.minimum ?? parsed, parsed));
+    const min = spec.minimum ?? parsed;
+    const max = spec.maximum ?? parsed;
+    if (inPlace && sourceType === "number" && (parsed < min || parsed > max)) {
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, parsed));
     const base = baselineFor(state.draftProfile);
     if (base[key] === clamped) delete state.draftOverrides[key];
     else state.draftOverrides[key] = clamped;
-    render();
+    if (inPlace) {
+      syncDraftIndicators(key, clamped, sourceType);
+    } else {
+      render();
+    }
   }
 
   function mount(node, options = {}) {
@@ -437,28 +549,46 @@ window.CompanionTuningPage = (() => {
     root = node;
     const ticket = version;
     state = emptyState();
-    if (options.focusField) {
+    const initialFocus = normalizeFieldKey(options.focusField);
+    if (initialFocus) {
       state.advancedOpen = true;
-      state.highlightField = String(options.focusField);
+      state.highlightField = initialFocus;
     }
 
-    root.addEventListener("input", event => {
+    const signal = typeof AbortController === "function"
+      ? (listenerAbort = new AbortController()).signal
+      : null;
+    const listen = (type, handler) => {
+      if (signal) {
+        root.addEventListener(type, handler, {signal});
+      } else {
+        root.addEventListener(type, handler);
+      }
+      boundListeners.push([type, handler]);
+    };
+
+    listen("input", event => {
+      if (!live(ticket) || state.busy) return;
       const key = event.target?.getAttribute?.("data-tuning-input");
-      if (!key || state.busy) return;
+      if (!key) return;
       if (event.target.type === "range") {
-        handleNumericInput(key, event.target.value);
+        handleNumericInput(key, event.target.value, {inPlace: true, sourceType: "range"});
+      } else if (event.target.type === "number") {
+        handleNumericInput(key, event.target.value, {inPlace: true, sourceType: "number"});
       }
     });
 
-    root.addEventListener("change", event => {
+    listen("change", event => {
+      if (!live(ticket) || state.busy) return;
       const key = event.target?.getAttribute?.("data-tuning-input");
-      if (!key || state.busy) return;
-      handleNumericInput(key, event.target.value);
+      if (!key) return;
+      handleNumericInput(key, event.target.value, {inPlace: false});
     });
 
-    root.addEventListener("click", event => {
+    listen("click", event => {
+      if (!live(ticket) || state.busy) return;
       const button = event.target?.closest?.("button");
-      if (!button || state.busy) return;
+      if (!button) return;
 
       const profileId = button.getAttribute?.("data-tuning-profile");
       if (profileId) {

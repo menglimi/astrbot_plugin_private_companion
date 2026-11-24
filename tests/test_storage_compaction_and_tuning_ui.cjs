@@ -21,7 +21,7 @@ function fakeButton(attrs = {}) {
   };
 }
 
-function mountStorage({canFullVacuum = true, compactError = null} = {}) {
+function mountStorage({canFullVacuum = true, compactError = null, healthError = null} = {}) {
   const calls = [];
   let healthState = {
     status: "compact_recommended",
@@ -55,7 +55,11 @@ function mountStorage({canFullVacuum = true, compactError = null} = {}) {
     AstrBotPluginPage: {
       async apiGet(route) {
         calls.push(["GET", route]);
-        if (route === "storage/health") return {status: "ok", data: healthState};
+        if (route === "storage/health") {
+          if (healthError instanceof Error) throw healthError;
+          if (healthError) return healthError;
+          return {status: "ok", data: healthState};
+        }
         return {
           status: "ok",
           data: {
@@ -83,6 +87,7 @@ function mountStorage({canFullVacuum = true, compactError = null} = {}) {
       async apiPost(route, body) {
         calls.push(["POST", route, body]);
         if (route === "storage/compact") {
+          if (compactError instanceof Error) throw compactError;
           if (compactError) return compactError;
           const after = {
             ...healthState,
@@ -126,25 +131,55 @@ function mountStorage({canFullVacuum = true, compactError = null} = {}) {
   return {window, root, handlers, calls};
 }
 
-function mountTuning({clamped = false} = {}) {
+function mountTuning({
+  clamped = false,
+  initialProfile = "auto",
+  getError = null,
+  postError = null,
+  delayGetMs = 0,
+  querySelectorImpl = null,
+  useAbortController = true,
+} = {}) {
   const calls = [];
+  const autoBaseline = {
+    cache_size_mb: 64, sidecar_cache_size_mb: 16, mmap_size_mb: 256, sidecar_mmap_size_mb: 128,
+    reader_pool_size: 4, journal_size_limit_mb: 64, synchronous: "NORMAL",
+    write_batch_window_ms: 50, background_slots: 3, tts_max_concurrency: 3, telemetry_ttl_days: 14,
+  };
+  const baselines = {
+    auto: autoBaseline,
+    eco: {
+      cache_size_mb: 8, sidecar_cache_size_mb: 4, mmap_size_mb: 0, sidecar_mmap_size_mb: 0,
+      reader_pool_size: 2, journal_size_limit_mb: 16, synchronous: "NORMAL",
+      write_batch_window_ms: 80, background_slots: 2, tts_max_concurrency: 1, telemetry_ttl_days: 7,
+    },
+    balanced: {
+      cache_size_mb: 32, sidecar_cache_size_mb: 8, mmap_size_mb: 128, sidecar_mmap_size_mb: 32,
+      reader_pool_size: 4, journal_size_limit_mb: 32, synchronous: "NORMAL",
+      write_batch_window_ms: 50, background_slots: 3, tts_max_concurrency: 3, telemetry_ttl_days: 14,
+    },
+    turbo: {
+      cache_size_mb: 128, sidecar_cache_size_mb: 32, mmap_size_mb: 512, sidecar_mmap_size_mb: 256,
+      reader_pool_size: 6, journal_size_limit_mb: 64, synchronous: "NORMAL",
+      write_batch_window_ms: 30, background_slots: 5, tts_max_concurrency: 4, telemetry_ttl_days: 30,
+    },
+    compat: {
+      cache_size_mb: 16, sidecar_cache_size_mb: 8, mmap_size_mb: 0, sidecar_mmap_size_mb: 0,
+      reader_pool_size: 2, journal_size_limit_mb: 16, synchronous: "FULL",
+      write_batch_window_ms: 100, background_slots: 2, tts_max_concurrency: 2, telemetry_ttl_days: 14,
+    },
+  };
+  const activeBase = baselines[initialProfile] || autoBaseline;
   let serverPayload = {
-    profile: "auto",
-    profile_label: "自动推荐",
-    resolved_profile: "balanced",
-    resolved_profile_label: "平衡推荐",
+    profile: initialProfile,
+    profile_label: initialProfile === "compat" ? "兼容稳妥" : "自动推荐",
+    resolved_profile: initialProfile === "auto" ? "balanced" : initialProfile,
+    resolved_profile_label: initialProfile === "compat" ? "兼容稳妥" : "平衡推荐",
     overrides: {},
     override_count: 0,
-    baseline: {
-      cache_size_mb: 32, sidecar_cache_size_mb: 8, mmap_size_mb: 128, sidecar_mmap_size_mb: 32,
-      reader_pool_size: 4, journal_size_limit_mb: 32, synchronous: "NORMAL",
-      write_batch_window_ms: 50, background_slots: 3, tts_max_concurrency: 3, telemetry_ttl_days: 14,
-    },
-    values: {
-      cache_size_mb: 32, sidecar_cache_size_mb: 8, mmap_size_mb: 128, sidecar_mmap_size_mb: 32,
-      reader_pool_size: 4, journal_size_limit_mb: 32, synchronous: "NORMAL",
-      write_batch_window_ms: 50, background_slots: 3, tts_max_concurrency: 3, telemetry_ttl_days: 14,
-    },
+    baseline: {...activeBase},
+    baselines,
+    values: {...activeBase},
     clamped_fields: clamped ? [{field: "mmap_size_mb", label: "数据库内存映射", requested: 512, effective: 256, reason: "按可用内存 25% 安全限幅至 256 MB。"}] : [],
     hardware: {
       effective_memory_bytes: 8 * 1024 ** 3,
@@ -181,10 +216,15 @@ function mountTuning({clamped = false} = {}) {
     AstrBotPluginPage: {
       async apiGet(route) {
         calls.push(["GET", route]);
+        if (delayGetMs > 0) await new Promise(resolve => setTimeout(resolve, delayGetMs));
+        if (getError instanceof Error) throw getError;
+        if (getError) return getError;
         return {status: "ok", data: serverPayload};
       },
       async apiPost(route, body) {
         calls.push(["POST", route, body]);
+        if (postError instanceof Error) throw postError;
+        if (postError) return postError;
         if (body.action === "lite_page") {
           serverPayload = {
             ...serverPayload,
@@ -192,9 +232,11 @@ function mountTuning({clamped = false} = {}) {
           };
           return {status: "ok", data: serverPayload};
         }
+        const nextProfile = body.profile || serverPayload.profile;
         serverPayload = {
           ...serverPayload,
-          profile: body.profile || serverPayload.profile,
+          profile: nextProfile,
+          baseline: {...(baselines[nextProfile] || autoBaseline)},
           overrides: body.overrides || {},
           override_count: Object.keys(body.overrides || {}).length,
         };
@@ -202,9 +244,47 @@ function mountTuning({clamped = false} = {}) {
       },
     },
   };
-  vm.runInNewContext(TUNING_JS, {window, document: {}, setTimeout, clearTimeout, Promise, Number, String, Object, Array, Error, Math});
-  const handlers = {};
-  const root = {isConnected: true, innerHTML: "", querySelector: () => null, addEventListener(name, fn) { handlers[name] = fn; }};
+  const sandbox = {
+    window, document: {}, setTimeout, clearTimeout, Promise, Number, String, Object, Array, Error, Math,
+  };
+  if (useAbortController && typeof AbortController === "function") {
+    sandbox.AbortController = AbortController;
+  }
+  vm.runInNewContext(TUNING_JS, sandbox);
+
+  const listeners = new Map();
+  let html = "";
+  let renderWrites = 0;
+  const root = {
+    isConnected: true,
+    get innerHTML() { return html; },
+    set innerHTML(val) { html = val; renderWrites += 1; },
+    get renderWrites() { return renderWrites; },
+    resetRenderWrites() { renderWrites = 0; },
+    querySelector: selector => (querySelectorImpl ? querySelectorImpl(selector, html) : null),
+    addEventListener(name, fn, opts) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      const bucket = listeners.get(name);
+      bucket.add(fn);
+      if (opts && opts.signal && typeof opts.signal.addEventListener === "function") {
+        opts.signal.addEventListener("abort", () => bucket.delete(fn), {once: true});
+      }
+    },
+    removeEventListener(name, fn) {
+      listeners.get(name)?.delete(fn);
+    },
+    listenerCount(name) {
+      return listeners.get(name)?.size || 0;
+    },
+    dispatch(name, event) {
+      for (const fn of [...(listeners.get(name) || [])]) fn(event);
+    },
+  };
+  const handlers = {
+    input: event => root.dispatch("input", event),
+    change: event => root.dispatch("change", event),
+    click: event => root.dispatch("click", event),
+  };
   window.CompanionTuningPage.mount(root);
   return {window, root, handlers, calls};
 }
@@ -314,4 +394,126 @@ test("global search engine indexes DB compaction, 5-tier profiles, and tuning fi
       `expected ${expectedField} (${expectedSubtab}) in top results for "${q}", got: ${hits.map(h => h.item.field).join(", ")}`
     );
   }
+});
+
+test("storage and tuning pages unpack rejected Error(machineCode) from host bridge into Chinese copy", async () => {
+  // 1. storage-page: reject(new Error("storage_insufficient_disk_for_vacuum")) must show friendly Chinese message, not bare machine code.
+  const storage = mountStorage({
+    compactError: new Error("storage_insufficient_disk_for_vacuum"),
+    healthError: new Error("staging_not_initialized"),
+  });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(storage.root.innerHTML, /插件运行档尚未加载/);
+
+  // Re-mount with healthy status and failing full vacuum via rejected Error(machineCode).
+  const storageVac = mountStorage({compactError: new Error("storage_insufficient_disk_for_vacuum")});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  storageVac.handlers.click({target: fakeButton({"data-db-compact-vacuum-review": ""})});
+  storageVac.handlers.click({target: fakeButton({"data-db-compact-vacuum-confirm": ""})});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(storageVac.root.innerHTML, /磁盘剩余空间不足（需至少 2\.2 倍主库空间）/);
+  assert.match(storageVac.root.innerHTML, /（storage_insufficient_disk_for_vacuum）/);
+  assert.doesNotMatch(storageVac.root.innerHTML, />storage_insufficient_disk_for_vacuum</);
+
+  // 2. tuning-page: reject(new Error("tuning_request_invalid")) on save maps to Chinese range hint.
+  const tuning = mountTuning({postError: new Error("tuning_request_invalid")});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  tuning.handlers.click({target: fakeButton({"data-tuning-profile": "eco"})});
+  tuning.handlers.click({target: fakeButton({"data-tuning-save": ""})});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(tuning.root.innerHTML, /调优参数超出安全范围/);
+  assert.match(tuning.root.innerHTML, /（tuning_request_invalid）/);
+
+  // 3. tuning-page: reject(new Error("dashboard_identity_required")) on load maps to login hint.
+  const tuningDenied = mountTuning({getError: new Error("dashboard_identity_required")});
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(tuningDenied.root.innerHTML, /请从 AstrBot 管理界面登录后查看性能调优/);
+});
+
+test("tuning page patches range drag in-place, uses backend auto baseline, handles async focusField, and cleans up listeners", async () => {
+  const numberEl = {value: "64"};
+  const badgeEl = {textContent: ""};
+  const statusEl = {textContent: ""};
+  const saveBtnEl = {disabled: true};
+  const fieldClasses = new Set();
+  const barClasses = new Set();
+  const fieldEl = {
+    classList: {toggle(name, force) { force ? fieldClasses.add(name) : fieldClasses.delete(name); }},
+    scrolled: 0,
+    scrollIntoView() { this.scrolled += 1; },
+  };
+  const barEl = {
+    classList: {toggle(name, force) { force ? barClasses.add(name) : barClasses.delete(name); }},
+  };
+  const queriedSelectors = [];
+  const queryMap = {
+    '[data-tuning-number="cache_size_mb"]': numberEl,
+    '[data-tuning-field="cache_size_mb"]': fieldEl,
+    "[data-tuning-active-badge]": badgeEl,
+    "[data-tuning-actions-bar]": barEl,
+    "[data-tuning-actions-status]": statusEl,
+    "[data-tuning-save]": saveBtnEl,
+  };
+
+  // Start on compat with delayed GET to test async focusField race + switching back to auto.
+  const {window, root, handlers} = mountTuning({
+    initialProfile: "compat",
+    delayGetMs: 15,
+    querySelectorImpl(selector) {
+      queriedSelectors.push(selector);
+      return queryMap[selector] || null;
+    },
+  });
+
+  // Malicious selector injection must be rejected before querySelector is ever called.
+  window.CompanionTuningPage.focusField('cache_size_mb"], .evil[a="');
+  assert.equal(queriedSelectors.some(s => s.includes(".evil")), false);
+
+  // Valid focusField called while GET is still pending must take effect after load() finishes.
+  window.CompanionTuningPage.focusField("cache_size_mb");
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.match(root.innerHTML, /tuning-advanced-panel is-open/);
+  assert.match(root.innerHTML, /is-highlighted" data-tuning-field="cache_size_mb"/);
+  assert.equal(fieldEl.scrolled, 1);
+
+  // Switch from compat back to auto -> must use backend baselines.auto (cache_size_mb=64, NOT balanced=32).
+  handlers.click({target: fakeButton({"data-tuning-profile": "auto"})});
+  assert.match(root.innerHTML, /档位默认 64 MB/);
+  assert.match(root.innerHTML, /当前生效：自动推荐（平衡推荐）/);
+
+  // Range drag (`input` event) must update paired number input & dirty indicators IN PLACE with ZERO innerHTML rebuilds.
+  root.resetRenderWrites();
+  handlers.input({
+    target: {
+      type: "range",
+      value: "128",
+      getAttribute: name => (name === "data-tuning-input" ? "cache_size_mb" : null),
+    },
+  });
+  assert.equal(root.renderWrites, 0, "range input must not rebuild root.innerHTML during drag");
+  assert.equal(numberEl.value, "128");
+  assert.equal(fieldClasses.has("is-overridden"), true);
+  assert.equal(barClasses.has("is-dirty"), true);
+  assert.equal(saveBtnEl.disabled, false);
+  assert.match(badgeEl.textContent, /已微调 1 项/);
+
+  // Committing via `change` triggers a single full render.
+  handlers.change({
+    target: {
+      type: "range",
+      value: "128",
+      getAttribute: name => (name === "data-tuning-input" ? "cache_size_mb" : null),
+    },
+  });
+  assert.equal(root.renderWrites, 1);
+  assert.match(root.innerHTML, /已微调 1 项/);
+
+  // Remounting on the same root must abort prior listeners so listener count stays 1 per event type.
+  assert.equal(root.listenerCount("click"), 1);
+  window.CompanionTuningPage.mount(root);
+  assert.equal(root.listenerCount("click"), 1);
+  assert.equal(root.listenerCount("input"), 1);
+  assert.equal(root.listenerCount("change"), 1);
+  window.CompanionTuningPage.unmount();
+  assert.equal(root.listenerCount("click"), 0);
 });

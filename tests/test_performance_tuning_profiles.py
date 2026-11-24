@@ -22,7 +22,12 @@ from astrbot_host import core_reply_voice
 from astrbot_host.multi_api import MultiHostWebAPI
 from astrbot_host.native_extensions.image_native.store import ImageStore
 from astrbot_host.settings import HostSettings
-from astrbot_host.tuning_api import PREFIX as TUNING_PREFIX, TuningWebAPI, apply_host_performance_tuning
+from astrbot_host.tuning_api import (
+    PREFIX as TUNING_PREFIX,
+    TuningWebAPI,
+    apply_host_performance_tuning,
+    release_host_performance_tuning,
+)
 from astrbot_host.web_api import StagingWebAPI
 from companion_v2.execution.models import Lane, SupervisorLimits, TaskDefinition, TaskRegistration
 from companion_v2.execution.service import TaskSupervisor
@@ -35,6 +40,10 @@ from companion_v2.storage.tuning_config import (
     CONCRETE_PROFILE_IDS,
     PROFILE_IDS,
     TUNING_FIELDS,
+    active_performance_plan,
+    active_telemetry_ttl_days,
+    active_tts_max_concurrency,
+    active_write_batch_window_ms,
     clear_active_performance_plan,
     compact_sparse_overrides,
     detect_hardware_profile,
@@ -190,6 +199,58 @@ class PerformanceTuningConfigTests(unittest.TestCase):
         auto_override = deepcopy(auto_custom)
         auto_override["performance"]["overrides"] = {"background_slots": 4}
         self.assertEqual(HostSettings.parse(auto_override).limits.background_slots, 4)
+
+    def test_payload_exposes_all_five_baselines_including_exact_auto_tier(self):
+        plan = resolve_performance_plan(
+            {"profile": "compat"},
+            total_memory_bytes=8 * GIB,
+            cpu_count=8,
+            is_32bit=False,
+        )
+        payload = plan.to_payload()
+        self.assertEqual(set(payload["baselines"].keys()), set(PROFILE_IDS))
+        # On an 8 GiB host, auto resolves to the high-tier SQLite baseline (64 MB cache / 256 MB mmap),
+        # distinct from balanced (32 MB / 128 MB).
+        self.assertEqual(payload["baselines"]["auto"]["cache_size_mb"], 64)
+        self.assertEqual(payload["baselines"]["auto"]["mmap_size_mb"], 256)
+        self.assertEqual(payload["baselines"]["balanced"]["cache_size_mb"], 32)
+        self.assertEqual(payload["baselines"]["balanced"]["mmap_size_mb"], 128)
+        self.assertEqual(payload["baselines"]["compat"]["synchronous"], "FULL")
+
+    def test_auto_profile_publishes_active_plan_for_low_high_and_32bit_hosts(self):
+        # 1.5 GiB low-RAM host (auto -> eco): runtime helpers must match UI values (1 / 7 / 80), not fallback defaults.
+        low_ctrl = NS(config={"performance": {"profile": "auto", "overrides": {}}}, runtime=None, session=None, last_session=None)
+        low_plan, _ = apply_host_performance_tuning(low_ctrl, total_memory_bytes=int(1.5 * GIB), cpu_count=2, is_32bit=False)
+        self.assertEqual(low_plan.resolved_profile, "eco")
+        self.assertIs(active_performance_plan(), low_plan)
+        self.assertEqual(active_tts_max_concurrency(), 1)
+        self.assertEqual(active_telemetry_ttl_days(), 7)
+        self.assertEqual(active_write_batch_window_ms(), 80)
+        self.assertEqual(core_reply_voice._max_concurrent_tts(None), 1)
+        self.assertEqual(sqlite_tuning.active_sqlite_tuning_profile().mmap_size, 0)
+
+        # 32 GiB high-RAM host (auto -> turbo): runtime helpers must match UI values (4 / 30 / 30).
+        high_ctrl = NS(config={"performance": {"profile": "auto"}}, runtime=None, session=None, last_session=None)
+        high_plan, _ = apply_host_performance_tuning(high_ctrl, total_memory_bytes=32 * GIB, cpu_count=16, is_32bit=False)
+        self.assertEqual(high_plan.resolved_profile, "turbo")
+        self.assertIs(active_performance_plan(), high_plan)
+        self.assertEqual(active_tts_max_concurrency(), 4)
+        self.assertEqual(active_telemetry_ttl_days(), 30)
+        self.assertEqual(active_write_batch_window_ms(), 30)
+
+        # 32-bit host (auto): clamped sidecar mmap=0 must take effect on sidecars.
+        bit32_ctrl = NS(config={"performance": {"profile": "auto"}}, runtime=None, session=None, last_session=None)
+        apply_host_performance_tuning(bit32_ctrl, total_memory_bytes=8 * GIB, cpu_count=4, is_32bit=True)
+        with TemporaryDirectory(prefix="auto-32bit-sidecar-") as tmp:
+            idx = SearchIndex(Path(tmp))
+            with closing(idx._connect()) as conn:
+                self.assertEqual(conn.execute("PRAGMA mmap_size").fetchone()[0], 0)
+
+        # Releasing the owning controller clears the active plan cleanly; non-owning controllers do not interfere.
+        release_host_performance_tuning(low_ctrl)
+        self.assertIsNotNone(active_performance_plan())
+        release_host_performance_tuning(bit32_ctrl)
+        self.assertIsNone(active_performance_plan())
 
 
 class HotRefreshRuntimeAndSidecarsTests(unittest.TestCase):

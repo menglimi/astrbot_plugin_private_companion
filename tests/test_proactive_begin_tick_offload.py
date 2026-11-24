@@ -262,6 +262,44 @@ class DedupFallbackSkipTests(unittest.TestCase):
                 )
             self.assertTrue(has_unhashed_context_rows(runtime, "conversation_native_turns"))
 
+    def test_unhashed_cache_is_instance_scoped_and_immune_to_id_reuse_aba(self):
+        import builtins
+        from unittest.mock import patch
+
+        with TemporaryDirectory(prefix="dedup-aba-a-") as dir_a, TemporaryDirectory(prefix="dedup-aba-b-") as dir_b:
+            # Prepare dir_b with a pre-existing legacy unhashed row, then close it so reopening starts at epoch (0, 0).
+            ctx_b = _make_context(9, conv_suffix="-legacy")
+            with StorageRuntime.open(data_root=Path(dir_b), installation_id=INST) as prep_b:
+                turns_b = NativeConversationTurns(prep_b)
+                turns_b.admit(ctx_b, NS(at=NOW, instruction="sys"), "t-legacy", NS(source_id="sb"))
+                with prep_b.transaction() as conn:
+                    conn.execute(
+                        "UPDATE conversation_native_turns SET context_json = ?, context_hash = '' WHERE turn_id = 't-legacy'",
+                        (encode(ctx_b),),
+                    )
+
+            # Open runtime_a where every row is hashed, populate its per-instance False cache, then close it.
+            ctx_a = _make_context(8, conv_suffix="-clean")
+            runtime_a = StorageRuntime.open(data_root=Path(dir_a), installation_id=INST)
+            try:
+                NativeConversationTurns(runtime_a).admit(ctx_a, NS(at=NOW, instruction="sys"), "t-clean", NS(source_id="sa"))
+                self.assertFalse(has_unhashed_context_rows(runtime_a, "conversation_native_turns"))
+                self.assertTrue(bool(runtime_a._unhashed_context_cache))
+            finally:
+                runtime_a.close()
+            self.assertEqual(runtime_a._unhashed_context_cache, {})
+
+            # Without calling clear_dedup_caches(), open runtime_b at epoch (0, 0) and simulate identical id() reuse.
+            with StorageRuntime.open(data_root=Path(dir_b), installation_id=INST) as runtime_b:
+                with patch.object(builtins, "id", return_value=0xDEADBEEF):
+                    self.assertTrue(has_unhashed_context_rows(runtime_b, "conversation_native_turns"))
+
+                # After deduplicating runtime_b, cache reflects False and clear_dedup_caches() invalidates cleanly.
+                dedup_native_storage(runtime_b)
+                self.assertFalse(has_unhashed_context_rows(runtime_b, "conversation_native_turns"))
+                clear_dedup_caches()
+                self.assertFalse(has_unhashed_context_rows(runtime_b, "conversation_native_turns"))
+
 
 class ImageAccessAsyncAndFastPathTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_only_fast_path_skips_write_transaction_and_async_offloads_thread(self):

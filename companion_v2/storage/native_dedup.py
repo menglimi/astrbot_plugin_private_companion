@@ -44,11 +44,11 @@ _HEX_CHARS = frozenset("0123456789abcdef")
 
 _ROLE_CACHE_MAX = 512
 _CONTEXT_CACHE_MAX = 2048
-_UNHASHED_CACHE_MAX = 128
+_UNHASHED_PER_RUNTIME_MAX = 32
 _CACHE_LOCK = threading.Lock()
 _ROLE_BLOB_CACHE: OrderedDict[str, str] = OrderedDict()
 _CONTEXT_CACHE: OrderedDict[str, str] = OrderedDict()
-_UNHASHED_CONTEXT_CACHE: OrderedDict[tuple[int, str, str], tuple[int, int, bool]] = OrderedDict()
+_UNHASHED_CACHE_GENERATION = 0
 _UNHASHED_ALLOWED_TABLES = frozenset((
     "conversation_native_turns",
     "conversation_native_observations",
@@ -83,10 +83,11 @@ DEDUP_INDEX_STATEMENTS = (
 
 def clear_dedup_caches() -> None:
     """Clear process-wide immutable blob caches (primarily for testing)."""
+    global _UNHASHED_CACHE_GENERATION
     with _CACHE_LOCK:
         _ROLE_BLOB_CACHE.clear()
         _CONTEXT_CACHE.clear()
-        _UNHASHED_CONTEXT_CACHE.clear()
+        _UNHASHED_CACHE_GENERATION += 1
 
 
 def _cache_get(cache: OrderedDict[str, str], key: str) -> str | None:
@@ -458,21 +459,38 @@ def has_unhashed_context_rows(
 
     epoch_fn = getattr(runtime_or_conn, "table_write_epoch_snapshot", None)
     epoch_pair: tuple[int, int] | None = None
-    cache_key: tuple[int, str, str] | None = None
+    instance_cache: dict[tuple[str, str], tuple[int, int, int, bool]] | None = None
+    cache_key = (table, kind or "")
+    cache_gen = 0
     if callable(epoch_fn):
         try:
             snap = epoch_fn((frozenset({table}),))
             if isinstance(snap, tuple) and len(snap) >= 2:
                 epoch_pair = (int(snap[0]), int(snap[1]))
-                cache_key = (id(runtime_or_conn), table, kind or "")
-                with _CACHE_LOCK:
-                    cached = _UNHASHED_CONTEXT_CACHE.get(cache_key)
-                    if cached is not None and cached[0] == epoch_pair[0] and cached[1] == epoch_pair[1]:
-                        _UNHASHED_CONTEXT_CACHE.move_to_end(cache_key)
-                        return cached[2]
+                existing_cache = getattr(runtime_or_conn, "_unhashed_context_cache", None)
+                if isinstance(existing_cache, dict):
+                    instance_cache = existing_cache
+                else:
+                    created_cache: dict[tuple[str, str], tuple[int, int, int, bool]] = {}
+                    try:
+                        setattr(runtime_or_conn, "_unhashed_context_cache", created_cache)
+                        instance_cache = created_cache
+                    except (AttributeError, TypeError):
+                        instance_cache = None
+                if instance_cache is not None:
+                    with _CACHE_LOCK:
+                        cache_gen = _UNHASHED_CACHE_GENERATION
+                        cached = instance_cache.get(cache_key)
+                        if (
+                            cached is not None
+                            and cached[0] == cache_gen
+                            and cached[1] == epoch_pair[0]
+                            and cached[2] == epoch_pair[1]
+                        ):
+                            return cached[3]
         except Exception:
             epoch_pair = None
-            cache_key = None
+            instance_cache = None
 
     try:
         if table == "conversation_native_observations" and kind is not None:
@@ -508,12 +526,12 @@ def has_unhashed_context_rows(
     except sqlite3.OperationalError:
         return True
 
-    if cache_key is not None and epoch_pair is not None:
+    if instance_cache is not None and epoch_pair is not None:
         with _CACHE_LOCK:
-            _UNHASHED_CONTEXT_CACHE[cache_key] = (epoch_pair[0], epoch_pair[1], found)
-            _UNHASHED_CONTEXT_CACHE.move_to_end(cache_key)
-            while len(_UNHASHED_CONTEXT_CACHE) > _UNHASHED_CACHE_MAX:
-                _UNHASHED_CONTEXT_CACHE.popitem(last=False)
+            if _UNHASHED_CACHE_GENERATION == cache_gen:
+                if len(instance_cache) >= _UNHASHED_PER_RUNTIME_MAX and cache_key not in instance_cache:
+                    instance_cache.clear()
+                instance_cache[cache_key] = (cache_gen, epoch_pair[0], epoch_pair[1], found)
     return found
 
 

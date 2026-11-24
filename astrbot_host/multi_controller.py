@@ -936,6 +936,8 @@ class AstrBotMultiController:
             migrate_legacy_policy_values(runtime)
             migrate_window_values(runtime)
         except BaseException:
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             runtime.close()
             raise
         authority = MultiAuthority(runtime, settings, now=self.now,
@@ -1977,6 +1979,8 @@ class AstrBotMultiController:
                 await close_pricing_catalog_services(self)
             except Exception as error:
                 logger.warning("[CompanionV2] 计价服务停机清理失败 error_type=%s", type(error).__name__)
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             self.unregister_routes()
 
     async def _release_runtime(self):

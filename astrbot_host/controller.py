@@ -443,6 +443,8 @@ class AstrBotStagingController:
                 now=self.now,
             )
         except BaseException:
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             runtime.close()
             raise
         self.runtime = runtime
@@ -1240,4 +1242,6 @@ class AstrBotStagingController:
                 await self.native_extensions.aclose()
                 self.native_extensions = None
             self._terminated = True
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             self.unregister_routes()

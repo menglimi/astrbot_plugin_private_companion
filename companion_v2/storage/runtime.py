@@ -495,6 +495,7 @@ class StorageRuntime:
         self._reader_closing = False
         self._meta_cache_lock = Lock()
         self._table_exists_cache: dict[str, tuple[bool, int]] = {}
+        self._unhashed_context_cache: dict[tuple[str, str], tuple[int, int, int, bool]] = {}
         self._initialized_schemas: set[str] = set()
         self._write_epoch = 0
         self._table_write_epochs: dict[str, int] = {}
@@ -945,6 +946,7 @@ class StorageRuntime:
                 self._connection = None
             with self._meta_cache_lock:
                 self._table_exists_cache.clear()
+                self._unhashed_context_cache.clear()
                 self._initialized_schemas.clear()
             configuration_store = self._configuration_store
             self._configuration_store = None
