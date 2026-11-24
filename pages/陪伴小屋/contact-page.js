@@ -1875,6 +1875,11 @@ window.CompanionContactPage = (() => {
       .some(until => typeof until === "string" && Date.parse(until) > Date.now())) return "paused";
     return "available";
   }
+  function sliderRatio(val, min, max) {
+    const numeric = Number(val), lo = Number(min), hi = Number(max);
+    if (!Number.isFinite(numeric) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return 0;
+    return Math.max(0, Math.min(1, (numeric - lo) / (hi - lo)));
+  }
   function purposeRow(name, label) {
     const enabled = value(name + ".enabled") !== false;
     const weight = Number(value(name + ".weight"));
@@ -1882,7 +1887,8 @@ window.CompanionContactPage = (() => {
     const pauseUntil = [value(name + ".pause_until"), value("pause_until")]
       .filter(until => typeof until === "string" && Date.parse(until) > Date.now())
       .sort((a, b) => Date.parse(b) - Date.parse(a))[0];
-    const scale = Math.max(0, Math.min(5, Number.isFinite(weight) ? weight : 1));
+    const weightVal = Math.max(0.1, Math.min(5, Number.isFinite(weight) ? weight : 1));
+    const ratio = sliderRatio(weightVal, 0.1, 5).toFixed(6);
     return `<article class="ct-purpose${enabled ? " is-on" : ""}"
       data-purpose="${e(name)}">
       <label class="ct-check">
@@ -1890,9 +1896,11 @@ window.CompanionContactPage = (() => {
         <span class="ct-check-box">${ICON.check}</span>
         <span class="ct-purpose-name">${e(label)}</span></label>
       <div class="ct-weight" title="相对权重 ${Number.isFinite(weight) ? weight.toFixed(2) : "—"}">
-        <input type="range" min="0.1" max="5" step="0.1" data-field="${e(name)}.weight"
-          value="${Number.isFinite(weight) ? weight : 1}" aria-label="${e(label)} 相对权重">
-        <span class="ct-weight-fill" style="--w:${(scale / 5) * 100}%"></span>
+        <span class="ct-weight-track">
+          <input type="range" min="0.1" max="5" step="0.1" data-field="${e(name)}.weight"
+            value="${weightVal}" style="--p:${ratio}" aria-label="${e(label)} 相对权重">
+          <span class="ct-weight-fill" style="--p:${ratio}"></span>
+        </span>
         <em>${Number.isFinite(weight) ? weight.toFixed(1) : "—"}</em>
       </div>
       <div class="ct-purpose-state">
@@ -2021,10 +2029,10 @@ window.CompanionContactPage = (() => {
     const burstOn = value("enable_proactive_burst") === true;
     const quota = [["max_contacts_24h", "本窗口每日最多实际联系", "条", 100]];
     const dedupSliders = [
-      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440, !dedupOn],
-      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440, !lastMsgOn],
-      ["dedup_min_shared_tokens", "最少共有词数", 4, !dedupOn],
-      ["dedup_min_overlap_ratio", "最低重合比例", 1, !dedupOn],
+      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440, 30, !dedupOn],
+      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440, 30, !lastMsgOn],
+      ["dedup_min_shared_tokens", "最少共有词数", 4, 1, !dedupOn],
+      ["dedup_min_overlap_ratio", "最低重合比例", 1, 0.05, !dedupOn],
     ];
     return `<div class="ct-budgets">
       <section class="ct-block"><h3>每日额度</h3>
@@ -2032,11 +2040,12 @@ window.CompanionContactPage = (() => {
         <div class="ct-budget-quota-list">
         ${quota.map(([name, label, unit, max]) => {
           const current = num(name);
+          const ratio = sliderRatio(current ?? 0, 0, max).toFixed(6);
           return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}">
             <div class="ct-quota-head"><strong>${e(label)}</strong>
               <span class="ct-quota-value"><b>${current === null ? "—" : current}</b><i>${e(unit)}</i></span></div>
             <input type="range" min="0" max="${max}" step="1" data-field="${e(name)}"
-              value="${current ?? 0}" aria-label="${e(label)}">
+              value="${current ?? 0}" style="--p:${ratio}" aria-label="${e(label)}">
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div>
           </div>`;
         }).join("")}
@@ -2048,13 +2057,15 @@ window.CompanionContactPage = (() => {
           ${toggle("dedup_last_message_enabled", "与上一条原文比对", "避免连续两次说出几乎相同的话。", {muted: !dedupOn})}
         </div>
         <div class="ct-budget-sliders${dedupOn ? "" : " is-branch-off"}">
-        ${dedupSliders.map(([name, label, max, muted]) => {
+        ${dedupSliders.map(([name, label, max, step, muted]) => {
           const current = num(name);
+          const ratio = sliderRatio(current ?? 0, 0, max).toFixed(6);
+          const formatted = current === null ? "—" : step < 1 ? current.toFixed(2) : String(current);
           return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}${muted ? " is-muted" : ""}">
             <div class="ct-quota-head"><strong>${e(label)}</strong>
-              <span class="ct-quota-value"><b>${current === null ? "—" : current}</b></span></div>
-            <input type="range" min="0" max="${max}" step="${max <= 4 ? 1 : max <= 100 ? 5 : 30}"
-              data-field="${e(name)}" value="${current ?? 0}" aria-label="${e(label)}">
+              <span class="ct-quota-value"><b>${e(formatted)}</b></span></div>
+            <input type="range" min="0" max="${max}" step="${step}"
+              data-field="${e(name)}" value="${current ?? 0}" style="--p:${ratio}" aria-label="${e(label)}">
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div></div>`;
         }).join("")}
         </div>
@@ -2923,16 +2934,30 @@ window.CompanionContactPage = (() => {
        整页重画会把手上的滑块弄丢，拖到一半就断了。 */
     const range = field.type === "range" ? field : null;
     if (range) {
-      const fill = range.parentElement?.querySelector(".ct-weight-fill");
-      if (fill) fill.style.setProperty("--w", (Number(range.value) / 5) * 100 + "%");
-      const em = range.parentElement?.querySelector("em");
+      const isWeight = String(range.dataset?.field || "").endsWith(".weight");
+      const min = range.min !== "" && range.min !== undefined && Number.isFinite(Number(range.min))
+        ? Number(range.min) : (isWeight ? 0.1 : 0);
+      const max = range.max !== "" && range.max !== undefined && Number.isFinite(Number(range.max))
+        ? Number(range.max) : (isWeight ? 5 : 100);
+      const ratio = sliderRatio(range.value, min, max).toFixed(6);
+      range.style?.setProperty?.("--p", ratio);
+      const weightBox = range.closest?.(".ct-weight");
+      const fill = range.parentElement?.querySelector?.(".ct-weight-fill")
+        || weightBox?.querySelector?.(".ct-weight-fill");
+      if (fill) fill.style.setProperty("--p", ratio);
+      if (weightBox && Number.isFinite(Number(range.value))) {
+        weightBox.title = "相对权重 " + Number(range.value).toFixed(2);
+      }
+      const em = weightBox?.querySelector?.("em") || range.parentElement?.querySelector?.("em");
       /* 权重是小数（0.1 步进），额度是整数（整步进）——判据是**步长**，不是 max。
          曾经写成 `range.max === "5"`：max 是字符串，恒不等于数字 5，
          于是权重永远被显示成整数，3.5 变成 4（草稿里存的是 3.5，界面却写 4）。 */
-      if (em) em.textContent = Number(range.step) < 1 ? Number(range.value).toFixed(1) : String(range.value);
-      const quota = range.closest(".ct-quota");
-      const shown = quota?.querySelector(".ct-quota-value b");
-      if (shown) shown.textContent = String(range.value);
+      const stepNum = Number(range.step);
+      const isFractional = Number.isFinite(stepNum) && stepNum > 0 && stepNum < 1;
+      if (em) em.textContent = isFractional ? Number(range.value).toFixed(1) : String(range.value);
+      const quota = range.closest?.(".ct-quota");
+      const shown = quota?.querySelector?.(".ct-quota-value b");
+      if (shown) shown.textContent = isFractional ? Number(range.value).toFixed(2) : String(range.value);
       return;
     }
     render();

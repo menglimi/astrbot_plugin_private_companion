@@ -422,6 +422,24 @@ window.CompanionLearningReviewPage = (() => {
     const partialMessage = data.failedLabels?.length
       ? `部分记录归属暂时无法读取（${data.failedLabels.join("、")}），已保留之前显示的记录`
       : "部分记录归属暂时无法读取，已保留之前显示的记录";
+    const emptyBody = !data.loading && !visible.length
+      ? `<section class="lh-review-empty-state" role="status">
+          <span class="lh-review-empty-icon" aria-hidden="true"><i data-lucide="${data.items.length ? "filter" : "check-circle-2"}"></i></span>
+          <h3>${data.items.length ? "该分类下暂无待批阅记录" : "当前没有待批阅记录"}</h3>
+          <p>${data.items.length ? "其他分类中仍有待处理条目，可切回「全部」查看。" : "陪伴中整理出的成长进展、表达候选与每日复盘会出现在这里，随时回来核实与裁决。"}</p>
+          <div class="lh-review-empty-actions">
+            ${data.filter !== "all" && data.items.length ? `<button type="button" class="lh-review-empty-btn is-primary" data-review-filter="all">查看全部（${data.items.length}）</button>` : ""}
+            <a class="lh-review-empty-btn" href="#manage/learning/chain">成长链路</a>
+            <a class="lh-review-empty-btn" href="#manage/learning/expression">表达学习</a>
+            <a class="lh-review-empty-btn" href="#manage/learning/reflection">每日复盘</a>
+          </div>
+        </section>`
+      : `<div class="lh-review-layout"><section class="lh-review-queue">
+        <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
+        <div class="lh-review-queue-list">${list}</div>
+        <footer class="lh-review-queue-foot"><span>显示 ${visible.length} / ${data.items.length} 条</span>
+          ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</footer></section>
+        ${detail}</div>`;
     root.innerHTML = `<header class="lh-review-head"><div class="lh-review-head-copy">
         <h2>审阅中心</h2>
         <p>把陪伴里学到的分寸与进展整理成手稿，逐条核实与裁决。</p></div>
@@ -435,12 +453,7 @@ window.CompanionLearningReviewPage = (() => {
           <button type="button" class="lh-review-bulk-reject" data-review-bulk="reject"${!bulkReject||data.writing?" disabled":""}>批量驳回${bulkReject?` · ${bulkReject}`:""}</button></div></div>
       ${data.notice?`<p class="lh-inline-status ${data.error?"is-error":""}" role="status">${e(data.notice)}</p>`:""}
       ${data.errors?`<p class="lh-inline-status" role="status">${e(partialMessage)}</p>`:""}
-      ${bulkConfirm}<div class="lh-review-layout"><section class="lh-review-queue">
-        <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
-        <div class="lh-review-queue-list">${list}</div>
-        <footer class="lh-review-queue-foot"><span>显示 ${visible.length} / ${data.items.length} 条</span>
-          ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</footer></section>
-        ${detail}</div>`;
+      ${bulkConfirm}${emptyBody}`;
     if (Number.isFinite(savedScroll)) {
       const node = queueNode();
       if (node) node.scrollTop = savedScroll;

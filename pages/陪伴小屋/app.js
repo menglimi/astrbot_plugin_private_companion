@@ -5611,18 +5611,18 @@ function renderUnderstanding(){
       <div class="understanding-stats" data-understanding-stats="overview" aria-live="polite"></div>
       <div class="understanding-shortcuts">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="decision">
-          <span><strong>群聊回应理解</strong></span>${I('arrow-up-right')}
+          <span><strong>群聊回应理解</strong><small>调整群聊唤醒、旁听与回应判断</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="identity">
-          <span><strong>关系站位</strong></span>${I('arrow-up-right')}
+          <span><strong>关系站位</strong><small>查看角色与私聊、群聊成员关系</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-understanding-scroll="permissions">
-          <span><strong>角色级理解许可</strong></span>${I('arrow-up-right')}
+          <span><strong>角色级理解许可</strong><small>定位到下方私聊与群聊许可开关</small></span>${I('arrow-up-right')}
         </button>
       </div>
       <section id="understandingPermissions" class="understanding-permissions" aria-label="适用范围">
         <header class="understanding-panel-heading">
-          <div><span>子面板 06</span><h3>适用范围</h3></div>
+          <div><span>角色级默认</span><h3>适用范围</h3></div>
           <span class="understanding-scope-badge">角色级 · 与角色共用</span>
         </header>
         <div data-understanding-editor-slot="overview"><div id="contextImageWorkspace" class="understanding-editor-workspace"></div></div>
@@ -5633,10 +5633,10 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="image"></div>
       <div class="understanding-shortcuts understanding-shortcuts-two">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="decision">
-          <span><strong>身份与现实承诺护栏</strong></span>${I('arrow-up-right')}
+          <span><strong>身份与现实承诺护栏</strong><small>管理看图与现实承诺的安全边界</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="models">
-          <span><strong>识图模型</strong></span>${I('arrow-up-right')}
+          <span><strong>识图模型</strong><small>配置图像理解与视觉转述路由</small></span>${I('arrow-up-right')}
         </button>
       </div>
     </section>
@@ -5645,7 +5645,7 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="video"></div>
       <div class="understanding-shortcuts understanding-shortcuts-one">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="models">
-          <span><strong>视频转述模型</strong></span>${I('arrow-up-right')}
+          <span><strong>视频转述模型</strong><small>配置原生视频理解与抽帧视觉模型</small></span>${I('arrow-up-right')}
         </button>
       </div>
     </section>
@@ -5658,12 +5658,20 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="web">${configEditors('webUnderstandingWorkspace',['web_understanding'],'网页理解')}</div>
     </section>
     <section class="understanding-panel" role="tabpanel" data-understanding-panel="forwards" hidden>
-      <div class="understanding-stats" data-understanding-stats="forwards" aria-live="polite"></div>
-      <button type="button" class="understanding-shortcut understanding-host-link" data-go="manage" data-manage="host">
-        <span><strong>转发摄取上限</strong></span>${I('arrow-up-right')}
-      </button>
+      <div class="understanding-stats understanding-stats-compact" data-understanding-stats="forwards" aria-live="polite"></div>
+      <section class="understanding-card understanding-forward-window-card" aria-label="当前窗口合并转发改写">
+        <header class="understanding-panel-heading">
+          <div><span>当前窗口</span><h3>合并转发改写开关</h3></div>
+          <span class="understanding-scope-badge">可按窗口覆盖 · 可继承角色默认</span>
+        </header>
+        <div data-understanding-editor-slot="forwards"></div>
+      </section>
       <div id="forwardIntakeWorkspace" class="understanding-forward-workspace"></div>
-      <div data-understanding-editor-slot="forwards"></div>
+      <div class="understanding-shortcuts understanding-shortcuts-one">
+        <button type="button" class="understanding-shortcut understanding-host-link" data-go="manage" data-manage="host">
+          <span><strong>账号与会话</strong><small>检查宿主连接、V2 初始化与运行状态</small></span>${I('arrow-up-right')}
+        </button>
+      </div>
     </section>
   </div>`;
 }

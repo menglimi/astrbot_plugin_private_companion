@@ -396,8 +396,7 @@ window.CompanionStateEditor = (() => {
       const alignReady=maintenance?.canAlign(status);
       const alignAction=feature==="cycle"&&draft?.kind!=="align"
         ?`<section class="state-config-calibration"><div><h4>校准当前周期</h4><p>按实际周期日重建定位，会清除旧周期感受；“交回角色判断”在下次维护采纳。</p></div><button type="button" class="memory-button" data-state-edit="align" ${busy||loading||pending||!alignReady?"disabled":""} ${alignReady?"":"title=\"请先开启生理期模拟并读取角色状态\""}>校准当前周期</button></section>`:"";
-      const sharedForm=editing?form({after:details+related+alignAction,grouped:true}):`<p class="state-feature-scope">${e(scopes)} · ${summary}</p>
-        ${displayed}<button type="button" class="memory-button" data-state-edit="${action}" ${busy||loading||pending||unavailable||calendarEditor?.interacting?"disabled":""}>${feature==="home"?"配置状态与首页展示":feature==="energy"?"调整能量表达":"配置"+title}</button>`;
+      const sharedForm=editing?form({after:details+related+alignAction,grouped:true}):`<div class="state-feature-action-bar"><div class="state-feature-action-copy"><span class="state-feature-action-kicker">${feature==="home"?"展示与维护":"配置与表达"}</span><p class="state-feature-scope">${summary}</p>${displayed}</div><button type="button" class="memory-button state-feature-action-btn" data-state-edit="${action}" ${busy||loading||pending||unavailable||calendarEditor?.interacting?"disabled":""}>${feature==="home"?"配置状态与首页展示":feature==="energy"?"调整能量表达":"配置"+title}</button></div>`;
       const feedbackVisible=feature==="home"
         ?category==="home"
         :feature==="presentation"

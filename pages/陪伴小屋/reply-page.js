@@ -153,7 +153,7 @@ window.CompanionReplyPage = (() => {
       reply_mention_speaker_enabled: "群聊回复时 @ 发言者",
       voice_enabled: "启用语音", voice_trigger_mode: "触发方式", voice_generation_mode: "朗读内容",
       voice_conversion_scope: "语音转换范围",
-      voice_segment_mode: "朗读段落（整段会等文字收齐后合成一次）", voice_delivery_mode: "发送形式", voice_position: "语音位置",
+      voice_segment_mode: "朗读段落", voice_delivery_mode: "发送形式", voice_position: "语音位置",
       voice_language: "语音语言", voice_foreign_text_mode: "外语文字",
       voice_direction_mode: "表演指令 / 风格强化",
       voice_provider_id: "通用 TTS 扩展", voice_zh_provider_id: "中文 TTS 扩展",
@@ -209,7 +209,7 @@ window.CompanionReplyPage = (() => {
       reply_quote_skip_chars: "回复去空白后不超过此字数时不附引用；0 表示不跳过。",
       reply_mention_speaker_enabled: "只在群聊中 @ 本轮发言者。",
       voice_trigger_mode: "决定这一轮要不要朗读，以及由谁挑句子。",
-      voice_segment_mode: "整段语气更完整；逐段出音更早。",
+      voice_segment_mode: "整段会等文字收齐后合成一次，语气更完整；逐段出音更早。",
       voice_delivery_mode: "仅语音只在完整覆盖文字时替代文字。",
       voice_language: "本窗口默认朗读语种；当轮换语种不保存。",
       voice_probability: "按百分比编辑，后端按 0–1 的小数保存。",
@@ -1530,11 +1530,31 @@ window.CompanionReplyPage = (() => {
     return true;
   }
 
+  function perceptionScopeNote(module) {
+    if (module === "forwards") {
+      return "<strong>当前窗口合并转发改写开关</strong>"
+        + "<p>控制当前窗口是否展开合并转发的节点内容、媒体与阅读提示；留空时继承角色默认。单条消息转发数、节点上限与嵌套深度由下方全局解析上限统一管控。</p>";
+    }
+    if (module === "image") {
+      return "<strong>普通聊天的图片由 AstrBot 核心管线送入本轮请求</strong>"
+        + "<p>此处配置视觉转述缓存、识图失败冷却与上下文图片描述条数，用于提升重复图片与连续看图体验；场景级开关在「总览 → 适用范围」中管理。</p>";
+    }
+    if (module === "file") {
+      return "<strong>文件理解按格式白名单与体积上限解析</strong>"
+        + "<p>可选择纳入解析的文件格式并设置单文件大小、正文长度与读取超时；未安装的格式解析器会自动跳过，不会阻塞普通文字回复。</p>";
+    }
+    return "<strong>普通聊天的视频已由本插件原生理解</strong>"
+      + "<p>普通聊天的图片、视频和文件由 AstrBot 核心管线送入本轮请求。视频默认开启：支持视频输入的 Gemini 类模型直接读取整段原视频；其他模型用宿主自带的 ffmpeg 抽帧后作为图片送入同一轮请求，不依赖外部视频插件。超时或抽帧失败时本轮不带视频继续，不会阻塞文字回复。本页的转述和文件读取设置用于 V2 独立任务及历史兼容。</p>";
+  }
+
   function setPerceptionModule(module) {
     if (!root || !instance || root.dataset?.replyView !== "perception") return false;
-    const sections = perceptionModuleSections[module] || perceptionModuleSections.overview;
+    const resolved = module in perceptionModuleSections ? module : "overview";
+    const sections = perceptionModuleSections[resolved] || perceptionModuleSections.overview;
     instance.setVisibleGroups?.(sections, sections[0] || "");
-    root.dataset.perceptionModule = module in perceptionModuleSections ? module : "overview";
+    root.dataset.perceptionModule = resolved;
+    const scope = root.querySelector?.('[data-reply-part="scope"]');
+    if (scope) scope.innerHTML = perceptionScopeNote(resolved);
     return true;
   }
 
@@ -1608,9 +1628,9 @@ window.CompanionReplyPage = (() => {
     const diagnostics = [undefined, "decision"].includes(options.view)
       ? '<div data-reply-part="diagnostics"></div>' : "";
     const scopeNote = options.view === "decision"
-      ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。角色默认供各群继承；选中具体群时编辑本群覆盖，已单独设置的群字段不随角色默认改变。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
-      ? '<aside class="reply-scope-note" role="note"><strong>普通聊天的视频已由本插件原生理解</strong>' +
-        '<p>普通聊天的图片、视频和文件由 AstrBot 核心管线送入本轮请求。视频默认开启：支持视频输入的 Gemini 类模型直接读取整段原视频；其他模型用宿主自带的 ffmpeg 抽帧后作为图片送入同一轮请求，不依赖外部视频插件。超时或抽帧失败时本轮不带视频继续，不会阻塞文字回复。本页的转述和文件读取设置用于 V2 独立任务及历史兼容。</p></aside>'
+      ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。角色默认供各群继承；选中具体群时编辑本群覆盖，已单独设置的群字段不随角色默认改变。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>'
+      : options.view === "perception"
+      ? `<aside class="reply-scope-note" role="note" data-reply-part="scope">${perceptionScopeNote(options.perceptionModule || "overview")}</aside>`
       : '<aside class="reply-scope-note" role="note" data-reply-part="scope">' +
         expressionScopeNote(options.expressionModule) + '</aside>';
     root.innerHTML = scopeNote + '<div data-reply-part="settings"></div>'

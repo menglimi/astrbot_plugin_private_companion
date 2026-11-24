@@ -136,20 +136,47 @@ window.CompanionStatePage = (() => {
     return [marks,fallback].filter(Boolean).join("；");
   }
   function moodEnabled(status) { return !!status?.settings?.mood_enabled; }
+  const featureTones={
+    energy:"ok",health:"ok",location:"ok",patrol:"ok",
+    hunger:"warn",busy:"warn",weather:"warn",
+    cycle:"risk",
+    sleep:"accent",mood:"accent",planning:"accent",datetime:"accent",presentation:"accent",
+  };
+  const narrativeFeatures=new Set(["hunger","health","mood","sleep","busy","location"]);
+  function moodAxesMarkup(status) {
+    const mood=status.state?.values?.mood;
+    if(!moodEnabled(status)||!mood||typeof mood!=="object")return "";
+    const axes=moodOrder.filter(key=>typeof mood[key]==="number"&&Number.isFinite(mood[key]));
+    if(!axes.length)return "";
+    const maxVal=Math.max(10,...axes.map(key=>mood[key]));
+    const chips=axes.map(key=>{
+      const num=mood[key];
+      const pct=Math.max(0,Math.min(100,(num/maxVal)*100));
+      return `<div class="state-mood-axis" data-axis="${key}"><span class="state-mood-axis-label">${moodAxes[key]}</span><span class="state-mood-axis-track" aria-hidden="true"><i style="width:${pct.toFixed(1)}%"></i></span><b class="state-mood-axis-val">${e(num)}</b></div>`;
+    }).join("");
+    const meta=[mood.baseline!=null?`基线 ${mood.baseline}`:"",mood.intensity||"",status.state?.mood_dynamics?.neutral?"中性带":""].filter(Boolean);
+    return `<div class="state-mood-axes" aria-label="心情四维读数">${chips}</div>${meta.length?`<div class="state-mood-tags">${meta.map(tag=>`<span>${e(tag)}</span>`).join("")}</div>`:""}`;
+  }
   function workspaceOverview(status,feature) {
     const settings=status.settings||{},state=status.state||{},values=state.values||{};
     const timeline=state.cycle_timeline;
     const content={
-      energy:{label:"当前能量",value:settings.energy_enabled===false?"未启用":typeof values.energy==="number"&&Number.isFinite(values.energy)?`${values.energy} / 100`:valueLabel(values.energy),detail:"精力会结合休息、活动与近期互动渐进变化。",scope:"当前人格 · 已授权会话"},
-      health:{label:"当前健康感受",value:valueLabel(values.health,settings.enabled&&settings.health_enabled!==false),detail:"记录角色自身的主观体感，不作为诊断。",scope:"当前人格"},
-      hunger:{label:"当前饥饿感受",value:valueLabel(values.hunger,settings.enabled&&settings.hunger_enabled!==false),detail:"结合角色的生活节奏与活动变化。",scope:"当前人格"},
-      cycle:{label:"当前阶段",value:phaseLabel(status),detail:timeline?.cycle_day?`周期第 ${timeline.cycle_day} / ${timeline.cycle_days} 天；时长调整从下一轮起采用。`:"周期定位与阶段表达按角色单独维护。",scope:"当前角色"},
+      energy:{label:"当前能量",value:settings.energy_enabled===false?"未启用":typeof values.energy==="number"&&Number.isFinite(values.energy)?`${values.energy} / 100`:valueLabel(values.energy),detail:""},
+      health:{label:"当前健康感受",value:valueLabel(values.health,settings.enabled&&settings.health_enabled!==false),detail:""},
+      hunger:{label:"当前饥饿感受",value:valueLabel(values.hunger,settings.enabled&&settings.hunger_enabled!==false),detail:""},
+      cycle:{label:"当前阶段",value:phaseLabel(status),detail:timeline?.cycle_day?`周期第 ${timeline.cycle_day} / ${timeline.cycle_days} 天；时长调整从下一轮起采用。`:""},
       mood:{label:"当前心情",value:!settings.mood_enabled?"未启用":values.mood&&typeof values.mood==="object"
         ?moodText(values.mood)||moodNumbers(values.mood):moodText(values.mood)||"尚未记录",
-        detail:moodDetail(status)||"心情会随互动变化，并逐步回归基线。",scope:"当前人格 · 跨窗口共享"},
-      patrol:{label:"巡视安排",value:settings.daily_state_patrol_enabled?`每天 ${settings.daily_state_patrol_time||"未设时刻"}`:"未启用",detail:`使用角色本地时区；记录保留 ${settings.daily_state_patrol_retention_days??"未提供"} 天。`,scope:"当前人格 · 已授权会话"},
+        detail:moodDetail(status)},
+      patrol:{label:"巡视安排",value:settings.daily_state_patrol_enabled?`每天 ${settings.daily_state_patrol_time||"未设时刻"}`:"未启用",detail:`使用角色本地时区；记录保留 ${settings.daily_state_patrol_retention_days??"未提供"} 天。`},
     }[feature];
     if(!content)return "";
+    const runningOn=feature==="energy"?!!settings.enabled&&settings.energy_enabled!==false
+      :feature==="health"?!!settings.enabled&&!!settings.health_enabled
+        :feature==="hunger"?!!settings.enabled&&!!settings.hunger_enabled
+          :feature==="cycle"?!!settings.cycle_enabled
+            :feature==="mood"?!!settings.mood_enabled
+              :!!settings.daily_state_patrol_enabled;
     const running=feature==="energy"?!settings.enabled?"后台维护已关闭":settings.energy_enabled===false?"能量模拟已关闭":"能量模拟已启用"
       :feature==="health"?!settings.enabled?"后台维护未启用":settings.health_enabled?"健康模拟已启用":"健康模拟已关闭"
         :feature==="hunger"?!settings.enabled?"后台维护未启用":settings.hunger_enabled?"饥饿模拟已启用":"饥饿模拟已关闭"
@@ -157,14 +184,19 @@ window.CompanionStatePage = (() => {
             :feature==="mood"?settings.mood_enabled?"心情模拟已启用":"心情模拟未启用"
               :settings.daily_state_patrol_enabled?"每日巡视已启用":"每日巡视未启用";
     const summary=window.CompanionStateMaintenance?.actionSummary(feature==="energy"?"intensity":feature,status,String)||"查看当前设置";
-    const rows=feature==="cycle"?[["运行状态",running],["阶段模式",`${settings.cycle_mode==="six_phase"?"六阶段":"基础三阶段"} · 周期共 ${Object.keys(window.CompanionStateMaintenance?.phases||{}).reduce((sum,key)=>sum+Number(settings[`cycle_${key}_days`]||0),0)} 天`],["周期时区",`${settings.cycle_timezone||"尚未配置"} · ${{natural:"自然定位",unknown:"暂不定位",first_day:"从第 1 天开始"}[settings.cycle_initialization]||"定位方式待确认"}`],["状态更新时间",state.updated_at?when(state.updated_at):"尚无记录"]]
-      :[["运行状态",running],["生效范围",content.scope],[feature==="mood"?"动力学参数":"配置摘要",summary],["状态更新时间",state.updated_at?when(state.updated_at):"尚无记录"]];
-    const gauge=feature==="energy"&&settings.energy_enabled!==false&&typeof values.energy==="number"&&Number.isFinite(values.energy)
-      ?`<meter min="0" max="100" value="${Math.max(0,Math.min(100,values.energy))}" aria-label="当前能量 ${e(values.energy)} / 100"></meter>`:"";
-    return overviewMarkup(feature,content.label,content.value,content.detail,rows,gauge);
+    const rows=feature==="cycle"
+      ?[["运行状态",running,runningOn?"on":"off"],["阶段模式",`${settings.cycle_mode==="six_phase"?"六阶段":"基础三阶段"} · 周期共 ${Object.keys(window.CompanionStateMaintenance?.phases||{}).reduce((sum,key)=>sum+Number(settings[`cycle_${key}_days`]||0),0)} 天`],["周期时区",`${settings.cycle_timezone||"尚未配置"} · ${{natural:"自然定位",unknown:"暂不定位",first_day:"从第 1 天开始"}[settings.cycle_initialization]||"定位方式待确认"}`],["状态更新时间",state.updated_at?when(state.updated_at):"尚无记录","time"]]
+      :[["运行状态",running,runningOn?"on":"off"],[feature==="mood"?"动力学参数":"配置摘要",summary],["状态更新时间",state.updated_at?when(state.updated_at):"尚无记录","time"]];
+    const extra=feature==="energy"&&settings.energy_enabled!==false&&typeof values.energy==="number"&&Number.isFinite(values.energy)
+      ?`<meter min="0" max="100" value="${Math.max(0,Math.min(100,values.energy))}" aria-label="当前能量 ${e(values.energy)} / 100"></meter>`
+      :feature==="mood"?moodAxesMarkup(status):"";
+    return overviewMarkup(feature,content.label,content.value,content.detail,rows,extra);
   }
   function overviewMarkup(feature,label,value,detail,rows=[],extra="") {
-    return `<section class="state-workspace-overview${rows.length?"":" state-workspace-overview-readonly"}" aria-label="${e(featureInfo[feature]?.[0]||"状态")}当前情况"><div class="state-workspace-current"><span>${e(label)}</span><strong>${e(value)}</strong><small>${e(detail)}</small>${extra}</div>${rows.length?`<dl>${rows.map(([key,text])=>`<div><dt>${e(key)}</dt><dd>${e(text)}</dd></div>`).join("")}</dl>`:""}</section>`;
+    const text=String(value??"");
+    const kind=narrativeFeatures.has(feature)||text.length>14?"narrative":"metric";
+    const tone=featureTones[feature]||"accent";
+    return `<section class="state-workspace-overview${rows.length?"":" state-workspace-overview-readonly"}" data-value-kind="${kind}" data-feature-tone="${tone}" aria-label="${e(featureInfo[feature]?.[0]||"状态")}当前情况"><div class="state-workspace-current"><span>${e(label)}</span><strong>${e(value)}</strong>${extra}${detail?`<small>${e(detail)}</small>`:""}</div>${rows.length?`<dl>${rows.map(([key,rowValue,rowTone])=>`<div${rowTone?` data-row-tone="${e(rowTone)}"`:""}><dt>${e(key)}</dt><dd>${e(rowValue)}</dd></div>`).join("")}</dl>`:""}</section>`;
   }
   function relatedSettings(cards) {
     return `<nav class="state-config-related" aria-label="相关设置"><h4>相关设置</h4>${cards.map(([title,description,icon,attribute])=>`<button type="button" class="state-config-link" ${attribute}><i data-lucide="${icon}" aria-hidden="true"></i><span><strong>${title}</strong><small>${description}</small></span><i data-lucide="chevron-right" aria-hidden="true"></i></button>`).join("")}</nav>`;
@@ -402,15 +434,16 @@ window.CompanionStatePage = (() => {
     } else body=workspaceOverview(status,feature)+(editor?.markup({feature})||"");
     const scopePill=featureScopes[feature]||"当前角色";
     const subtitle=featureSubtitles[feature]||"";
-    return `<section id="state-feature-detail" class="state-feature-detail state-config-page" data-state-config-feature="${feature}" aria-labelledby="state-feature-title">
-      <header><button type="button" class="state-feature-back" data-state-feature-close aria-label="收起${title}" title="返回状态看板" ${editor?.busy?"disabled":""}><i data-lucide="arrow-left" aria-hidden="true"></i></button><div class="state-feature-head-main">
+    const tone=featureTones[feature]||"accent";
+    return `<section id="state-feature-detail" class="state-feature-detail state-config-page" data-state-config-feature="${feature}" data-feature-tone="${tone}" aria-labelledby="state-feature-title">
+      <header><span class="state-feature-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><div class="state-feature-head-main">
           <span class="state-eyebrow">状态 · ${title}</span>
-          <h3 id="state-feature-title"><i data-lucide="${icon}" aria-hidden="true"></i>${title}</h3>
+          <h3 id="state-feature-title">${title}</h3>
           ${subtitle?`<p class="state-feature-subtitle">${e(subtitle)}</p>`:""}
         </div>
         <div class="state-feature-head-aside">
           <span class="state-feature-scope-pill">${e(scopePill)}</span>
-          <button type="button" class="state-feature-close" data-state-feature-close aria-label="收起${title}" title="收起" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button>
+          <button type="button" class="state-feature-close" data-state-feature-close aria-label="收起${title}" title="收起详情" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button>
         </div></header>
       <div class="state-feature-content">${body}</div>
     </section>`;
