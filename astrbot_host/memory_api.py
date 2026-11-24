@@ -19,18 +19,6 @@ from .memory_linkage import read_external_memory_summary
 
 
 PREFIX = "/astrbot_plugin_private_companion/memory"
-DEGRADED_DETAIL_CODES = frozenset({
-    "memory_inactive",
-    "memory_forgotten",
-    "memory_expired",
-    "memory_not_current",
-    "memory_session_mismatch",
-    "source_revoked",
-    "source_expired",
-    "memory_source_unavailable",
-    "memory_evidence_forgotten",
-    "conversation_context_reset",
-})
 
 
 class MemoryWebAPI:
@@ -570,25 +558,12 @@ class MemoryWebAPI:
                 reflection_manager, context = self._build_reflection_manager(
                     session, runtime, resolved_username, observed_at)
                 management = reflection_manager.manager
-                item = management.writer.read(context, AtomRef(atom_id, revision))
+                item = management.writer.read_or_degraded(context, AtomRef(atom_id, revision))
                 if item.failure:
-                    if item.failure.code not in DEGRADED_DETAIL_CODES:
-                        return item
-                    with management.writer.runtime.read_snapshot():
-                        management.writer.access.check(context)
-                        row = management.writer._head(context, AtomRef(atom_id, revision), allow_inactive=True)
-                        degraded = {
-                            "atom_id": row["atom_id"],
-                            "revision": row["revision"],
-                            "state": row["state"],
-                            "representation": None,
-                            "object": None,
-                            "updated_at": row["updated_at"],
-                            "unavailable_reason": item.failure.code,
-                            "read_only": True,
-                        }
-                        return Outcome.success({"item": degraded, "sources": [], "session_id": None})
+                    return item
                 value = item.unwrap()
+                if value.get("read_only"):
+                    return Outcome.success({"item": value, "sources": [], "session_id": None})
                 engine = MemoryQuery(management.writer)
                 session_id = "memory-page-query-" + uuid4().hex
                 engine.begin(context, session_id)

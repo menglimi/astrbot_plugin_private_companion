@@ -268,7 +268,7 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_nai_preflight_refusals_surface_sanitized_note_and_mark_confirmed(self):
         cases = (
             (
-                {"handled": True, "image_path": "", "note": "🚫 上游返回 HTTP 400：参数错误。\n详情: invalid size https://secret.example/v1 sk-abcdef1234567890"},
+                {"handled": True, "image_path": "", "note": "🚫 上游返回 HTTP 400：参数错误。\n详情: invalid size https://secret.example/v1 sk-abcdef1234567890 pst-novelaiSecretToken99"},
                 "nai_request_rejected",
                 400,
                 False,
@@ -312,3 +312,4 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(diag["detail"])
                 self.assertNotIn("secret.example", diag["detail"])
                 self.assertNotIn("sk-abcdef1234567890", diag["detail"])
+                self.assertNotIn("pst-novelaiSecretToken99", diag["detail"])

@@ -520,7 +520,7 @@ window.CompanionMemoryPage = (() => {
     }
     const state = stateOf(value);
     const entry = LIFECYCLE.find(x=>x.key===state);
-    const active = value.state === "active";
+    const active = value.state === "active" && !value.read_only && !value.unavailable_reason;
     const pinned = value.context_mode === "pinned";
     return `<div class="mem-detail-top">
       <button type="button" class="mem-btn is-quiet mem-detail-close" id="memory-detail-close">${ICON.back}返回列表</button>
@@ -1219,7 +1219,7 @@ window.CompanionMemoryPage = (() => {
       if (!live(ticket)) return;
       if (!Array.isArray(result.items)) throw problem("invalid_response");
       data.revisions = result.items;
-    } catch (error) { if (live(ticket) && !silent) failure(error); }
+    } catch (error) { if (live(ticket) && !silent) failure(error, {preserveCorpus: true}); }
     finally { if (live(ticket)) { data.loading = false; render(); } }
   }
 
@@ -1267,13 +1267,13 @@ window.CompanionMemoryPage = (() => {
       if (!live(ticket)) return;
       if (typeof result.text !== "string") throw problem("invalid_response");
       data.sourceResult = result; notice("");
-    } catch (error) { if (live(ticket)) failure(error); }
+    } catch (error) { if (live(ticket)) failure(error, {preserveCorpus: true}); }
     finally { if (live(ticket)) { data.loading = false; render(); } }
   }
 
   async function mutateFact(action, value) {
     const item = data.factDetail?.item;
-    if (!item || item.state !== "active" || data.busy || data.loading) return;
+    if (!item || item.state !== "active" || item.read_only || item.unavailable_reason || data.busy || data.loading) return;
     const confirmationVersion = version;
     if (["retract","forget"].includes(action)) {
       const accepted = await askConfirm({

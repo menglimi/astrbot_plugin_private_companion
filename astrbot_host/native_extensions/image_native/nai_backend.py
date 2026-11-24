@@ -13,7 +13,7 @@ from .types import BackendResult, NativeImageError, inspect_image
 PLUGIN_NAME = "astrbot_plugin_nai_image"
 _NAI_HTTP_STATUS_RE = re.compile(r"\bHTTP\s+(\d{3})\b|\bhttp_(\d{3})\b", re.IGNORECASE)
 _NAI_SECRET_RE = re.compile(
-    r"(?:Bearer\s+[A-Za-z0-9._~+/=-]{6,}|(?:sk|pk|key|token)[_-][A-Za-z0-9._-]{8,}|https?://\S+)",
+    r"(?:Bearer\s+[A-Za-z0-9._~+/=-]{6,}|(?:sk|pk|pst|key|token)[_-][A-Za-z0-9._-]{8,}|https?://\S+)",
     re.IGNORECASE,
 )
 _NAI_NOTE_PREFIXES = ("🚫", "❌", "⏱", "📭", "🖼", "💥", "🔥", "⚠️", "❓", "NAI ", "提示词为空", "图片已生成但保存失败")

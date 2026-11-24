@@ -428,3 +428,18 @@ class MemoryHostAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing["data"]["code"], "memory_unavailable")
         stale = await self.request("/detail", data={"atom_id": after["atom_id"], "revision": after["revision"] + 5})
         self.assertEqual(stale["data"]["code"], "memory_revision_conflict")
+
+    async def test_active_fact_with_revoked_source_degrades_readonly_within_single_snapshot(self):
+        session = await self.initialize()
+        listed = (await self.request())["data"]["items"][0]
+        with session.application.runtime.transaction() as connection:
+            connection.execute("UPDATE sources SET state = 'revoked'")
+        detail = await self.request("/detail", data={"atom_id": listed["atom_id"], "revision": listed["revision"]})
+        self.assertEqual(detail["status"], "ok", detail)
+        self.assertEqual(detail["data"]["item"]["state"], "active")
+        self.assertTrue(detail["data"]["item"]["read_only"])
+        self.assertEqual(detail["data"]["item"]["unavailable_reason"], "source_revoked")
+        self.assertIsNone(detail["data"]["item"]["representation"])
+        self.assertIsNone(detail["data"]["item"]["object"])
+        self.assertEqual(detail["data"]["sources"], [])
+        self.assertNotIn("实际管理员提供的测试记录", json.dumps(detail, ensure_ascii=False))

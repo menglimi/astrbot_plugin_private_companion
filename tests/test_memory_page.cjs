@@ -592,3 +592,47 @@ test('只读降级详情渲染不可读原因并自动加载版本历史', async
   assert.match(h.element.innerHTML, /不再有效|只读/);
   assert.match(h.element.innerHTML, /第一版内容/);
 });
+
+test('active 但 read_only 降级事实不渲染变更按钮与修正表单，且子请求失败不清空语料列表', async () => {
+  const h = harness();
+  const activeDegraded = {
+    atom_id: 'a-revoked', revision: 1, state: 'active', context_mode: 'default',
+    predicate: '来源已撤回的事实', representation: null, unavailable_reason: 'source_revoked',
+  };
+  await boot(h, [fact('a-1', 1), activeDegraded]);
+  const card = {disabled: false, id: '', dataset: {factId: 'a-revoked'}};
+  card.closest = () => card;
+  h.element.__inside.add(card);
+  h.element.dispatch('click', {target: {closest: () => card}});
+  await h.settle();
+  const detailReq = h.requests.find(r => r.route === 'memory/detail');
+  h.reply(detailReq, {
+    item: {
+      atom_id: 'a-revoked', revision: 1, state: 'active',
+      representation: null, object: null, unavailable_reason: 'source_revoked', read_only: true,
+    },
+    sources: [],
+    session_id: null,
+  });
+  await h.settle();
+  const revReq = h.requests.find(r => r.route === 'memory/revisions');
+  h.reply(revReq, {items: []});
+  await h.settle();
+
+  assert.doesNotMatch(h.element.innerHTML, /memory-fact-pin|memory-fact-retract|memory-fact-forget|memory-correction-form/,
+    '只读降级事实即使 state 为 active 也不得渲染变更按钮与修正表单');
+  assert.match(h.element.innerHTML, /原来源已撤回/);
+
+  /* 手动点击查看版本历史失败时，不能清空左侧语料列表 */
+  const revBtn = {disabled: false, id: 'memory-revisions', dataset: {}};
+  revBtn.closest = () => revBtn;
+  h.element.__inside.add(revBtn);
+  h.element.dispatch('click', {target: {closest: () => revBtn}});
+  await h.settle();
+  const manualRevReq = h.requests.filter(r => r.route === 'memory/revisions').at(-1);
+  assert.ok(manualRevReq && manualRevReq !== revReq, '手动点击应再次请求版本历史');
+  manualRevReq.reject(new Error('memory_unavailable'));
+  await h.settle();
+  assert.equal(h.page.state.data.corpus.length, 2, '查看版本历史失败绝不能清空左侧语料列表');
+  assert.doesNotMatch(h.page.state.data.notice, /连接中断/);
+});
