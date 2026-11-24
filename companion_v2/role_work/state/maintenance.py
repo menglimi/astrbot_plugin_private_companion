@@ -754,15 +754,18 @@ class StateMaintenance:
         sources = tuple(dict.fromkeys((*sources, *(as_source_ref(s) for s in mood_round["sources"]),
                                        *(as_source_ref(s) for s in dependencies))))
         self.service.evidence.validate(context, sources)
+        sleep_cfg = self.service.body_clock.sleep_settings(context)
+        sleep_enabled = True if sleep_cfg is None else bool(sleep_cfg.get("sleep_enabled", False))
         return {"context": context, "instruction": instruction, "request_id": request_id, "at": now,
             "revision": record["revision"] if record else 0, "record_hash": digest(record), "record": record,
             "previous": previous,
             "settings": settings, "token": token, "sources": sources, "materials": materials,
             "calendar": calendar, "activities": activities, "cycle_timeline": cycle_timeline,
             "today": self._today(settings, now, context),
-            "mood_round": mood_round, "sleep_execution": self.service.body_clock.read(context, now=now),
-            "sleep_profile": self.service.body_clock.profile(context, now=now),
-            "sleep_schedule": sleep_schedule_summary(self.service.body_clock.sleep_settings(context)),
+            "mood_round": mood_round,
+            "sleep_execution": self.service.body_clock.read(context, now=now, sleep_enabled=sleep_enabled),
+            "sleep_profile": self.service.body_clock.profile(context, now=now, sleep_enabled=sleep_enabled),
+            "sleep_schedule": sleep_schedule_summary(sleep_cfg),
             "simulation_history": maintenance_context.simulation_history(self.service, context, now),
             "recent_dialogue": recent_dialogue, "dialogue_start": dialogue_start,
             "growth_refs": growth_refs, "skills_partial": skills_partial,

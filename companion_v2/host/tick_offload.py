@@ -833,7 +833,9 @@ def _scan_life_routine_sync(
                     minutes=routine.settings["sleep_minutes"]
                 )
             else:
-                profile = routine.app.role_state.body_clock.profile(routine.context, now=now)
+                profile = routine.app.role_state.body_clock.profile(
+                    routine.context, now=now, sleep_enabled=routine.settings["sleep_enabled"]
+                )
                 window_closed = now >= routine._next_sleep + timedelta(
                     minutes=routine.settings["sleep_window_minutes"]
                 )
@@ -854,21 +856,22 @@ def _scan_life_routine_sync(
                         sleep_kind="night",
                     )
                     return "ok", to_launch, False
-        local_now = now.astimezone(ZoneInfo(routine.settings["sleep_timezone"]))
-        profile = routine.app.role_state.body_clock.profile(routine.context, now=now)
-        if routine.settings["sleep_enabled"] and not busy and nap_ready(
-            profile, local_minutes=local_now.hour * 60 + local_now.minute
-        ):
-            today = local_now.date().isoformat()
-            if not any(
-                item.sleep
-                and item.sleep.kind == "nap"
-                and item.started_at.astimezone(ZoneInfo(routine.settings["sleep_timezone"])).date().isoformat()
-                == today
-                for item in routine.app.role_state.body_clock.episodes(routine.context)
-            ):
-                routine.start_sleep("daily-nap-" + today, 25, label="角色短暂午休", sleep_kind="nap")
-                return "ok", to_launch, False
+        if routine.settings["sleep_enabled"] and not busy:
+            local_now = now.astimezone(ZoneInfo(routine.settings["sleep_timezone"]))
+            profile = routine.app.role_state.body_clock.profile(
+                routine.context, now=now, sleep_enabled=True
+            )
+            if nap_ready(profile, local_minutes=local_now.hour * 60 + local_now.minute):
+                today = local_now.date().isoformat()
+                if not any(
+                    item.sleep
+                    and item.sleep.kind == "nap"
+                    and item.started_at.astimezone(ZoneInfo(routine.settings["sleep_timezone"])).date().isoformat()
+                    == today
+                    for item in routine.app.role_state.body_clock.episodes(routine.context)
+                ):
+                    routine.start_sleep("daily-nap-" + today, 25, label="角色短暂午休", sleep_kind="nap")
+                    return "ok", to_launch, False
         if not busy:
             _scan_calendar_work(routine, records, now, writing_active, to_launch)
         return "ok", to_launch, False

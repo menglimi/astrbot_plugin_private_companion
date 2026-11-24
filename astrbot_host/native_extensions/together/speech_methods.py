@@ -2,6 +2,9 @@
 from __future__ import annotations
 from .common import *
 
+_VOICE_POLICY_UNSET = object()
+
+
 class TogetherSpeechMethods:
 
     @staticmethod
@@ -91,27 +94,27 @@ class TogetherSpeechMethods:
             logger.debug('[TogetherCompanion] 读取陪伴语音配置失败，回退默认 TTS 链路: %s', _single_line(exc, 160))
             return None
 
-    def _room_voice_config(self, room: RoomSession | None, *, spoken_text: str='') -> dict[str, Any]:
+    def _room_voice_config(self, room: RoomSession | None, *, spoken_text: str='', policy: Any=_VOICE_POLICY_UNSET) -> dict[str, Any]:
         if spoken_text:
             from companion_v2.conversation.voice_reply import detected_speech_language
             detected = detected_speech_language(spoken_text)
             if detected:
                 return {'voice_language': detected}
-        policy = self._companion_voice_policy(room)
-        if policy is not None:
-            return {'voice_language': policy.language}
+        resolved_policy = self._companion_voice_policy(room) if policy is _VOICE_POLICY_UNSET else policy
+        if resolved_policy is not None:
+            return {'voice_language': resolved_policy.language}
         if room is not None and room.native_v2 is not None:
             return {'voice_language': room.native_v2.tts_language}
         return self._companion_realtime_voice_config()
 
-    def _room_tts_provider(self, room: RoomSession | None, *, spoken_text: str='') -> Any | None:
+    def _room_tts_provider(self, room: RoomSession | None, *, spoken_text: str='', policy: Any=_VOICE_POLICY_UNSET) -> Any | None:
         explicit_id = str(getattr(self, 'tts_provider_id', '') or '').strip()
         if explicit_id:
             explicit = self._get_tts_provider_by_id(explicit_id)
             if explicit is not None:
                 return explicit
-        policy = self._companion_voice_policy(room)
-        if policy is not None:
+        resolved_policy = self._companion_voice_policy(room) if policy is _VOICE_POLICY_UNSET else policy
+        if resolved_policy is not None:
             from companion_v2.conversation.voice_reply import detected_speech_language
             detected = detected_speech_language(spoken_text) if spoken_text else ''
             channel = (
@@ -120,10 +123,10 @@ class TogetherSpeechMethods:
                 else 'private'
             )
             seen_ids: set[str] = set()
-            for language in (detected, policy.language):
+            for language in (detected, resolved_policy.language):
                 if not language:
                     continue
-                candidate_id = str(policy.provider_for_language(channel, language) or '').strip()
+                candidate_id = str(resolved_policy.provider_for_language(channel, language) or '').strip()
                 if not candidate_id or candidate_id in seen_ids:
                     continue
                 seen_ids.add(candidate_id)

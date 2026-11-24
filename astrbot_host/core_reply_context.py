@@ -610,24 +610,32 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         captured("relationship", "相处背景", system_text("relationship", RELATIONSHIP_INSTRUCTION),
                  getattr(messages, "relationship_context", None))
 
-        def private_life_and_reading():
+        has_local_reading = False
+
+        def private_life():
+            nonlocal has_local_reading
             owner = getattr(messages, "life_context", None)
             materials = _capture_materials(owner, context, at, runtime=runtime)
-            section = _material_section("角色生活", LIFE_INSTRUCTION, materials)
             has_local_reading = any(
                 getattr(item, "purpose", None) == "role_life_activity"
                 and '"kind":"reading"' in (getattr(item, "payload", "") or "")
                 for item in _ready(materials)
             )
-            if not has_local_reading and owner is not None and hasattr(owner, "public_reading_contributions"):
-                public_items = owner.public_reading_contributions(context, at)
-                if public_items:
-                    optional("public_reading", lambda: _material_section(
-                        "角色近期阅读书目", PUBLIC_READING_INSTRUCTION, public_items
-                    ))
-            return section
+            return _material_section("角色生活", LIFE_INSTRUCTION, materials)
 
-        optional("life", private_life_and_reading)
+        def private_public_reading():
+            if has_local_reading:
+                return ""
+            owner = getattr(messages, "life_context", None)
+            if owner is None or not hasattr(owner, "public_reading_contributions"):
+                return ""
+            public_items = owner.public_reading_contributions(context, at)
+            if not public_items:
+                return ""
+            return _material_section("角色近期阅读书目", PUBLIC_READING_INSTRUCTION, public_items)
+
+        optional("life", private_life)
+        optional("public_reading", private_public_reading)
         captured("growth", "角色成长", ROLE_GROWTH_INSTRUCTION,
                  getattr(messages, "role_growth_context", None))
         captured("self_review", "角色自我提醒", SELF_REVIEW_INSTRUCTION,

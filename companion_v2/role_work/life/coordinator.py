@@ -140,7 +140,9 @@ class RoleLifeCoordinator:
         active_sleep = (
             body_sleep
             if body_sleep is not None
-            else self.app.role_state.body_clock.read(routine.context, now=now)
+            else self.app.role_state.body_clock.read(
+                routine.context, now=now, sleep_enabled=settings["sleep_enabled"]
+            )
         )
         if active_sleep is not None and "sleep_debt_minutes" in active_sleep and "workload_score" in active_sleep:
             profile = {
@@ -151,7 +153,9 @@ class RoleLifeCoordinator:
                 "has_sleep_history": active_sleep["has_sleep_history"],
             }
         else:
-            profile = self.app.role_state.body_clock.profile(routine.context, now=now)
+            profile = self.app.role_state.body_clock.profile(
+                routine.context, now=now, sleep_enabled=settings["sleep_enabled"]
+            )
         planned_minutes = recommended_sleep_minutes(settings["sleep_minutes"],
             profile["sleep_debt_minutes"], profile["workload_score"])
         next_wake = next_at + timedelta(minutes=planned_minutes) if next_at else None

@@ -245,7 +245,28 @@ class BookshelfContextAndPrivacyTests(LifeContextFixture, unittest.TestCase):
         self.assertTrue(galaxy["reading"]["book_completed"])
         self.assertEqual(galaxy["book_progress"], {"completed": 2, "total": 2, "completed_book": True})
 
-    def test_public_reading_summaries_respect_privacy_and_source_revocation(self):
+    def _enable_reading_share_in_group(self, enabled: bool):
+        from companion_v2.role_work.life.configuration import (
+            GROUP,
+            LifeConfigurationOwner,
+            configuration_fields,
+            target_for,
+        )
+
+        owner = LifeConfigurationOwner(self.runtime)
+        target = target_for(self.context)
+        fields = configuration_fields()
+        snapshot = owner.read(target, fields)
+        owner.write(
+            target,
+            fields,
+            changes={GROUP + ".reading_share_in_group": enabled},
+            reset=(),
+            expected_revision=snapshot.revision,
+            observed_at=NOW,
+        )
+
+    def test_public_reading_summaries_default_off_and_opt_in_privacy_and_governance(self):
         source = self._record_book_chunks("挪威的森林", 300, 1, completed=True)
         self.diary(body="私密日记绝不能泄漏到群聊")
 
@@ -260,16 +281,48 @@ class BookshelfContextAndPrivacyTests(LifeContextFixture, unittest.TestCase):
             "group-999",
         )
         group_ctx = NS(scope=group_scope, role_binding=self.context.role_binding, key="group-999")
+        other_private_scope = ScopeRef(
+            INSTALLATION,
+            SCOPE.platform,
+            ScopeKind.PRIVATE,
+            "user-other",
+            SCOPE.bot_id,
+            SCOPE.account_id,
+            "user-other",
+            "user-other",
+        )
+        other_private_ctx = NS(
+            scope=other_private_scope,
+            role_binding=self.context.role_binding,
+            key="user-other",
+        )
 
-        items = self.reader.public_reading_summaries(group_ctx, NOW)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0].purpose, "role_public_reading")
-        payload = json.loads(items[0].payload)
-        self.assertEqual(payload["basis"], "role_public_reading_summary")
-        self.assertIn("挪威的森林", payload["title"])
-        self.assertTrue(payload["completed_book"])
-        self.assertNotIn("私密日记", items[0].payload)
-        self.assertNotIn(self.important.subject.subject_id, items[0].payload)
+        # Opt-in by default: disabled until explicitly enabled, preventing silent cross-window leakage.
+        self.assertEqual(self.reader.public_reading_summaries(group_ctx, NOW), ())
+        self.assertEqual(self.reader.public_reading_summaries(other_private_ctx, NOW), ())
+
+        # Once explicitly enabled, both group chats and other private windows of the same role
+        # receive ONLY title, state, and progress — never source text, reflections, diary, or participants.
+        self._enable_reading_share_in_group(True)
+        for viewer_name, viewer_ctx in (("group", group_ctx), ("other_private", other_private_ctx)):
+            with self.subTest(viewer=viewer_name):
+                items = self.reader.public_reading_summaries(viewer_ctx, NOW)
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0].purpose, "role_public_reading")
+                payload = json.loads(items[0].payload)
+                self.assertEqual(payload["basis"], "role_public_reading_summary")
+                self.assertIn("挪威的森林", payload["title"])
+                self.assertTrue(payload["completed_book"])
+                self.assertEqual(payload["book_progress"], {"completed": 1, "total": 1, "completed_book": True})
+                self.assertNotIn("reflection_excerpt", payload)
+                self.assertNotIn("reflection", payload)
+                self.assertNotIn("第 1 段", items[0].payload)
+                self.assertNotIn("星星星", items[0].payload)
+                self.assertNotIn("私密日记", items[0].payload)
+                self.assertNotIn(self.important.subject.subject_id, items[0].payload)
+
+        # Expired book sources are excluded via full source governance validation.
+        self.assertEqual(self.reader.public_reading_summaries(group_ctx, NOW + timedelta(days=8)), ())
 
         # Revoking the underlying book source immediately hides it from public reading summaries.
         self.messages.sources.revoke(source, expected_governance_revision=1, observed_at=NOW).unwrap()

@@ -129,7 +129,7 @@ class RoleBodyClock:
         activity = self.latest(context)
         return {"id": activity.activity_id, "revision": activity.revision} if activity else None
 
-    def read(self, context, *, reference=None, historical=False, now=None):
+    def read(self, context, *, reference=None, historical=False, now=None, sleep_enabled=None):
         now = now or self.tasks.now()
         if historical:
             if reference is None:
@@ -150,7 +150,11 @@ class RoleBodyClock:
             episodes = self.episodes(context)
         receipt = activity.sleep
         actual = actual_sleep_seconds(activity, now)
-        enabled = True if historical else self._sleep_enabled(context)
+        enabled = (
+            True
+            if historical
+            else (self._sleep_enabled(context) if sleep_enabled is None else bool(sleep_enabled))
+        )
         profile = sleep_profile(episodes, workload_score=self.workload(context, now=now), now=now, sleep_enabled=enabled)
         return {"basis": "execution_receipt", "state": "sleeping" if activity.state is State.ACTIVE else
             "interrupted" if activity.state is State.PAUSED else
@@ -184,7 +188,7 @@ class RoleBodyClock:
         early = segment_seconds < 20 * 60
         interruptions = receipt.interruptions + 1
         early_interruptions = receipt.early_interruptions + int(early)
-        debt = self.profile(context, now=at)["sleep_debt_minutes"]
+        debt = self.profile(context, now=at, sleep_enabled=True)["sleep_debt_minutes"]
         quality_min, quality_max = sleep_quality_range(receipt.workload_score, debt,
                                                         interruptions, early_interruptions)
         updated = replace(receipt, slept_seconds=min(172800, receipt.slept_seconds + segment_seconds),
@@ -211,7 +215,7 @@ class RoleBodyClock:
         # schema bounds one episode at 48h; without this clamp, waking it fails
         # validation and the UI can never end the sleep.
         total = min(172800, receipt.slept_seconds + elapsed)
-        debt = self.profile(context, now=observed_at)["sleep_debt_minutes"]
+        debt = self.profile(context, now=observed_at, sleep_enabled=True)["sleep_debt_minutes"]
         low, high = sleep_quality_range(receipt.workload_score, debt,
                                          receipt.interruptions, receipt.early_interruptions)
         receipt = replace(receipt, slept_seconds=total, wake_until=None,
@@ -255,7 +259,7 @@ class RoleBodyClock:
                 receipt = activity.sleep or self._legacy_receipt(activity)
                 elapsed = max(0, round((at - activity.updated_at).total_seconds()))
                 total = min(172800, receipt.slept_seconds + elapsed)
-                debt = self.profile(context, now=at)["sleep_debt_minutes"]
+                debt = self.profile(context, now=at, sleep_enabled=True)["sleep_debt_minutes"]
                 extension = oversleep_extension(activity, sleep_debt_minutes=debt)
                 if extension:
                     slept = replace(receipt, slept_seconds=total, oversleep_minutes=extension)

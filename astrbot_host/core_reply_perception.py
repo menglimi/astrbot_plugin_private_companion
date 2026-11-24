@@ -274,8 +274,9 @@ def _animated_gif_file(path):
 def _astrbot_montage_notice_state(request):
     """Inspect AstrBot's authoritative 3x3 montage notice in ``extra_user_content_parts``.
 
-    Returns ``(montage_present, already_explained)`` so AstrBot 4.29+ native
-    montage conversion is recognized without duplicating its own system notice.
+    AstrBot 4.29+ emits the image label (``[Image N: ...; animation converted to
+    a 3x3 frame montage]``) and its explanatory ``<system_notice>`` as separate
+    text parts, so both flags are evaluated across all parts.
     """
     montage_present = False
     already_explained = False
@@ -291,15 +292,21 @@ def _astrbot_montage_notice_state(request):
             if part_type != "text" or not isinstance(text, str):
                 continue
             lower = text.lower()
-            if "3x3 frame montage" in lower or "animation converted to a 3x3" in lower:
+            if (
+                "3x3 frame montage" in lower
+                or "animation converted to a 3x3" in lower
+                or "animation montage" in lower
+            ):
                 montage_present = True
-                if (
-                    "<system_notice>" in lower
-                    or "left to right" in lower
-                    or "top to bottom" in lower
-                    or "chronological order" in lower
-                ):
-                    already_explained = True
+            if "<system_notice>" in lower and (
+                "animation montage" in lower
+                or "3x3 frame montage" in lower
+                or "reading order" in lower
+                or "left to right" in lower
+                or "top to bottom" in lower
+                or "chronological order" in lower
+            ):
+                already_explained = True
     except Exception:
         return False, False
     return montage_present, already_explained

@@ -517,7 +517,7 @@ class CoreReplyVideoStateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CoreReplyAnimatedImageOptimizationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_astrbot_montage_skips_duplicate_notice_when_system_notice_already_present(self):
+    async def test_astrbot_montage_skips_duplicate_notice_across_separate_host_parts(self):
         from astrbot_host.core_reply_perception import _astrbot_montage_notice_state
 
         event = Event()
@@ -531,7 +531,15 @@ class CoreReplyAnimatedImageOptimizationTests(unittest.IsolatedAsyncioTestCase):
             audio_urls=[],
             func_tool=None,
             extra_user_content_parts=[
-                TextPart(text="<system_notice>The image is a 3x3 frame montage from an animated GIF.</system_notice>"),
+                TextPart(
+                    text="[Image 1: original path /tmp/demo.gif; animation converted to a 3x3 frame montage]"
+                ),
+                TextPart(
+                    text="<system_notice>\n"
+                    "Images labeled as animation montages contain frames in reading order. "
+                    "Treat them as animations; do not mention the conversion or frame layout.\n"
+                    "</system_notice>"
+                ),
             ],
         )
         self.assertEqual(_astrbot_montage_notice_state(request), (True, True))
@@ -539,7 +547,7 @@ class CoreReplyAnimatedImageOptimizationTests(unittest.IsolatedAsyncioTestCase):
         payload = context_payload(request)
         self.assertNotIn("astrbot_animated_image_understanding", payload)
 
-    async def test_astrbot_montage_injects_notice_when_host_has_no_system_notice(self):
+    async def test_astrbot_montage_injects_notice_when_host_has_no_montage_system_notice(self):
         from astrbot_host.core_reply_perception import _astrbot_montage_notice_state
         from companion_v2.conversation.media.understanding import ASTRBOT_ANIMATED_IMAGE_INSTRUCTION
 
@@ -554,7 +562,16 @@ class CoreReplyAnimatedImageOptimizationTests(unittest.IsolatedAsyncioTestCase):
             audio_urls=[],
             func_tool=None,
             extra_user_content_parts=[
-                TextPart(text="Converted to a 3x3 frame montage for vision input."),
+                TextPart(
+                    text="[Image 1: original path /tmp/demo.gif; animation converted to a 3x3 frame montage]"
+                ),
+                # An unrelated oversized-image notice must NOT suppress the montage instruction.
+                TextPart(
+                    text="<system_notice>\n"
+                    "For skipped images, use astrbot_file_read_tool if available, "
+                    "or ask the user to resend a smaller image.\n"
+                    "</system_notice>"
+                ),
             ],
         )
         self.assertEqual(_astrbot_montage_notice_state(request), (True, False))

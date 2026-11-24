@@ -206,7 +206,10 @@ class RoleLifeRuntime:
             raise TaskError("life_reading_active", "wait for the current reading or cancel it before sleeping")
         now = self.app.now()
         base_need = self.settings["sleep_minutes"] if self.settings else minutes
-        profile = self.app.role_state.body_clock.profile(self.context, now=now)
+        sleep_enabled = self.settings["sleep_enabled"] if self.settings else None
+        profile = self.app.role_state.body_clock.profile(
+            self.context, now=now, sleep_enabled=sleep_enabled
+        )
         target = (25 if sleep_kind == "nap" else recommended_sleep_minutes(base_need,
             profile["sleep_debt_minutes"], profile["workload_score"])) if sleep_kind != "manual" else minutes
         receipt = sleep_receipt(kind=sleep_kind, base_need_minutes=base_need, target_minutes=target,
@@ -396,7 +399,9 @@ class RoleLifeRuntime:
                         time.fromisoformat(self.settings["sleep_time"]), self.settings["sleep_variation_minutes"])
                     self._next_wake = self._next_sleep + timedelta(minutes=self.settings["sleep_minutes"])
                 else:
-                    profile = self.app.role_state.body_clock.profile(self.context, now=now)
+                    profile = self.app.role_state.body_clock.profile(
+                        self.context, now=now, sleep_enabled=self.settings["sleep_enabled"]
+                    )
                     window_closed = now >= self._next_sleep + timedelta(minutes=self.settings["sleep_window_minutes"])
                     if night_sleep_ready(profile) or window_closed:
                         self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, zone,
@@ -405,16 +410,18 @@ class RoleLifeRuntime:
                         self.start_sleep("daily-sleep-" + due_day.isoformat(),
                             self.settings["sleep_minutes"], sleep_kind="night")
                         return
-            local_now = now.astimezone(ZoneInfo(self.settings["sleep_timezone"]))
-            profile = self.app.role_state.body_clock.profile(self.context, now=now)
-            if (self.settings["sleep_enabled"] and not busy
-                    and nap_ready(profile, local_minutes=local_now.hour * 60 + local_now.minute)):
-                today = local_now.date().isoformat()
-                if not any(item.sleep and item.sleep.kind == "nap" and item.started_at.astimezone(
-                        ZoneInfo(self.settings["sleep_timezone"])).date().isoformat() == today
-                        for item in self.app.role_state.body_clock.episodes(self.context)):
-                    self.start_sleep("daily-nap-" + today, 25, label="角色短暂午休", sleep_kind="nap")
-                    return
+            if self.settings["sleep_enabled"] and not busy:
+                local_now = now.astimezone(ZoneInfo(self.settings["sleep_timezone"]))
+                profile = self.app.role_state.body_clock.profile(
+                    self.context, now=now, sleep_enabled=True
+                )
+                if nap_ready(profile, local_minutes=local_now.hour * 60 + local_now.minute):
+                    today = local_now.date().isoformat()
+                    if not any(item.sleep and item.sleep.kind == "nap" and item.started_at.astimezone(
+                            ZoneInfo(self.settings["sleep_timezone"])).date().isoformat() == today
+                            for item in self.app.role_state.body_clock.episodes(self.context)):
+                        self.start_sleep("daily-nap-" + today, 25, label="角色短暂午休", sleep_kind="nap")
+                        return
             if not busy:
                 self.advance_calendar_work(records, now)
         except (TaskError, ValueError, KeyError) as error:

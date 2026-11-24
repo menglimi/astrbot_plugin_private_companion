@@ -236,14 +236,9 @@ class RoleLifeContextReader:
                           else activity.work.source if activity.work is not None else None)
                 if source is None:
                     continue
-                # Verify source is still active and non-expired; never surface withdrawn books.
-                row = self.runtime.read_one(
-                    "SELECT state, expires_at FROM sources WHERE source_id = ?",
-                    (source.source_id,),
-                )
-                if row is None or row["state"] != "active":
-                    continue
-                if row["expires_at"] and row["expires_at"] <= at.isoformat():
+                # The exact source version must still pass governance (state, expiry,
+                # dependencies); a withdrawn or expired book is never projected.
+                if not self.journal.sources.validate_reference(source, observed_at=at).is_success:
                     continue
                 key = (activity.scope.key, source.source_id)
                 existing = by_book.get(key)
@@ -285,8 +280,8 @@ class RoleLifeContextReader:
                 }
                 if progress is not None:
                     payload["book_progress"] = dict(progress)
-                if activity.reading is not None and activity.reading.reflection:
-                    payload["reflection_excerpt"] = redact_text(activity.reading.reflection).strip()[:180]
+                # Reading reflections respond to a private source and may quote it, so
+                # this cross-audience projection carries only title, state and progress.
                 materials.append(material(
                     {"kind": "public_reading", "book_key": digest([owner, source_id])},
                     "role_public_reading",

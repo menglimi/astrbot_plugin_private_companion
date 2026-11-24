@@ -446,11 +446,12 @@ class TogetherRoomsMethods:
 
     async def room_bootstrap(self, room: RoomSession, *, member_role: str='owner') -> dict[str, Any]:
         is_owner = member_role == 'owner'
-        capabilities = await self._capabilities(room)
+        voice_policy = await asyncio.to_thread(self._companion_voice_policy, room)
+        capabilities = await self._capabilities(room, voice_policy=voice_policy)
         work_capability = capabilities.get('work')
         if not isinstance(work_capability, dict):
             work_capability = {'available': False, 'label': ''}
-        companion_tts = self._room_voice_config(room)
+        companion_tts = self._room_voice_config(room, policy=voice_policy)
         scene = {} if room.native_v2 is not None else self._companion_scene(room.user_id)
         relationship = scene.get('relationship') if isinstance(scene.get('relationship'), dict) else {}
         work_context = await self._work_collaboration_context(room, force=True) if is_owner and room.mode == 'work' and (work_capability.get('available') is True) else {}

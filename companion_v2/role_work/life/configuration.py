@@ -15,7 +15,7 @@ GROUP = "role.life"
 DEFAULTS = {"enabled": False, "diary_enabled": True, "diary_time": "23:50", "timezone": "Asia/Shanghai",
             "sleep_enabled": False, "sleep_time": "00:30", "sleep_timezone": "Asia/Shanghai",
             "sleep_variation_minutes": 20, "sleep_window_minutes": 120, "sleep_minutes": 480,
-            "reading_enabled": False, "reading_share_in_group": True, "derive_enabled": True,
+            "reading_enabled": False, "reading_share_in_group": False, "derive_enabled": True,
             "diary_style_prompt": "",
             "dream_theme_candidates": "", "dream_mixed_themes_enabled": False,
             "dream_intimate_theme_enabled": False, "dream_afterglow_mode": "auto",
