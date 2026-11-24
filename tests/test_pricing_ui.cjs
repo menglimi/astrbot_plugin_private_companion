@@ -1199,3 +1199,19 @@ test("New API gateway bar: enriched probe notice, recommended group ratio chip, 
   assert.match(h.root.innerHTML, /探测成功：已接入 示例公益站（120 个模型 · 人民币 CNY）（已复用同域名价格源） · 推荐分组 gemini \(0\.245×\) · 跳过 2 个特殊私有公式。/);
   h.page.unmount();
 });
+
+test("pricing-workbench.css mobile responsive contracts: smooth horizontal cand-table, <=520px full-width selects/inline fields, compact padding, and 32x32 day-pill touch target", () => {
+  const css = fs.readFileSync(path.join(PAGE_DIR, "pricing-workbench.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /\.pw-table-wrap\s*\{[^}]*overflow-x:\s*auto[^}]*overscroll-behavior-x:\s*contain/s);
+  assert.match(css, /\.pw-cand-table\s*\{[^}]*min-width:\s*520px/s);
+  assert.match(css, /\.pw-cand-table\s+\.pw-num\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(
+    css,
+    /@container\s+pricing-wb\s*\(\s*max-width:\s*520px\s*\)\s*\{[\s\S]*?\.pw-hero[\s\S]*?padding:\s*var\(--sp-3\)[\s\S]*?\.pw-inline-field\s+select,\s*\.pw-newapi-bar\s+select\s*\{[^}]*width:\s*100%[^}]*max-width:\s*none[\s\S]*?\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s,
+  );
+  assert.match(
+    css,
+    /@media\s*\(\s*max-width:\s*520px\s*\)\s*\{[\s\S]*?\.pw-hero[\s\S]*?padding:\s*var\(--sp-3\)[\s\S]*?\.pw-inline-field\s+select,\s*\.pw-newapi-bar\s+select\s*\{[^}]*width:\s*100%[^}]*max-width:\s*none[\s\S]*?\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s,
+  );
+  assert.match(css, /@media\s*\(\s*pointer:\s*coarse\s*\)\s*\{[^}]*\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s);
+});

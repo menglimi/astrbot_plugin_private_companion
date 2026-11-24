@@ -853,7 +853,7 @@
 .pw-source-cur {
   display: inline-flex;
   align-items: center;
-  padding: 0 5px;
+  padding: 0 var(--sp-1);
   border-radius: var(--r-pill);
   background: var(--t-accent-quiet);
   color: var(--t-accent-ink);
@@ -1126,6 +1126,8 @@
 .pw-table-wrap {
   width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--t-line);
   border-radius: var(--r-xs);
   background: var(--t-surface);
@@ -1133,6 +1135,7 @@
 
 .pw-cand-table {
   width: 100%;
+  min-width: 520px;
   border-collapse: collapse;
   font-size: var(--fs-micro);
 }
@@ -1143,6 +1146,10 @@
   border-bottom: 1px solid var(--t-line);
   text-align: left;
   vertical-align: middle;
+}
+
+.pw-cand-table .pw-num {
+  white-space: nowrap;
 }
 
 .pw-cand-table th {
@@ -1574,6 +1581,8 @@
     display: flex;
     flex-wrap: nowrap;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
     gap: var(--sp-2);
   }
   .pw-rail-divider {
@@ -1600,6 +1609,17 @@
 }
 
 @container pricing-wb (max-width: 520px) {
+  .pw-hero,
+  .pw-sources-bar,
+  .pw-unpriced-card,
+  .pw-workbench,
+  .pw-residue-section,
+  .pw-presets-section {
+    padding: var(--sp-3);
+  }
+  .pw-card-head {
+    gap: var(--sp-2);
+  }
   .pw-rate-grid,
   .pw-rate-grid--compact,
   .pw-tz-row,
@@ -1613,6 +1633,50 @@
     min-width: 0;
     max-width: none;
     flex: 1 1 100%;
+  }
+  .pw-newapi-bar-row {
+    gap: var(--sp-2);
+  }
+  .pw-inline-field,
+  .pw-newapi-chip-group,
+  .pw-cluster-actions,
+  .pw-mult-editor {
+    width: 100%;
+  }
+  .pw-inline-field select,
+  .pw-newapi-bar select {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .pw-fixed-price-row {
+    max-width: none;
+  }
+  .pw-mult-editor .pw-unit-input,
+  .pw-fixed-price-row .pw-unit-input {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .pw-mult-editor .pw-unit-input input,
+  .pw-fixed-price-row .pw-unit-input input {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .pw-catalog-status .pw-badge,
+  .pw-cluster-title-row .pw-badge,
+  .pw-newapi-chip-group .pw-badge,
+  .pw-period-time .pw-badge {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  .pw-unpriced-right {
+    gap: var(--sp-2);
+  }
+  .pw-day-pill {
+    min-width: 32px;
+    height: 32px;
   }
 }
 
@@ -1630,6 +1694,8 @@
     display: flex;
     flex-wrap: nowrap;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
     gap: var(--sp-2);
   }
   .pw-rail-divider {
@@ -1647,6 +1713,17 @@
 }
 
 @media (max-width: 520px) {
+  .pw-hero,
+  .pw-sources-bar,
+  .pw-unpriced-card,
+  .pw-workbench,
+  .pw-residue-section,
+  .pw-presets-section {
+    padding: var(--sp-3);
+  }
+  .pw-card-head {
+    gap: var(--sp-2);
+  }
   .pw-wb-tools {
     width: 100%;
     justify-content: flex-start;
@@ -1656,6 +1733,57 @@
     min-width: 0;
     max-width: none;
     flex: 1 1 100%;
+  }
+  .pw-newapi-bar-row {
+    gap: var(--sp-2);
+  }
+  .pw-inline-field,
+  .pw-newapi-chip-group,
+  .pw-cluster-actions,
+  .pw-mult-editor {
+    width: 100%;
+  }
+  .pw-inline-field select,
+  .pw-newapi-bar select {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .pw-fixed-price-row {
+    max-width: none;
+  }
+  .pw-mult-editor .pw-unit-input,
+  .pw-fixed-price-row .pw-unit-input {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .pw-mult-editor .pw-unit-input input,
+  .pw-fixed-price-row .pw-unit-input input {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .pw-catalog-status .pw-badge,
+  .pw-cluster-title-row .pw-badge,
+  .pw-newapi-chip-group .pw-badge,
+  .pw-period-time .pw-badge {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  .pw-unpriced-right {
+    gap: var(--sp-2);
+  }
+  .pw-day-pill {
+    min-width: 32px;
+    height: 32px;
+  }
+}
+
+@media (pointer: coarse) {
+  .pw-day-pill {
+    min-width: 32px;
+    height: 32px;
   }
 }
 
