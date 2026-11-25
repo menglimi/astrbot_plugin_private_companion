@@ -16,7 +16,8 @@ class NAIGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
     def image_session(self):
         run = self.model_run()
         invocation = NS(context=run.task.spec.context, invocation_id=run.task.spec.request_ref,
-            parent_task_id="original-parent", arguments_hash="synthetic-arguments",
+            parent_task_id="original-parent", tool_call_id="test-image-tool",
+            arguments_hash="synthetic-arguments",
             descriptor=NS(tool=NS(action="image.generate"),
                 binding=ProviderBinding("image.generate", "image.native", "1", "native-generation")))
         self.ledger.policy = replace(self.ledger.policy, enabled=False)
