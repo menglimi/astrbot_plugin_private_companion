@@ -349,8 +349,13 @@ test("视觉打磨 P1 回归：模型页签不拆字、感知时钟单行不折�
   const modelsCss = stripComments(read("pages/陪伴小屋/models-page.css"));
   assert.match(
     modelsCss,
-    /\.model-tabs\s*\{[^}]*flex-wrap:\s*wrap/,
-    "models-page.css 的 .model-tabs 应允许窄宽折行且不撑破容器",
+    /\.model-tabs\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/,
+    "models-page.css 的 .model-tabs 应采用单行自然内容宽与平滑横滑，避免孤儿折行条",
+  );
+  assert.match(
+    modelsCss,
+    /\.model-tabs-sep\s*\{[^}]*width:\s*1px/,
+    "models-page.css 应提供模型能力与计价/额度分组微分隔线 .model-tabs-sep",
   );
   assert.match(
     modelsCss,

@@ -50,6 +50,7 @@ from .native_extensions.image_settings import read_image_settings, write_image_s
 from .settings import HostControlError
 from .native_extensions.images import IMAGE_ACTIONS
 from .reply_api import ReplyWebAPI
+from .quota_api import QuotaWebEndpoints
 from .service_balance import configured_balance_port, display_amount
 from .token_sources import read_token_sources
 from .host_token_usage import read_astrbot_token_usage
@@ -519,6 +520,7 @@ class ModelWebAPI:
         self.controller = controller
         self._balance_lock = asyncio.Lock()
         self._laya_lock = asyncio.Lock()
+        self._quota_api = QuotaWebEndpoints(self)
 
     def routes(self):
         return [
@@ -569,6 +571,7 @@ class ModelWebAPI:
             (PREFIX + "/image/output/reconnect", self.image_output_reconnect, ["POST"], "Reload the active V2 session's native providers"),
             (PREFIX + "/image/observability", self.image_observability, ["GET"], "Read image invocation outcomes and Content dashboard counts"),
             (PREFIX + "/image/review/providers", self.image_review_providers, ["GET"], "List loaded image-capable V2 providers"),
+            *self._quota_api.routes(PREFIX),
         ]
 
     async def catalog(self):
@@ -813,10 +816,17 @@ class ModelWebAPI:
 
     async def balance(self):
         try:
-            await self._run_authorized_read()
+            session, _op, _mgr, _status = await self._run_authorized_read()
+            runtime = getattr(getattr(session, "application", None), "runtime", None) or getattr(self.controller, "runtime", None)
+            runtime_root = getattr(runtime, "data_root", None)
             async with self._balance_lock:
                 try:
-                    port = configured_balance_port(self.controller.config, context=getattr(self.controller, "context", None))
+                    port = configured_balance_port(
+                        self.controller.config,
+                        context=getattr(self.controller, "context", None),
+                        runtime_root=runtime_root,
+                        controller=self.controller,
+                    )
                 except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
                     return self._response(Outcome.success({
                         "configured": True, "available": False, "provider": "unknown",
@@ -833,14 +843,18 @@ class ModelWebAPI:
                     observation = await asyncio.wait_for(port.fetch(), timeout=12)
                 except Exception as error:
                     from .service_balance import balance_failure_data
+                    meta_fn = getattr(port, "balance_metadata", None)
+                    extra_meta = meta_fn(None) if callable(meta_fn) else {"source_kind": "legacy_balance"}
                     data = {"configured": True, "available": False, "provider": port.provider,
                             "provider_label": port.provider_label, "currency_label": port.currency_label,
-                            "observed_at": None, "amount": None, **balance_failure_data(error)}
+                            "observed_at": None, "amount": None, **extra_meta, **balance_failure_data(error)}
                 else:
                     from .service_balance import balance_observation_data
+                    meta_fn = getattr(port, "balance_metadata", None)
+                    extra_meta = meta_fn(observation) if callable(meta_fn) else {"source_kind": "legacy_balance"}
                     data = {"configured": True, "available": True, "provider": port.provider,
                             "provider_label": port.provider_label, "state": "available",
-                            **balance_observation_data(port, observation)}
+                            **extra_meta, **balance_observation_data(port, observation)}
                 return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -1020,17 +1034,44 @@ class ModelWebAPI:
         key = str(Path(runtime_root).resolve())
         service = services.get(key)
         if service is None:
+            import inspect
+            from .quota_service import get_quota_watch_service
+
             def _connections():
                 _p, _s, conns = collect_provider_inventory(self.controller, session)
                 return conns
 
+            def _quota_station_resolver(origin: str):
+                try:
+                    qsvc = get_quota_watch_service(self.controller, Path(runtime_root))
+                    return qsvc.resolve_station_for_origin(origin, session=session)
+                except Exception:
+                    return None
+
+            init_kwargs: dict[str, Any] = {
+                "now": getattr(base, "now", None),
+                "proxy_resolver": lambda: read_astrbot_http_proxy(self.controller),
+                "connections_resolver": _connections,
+            }
+            try:
+                if "quota_station_resolver" in inspect.signature(PricingCatalogService.__init__).parameters:
+                    init_kwargs["quota_station_resolver"] = _quota_station_resolver
+            except (TypeError, ValueError):
+                pass
+
             service = PricingCatalogService(
                 PricingSettingsStore(Path(runtime_root)),
                 PriceCatalogStore(Path(runtime_root)),
-                now=getattr(base, "now", None),
-                proxy_resolver=lambda: read_astrbot_http_proxy(self.controller),
-                connections_resolver=_connections,
+                **init_kwargs,
             )
+            setter = getattr(service, "set_quota_station_resolver", None)
+            if callable(setter):
+                setter(_quota_station_resolver)
+            elif hasattr(service, "_quota_station_resolver"):
+                try:
+                    service._quota_station_resolver = _quota_station_resolver
+                except Exception:
+                    pass
             services[key] = service
         return service
 

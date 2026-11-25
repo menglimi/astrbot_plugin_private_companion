@@ -539,6 +539,13 @@ window.CompanionPerceptionOverviewPage = (() => {
       : balanceConfig.source === "environment" ? "正在使用插件环境配置"
         : "尚未配置数据源";
     return `<form id="perception-balance-source" class="perception-balance-config" data-balance-form novalidate aria-label="余额感知数据源配置">
+      <div class="perception-quota-bridge">
+        <div class="perception-quota-bridge-copy">
+          <strong>推荐：前往「模型与连接 → 额度看板」统一管理多站点余额</strong>
+          <small>支持自动识别 NewAPI / 衍生站 / DeepSeek / OpenRouter / 硅基流动 / 月之暗面 / Sub2API 等多站并行监测、汇率折算汇总，以及按主站/聚合/任一偏低反哺余额感知。</small>
+        </div>
+        <button type="button" class="qw-btn small soft" data-open-quota-dashboard data-go="manage" data-manage="models" data-manage-subtab="quota">打开多站点额度看板 →</button>
+      </div>
       <div class="perception-balance-config-head"><span>${icon("wallet-cards")}</span><div><strong>余额数据源</strong><small>${esc(sourceState)} · ${esc(sourceMessage)}</small></div></div>
       <fieldset class="perception-balance-legacy" aria-label="原有 NewAPI 配置" ${busy || draft.clear_configuration || draft.advanced_enabled ? "disabled" : ""}>
       <label class="perception-balance-field"><span>NewAPI 地址</span><input name="url" data-balance-field="url" type="url" inputmode="url" autocomplete="url" maxlength="2048"

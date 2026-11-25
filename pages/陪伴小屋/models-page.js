@@ -2,7 +2,7 @@
 "use strict";
 window.CompanionModelsPage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion/";
-  const MODEL_TABS = new Set(["fn", "voice", "image", "search", "laya", "pricing"]);
+  const MODEL_TABS = new Set(["fn", "voice", "image", "search", "laya", "pricing", "quota"]);
   const routing = ["provider", "fallback", "max_output_tokens"];
   const MAX_MODEL_OUTPUT_TOKENS = 65536;
   const TASK_CONFIG_TIMEOUT_MS = 30000;
@@ -88,6 +88,8 @@ window.CompanionModelsPage = (() => {
   const fail = (err, fallback) => errors[err.code] || errors[err.message]
     || window.CompanionPricingWorkbench?.ERRORS?.[err.code]
     || window.CompanionPricingWorkbench?.ERRORS?.[err.message]
+    || window.CompanionQuotaWorkbench?.ERRORS?.[err.code]
+    || window.CompanionQuotaWorkbench?.ERRORS?.[err.message]
     || err?.reason || fallback;
   /* 后端把机器码放在信封的 message 上（页面桥只转发 message），所以取码要同时
      看 data.code 与 message；reason 里若是人话则原样保留。 */
@@ -109,7 +111,7 @@ window.CompanionModelsPage = (() => {
   }
   let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true, onTabChange = null;
   let deferChangeRender = false, deferredRenderPending = false, pointerResetTimer = null;
-  let wsShell = null, wsMain = null, wsDock = null, wsMask = null, wsDrawer = null;
+  let wsShell = null, wsMain = null, wsDock = null, wsMask = null, wsDrawer = null, wsQuotaModalHost = null;
   let overlayCloseTimer = null, overlayWasOpen = false;
   let dockCloseTimer = null, dockWasOpen = false, dockHadReport = false, reportCloseTimer = null;
   let quickCloseTimer = null, advAnimTimer = null;
@@ -548,7 +550,8 @@ window.CompanionModelsPage = (() => {
     write: '<path d="M4 20l4-1 10-10-3-3L5 16l-1 4Z"/>',
     lane: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     decision: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="5"/><path d="m8.5 8.5 7 7M15.5 8.5l-7 7"/>',
-    pricing: '<circle cx="12" cy="12" r="9"/><path d="M9 8.5 12 12l3-3.5M8.5 12.5h7M8.5 15.5h7M12 12v6"/>' };
+    pricing: '<circle cx="12" cy="12" r="9"/><path d="M9 8.5 12 12l3-3.5M8.5 12.5h7M8.5 15.5h7M12 12v6"/>',
+    quota: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 10h18"/><path d="M15 14.5h3.5"/>' };
   const groupIcon = name => ({ "对话": ICONS.reply, "主动与整理": ICONS.memory, "生活与成长": ICONS.life, "私人书写": ICONS.write }[name] || ICONS.lane);
   const CAP_SHORT = { text: "文", image: "图", audio: "音", video: "视", tools: "具", embedding: "向", vision: "视", video_relay: "转视" };
   function topbar(s) {
@@ -1992,6 +1995,34 @@ window.CompanionModelsPage = (() => {
       isCurrent: ticket => current(ticket, s), ticket: () => version, root: () => root, fail,
     };
   }
+  /* ---------- Multi-station Quota Dashboard delegation ---------- */
+  const quotaWorkbench = () => window.CompanionQuotaWorkbench || null;
+  function syncQuotaTabBadge(s) {
+    if (!useLiveDom() || !wsMain) return;
+    const btn = wsMain.querySelector?.('[data-model-tab="quota"]');
+    if (!btn) return;
+    const badge = quotaWorkbench()?.tabBadge?.(s.quota) || "";
+    let pill = btn.querySelector?.(".c");
+    if (badge) {
+      if (!pill) {
+        pill = document.createElement("span");
+        pill.className = "c";
+        btn.appendChild(pill);
+      }
+      pill.textContent = badge;
+    } else if (pill) {
+      pill.remove?.();
+    }
+  }
+  function quotaCtx(s) {
+    const wb = quotaWorkbench();
+    s.quota ||= wb?.createState?.() || {loaded: false, loading: false, busy: false, data: null, wizard: null};
+    return {
+      state: s, q: s.quota, path, api, render,
+      syncTabBadge: () => syncQuotaTabBadge(s),
+      isCurrent: ticket => current(ticket, s), ticket: () => version, root: () => root, fail,
+    };
+  }
   async function layaDecide(s) { const l = s.laya; if (l.busy || l.loading || !l.data) return;
     if (layaDirty(l)) { l.bad = true; l.notice = "请先保存当前 Laya 配置，再执行决策预览。"; render(); return; }
     if ((l.draft?.mode || l.data.mode) === "local" && l.data.local_runtime_state === "gpu_unavailable") {
@@ -2809,14 +2840,43 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function semanticBanner() {
     return `<div class="model-note cfg"><span>向量嵌入、候选重排和视觉分析不在任务路由里，而在「学习与反思 → 语义目录」统一配置；列表为空时先在 AstrBot 模型服务中加载对应模型。</span><button type="button" class="button small" data-go="manage" data-manage="learning" data-manage-subtab="semantic">打开向量模型配置</button></div>`;
   }
-  function tabBar(s) { const tabs = [["fn", "功能模型", ICONS.fn, snapshot(s).length],
-      ["voice", "语音模型", ICONS.voice, s.voice.data ? s.voice.data.providers.length : ""],
-      ["image", "生图模型", ICONS.image, s.image.data ? s.image.data.actions.length : ""],
-      ["search", "搜索服务", ICONS.search, s.search?.data?.deepseek_provider_id ? "已绑定" : ""],
-      ["laya", "Laya 决策", ICONS.decision, s.laya.data ? (s.laya.data.enabled ? "启用" : "") : ""],
-      ["pricing", "计价与汇率", ICONS.pricing, pricingWorkbench()?.tabBadge?.(s.pricing) || ""]];
-    return `<div class="model-tabs" role="tablist" aria-label="模型配置分类">${tabs.map(([id, label, ic, count]) =>
-      `<button type="button" role="tab" data-model-tab="${id}" aria-selected="${s.tab === id}" class="${s.tab === id ? "on" : ""}">${icon(ic)}${label}${count !== "" ? `<span class="c">${count}</span>` : ""}</button>`).join("")}</div>`; }
+  function tabBar(s) {
+    const primaryTabs = [
+      ["fn", "功能模型", ICONS.fn, snapshot(s).length, false],
+      ["voice", "语音模型", ICONS.voice, s.voice.data ? s.voice.data.providers.length : "", false],
+      ["image", "生图模型", ICONS.image, s.image.data ? s.image.data.actions.length : "", false],
+      ["search", "搜索服务", ICONS.search, s.search?.data?.deepseek_provider_id ? "已绑定" : "", true],
+      ["laya", "Laya 决策", ICONS.decision, s.laya.data ? (s.laya.data.enabled ? "启用" : "") : "", true],
+    ];
+    const opsTabs = [
+      ["pricing", "计价与汇率", ICONS.pricing, pricingWorkbench()?.tabBadge?.(s.pricing) || "", false],
+      ["quota", "额度看板", ICONS.quota, quotaWorkbench()?.tabBadge?.(s.quota) || "", false],
+    ];
+    const renderTab = ([id, label, ic, count, isDot]) =>
+      `<button type="button" role="tab" data-model-tab="${id}" aria-selected="${s.tab === id}" class="${s.tab === id ? "on" : ""}">${icon(ic)}<span>${label}</span>${count !== "" ? (isDot ? `<span class="c-dot" title="${esc(count)}" aria-label="${esc(count)}"></span>` : `<span class="c">${esc(count)}</span>`) : ""}</button>`;
+    return `<div class="model-tabs-wrap" data-model-tabs-wrap><div class="model-tabs" role="tablist" aria-label="模型配置分类">${primaryTabs.map(renderTab).join("")}<span class="model-tabs-sep" aria-hidden="true"></span>${opsTabs.map(renderTab).join("")}</div></div>`;
+  }
+  function syncModelTabsOverflow() {
+    if (!root?.querySelector) return;
+    const wrap = root.querySelector("[data-model-tabs-wrap]");
+    const bar = wrap?.querySelector?.(".model-tabs");
+    if (!wrap || !bar) return;
+    const updateFade = () => {
+      const maxScroll = Math.max(0, (bar.scrollWidth || 0) - (bar.clientWidth || 0));
+      const left = bar.scrollLeft || 0;
+      wrap.dataset.fadeLeft = left > 4 ? "1" : "0";
+      wrap.dataset.fadeRight = maxScroll - left > 4 ? "1" : "0";
+    };
+    if (!bar._fadeBound && typeof bar.addEventListener === "function") {
+      bar._fadeBound = true;
+      bar.addEventListener("scroll", updateFade, { passive: true });
+    }
+    updateFade();
+  }
+  function handleModelTabsResize() {
+    if (!root?.isConnected) return;
+    syncModelTabsOverflow();
+  }
   /* ---------- functional subtabs (2-level flattened IA) ---------- */
   function subtabBar(s) { const tabs = [
       ["cfg", "任务路由", "cfg", "统一查看主备链路，点击任意任务在右侧抽屉精调"],
@@ -3346,7 +3406,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     ruleInput(s, event); }
   function fnPane(s) { const sub = s.sub === "pol" ? replacementPolicy(s) : cfgPane(s);
     return `${topbar(s)}${subtabBar(s)}${sub}`; }
-  function pane(s) { if (s.tab !== "fn" && !path) return `<p class="model-empty">当前角色只有群聊模型入口，此处的模型连接服务暂不可用。功能模型仍可设置角色默认与本群覆盖。</p>`; if (s.tab === "voice") return voicePane(s); if (s.tab === "image") return imagePane(s); if (s.tab === "search") return searchPane(s); if (s.tab === "laya") return layaPane(s); if (s.tab === "pricing") return pricingWorkbench()?.renderPane?.(pricingCtx(s)) || '<p class="model-empty">计价模块未加载。</p>'; return fnPane(s); }
+  function pane(s) { if (s.tab !== "fn" && !path) return `<p class="model-empty">当前角色只有群聊模型入口，此处的模型连接服务暂不可用。功能模型仍可设置角色默认与本群覆盖。</p>`; if (s.tab === "voice") return voicePane(s); if (s.tab === "image") return imagePane(s); if (s.tab === "search") return searchPane(s); if (s.tab === "laya") return layaPane(s); if (s.tab === "pricing") return pricingWorkbench()?.renderPane?.(pricingCtx(s)) || '<p class="model-empty">计价模块未加载。</p>'; if (s.tab === "quota") return quotaWorkbench()?.renderPane?.(quotaCtx(s)) || '<p class="model-empty">额度看板模块未加载。</p>'; return fnPane(s); }
   function providerDrawerSpec(s) { const id = s.drawer; if (!id) return null;
     const provider = s.status?.providers.find(p => p.id === id); if (!provider) return null;
     const tasks = snapshot(s), asMain = tasks.filter(t => providerFor(t, s.drafts.get(t.kind)) === id);
@@ -3658,7 +3718,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   }
   const useLiveDom = () => Boolean(root && typeof document !== "undefined" && typeof document.createElement === "function" && typeof root.appendChild === "function");
   function ensureLiveShell() {
-    if (wsShell && wsShell.parentNode === root && wsMain && wsDock && wsMask && wsDrawer) return;
+    if (wsShell && wsShell.parentNode === root && wsMain && wsDock && wsMask && wsDrawer && wsQuotaModalHost) return;
     if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
     if (wsDock) wsDock.removeEventListener("transitionend", handleDockTransitionEnd);
     root.innerHTML = "";
@@ -3683,10 +3743,15 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     wsDrawer.setAttribute("aria-hidden", "true");
     wsDrawer.inert = true;
     wsDrawer.addEventListener("transitionend", handleDrawerTransitionEnd);
+    wsQuotaModalHost = document.createElement("div");
+    wsQuotaModalHost.className = "qw-modal-host";
+    wsQuotaModalHost.setAttribute("data-qw-modal-host", "");
+    wsQuotaModalHost.setAttribute("aria-hidden", "true");
     wsShell.appendChild(wsMain);
     wsShell.appendChild(wsDock);
     wsShell.appendChild(wsMask);
     wsShell.appendChild(wsDrawer);
+    wsShell.appendChild(wsQuotaModalHost);
     root.appendChild(wsShell);
     overlayWasOpen = false;
     dockWasOpen = false;
@@ -3757,9 +3822,42 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     const mainHtml = `${s.tab === "fn" ? semanticBanner() : ""}${tabBar(s)}${(s.bad || s.denied) ? notice(s) : ""}${pane(s)}`;
     if (useLiveDom()) {
       ensureLiveShell();
-      wsMain.innerHTML = mainHtml;
+      const qwb = s.tab === "quota" && path ? quotaWorkbench() : null;
+      if (qwb && typeof qwb.syncDom === "function") {
+        let tabsHost = wsMain.querySelector?.("[data-quota-tabs-host]");
+        let noticeHost = wsMain.querySelector?.("[data-quota-notice-host]");
+        let mountHost = wsMain.querySelector?.("[data-quota-mount]");
+        if (!tabsHost || !noticeHost || !mountHost) {
+          wsMain.innerHTML = "";
+          tabsHost = document.createElement("div");
+          tabsHost.setAttribute("data-quota-tabs-host", "");
+          noticeHost = document.createElement("div");
+          noticeHost.setAttribute("data-quota-notice-host", "");
+          mountHost = document.createElement("div");
+          mountHost.setAttribute("data-quota-mount", "");
+          wsMain.appendChild(tabsHost);
+          wsMain.appendChild(noticeHost);
+          wsMain.appendChild(mountHost);
+          tabsHost.innerHTML = tabBar(s);
+        } else {
+          syncQuotaTabBadge(s);
+        }
+        const noticeHtml = (s.bad || s.denied) ? notice(s) : "";
+        if (noticeHost.innerHTML !== noticeHtml) noticeHost.innerHTML = noticeHtml;
+        qwb.syncDom(quotaCtx(s), mountHost, wsQuotaModalHost);
+      } else {
+        if (wsMain.querySelector?.("[data-quota-mount]")) {
+          quotaWorkbench()?.detachDom?.(s.quota);
+          if (wsQuotaModalHost) {
+            wsQuotaModalHost.innerHTML = "";
+            wsQuotaModalHost.setAttribute("aria-hidden", "true");
+          }
+        }
+        wsMain.innerHTML = mainHtml;
+      }
       syncLiveDock(s);
       syncLiveOverlay(spec);
+      syncModelTabsOverflow();
     } else {
       const prevCard = root.querySelector?.("[data-fncard]");
       const prevKind = prevCard?.dataset?.fncard || prevCard?.getAttribute?.("data-fncard") || "";
@@ -3772,7 +3870,12 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     }
     window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}}); }
   function handleKeydown(event) {
-    const s = state; if (!s || !root?.isConnected || s.tab !== "fn") return;
+    const s = state; if (!s || !root?.isConnected) return;
+    if (s.tab === "quota") {
+      if (quotaWorkbench()?.handleKeydown?.(quotaCtx(s), event)) event.preventDefault?.();
+      return;
+    }
+    if (s.tab !== "fn") return;
     if (event.key === "Escape") {
       if (s.drawer) { s.drawer = null; render(); event.preventDefault?.(); return; }
       if (s.expanded) { s.expanded = null; render(); event.preventDefault?.(); return; }
@@ -3791,6 +3894,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.tab === "search") { searchInput(s, event); return; }
     if (s.tab === "laya") { layaInput(s, event); return; }
     if (s.tab === "pricing") { pricingWorkbench()?.handleInput?.(pricingCtx(s), event); return; }
+    if (s.tab === "quota") { quotaWorkbench()?.handleInput?.(quotaCtx(s), event); return; }
     fnInput(event); }
   function loadTabData(s, id) {
     if (!s) return;
@@ -3804,6 +3908,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     else if (id === "search" && !s.search.loaded) searchRefresh(s);
     else if (id === "laya" && !s.laya.loaded) layaRefresh(s);
     else if (id === "pricing" && !s.pricing?.loaded) pricingWorkbench()?.refresh?.(pricingCtx(s));
+    else if (id === "quota" && !s.quota?.loaded) quotaWorkbench()?.refresh?.(quotaCtx(s));
   }
   function selectTab(id, { notify = true } = {}) {
     if (!MODEL_TABS.has(id) || !state || !root?.isConnected) return false;
@@ -3812,9 +3917,18 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       if (notify) onTabChange?.(id);
       loadTabData(state, id);
       render();
+      const activeTab = root.querySelector?.(`.model-tabs [data-model-tab="${id}"]`);
+      activeTab?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+      syncModelTabsOverflow();
     } else {
       loadTabData(state, id);
     }
+    return true;
+  }
+  function focusQuota(section = "awareness") {
+    if (!state || !root?.isConnected) return false;
+    selectTab("quota", { notify: false });
+    if (section === "awareness") quotaWorkbench()?.openAwareness?.(quotaCtx(state));
     return true;
   }
   function handlePointerDown(event) {
@@ -3847,6 +3961,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.tab === "search") { searchClick(s, event); return; }
     if (s.tab === "laya") { layaClick(s, event); return; }
     if (s.tab === "pricing") { pricingWorkbench()?.handleClick?.(pricingCtx(s), event); return; }
+    if (s.tab === "quota") { quotaWorkbench()?.handleClick?.(quotaCtx(s), event); return; }
     fnClick(event); }
   function providerHover(event) {
     window.CompanionWorkbench.scopeHintReset(event);
@@ -3874,11 +3989,12 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (advAnimTimer) { clearTimeout(advAnimTimer); advAnimTimer = null; }
     if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
     if (wsDock) wsDock.removeEventListener("transitionend", handleDockTransitionEnd);
-    wsShell = wsMain = wsDock = wsMask = wsDrawer = null; overlayWasOpen = false; dockWasOpen = false; dockHadReport = false;
+    wsShell = wsMain = wsDock = wsMask = wsDrawer = wsQuotaModalHost = null; overlayWasOpen = false; dockWasOpen = false; dockHadReport = false;
     deferChangeRender = false; deferredRenderPending = false;
     if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerdown", handlePointerDown); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") { document.removeEventListener("keydown", handleKeydown); document.removeEventListener("pointerup", handlePointerUp); document.removeEventListener("pointercancel", handlePointerUp); }
-    if (state) { state.loading = false; state.busy = false; state.globalBusy = false; }
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") { window.removeEventListener("resize", handleModelTabsResize); }
+    if (state) { quotaWorkbench()?.unmount?.(state.quota); state.loading = false; state.busy = false; state.globalBusy = false; }
     root = null; state = null; path = taskPath = key = null; onTabChange = null; }
   function mount(element, options = {}) { unmount(); root = element; if (!root) return; onTabChange = typeof options.onTabChange === "function" ? options.onTabChange : null; const product = window.CompanionProduct;
     /* 这里原先先判断 hosted()，桥还没注入时直接写「从 AstrBot 管理界面打开陪伴小屋后…」。
@@ -3914,19 +4030,23 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       laya: { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" },
       search: { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" },
       pricing: pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null },
+      quota: quotaWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, wizard: null },
       loading: false, busy: false, bad: false, denied: false, notice: "" };
     state.layer ||= "role"; if(!windowAvailable)state.layer="role"; state.providerTests ||= {}; state.testing ||= new Set();
     state.quickOpen = Boolean(state.quickOpen); state.legendOpen = Boolean(state.legendOpen); state.groupCollapsed ||= {}; state.advOpen ||= {};
     state.globalDraft ??= null; state.globalBusy = false; state.globalNotice ||= ""; state.globalBad = Boolean(state.globalBad); state.globalRestartRequired = Boolean(state.globalRestartRequired);
     /* 展开状态按对象保存：刷新、切任务、切页回来都保持上次展开的分组，
        不再每次回到“全收起”或“全展开”。 */
-    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.pricing ||= pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null }; state.hoverProvider = "";
+    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.pricing ||= pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null }; state.quota ||= quotaWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, wizard: null }; state.hoverProvider = "";
     const requestedTab = typeof options.initialTab === "string" && MODEL_TABS.has(options.initialTab) ? options.initialTab : "";
     if (requestedTab) {
       state.tab = requestedTab;
       pricingWorkbench()?.consumePendingTab?.();
+      quotaWorkbench()?.consumePendingTab?.();
     } else if (pricingWorkbench()?.consumePendingTab?.()) {
       state.tab = "pricing";
+    } else if (quotaWorkbench()?.consumePendingTab?.()) {
+      state.tab = "quota";
     } else if (!MODEL_TABS.has(state.tab)) {
       state.tab = "fn";
     }
@@ -3934,6 +4054,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     state.sub = options.sub === "pol" ? "pol" : "cfg";
     root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerdown", handlePointerDown); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset);
     if (typeof document !== "undefined" && typeof document.addEventListener === "function") { document.addEventListener("keydown", handleKeydown); document.addEventListener("pointerup", handlePointerUp); document.addEventListener("pointercancel", handlePointerUp); }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") { window.addEventListener("resize", handleModelTabsResize, { passive: true }); }
     render();
     loadTabData(state, state.tab); }
   /* Only the mounted scope can block navigation. Retained drafts belonging to
@@ -4015,6 +4136,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     }
     if (s.search && searchDirty(s.search)) changed.push('联网搜索凭据来源');
     if (s.pricing && pricingWorkbench()?.changedFields) changed.push(...pricingWorkbench().changedFields(s.pricing));
+    if (s.quota && quotaWorkbench()?.changedFields) changed.push(...quotaWorkbench().changedFields(s.quota));
     return changed;
   }
   function isDirty() {
@@ -4023,7 +4145,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   async function saveBeforeLeave() {
     const s = state;
     if (!s || !root) return true;
-    if (s.busy || s.globalBusy || s.loading || s.voice?.busy || s.image?.busy || s.image?.configSaving || s.laya?.busy || s.search?.busy || pricingWorkbench()?.isBusy?.(s.pricing))
+    if (s.busy || s.globalBusy || s.loading || s.voice?.busy || s.image?.busy || s.image?.configSaving || s.laya?.busy || s.search?.busy || pricingWorkbench()?.isBusy?.(s.pricing) || quotaWorkbench()?.isBusy?.(s.quota))
       return {error:'模型配置正在处理，请稍后保存。'};
     if ([...s.drafts.values()].some(draft => draft.pending) || s.voice?.pending)
       return {error:'上次保存结果待核对，请回到模型配置中核对原请求。'};
@@ -4043,6 +4165,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       [s.laya && layaDirty(s.laya), layaSave, () => layaDirty(s.laya), () => s.laya.notice],
       [s.search && searchDirty(s.search), searchSave, () => searchDirty(s.search), () => s.search.notice],
       [s.pricing && pricingWorkbench()?.isDirty?.(s.pricing), () => pricingWorkbench().save(pricingCtx(s)), () => pricingWorkbench().isDirty(s.pricing), () => s.pricing.notice],
+      [s.quota && quotaWorkbench()?.isDirty?.(s.quota), () => quotaWorkbench().save(quotaCtx(s)), () => quotaWorkbench().isDirty(s.quota), () => s.quota.wizard?.error || s.quota.notice],
     ]) {
       if (!needed) continue;
       await action(s);
@@ -4052,13 +4175,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     return !isDirty() ? true : {error:'还有配置未保存，改动仍保留。'};
   }
   function discardChanges() {
-    if (state?.busy || state?.globalBusy || state?.voice?.busy || state?.image?.busy || state?.image?.configSaving || state?.laya?.busy || state?.search?.busy || pricingWorkbench()?.isBusy?.(state?.pricing))
+    if (state?.busy || state?.globalBusy || state?.voice?.busy || state?.image?.busy || state?.image?.configSaving || state?.laya?.busy || state?.search?.busy || pricingWorkbench()?.isBusy?.(state?.pricing) || quotaWorkbench()?.isBusy?.(state?.quota))
       return {error:'正在保存，请等待结果后再切换。'};
     if (key) states.delete(key);
     unmount();
     return true;
   }
   const isBusy = () => Boolean(state && (state.busy || state.globalBusy || state.voice?.busy || state.voice?.ttsBusy
-    || state.voice?.ttsTesting || state.image?.busy || state.image?.configSaving || state.laya?.busy || state.search?.busy || pricingWorkbench()?.isBusy?.(state.pricing)));
-  return { mount, unmount, selectTab, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
+    || state.voice?.ttsTesting || state.image?.busy || state.image?.configSaving || state.laya?.busy || state.search?.busy || pricingWorkbench()?.isBusy?.(state.pricing) || quotaWorkbench()?.isBusy?.(state.quota)));
+  return { mount, unmount, selectTab, focusQuota, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
 })();

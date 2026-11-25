@@ -183,7 +183,325 @@ def configured_balance_source(config=None):
     return {"source": "environment", "settings": values} if any(values.values()) else None
 
 
-def configured_balance_port(config=None, *, context=None):
+def propagate_balance_port(controller, balance_port):
+    """Synchronize an updated balance port across single-role and multi-role host sessions."""
+    if controller is None:
+        return
+    base = getattr(controller, "controller", controller)
+    owners = [controller]
+    if base is not controller:
+        owners.append(base)
+
+    applications = []
+    seen_ids = set()
+
+    def _collect(app):
+        if app is not None and id(app) not in seen_ids:
+            seen_ids.add(id(app))
+            applications.append(app)
+
+    for owner in owners:
+        for attr in ("session", "last_session"):
+            sess = getattr(owner, attr, None)
+            _collect(getattr(sess, "application", None))
+        for attr in ("sessions", "_sessions"):
+            group = getattr(owner, attr, None)
+            if isinstance(group, dict):
+                for sess in group.values():
+                    _collect(getattr(sess, "application", None))
+            elif isinstance(group, (list, tuple, set)):
+                for sess in group:
+                    _collect(getattr(sess, "application", None))
+
+    for application in applications:
+        application.balance_port = balance_port
+        materials = getattr(application, "keyword_materials", None)
+        invalidate = getattr(materials, "invalidate", None)
+        if callable(invalidate):
+            invalidate("service.balance")
+        schedule = getattr(application, "contact_schedule", None)
+        balance_events = getattr(schedule, "balance_events", None)
+        if balance_events is not None:
+            update_port = getattr(balance_events, "update_port", None)
+            if callable(update_port):
+                update_port(balance_port)
+            else:
+                balance_events.port = balance_port
+
+
+class MultiStationBalancePort:
+    """Bridge multi-station quota snapshots into companion_v2 BalanceObservation contract.
+
+    Supports three awareness aggregation policies:
+    - ``primary``: track the selected primary station (or first enabled participating station)
+    - ``aggregate_sum``: convert participating fiat stations via live FX and sum them
+    - ``any_low``: evaluate all participating stations and report the most urgent one
+    """
+
+    provider = "multi_station"
+    provider_label = "多站点额度看板"
+
+    def __init__(self, runtime_root, controller, *, now=None):
+        from pathlib import Path
+
+        self.runtime_root = Path(runtime_root).resolve()
+        self.controller = controller
+        self._now = now or getattr(controller, "now", None) or (lambda: datetime.now(timezone.utc))
+        self._last_selected: tuple[str, str, str] | None = None
+
+    def _service(self):
+        from .quota_service import get_quota_watch_service
+
+        return get_quota_watch_service(self.controller, self.runtime_root)
+
+    def _participating(self):
+        service = self._service()
+        stations, awareness, _token, _legacy = service._effective_stations()
+        enabled = [st for st in stations if st.enabled]
+        if not enabled:
+            return service, [], awareness
+        participating = [st for st in enabled if st.participate_in_awareness]
+        if awareness.mode == "primary":
+            if awareness.primary_station_id:
+                chosen = next((st for st in enabled if st.id == awareness.primary_station_id), None)
+                if chosen is not None:
+                    return service, [chosen], awareness
+            if participating:
+                return service, [participating[0]], awareness
+            return service, [], awareness
+        return service, participating, awareness
+
+    @property
+    def currency_label(self):
+        service, participating, awareness = self._participating()
+        if awareness.target_currency in ("CNY", "USD"):
+            return awareness.target_currency
+        if awareness.mode == "primary" and participating and participating[0].display_type:
+            return participating[0].display_type
+        display_currency, _rate = service._pricing_fx()
+        return display_currency or "额度"
+
+    @property
+    def source_fingerprint(self):
+        service, participating, awareness = self._participating()
+        display_currency, _rate = service._pricing_fx()
+        return digest([
+            "multi_station",
+            awareness.to_dict(),
+            display_currency,
+            [st.secret_free_fingerprint() for st in participating],
+        ])
+
+    @staticmethod
+    def _dec(value):
+        if value is None:
+            return None
+        d = Decimal(str(value))
+        return max(Decimal(0), d) if d.is_finite() else None
+
+    async def fetch(self):
+        from companion_v2.model_gateway.quota import (
+            convert_currency_amount,
+            evaluate_station_health,
+        )
+
+        service, participating, awareness = self._participating()
+        if not participating:
+            raise ValueError("尚未指定参与余额感知的站点")
+
+        snapshots = await service.refresh_for_awareness(participating)
+        display_currency, usd_cny_rate = service._pricing_fx()
+        target_currency = awareness.target_currency or display_currency or "CNY"
+        now_dt = self._now()
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+
+        if awareness.mode == "primary":
+            spec = participating[0]
+            snap = snapshots.get(spec.id)
+            self._last_selected = (spec.id, spec.name, (snap.symbol if snap else "") or "")
+            if snap is None or not snap.ok or snap.remaining is None:
+                raise ValueError(f"主站点「{spec.name}」余额暂不可用")
+            observed = datetime.fromisoformat(snap.checked_at) if snap.checked_at else now_dt
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            return BalanceObservation(
+                self._dec(snap.remaining),
+                self._dec(snap.total),
+                observed,
+                unit=snap.display_type or "额度",
+                used=self._dec(snap.used),
+                plan_name=spec.name[:120],
+                extra=snap.extra[:200] if snap.extra else None,
+            )
+
+        if awareness.mode == "aggregate_sum":
+            self._last_selected = ("", "多站点汇总", "")
+            rem_sum = Decimal(0)
+            total_sum = Decimal(0)
+            used_sum = Decimal(0)
+            has_total = True
+            has_used = False
+            ok_names = []
+            latest_obs = None
+
+            for spec in participating:
+                snap = snapshots.get(spec.id)
+                if snap is None or not snap.ok or snap.remaining is None:
+                    continue
+                conv_rem = convert_currency_amount(snap.remaining, snap.display_type, target_currency, usd_cny_rate)
+                if conv_rem is None:
+                    continue
+                rem_sum += self._dec(conv_rem)
+                if snap.total is not None:
+                    conv_tot = convert_currency_amount(snap.total, snap.display_type, target_currency, usd_cny_rate)
+                    if conv_tot is not None:
+                        total_sum += self._dec(conv_tot)
+                    else:
+                        has_total = False
+                else:
+                    has_total = False
+                if snap.used is not None:
+                    conv_used = convert_currency_amount(snap.used, snap.display_type, target_currency, usd_cny_rate)
+                    if conv_used is not None:
+                        used_sum += self._dec(conv_used)
+                        has_used = True
+                ok_names.append(spec.name)
+                if snap.checked_at:
+                    dt = datetime.fromisoformat(snap.checked_at)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if latest_obs is None or dt > latest_obs:
+                        latest_obs = dt
+
+            if not ok_names:
+                raise ValueError("参与余额感知的站点均无可用的 CNY/USD 余额数据")
+            extra_text = f"已汇总 {len(ok_names)} 个站点（{target_currency}）"
+            return BalanceObservation(
+                rem_sum,
+                total_sum if has_total and total_sum > 0 else None,
+                latest_obs or now_dt,
+                unit=target_currency,
+                used=used_sum if has_used else None,
+                plan_name="多站点汇总",
+                extra=extra_text,
+            )
+
+        # mode == "any_low": choose the most urgent healthy station (critical > low > lowest pct / converted remaining)
+        severity_rank = {"critical": 0, "low": 1, "normal": 2}
+        candidates = []
+        for spec in participating:
+            snap = snapshots.get(spec.id)
+            if snap is None or not snap.ok or snap.remaining is None:
+                continue
+            health = evaluate_station_health(spec, snap)
+            rank = severity_rank.get(health, 2)
+            conv_rem = convert_currency_amount(snap.remaining, snap.display_type, target_currency, usd_cny_rate)
+            pct = snap.remaining_percent if snap.remaining_percent is not None else 101.0
+            sort_key = (rank, pct, conv_rem if conv_rem is not None else snap.remaining)
+            candidates.append((sort_key, spec, snap))
+
+        if not candidates:
+            raise ValueError("参与余额感知的站点暂均不可用")
+        candidates.sort(key=lambda item: item[0])
+        _, chosen_spec, chosen_snap = candidates[0]
+        self._last_selected = (chosen_spec.id, chosen_spec.name, chosen_snap.symbol or "")
+        observed = datetime.fromisoformat(chosen_snap.checked_at) if chosen_snap.checked_at else now_dt
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        return BalanceObservation(
+            self._dec(chosen_snap.remaining),
+            self._dec(chosen_snap.total),
+            observed,
+            unit=chosen_snap.display_type or "额度",
+            used=self._dec(chosen_snap.used),
+            plan_name=chosen_spec.name[:120],
+            extra=f"站点 {chosen_spec.name}（共监测 {len(candidates)} 站）",
+        )
+
+    def balance_metadata(self, observation=None):
+        """Return explicit station & awareness-mode metadata for both success and error states."""
+        from companion_v2.model_gateway.quota import normalize_currency_symbol
+
+        service, participating, awareness = self._participating()
+        stations, _, _, _ = service._effective_stations()
+        enabled = [st for st in stations if st.enabled]
+        snaps, _ = service.snapshot_cache.all()
+
+        participating_enabled = [st for st in enabled if st.participate_in_awareness]
+        is_primary_explicit = bool(
+            awareness.mode == "primary"
+            and awareness.primary_station_id
+            and any(st.id == awareness.primary_station_id for st in enabled)
+        )
+        participating_count = len(participating_enabled)
+        if participating_count == 0 and participating:
+            participating_count = len(participating)
+
+        obs_unit = str(getattr(observation, "unit", "") or "").strip().upper()
+        station_id = ""
+        station_name = ""
+        currency_symbol = ""
+
+        if awareness.mode == "primary":
+            if participating:
+                spec = participating[0]
+                snap = snaps.get(spec.id)
+                station_id = spec.id
+                station_name = spec.name
+                currency_symbol = (
+                    (snap.symbol if snap and snap.symbol else "")
+                    or normalize_currency_symbol(obs_unit or (snap.display_type if snap else "") or spec.display_type)
+                )
+        elif awareness.mode == "aggregate_sum":
+            station_name = "多站点汇总"
+            target_cur = obs_unit or awareness.target_currency or service._pricing_fx()[0] or "CNY"
+            currency_symbol = normalize_currency_symbol(target_cur)
+        else:
+            if self._last_selected is not None and self._last_selected[1]:
+                station_id, station_name, currency_symbol = self._last_selected
+            elif participating:
+                spec = participating[0]
+                snap = snaps.get(spec.id)
+                station_id = spec.id
+                station_name = spec.name
+                currency_symbol = snap.symbol if snap else ""
+            if not currency_symbol:
+                currency_symbol = normalize_currency_symbol(obs_unit)
+
+        return {
+            "source_kind": "quota_dashboard",
+            "awareness_mode": awareness.mode,
+            "station_id": station_id,
+            "station_name": station_name,
+            "is_primary_explicit": is_primary_explicit,
+            "participating_count": participating_count,
+            "currency_symbol": currency_symbol,
+        }
+
+
+def configured_balance_port(config=None, *, context=None, runtime_root=None, controller=None):
+    if runtime_root is None and controller is not None:
+        base_ctrl = getattr(controller, "controller", controller)
+        runtime_obj = getattr(base_ctrl, "runtime", None)
+        runtime_root = getattr(runtime_obj, "data_root", None) or getattr(base_ctrl, "data_root", None)
+    if runtime_root is not None and controller is not None:
+        from pathlib import Path
+        from companion_v2.model_gateway.quota import QuotaStationStore
+
+        store = QuotaStationStore(Path(runtime_root))
+        if store.exists():
+            stations, awareness, _token = store.read_safe()
+            enabled = [st for st in stations if st.enabled]
+            has_primary = bool(
+                awareness.mode == "primary"
+                and awareness.primary_station_id
+                and any(st.id == awareness.primary_station_id for st in enabled)
+            )
+            has_participating = any(st.participate_in_awareness for st in enabled)
+            if has_primary or has_participating:
+                return MultiStationBalancePort(runtime_root, controller)
+
     source = configured_balance_source(config)
     if source is None:
         return None

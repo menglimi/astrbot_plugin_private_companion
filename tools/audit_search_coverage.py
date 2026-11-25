@@ -269,6 +269,11 @@ const probes = [
   { q: "ComfyUI", expectField: "image_generation_providers" },
   { q: "华为健康", expectField: "huawei_health_sync" },
   { q: "和风天气", expectField: "weather_source_provider" },
+  { q: "额度看板", expectField: "model_quota_dashboard" },
+  { q: "edkb", expectField: "model_quota_dashboard" },
+  { q: "指定主站", expectField: "quota_awareness_primary_station" },
+  { q: "主站", expectField: "quota_awareness_primary_station" },
+  { q: "zhuzhan", expectField: "quota_awareness_primary_station" },
 ];
 for (const probe of probes) {
   const hits = ctx.__audit.rankedSearchResults(probe.q);

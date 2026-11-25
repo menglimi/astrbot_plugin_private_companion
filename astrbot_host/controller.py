@@ -483,7 +483,12 @@ class AstrBotStagingController:
                                      default_provider_resolver=conversation_provider_resolver(self.context),
                                      weather_port=weather_port,
                                      weather_alert_port=weather_alert_port,
-                                     balance_port=configured_balance_port(self.config, context=self.context),
+                                     balance_port=configured_balance_port(
+                                         self.config,
+                                         context=self.context,
+                                         runtime_root=getattr(self.runtime, "data_root", None),
+                                         controller=self,
+                                     ),
                                      news_port=configured_news_port(self.config, context=self.context,
                                          deepseek_provider_resolver=search_provider_resolver,
                                          search_priority_resolver=search_settings.source_priority),
@@ -1236,8 +1241,10 @@ class AstrBotStagingController:
         finally:
             from .exchange_rate import close_exchange_rate_services
             from .pricing_sources import close_pricing_catalog_services
+            from .quota_service import close_quota_watch_services
             await close_exchange_rate_services(self)
             await close_pricing_catalog_services(self)
+            await close_quota_watch_services(self)
             if self.native_extensions is not None:
                 await self.native_extensions.aclose()
                 self.native_extensions = None
