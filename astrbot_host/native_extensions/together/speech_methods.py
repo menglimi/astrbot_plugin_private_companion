@@ -2,6 +2,9 @@
 from __future__ import annotations
 from .common import *
 
+_VOICE_POLICY_UNSET = object()
+
+
 class TogetherSpeechMethods:
 
     @staticmethod
@@ -23,12 +26,118 @@ class TogetherSpeechMethods:
             return None
         return provider if callable(getattr(provider, 'get_text', None)) else None
 
-    def _room_tts_provider(self, room: RoomSession | None) -> Any | None:
+    @staticmethod
+    def _provider_tts_id(provider: Any) -> str:
+        try:
+            meta = provider.meta() if callable(getattr(provider, 'meta', None)) else None
+        except Exception:
+            meta = None
+        config = getattr(provider, 'provider_config', None) or getattr(provider, 'config', None) or {}
+        for value in (
+            meta.get('id') if isinstance(meta, dict) else getattr(meta, 'id', ''),
+            config.get('id') if isinstance(config, dict) else getattr(config, 'id', ''),
+            config.get('provider_id') if isinstance(config, dict) else getattr(config, 'provider_id', ''),
+            getattr(provider, 'provider_id', ''),
+            getattr(provider, 'id', ''),
+        ):
+            cleaned = _single_line(value, 160)
+            if cleaned:
+                return cleaned
+        return ''
+
+    def _get_tts_provider_by_id(self, provider_id: str) -> Any | None:
+        target = str(provider_id or '').strip()
+        if not target:
+            return None
+        lister = getattr(self.context, 'get_all_tts_providers', None)
+        if callable(lister):
+            try:
+                for provider in list(lister() or ()):
+                    if not callable(getattr(provider, 'get_audio', None)):
+                        continue
+                    if self._provider_tts_id(provider) == target:
+                        return provider
+            except Exception as exc:
+                logger.debug('[TogetherCompanion] 读取 TTS Provider 列表失败: id=%s error=%s', target[:80], exc)
+        provider = self._get_provider_by_id(target)
+        return provider if provider is not None and callable(getattr(provider, 'get_audio', None)) else None
+
+    def _companion_voice_policy(self, room: RoomSession | None) -> Any | None:
+        controller = getattr(self, 'controller', None)
+        if controller is None:
+            return None
+        try:
+            from astrbot_host.native_extensions import together_voice_policy
+            from .native_context import current_room_context
+
+            application = context = None
+            if room is not None and room.native_v2 is not None:
+                resolved = current_room_context(self, room)
+                if resolved is None:
+                    return None
+                application, context = resolved.application, resolved.context
+            else:
+                user_id = _single_line(getattr(room, 'user_id', '') if room is not None else '', 80) or self._resolve_primary_user_id()
+                if user_id:
+                    from astrbot_host.mobile_together import MobileTogetherBridge
+                    target = MobileTogetherBridge(controller)._target_context(user_id)
+                    if target is not None:
+                        _session, application, context = target
+                if application is None or context is None:
+                    session = getattr(controller, 'session', None) or getattr(controller, 'last_session', None)
+                    if session is not None:
+                        application = getattr(session, 'application', None)
+                        context = getattr(getattr(session, 'profile', None), 'target', None)
+            now = controller.now() if callable(getattr(controller, 'now', None)) else None
+            return together_voice_policy(application, context, now=now)
+        except Exception as exc:
+            logger.debug('[TogetherCompanion] 读取陪伴语音配置失败，回退默认 TTS 链路: %s', _single_line(exc, 160))
+            return None
+
+    def _room_voice_config(self, room: RoomSession | None, *, spoken_text: str='', policy: Any=_VOICE_POLICY_UNSET) -> dict[str, Any]:
+        if spoken_text:
+            from companion_v2.conversation.voice_reply import detected_speech_language
+            detected = detected_speech_language(spoken_text)
+            if detected:
+                return {'voice_language': detected}
+        resolved_policy = self._companion_voice_policy(room) if policy is _VOICE_POLICY_UNSET else policy
+        if resolved_policy is not None:
+            return {'voice_language': resolved_policy.language}
+        if room is not None and room.native_v2 is not None:
+            return {'voice_language': room.native_v2.tts_language}
+        return self._companion_realtime_voice_config()
+
+    def _room_tts_provider(self, room: RoomSession | None, *, spoken_text: str='', policy: Any=_VOICE_POLICY_UNSET) -> Any | None:
+        explicit_id = str(getattr(self, 'tts_provider_id', '') or '').strip()
+        if explicit_id:
+            explicit = self._get_tts_provider_by_id(explicit_id)
+            if explicit is not None:
+                return explicit
+        resolved_policy = self._companion_voice_policy(room) if policy is _VOICE_POLICY_UNSET else policy
+        if resolved_policy is not None:
+            from companion_v2.conversation.voice_reply import detected_speech_language
+            detected = detected_speech_language(spoken_text) if spoken_text else ''
+            channel = (
+                'group'
+                if (room is not None and room.native_v2 is not None and room.native_v2.scope_kind == 'group')
+                else 'private'
+            )
+            seen_ids: set[str] = set()
+            for language in (detected, resolved_policy.language):
+                if not language:
+                    continue
+                candidate_id = str(resolved_policy.provider_for_language(channel, language) or '').strip()
+                if not candidate_id or candidate_id in seen_ids:
+                    continue
+                seen_ids.add(candidate_id)
+                provider = self._get_tts_provider_by_id(candidate_id)
+                if provider is not None:
+                    return provider
         if room is None or room.native_v2 is None:
             return self._get_tts_provider()
         provider_id = room.native_v2.tts_provider_id
         if provider_id:
-            provider = self._get_provider_by_id(provider_id)
+            provider = self._get_tts_provider_by_id(provider_id)
         else:
             getter = getattr(self.context, 'get_using_tts_provider', None)
             try:
@@ -55,8 +164,8 @@ class TogetherSpeechMethods:
         return '当前房间未接通语音识别。请在陪伴小屋的「一起房间 → 语音链路」选择 STT 提供商，或启用 AstrBot 当前会话的默认 STT。也可以先输入文字。'
 
     def _get_tts_provider(self) -> Any | None:
-        provider = self._get_provider_by_id(self.tts_provider_id)
-        if provider is not None and hasattr(provider, 'get_audio'):
+        provider = self._get_tts_provider_by_id(self.tts_provider_id)
+        if provider is not None:
             return provider
         getter = getattr(self.context, 'get_using_tts_provider', None)
         try:
@@ -102,19 +211,7 @@ class TogetherSpeechMethods:
     def _call_direct_speech_prompt(self, room: RoomSession) -> str:
         if room.mode != 'call' or not room.call_active or not getattr(self, 'direct_multilingual_tts', True):
             return ''
-        if room.native_v2 is not None:
-            voice_config = {'voice_language': room.native_v2.tts_language}
-        else:
-            if not getattr(self, 'direct_multilingual_tts', True):
-                return ''
-            config_getter = getattr(self, '_companion_realtime_voice_config', None)
-            if not callable(config_getter):
-                return ''
-            try:
-                voice_config = config_getter()
-            except Exception as exc:
-                logger.debug('[TogetherCompanion] 通话外语语音直出读取配置失败，回退原有 TTS 链路: %s', exc)
-                return ''
+        voice_config = self._room_voice_config(room)
         language_code, language_label = self._direct_voice_language(voice_config)
         if not language_code:
             return ''

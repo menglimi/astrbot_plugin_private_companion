@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.refs import RoleOwnerRef
 from companion_v2.role_work.journal.models import JournalKey, JournalKind
+from companion_v2.role_work.models import RoleActivityState as ActivityState
+from companion_v2.sources.privacy import redact_text
 
 
 READ_ACTION = "role.life.read"
@@ -59,7 +61,19 @@ class RoleLifeContextReader:
         require(self.journal.sources.validate_reference_for_audience(source,
             recipient=context.actor.subject, observed_at=at, expected_content_hash=content_hash))
 
-    def _activity(self, activity, context, at):
+    @staticmethod
+    def _reading_source_id(activity):
+        if activity.work is not None and activity.work.source is not None:
+            return activity.work.source.source_id
+        if activity.reading is not None:
+            return activity.reading.source.source_id
+        return None
+
+    @staticmethod
+    def _is_reading_activity(activity):
+        return (activity.work is not None and activity.work.kind == "reading") or activity.reading is not None
+
+    def _activity(self, activity, context, at, *, book_progress=None):
         if (activity.owner != self.owner(context) or activity.scope != context.scope
                 or activity.work is not None and activity.work.context_key != context.key):
             raise TaskError("life_context_scope", "activity belongs to another original authority")
@@ -79,12 +93,23 @@ class RoleLifeContextReader:
         if work is not None and work.kind == "reading" and reading is None:
             payload["planned_reading_span"] = {"start_offset": work.start_offset,
                 "end_offset": work.end_offset, "source_key": digest(work.source)}
+        source_id = self._reading_source_id(activity)
+        progress = book_progress.get(source_id) if isinstance(book_progress, dict) and source_id else None
+        if progress is None and work is not None and work.kind == "reading" and work.source is not None:
+            progress = self.life.book_progress_for_sources(
+                activity.owner, activity.scope, (work.source.source_id,), observed_at=at
+            ).get(work.source.source_id)
+        if progress is not None:
+            payload["book_progress"] = dict(progress)
         if reading is not None:
-            payload["reading"] = {"basis": "completed_reading_receipt",
+            reading_payload = {"basis": "completed_reading_receipt",
                 "source_key": digest(reading.source), "start_offset": reading.start_offset,
                 "end_offset": reading.end_offset, "text_length": reading.text_length,
                 "covers_source": reading.covers_source, "completed_at": reading.completed_at.isoformat(),
                 "reflection": reading.reflection, "reflection_basis": "subjective_reading_response"}
+            if progress is not None and progress.get("completed_book"):
+                reading_payload["book_completed"] = True
+            payload["reading"] = reading_payload
         return material({"kind": "activity", "activity_id": activity.activity_id,
             "revision": activity.revision}, "role_life_activity", payload)
 
@@ -117,11 +142,59 @@ class RoleLifeContextReader:
             self.authorize(context, at)
             owner = self.owner(context)
             activities = self.life.context_activities(owner, context.scope, observed_at=at, limit=SCAN_LIMIT)
+            reading_rows = self.life.context_reading_activities(owner, context.scope, observed_at=at, limit=48)
             journals = self.journal.context_days(owner, context.scope, observed_at=at, limit=SCAN_LIMIT)
+            # Deduplicate reading chunks by book source so one multi-chunk book
+            # or an old paused chunk never crowds out newly finished books, and
+            # balance reading vs non-reading activities so sleep logs never
+            # starve the bookshelf context.
+            reading_by_book = {}
+            reading_source_ids = []
+            for activity in reading_rows:
+                sid = self._reading_source_id(activity) or activity.activity_id
+                reading_source_ids.append(sid)
+                existing = reading_by_book.get(sid)
+                if existing is None:
+                    reading_by_book[sid] = activity
+                    continue
+                # Prefer active > completed (newest/highest offset) > paused > planned.
+                rank = {ActivityState.ACTIVE: 0, ActivityState.COMPLETED: 1,
+                        ActivityState.PAUSED: 2, ActivityState.PLANNED: 3}
+                new_key = (rank.get(activity.state, 4), -activity.updated_at.timestamp(),
+                           -(activity.work.end_offset if activity.work else 0))
+                old_key = (rank.get(existing.state, 4), -existing.updated_at.timestamp(),
+                           -(existing.work.end_offset if existing.work else 0))
+                if new_key < old_key:
+                    reading_by_book[sid] = activity
+            book_progress = self.life.book_progress_for_sources(
+                owner, context.scope, reading_source_ids, observed_at=at
+            )
+            ordered_readings = sorted(
+                reading_by_book.values(),
+                key=lambda item: (
+                    0 if item.state is ActivityState.ACTIVE else 1,
+                    -item.updated_at.timestamp(),
+                    item.activity_id,
+                ),
+            )
+            other_activities = [item for item in activities if not self._is_reading_activity(item)]
+            # Guarantee balanced slots across sleep/other and books within MAX_ACTIVITIES (6):
+            # active non-reading activities (e.g. currently sleeping) + up to 4 books + up to 2 other,
+            # then any remaining records so single-kind callers keep filling all 6 slots.
+            active_others = [item for item in other_activities if item.state is ActivityState.ACTIVE]
+            rest_others = [item for item in other_activities if item.state is not ActivityState.ACTIVE]
+            merged = []
+            seen_ids = set()
+            for group in (active_others, ordered_readings[:4], rest_others[:2],
+                          ordered_readings[4:], rest_others[2:]):
+                for item in group:
+                    if item.activity_id not in seen_ids:
+                        seen_ids.add(item.activity_id)
+                        merged.append(item)
             variants, skipped = [], 0
-            for activity in activities:
+            for activity in merged:
                 try:
-                    variants.append((self._activity(activity, context, at),))
+                    variants.append((self._activity(activity, context, at, book_progress=book_progress),))
                 except TaskError:
                     skipped += 1
             for head in journals:
@@ -135,7 +208,86 @@ class RoleLifeContextReader:
                     variants.append(options)
                 except TaskError:
                     skipped += 1
-            return LifeCandidates(tuple(variants), len(activities) == SCAN_LIMIT or len(journals) == SCAN_LIMIT, skipped)
+            return LifeCandidates(tuple(variants),
+                len(activities) == SCAN_LIMIT or len(reading_rows) == 48 or len(journals) == SCAN_LIMIT,
+                skipped)
+
+    def _reading_share_in_group_enabled(self, context):
+        from .configuration import DEFAULTS, LifeConfigurationOwner, configuration_fields, target_for, values
+        try:
+            store = getattr(self.runtime, "configuration_store", self.runtime)
+            snapshot = LifeConfigurationOwner(store).read(target_for(context), configuration_fields())
+            return bool(values(snapshot).get("reading_share_in_group", DEFAULTS["reading_share_in_group"]))
+        except Exception:
+            return bool(DEFAULTS["reading_share_in_group"])
+
+    def public_reading_summaries(self, context, at, *, max_books=4):
+        """Project sanitized, opt-in role-wide reading summaries without exposing private sources or participants."""
+        if not self._reading_share_in_group_enabled(context):
+            return ()
+        with self.runtime.read_snapshot():
+            owner = self.owner(context)
+            rows = self.life.role_reading_activities(owner, observed_at=at, limit=48)
+            if not rows:
+                return ()
+            by_book = {}
+            for activity in rows:
+                source = (activity.reading.source if activity.reading is not None
+                          else activity.work.source if activity.work is not None else None)
+                if source is None:
+                    continue
+                # The exact source version must still pass governance (state, expiry,
+                # dependencies); a withdrawn or expired book is never projected.
+                if not self.journal.sources.validate_reference(source, observed_at=at).is_success:
+                    continue
+                key = (activity.scope.key, source.source_id)
+                existing = by_book.get(key)
+                if existing is None or activity.updated_at > existing[0].updated_at:
+                    by_book[key] = (activity, source)
+            if not by_book:
+                return ()
+            # Compute book progress per owning scope.
+            by_scope = {}
+            for (scope_key, source_id), (activity, _) in by_book.items():
+                by_scope.setdefault(scope_key, (activity.scope, []))[1].append(source_id)
+            progress_map = {}
+            for scope_key, (scope_obj, sids) in by_scope.items():
+                scoped = self.life.book_progress_for_sources(owner, scope_obj, sids, observed_at=at)
+                for sid, prog in scoped.items():
+                    progress_map[(scope_key, sid)] = prog
+            ranked = sorted(
+                by_book.items(),
+                key=lambda item: (
+                    0 if item[1][0].state is ActivityState.ACTIVE else 1,
+                    -item[1][0].updated_at.timestamp(),
+                ),
+            )[:max(1, min(8, int(max_books)))]
+            materials = []
+            for (scope_key, source_id), (activity, _) in ranked:
+                progress = progress_map.get((scope_key, source_id))
+                completed_book = bool(progress and progress.get("completed_book")) or bool(
+                    activity.reading and activity.reading.covers_source
+                )
+                title = redact_text((activity.description or "书架读物").strip())[:120]
+                if not title:
+                    title = "书架读物"
+                payload = {
+                    "basis": "role_public_reading_summary",
+                    "title": title,
+                    "state": "reading" if activity.state is ActivityState.ACTIVE else "completed",
+                    "completed_book": completed_book,
+                    "updated_at": activity.updated_at.isoformat(),
+                }
+                if progress is not None:
+                    payload["book_progress"] = dict(progress)
+                # Reading reflections respond to a private source and may quote it, so
+                # this cross-audience projection carries only title, state and progress.
+                materials.append(material(
+                    {"kind": "public_reading", "book_key": digest([owner, source_id])},
+                    "role_public_reading",
+                    payload,
+                ))
+            return tuple(materials)
 
     def read(self, references, context, at):
         """Reconstruct only the original selection, under current source governance."""

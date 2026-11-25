@@ -702,6 +702,8 @@ window.CompanionPerceptionOverviewPage = (() => {
     const networkLabel = news.networkStatus === "failed" ? "上次网络检查失败"
       : news.networkStatus === "succeeded" ? "网络检查通过"
         : sourceAssembled ? "网络尚未检查" : "来源未装配";
+    const explorationSearchReady = news.explorationSearchReady;
+    const parallelExplore = !searchSource && explorationEnabled;
     const externalWindowPending = ready && windowRequired && !sourceAssembled && !news.sourceKind && !news.label;
     const externalValue = !ready ? configurationFailed ? "外部来源设置读取失败" : "正在读取外部来源"
       : externalWindowPending
@@ -710,16 +712,19 @@ window.CompanionPerceptionOverviewPage = (() => {
       ? explorationEnabled ? networkSucceeded ? news.label || "网络搜索检查通过" : sourceAssembled ? `网络搜索已配置 · ${networkLabel}` : "网络探索已启用，搜索源未装配" : "网络探索未启用"
       : dailySource ? `AI 日报已装配 · ${networkSucceeded ? "后台持续维护" : networkLabel}`
         : sourceAssembled ? `${news.label || "资讯来源"} · ${networkSucceeded ? "后台持续维护" : networkLabel}`
-          : ready ? "尚未配置外部来源" : "正在读取外部来源";
+          : explorationEnabled ? (explorationSearchReady === false ? "网络探索已启用，搜索源未装配" : "网络探索已启用")
+            : "尚未配置外部来源";
     const externalState = !ready || externalWindowPending ? "pending" : searchSource && explorationEnabled
       ? networkSucceeded ? "ready" : "pending"
-      : networkSucceeded ? "ready" : sourceAssembled ? "pending" : "off";
+      : networkSucceeded ? "ready" : sourceAssembled ? "pending"
+        : explorationEnabled ? (explorationSearchReady === false ? "pending" : "ready") : "off";
     const externalDetail = externalWindowPending
       ? (poolCount > 0
           ? `当前角色资讯池已有 ${poolCount} 条素材；选择私聊窗口后查看外部资讯来源与搜索探索配置。`
           : "外部资讯来源与搜索探索配置按私聊窗口读取；请先选择当前角色的私聊窗口。")
       : [
       searchSource ? "AstrBot 网页搜索或自定义搜索源" : dailySource ? "内置 AI 日报来源" : `来源类型 ${news.sourceKind || "未选择"}`,
+      parallelExplore ? (explorationSearchReady === false ? "网络探索已开启（搜索源未装配）" : "已并行开启网络探索") : "",
       news.explorationInterests ? `兴趣：${news.explorationInterests}` : "未指定搜索兴趣",
       Number.isInteger(news.explorationIntervalHours) ? `最短间隔 ${news.explorationIntervalHours} 小时` : "",
       Number.isInteger(news.explorationResultCount) ? `每次最多 ${news.explorationResultCount} 条` : "",
@@ -1353,9 +1358,14 @@ window.CompanionPerceptionOverviewPage = (() => {
           : materialPoolState === "error" ? `<p class="perception-preview-empty">资讯池读取失败：${esc(materialPoolError)}</p>`
             : poolItems.length ? `<ul class="perception-preview-material-list is-scroll">${poolItems.map(item => `<li><strong>${esc(item.title)}</strong>${item.detail ? `<span>${esc(String(item.detail).slice(0, 280))}</span>` : ""}<small>${esc(item.note || item.source || "资讯")}${item.captured_at ? ` · ${esc(ageLabel(item.captured_at))}` : ""}</small></li>`).join("")}</ul>`
               : `<p class="perception-preview-empty">资讯池暂无可展示条目。</p>`;
+        const explorationRow = !searchSource && explorationEnabled
+          ? [["网络探索", news.explorationSearchReady === false ? "已启用（搜索源未装配）"
+            : `并行启用${news.explorationSearchLabel ? ` · ${news.explorationSearchLabel}` : ""}${news.explorationNoteCount ? ` · 已记 ${news.explorationNoteCount} 条笔记` : ""}`]]
+          : [];
         itemPreviewMarkup.set("ext-external", previewCard({title:"外部资讯", state:external.state, tag:external.tag,
           body:previewFields([
             ["来源", externalWindowPending ? "请选择私聊窗口查看" : news.label || "尚未配置"],
+            ...(externalWindowPending ? [] : explorationRow),
             ["自选兴趣", externalWindowPending ? "按私聊窗口读取" : news.explorationInterests || "未指定"],
             ["检查节奏", externalWindowPending ? "请选择私聊窗口查看" : [Number.isInteger(news.explorationIntervalHours) ? `最短 ${news.explorationIntervalHours} 小时` : "", Number.isInteger(news.explorationResultCount) ? `每次最多 ${news.explorationResultCount} 条` : ""].filter(Boolean).join(" · ") || "—"],
             ["最近检查", [news.lastCheckedAt || materialPool?.checked_at || "—", Number.isInteger(news.itemCount) ? `${news.itemCount} 条` : poolCount > 0 ? `资讯池 ${poolCount} 条` : ""].filter(Boolean).join(" · ")]])

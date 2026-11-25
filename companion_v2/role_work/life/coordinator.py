@@ -147,7 +147,9 @@ class RoleLifeCoordinator:
         active_sleep = (
             body_sleep
             if body_sleep is not None
-            else self.app.role_state.body_clock.read(routine.context, now=now)
+            else self.app.role_state.body_clock.read(
+                routine.context, now=now, sleep_enabled=settings["sleep_enabled"]
+            )
         )
         if active_sleep is not None and "sleep_debt_minutes" in active_sleep and "workload_score" in active_sleep:
             profile = {
@@ -158,7 +160,9 @@ class RoleLifeCoordinator:
                 "has_sleep_history": active_sleep["has_sleep_history"],
             }
         else:
-            profile = self.app.role_state.body_clock.profile(routine.context, now=now)
+            profile = self.app.role_state.body_clock.profile(
+                routine.context, now=now, sleep_enabled=settings["sleep_enabled"]
+            )
         planned_minutes = recommended_sleep_minutes(settings["sleep_minutes"],
             profile["sleep_debt_minutes"], profile["workload_score"])
         next_wake = next_at + timedelta(minutes=planned_minutes) if next_at else None
@@ -193,10 +197,10 @@ class RoleLifeCoordinator:
                 "label": f"{scope.platform} · 账号 {account} · 会话 {scope.native_scope_id}"}
 
     def cancel_activity(self, identifier):
+        wake_prefix = "wake:" + identifier + ":"
         for routine in tuple(self.routines.values()):
-            for key in (identifier, "wake:" + identifier):
-                worker = routine._workers.get(key)
-                if worker is not None:
+            for key, worker in tuple(routine._workers.items()):
+                if key in (identifier, "wake:" + identifier) or key.startswith(wake_prefix):
                     worker.cancel()
 
     @property

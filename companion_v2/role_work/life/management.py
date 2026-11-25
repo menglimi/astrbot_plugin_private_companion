@@ -134,18 +134,21 @@ class RoleLifeManagement:
                 data["unavailable_reason"] = error.code
         return data
 
-    def status(self, operator, *, before=None, after_activity=None):
+    def status(self, operator, *, before=None, after_activity=None, after_reading=None, after_sleep=None):
         access = self.authorize(operator)
         # Cursor pages include unavailable/deleted records; a damaged source never hides the rest of the archive.
         if before is not None:
             date.fromisoformat(before)
-        if after_activity is not None and (not isinstance(after_activity, str) or len(after_activity) > 512):
-            raise ValueError("invalid activity cursor")
+        for cursor_value in (after_activity, after_reading, after_sleep):
+            if cursor_value is not None and (not isinstance(cursor_value, str) or len(cursor_value) > 512):
+                raise ValueError("invalid activity cursor")
         now = self.app.now()
         with self.runtime.read_snapshot(), validation_batch(self.runtime, now):
-            return self._status_in_snapshot(operator, access, now, before=before, after_activity=after_activity)
+            return self._status_in_snapshot(operator, access, now, before=before, after_activity=after_activity,
+                                            after_reading=after_reading, after_sleep=after_sleep)
 
-    def _status_in_snapshot(self, operator, access, now, *, before=None, after_activity=None):
+    def _status_in_snapshot(self, operator, access, now, *, before=None, after_activity=None,
+                            after_reading=None, after_sleep=None):
         config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
                                                       observed_at=now))
         rows = self.runtime.read_all("""SELECT * FROM role_journals WHERE owner_key = ?
@@ -182,8 +185,19 @@ class RoleLifeManagement:
                                                        after_id=after_activity, limit=31)
         activities = archive[:30]
         cursor = activities[-1].activity_id if len(archive) > 30 else None
+        reading_archive = self.app.role_life.archive_activities(self.owner, self.context.scope,
+                                                               after_id=after_reading, limit=31, kind="reading")
+        reading_activities = reading_archive[:30]
+        next_reading_activity = reading_activities[-1].activity_id if len(reading_archive) > 30 else None
+        sleep_archive = self.app.role_life.archive_activities(self.owner, self.context.scope,
+                                                             after_id=after_sleep, limit=31, kind="sleep")
+        sleep_activities = sleep_archive[:30]
+        next_sleep_activity = sleep_activities[-1].activity_id if len(sleep_archive) > 30 else None
         books = {}
-        sources = {a.work.source for a in activities if a.work.kind == "reading"}
+        sources = {
+            a.work.source for a in (*activities, *reading_activities)
+            if a.work.kind == "reading" and a.work.source is not None
+        }
         if sources:
             for activity in self._activities():
                 if activity.work.source in sources:
@@ -227,7 +241,10 @@ class RoleLifeManagement:
         daily = self.app.journal_schedule._schedules.get(self.life.schedule_id)
         body_sleep = self.app.role_state.body_clock.read(self.context, now=now)
         sleep_schedule = self.app.life_runtime.sleep_schedule_status(self.life, config, body_sleep=body_sleep, now=now)
-        return {"role_id": self.owner.persona_id, "participant": self.context.scope.native_scope_id,
+        scope = self.context.scope
+        window_label = f"{scope.platform} · 会话 {scope.native_scope_id}"
+        return {"role_id": self.owner.persona_id, "participant": scope.native_scope_id,
+            "window_label": window_label,
             "host_state": self.app.state, "config": values(config), "edit_token": config.edit_token,
             "view_token": self.token(operator, access), "failure_code": self.life.failure_code,
             "next_diary_at": daily.next_at.isoformat() if daily else None,
@@ -236,7 +253,13 @@ class RoleLifeManagement:
             "body_sleep": body_sleep,
             "activities": [{**self._project_activity(a, operator, access, now=now),
                             "book_progress": books.get(a.work.source)} for a in activities],
-            "next_activity": cursor, "journals": journals,
+            "next_activity": cursor,
+            "reading_activities": [{**self._project_activity(a, operator, access, now=now),
+                                    "book_progress": books.get(a.work.source)} for a in reading_activities],
+            "next_reading_activity": next_reading_activity,
+            "sleep_activities": [self._project_activity(a, operator, access, now=now) for a in sleep_activities],
+            "next_sleep_activity": next_sleep_activity,
+            "journals": journals,
             "next_date": last_local_date if len(distinct_dates) == 50 else None,
             "receipts": receipts[-60:], "running": list(self.life._workers),
             "journal_unresolved": journal_unresolved}

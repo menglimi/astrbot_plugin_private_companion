@@ -372,9 +372,7 @@ class ContentAuthoringWorkflow:
         finished = True
         if job.scheduled:
             try:
-                raw = json.loads(raw)
-                if not isinstance(raw, dict):
-                    raise ValueError("scheduled draft must be an object")
+                raw = dict(authoring.decode_json_object(raw))
                 finished = raw.pop("finished", False)
                 if type(finished) is not bool:
                     raise ValueError("finished must be a boolean")

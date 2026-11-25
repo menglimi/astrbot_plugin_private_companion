@@ -11,6 +11,7 @@ from companion_v2.identity_policy.private_domain import source_ref
 from companion_v2.memory.models import AtomRef
 from companion_v2.memory.pinned import visible_fact
 from companion_v2.role_work.growth.configuration import INFLUENCE_NOTES, skill_settings, skills_enabled
+from companion_v2.role_work.life.scheduling import sleep_schedule_summary
 from .planning_config import (SCHEDULE_MODE_ORCHESTRATED, configured_annual_calendars,
                               configured_weather_location, configured_weather_max_age, planning_values)
 from .weather_material import planning_weather_material
@@ -136,6 +137,16 @@ def _recent_life_summary(app, context, at):
                 entry[key] = item[key]
         items.append(entry)
     return items or None
+
+
+def _sleep_schedule_summary(app, context):
+    body_clock = getattr(getattr(app, "role_state", None), "body_clock", None)
+    if body_clock is None:
+        return None
+    try:
+        return sleep_schedule_summary(body_clock.sleep_settings(context))
+    except Exception:
+        return None
 
 
 def _content_authoring_summary(app, context, at):
@@ -403,6 +414,12 @@ def capture(planner, context, instruction, mode, slot, occurrence=None, *, weath
             ("id", "revision", "sequence", "kind", "state", "title", "start", "end")} if occurrence else None)}
     if current_weather is not None:
         material["current_weather"] = current_weather
+    sleep_schedule = _sleep_schedule_summary(app, context)
+    if sleep_schedule is not None:
+        size = len(json.dumps(sleep_schedule, ensure_ascii=False, separators=(",", ":")))
+        if used_chars + size <= MATERIAL_CHARS:
+            material["sleep_schedule"] = sleep_schedule
+            used_chars += size
     role_state = _role_state_summary(app, context, at)
     if role_state is not None:
         size = len(json.dumps(role_state, ensure_ascii=False, separators=(",", ":")))

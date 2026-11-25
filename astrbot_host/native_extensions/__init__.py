@@ -62,6 +62,46 @@ def together_execution_binding(settings):
             "tts_timeout_seconds": voice.timeout_seconds}
 
 
+def together_voice_policy(application, context, *, now=None):
+    """Read the live Companion per-language voice policy for one role/window."""
+    reply_settings = getattr(application, "reply_settings", None)
+    capture = getattr(reply_settings, "capture", None)
+    if not callable(capture) or context is None:
+        return None
+    try:
+        from companion_v2.conversation.reply_settings import VOICE_FIELDS
+        from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+
+        observed_at = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+        captured = capture(context, observed_at)
+        values = captured.get("settings") if isinstance(captured, Mapping) else None
+        if not isinstance(values, Mapping):
+            return None
+        defaults = VoiceReplyPolicy()
+        return VoiceReplyPolicy(**{
+            key: values.get("voice_" + key, getattr(defaults, key))
+            for key in VOICE_FIELDS
+        })
+    except Exception:
+        return None
+
+
+def together_context_execution(base_binding, application, context, *, now=None):
+    """Overlay live Companion per-language voice defaults onto the 4-key room execution binding."""
+    execution = dict(base_binding or {})
+    policy = together_voice_policy(application, context, now=now)
+    if policy is None:
+        return execution
+    scope_kind = getattr(getattr(getattr(context, "scope", None), "kind", None), "value", "private")
+    channel = "group" if scope_kind == "group" else "private"
+    provider_id = policy.provider_for_language(channel)
+    if provider_id:
+        execution["tts_provider_id"] = provider_id
+    execution["tts_language"] = policy.language
+    execution["tts_timeout_seconds"] = policy.timeout_seconds
+    return execution
+
+
 def _together_provider_id(provider):
     try:
         meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
@@ -671,8 +711,10 @@ class NativeExtensionRegistry(AstrBotToolPort):
                 raise TaskError("native_persona_guard_missing", "room creation requires a verified host persona")
             request["host_persona"] = await self.persona_guard(
                 invocation.context.scope, invocation.context.role_binding)
+            live_execution = together_context_execution(
+                self.together_execution, self.application, invocation.context, now=self.now())
             request["host_execution"] = together_room_execution(
-                self.together_execution, entry[1].instance, context=self.context)
+                live_execution, entry[1].instance, context=self.context)
             guard()
         if self.content is not None and invocation.descriptor.tool.action in CONTENT_ACTIONS:
             self.content.sources.synchronize()

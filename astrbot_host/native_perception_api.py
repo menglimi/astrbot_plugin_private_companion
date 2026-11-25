@@ -146,6 +146,14 @@ class NativePerceptionWebAPI:
         preferences = SimpleNamespace(values=contact["settings"])
         diagnostic = app.contact_schedule.news_events.diagnostic(context, preferences)
         source = diagnostic.get("source", {})
+        exploration_port = None
+        if port is not None and callable(getattr(port, "for_settings", None)):
+            try:
+                exploration_port = port.for_settings({**contact["settings"], "news_source_kind": "search"}, context)
+            except (ValueError, TypeError):
+                exploration_port = None
+        exploration_service = getattr(app.contact_schedule, "exploration", None)
+        exploration_snapshot = exploration_service.read(context) if exploration_service is not None else {}
         weather = app.contact_schedule.weather_events
         alerts = app.contact_schedule.official_alert_events
         weather_port = getattr(weather, "port", None) if weather is not None else None
@@ -160,6 +168,14 @@ class NativePerceptionWebAPI:
                                     "assembled": bool(source.get("assembled", source.get("ready"))),
                                     "kind": source.get("kind", ""),
                                     "label": source.get("label", "")},
+                         "exploration": {
+                             "enabled": contact["settings"].get("web_exploration_enabled") is True,
+                             "search_ready": exploration_port is not None,
+                             "search_label": getattr(exploration_port, "source_label", "") if exploration_port is not None else "",
+                             "last_run_at": exploration_snapshot.get("last_run_at", ""),
+                             "last_result": exploration_snapshot.get("last_result", ""),
+                             "note_count": len(exploration_snapshot.get("notes", ())),
+                         },
                          "diagnostic": diagnostic,
                          "contact_enabled": contact["settings"]["enabled"],
                          "automatic_enabled": contact["settings"]["automatic_enabled"]}}

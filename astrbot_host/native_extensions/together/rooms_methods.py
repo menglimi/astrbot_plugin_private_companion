@@ -127,7 +127,7 @@ class TogetherRoomsMethods:
             return None
         try:
             from astrbot_host.mobile_together import MobileTogetherBridge
-            from astrbot_host.native_extensions import together_room_execution
+            from astrbot_host.native_extensions import together_context_execution, together_room_execution
             from companion_v2.execution.models import encode
             from companion_v2.together.provider import scope_key
             bridge = MobileTogetherBridge(controller)
@@ -148,7 +148,13 @@ class TogetherRoomsMethods:
             persona = await persona_guard(scope, context.role_binding)
             if not isinstance(persona, dict):
                 return None
-            base_execution = dict(getattr(registry, 'together_execution', None) or {})
+            now = controller.now() if callable(getattr(controller, 'now', None)) else None
+            base_execution = together_context_execution(
+                getattr(registry, 'together_execution', None) or {},
+                application,
+                context,
+                now=now,
+            )
             if not base_execution.get('model_provider_id'):
                 chat = self._get_chat_provider()
                 base_execution['model_provider_id'] = self._provider_usage_id(chat) if chat is not None else ''
@@ -440,11 +446,12 @@ class TogetherRoomsMethods:
 
     async def room_bootstrap(self, room: RoomSession, *, member_role: str='owner') -> dict[str, Any]:
         is_owner = member_role == 'owner'
-        capabilities = await self._capabilities(room)
+        voice_policy = await asyncio.to_thread(self._companion_voice_policy, room)
+        capabilities = await self._capabilities(room, voice_policy=voice_policy)
         work_capability = capabilities.get('work')
         if not isinstance(work_capability, dict):
             work_capability = {'available': False, 'label': ''}
-        companion_tts = {'voice_language': room.native_v2.tts_language} if room.native_v2 is not None else self._companion_realtime_voice_config()
+        companion_tts = self._room_voice_config(room, policy=voice_policy)
         scene = {} if room.native_v2 is not None else self._companion_scene(room.user_id)
         relationship = scene.get('relationship') if isinstance(scene.get('relationship'), dict) else {}
         work_context = await self._work_collaboration_context(room, force=True) if is_owner and room.mode == 'work' and (work_capability.get('available') is True) else {}

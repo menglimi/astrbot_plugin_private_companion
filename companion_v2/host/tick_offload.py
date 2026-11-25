@@ -927,8 +927,10 @@ def _scan_calendar_work(routine: RoleLifeRuntime, records, now, writing_active: 
         None,
     )
     current = [item for item in page["items"] if item["state"] == "accepted" and item["start"] <= stamp(now)]
-    if page["scan_truncated"] or any(life_routine_for(item) is None for item in current):
+    if page["scan_truncated"] or any(item.get("kind") == "commitment" for item in current):
         current = []
+    else:
+        current = [item for item in current if life_routine_for(item) is not None]
     if writing_active or routine.app.role_state.body_clock.active(context, "reading"):
         return
     if writer is not None:
@@ -936,11 +938,18 @@ def _scan_calendar_work(routine: RoleLifeRuntime, records, now, writing_active: 
             if life_routine_for(item) != "writing":
                 continue
             key = "writing:" + item["id"] + ":" + str(item["sequence"])
+            prior = routine.results.get(key)
+            retryable_prior = (
+                prior is not None
+                and getattr(prior, "failure", None) is not None
+                and getattr(writer, "is_retryable_failure", lambda _: False)(prior.failure.code)
+            )
             if (
-                key not in routine.results
+                (prior is None or retryable_prior)
                 and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
                 and writer.ready(context, item)
             ):
+                routine.results.pop(key, None)
                 to_launch.append((key, lambda w=writer, r=routine, it=item: w.run(r, it), None))
                 return
     if (

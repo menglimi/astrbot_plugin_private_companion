@@ -482,6 +482,20 @@ class RestGateHostTests(HostFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rest_gate.deferral(app.runtime, context, text="在吗", now=self.clock.now()), 0.0)
             self.assertFalse(rest_gate.sleep_context(app.runtime, context, now=self.clock.now())["resting"])
 
+    def test_custom_sleep_time_aligns_default_rest_window(self):
+        late_owl = gate_settings(
+            enable_rest_reply_simulation=True,
+            sleep_enabled=True,
+            sleep_time="04:00",
+            sleep_minutes=480,
+        )
+        windows = late_owl.windows()
+        # 23:30 is well before 04:00 bedtime and must not be treated as resting.
+        self.assertFalse(rest_gate.window_active(windows, minutes=23 * 60 + 30))
+        # 04:30 and 10:30 fall inside the 04:00-12:00 sleep schedule.
+        self.assertTrue(rest_gate.window_active(windows, minutes=4 * 60 + 30))
+        self.assertTrue(rest_gate.window_active(windows, minutes=10 * 60 + 30))
+
 
 if __name__ == "__main__":
     unittest.main()

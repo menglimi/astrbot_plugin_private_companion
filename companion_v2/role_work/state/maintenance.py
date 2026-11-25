@@ -18,6 +18,7 @@ from companion_v2.identity_policy.private_domain import as_source_ref
 from companion_v2.identity_policy.interventions import (REST_WAKE_INTERVENTION,
     STATE_INTERVENTION, require_capability)
 from companion_v2.role_work.growth.configuration import skills_enabled
+from companion_v2.role_work.life.scheduling import sleep_schedule_summary
 from .service import FIELDS
 from . import maintenance_context
 from .configuration import FEATURE_SWITCHES
@@ -51,7 +52,7 @@ maintenance_basis.today 是当前时区的日期投影，包含年度日历里�
 健康、能够照顾自己的普通生活是常态。疾病应有具体情境和连续过程，不为更新而随机生病，也不把一次不适反复当成新发病。previous_simulation 和 simulation_history 都是此前模型的模拟，重复保存不构成新的病情证据；结合原始时间判断同一次不适如何平稳、缓解或结束，不把“昨天”“整夜”每天滚动续写。
 若异常只剩长期重复的旧描述、缺乏近期独立材料支持，可以逐步回到惯常体验或保留未知，不必等待不存在的进食或服药执行系统才允许感受好转。已知仍在持续的具体症状则保持合理连续性，不无故抹去。
 recent_dialogue 是带时间、说话者的完整互动。分清用户与角色，用户的经历不移到角色身上；用户以“我”陈述的身体、睡眠、饥饿或情绪只属于用户，不把任一方的状态移到另一方。角色在互动中接受食物、照顾、药物或表达舒服些，可以自然影响饥饿、健康、心情与精力的模拟感受，注意先后顺序和已经反映过的影响，不机械叠加奖励，也不要求用户特定措辞。仅提供药物不等于已服用，更不等于立即痊愈；角色表达药效或缓解是可参考的主观体验，不是医疗诊断或真实服药回执。
-sleep_execution 记录实际睡眠，sleep_profile.has_sleep_history=false 或 sleep_execution=null 表示没有执行记录，不表示没睡、失眠或睡眠不足。自动睡眠未启用也不表示角色通宵。缺少进食、饮水记录同样不表示一直挨饿；允许按角色日常节律模拟普通饥饿、困倦与舒缓，不补造具体吃饭、入睡、醒来或服药经过。不能根据时间经过宣称现实行动已完成，不从清晨、沉默或对话推断已睡足、醒来或休息完成。
+sleep_execution 记录实际睡眠，sleep_profile.has_sleep_history=false 或 sleep_execution=null 表示没有近期有效执行记录，不表示没睡、失眠或睡眠不足。自动睡眠未启用也不表示角色通宵。若 maintenance_basis.sleep_schedule 提供了作息配置（如 sleep_time 入睡时间、duration_minutes 睡眠时长与 expected_wake_time 预计醒来时间），以该作息为准理解角色的昼夜节律与夜猫子/早睡习惯，不要套用普通人 23:00 就该犯困的刻板印象在远早于入睡时间的时段强行喊困。缺少进食、饮水记录同样不表示一直挨饿；允许按角色日常节律模拟普通饥饿、困倦与舒缓，不补造具体吃饭、入睡、醒来或服药经过。不能根据时间经过宣称现实行动已完成，不从清晨、沉默或对话推断已睡足、醒来或休息完成。
 energy 是 0 到 100 的主观精力。结合 previous_simulation 及 updated_at、当前时段、实际睡眠回执、睡眠压力/欠睡、质量、中断与活动连续调整，沿用不等于照抄。低值且无持续负荷或睡眠不足依据时，可随时间小幅回升至角色惯常水平，不必等睡眠回执才允许感受温和好转；好转不宣称已休息。接近日常水平后稳定或自然起伏，不突然满格或持续单向上升，不让过时疲惫永久锁低。
 持续负荷或明确欠睡时可偏低并在下轮重评；低质量睡眠、刚睡被叫醒或反复中断限制恢复，补足后渐进回升。午休只缓解部分困倦，睡眠压力不换算为固定精力扣分。深夜持续互动可以慢慢加深疲惫，短聊不要求改变作息；状态维护不代替睡眠执行器。
 busy 描述注意力，不决定是否拒答。共享状态只写角色自己的概括感受与活动，不写对象、他人位置或私人日程。当前窗口没新消息不表示不忙、情绪归零或状态结束；没有变化依据时保留有效状态或 null。
@@ -753,14 +754,18 @@ class StateMaintenance:
         sources = tuple(dict.fromkeys((*sources, *(as_source_ref(s) for s in mood_round["sources"]),
                                        *(as_source_ref(s) for s in dependencies))))
         self.service.evidence.validate(context, sources)
+        sleep_cfg = self.service.body_clock.sleep_settings(context)
+        sleep_enabled = True if sleep_cfg is None else bool(sleep_cfg.get("sleep_enabled", False))
         return {"context": context, "instruction": instruction, "request_id": request_id, "at": now,
             "revision": record["revision"] if record else 0, "record_hash": digest(record), "record": record,
             "previous": previous,
             "settings": settings, "token": token, "sources": sources, "materials": materials,
             "calendar": calendar, "activities": activities, "cycle_timeline": cycle_timeline,
             "today": self._today(settings, now, context),
-            "mood_round": mood_round, "sleep_execution": self.service.body_clock.read(context, now=now),
-            "sleep_profile": self.service.body_clock.profile(context, now=now),
+            "mood_round": mood_round,
+            "sleep_execution": self.service.body_clock.read(context, now=now, sleep_enabled=sleep_enabled),
+            "sleep_profile": self.service.body_clock.profile(context, now=now, sleep_enabled=sleep_enabled),
+            "sleep_schedule": sleep_schedule_summary(sleep_cfg),
             "simulation_history": maintenance_context.simulation_history(self.service, context, now),
             "recent_dialogue": recent_dialogue, "dialogue_start": dialogue_start,
             "growth_refs": growth_refs, "skills_partial": skills_partial,
@@ -887,6 +892,11 @@ class StateMaintenance:
         job = self.pending[run.task.task_id]
         context = job["context"]
         mood_round = job["mood_round"]
+        sleep_execution = job["sleep_execution"]
+        if (isinstance(sleep_execution, dict)
+                and sleep_execution.get("state") not in ("sleeping", "interrupted")
+                and sleep_execution.get("has_sleep_history") is False):
+            sleep_execution = None
         materials = (PromptMaterial("role.state", "maintenance_basis", encode({
             "at": job["at"], "today": job.get("today"),
             "previous_simulation": job["previous"], "settings": job["settings"],
@@ -894,8 +904,9 @@ class StateMaintenance:
             "mood_settlement": {"reference": mood_round["reference"], "baseline": mood_round["baseline"],
                 "interest_level": mood_round["interest"], "messages_since_last_round": mood_round["messages"],
                 "message_characters": mood_round["characters"], "numbers_may_move": mood_round["gate"] == "open"},
-            "actual_activity_records": job["activities"], "sleep_execution": job["sleep_execution"],
-            "sleep_profile": job["sleep_profile"], "simulation_history": job["simulation_history"],
+            "actual_activity_records": job["activities"], "sleep_execution": sleep_execution,
+            "sleep_profile": job["sleep_profile"], "sleep_schedule": job.get("sleep_schedule"),
+            "simulation_history": job["simulation_history"],
             "recent_dialogue": job["recent_dialogue"],
             "intervention_dialogue": job.get("intervention_dialogue", ())})),) + (
                 (PromptMaterial("conversation.native", "intervention_dialogue",

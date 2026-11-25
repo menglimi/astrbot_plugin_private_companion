@@ -115,12 +115,38 @@ def authoring_prompt(action: str, brief: str, materials: Mapping[str, str] | Non
     )
 
 
-def parse_output(raw: object, *, action: str) -> ContentDraft:
-    if type(raw) is str:
+def decode_json_object(raw: object) -> Mapping[str, object]:
+    """Parse a model JSON object, tolerating Markdown code fences or surrounding whitespace."""
+    if isinstance(raw, Mapping):
+        return raw
+    if type(raw) is not str:
+        raise ValueError("invalid_json")
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            text = "\n".join(lines[1:-1]).strip()
+        elif "\n" in text and text.endswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("invalid_json") from None
         try:
-            raw = json.loads(raw)
+            parsed = json.loads(text[start:end + 1])
         except json.JSONDecodeError as error:
             raise ValueError("invalid_json") from error
+    if not isinstance(parsed, Mapping):
+        raise ValueError("invalid_json")
+    return parsed
+
+
+def parse_output(raw: object, *, action: str) -> ContentDraft:
+    if type(raw) is str:
+        raw = decode_json_object(raw)
     expected = {"title", "work_type", "body"} if action == "draft" else {"body"}
     if action not in {"draft", "continue"} or not isinstance(raw, Mapping) or set(raw) != expected:
         raise ValueError("invalid_shape")

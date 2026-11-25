@@ -171,11 +171,12 @@
         "hint": "例如 zh-CN、ja-JP、en-US。"
       },
       "tts_provider_id": {
-        "description": "TTS Provider",
+        "description": "TTS Provider（留空跟随陪伴语音配置）",
         "type": "string",
         "default": "",
         "_special": "select_provider_tts",
-        "hint": "留空时跟随 AstrBot 当前 TTS；若所选 TTS Provider 已删除或失效，建房时将记录告警并自动回退到主配置或默认 TTS。"
+        "placeholder": "留空 = 自动跟随「模型与连接 → 语音模型」分语种配置",
+        "hint": "留空（默认）时自动复用「模型与连接 → 语音模型」中配置的分语种 TTS 绑定与默认语种（按回复语种自动切换中/日/英语音服务，未绑定时回退 AstrBot 当前默认 TTS）；显式填写后将固定使用该房间专属 TTS 覆盖陪伴配置。若所选服务已删除或失效，建房与播放时将自动回退。"
       },
       "browser_tts_fallback": {
         "description": "浏览器朗读兜底",

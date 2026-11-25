@@ -290,6 +290,34 @@ class PrivateDebounceStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(manager.closed)
         self.assertIsNone(manager.reserve("target", object(), "在吗"))
 
+    async def test_trailing_single_image_coalesces_into_pending_text_and_seals(self):
+        manager = self.make_manager()
+        text_event = object()
+        image_event = object()
+        later_text_event = object()
+
+        first = manager.reserve("target", text_event, "看这个表情")
+        self.assertTrue(manager.has_pending_text("target"))
+        waiter = asyncio.create_task(manager.wait_for_quiet(first, text_event))
+        await asyncio.sleep(0)
+
+        sealed = manager.reserve("target", image_event, "", seal_media=True)
+        self.assertIs(sealed.pending, first.pending)
+        self.assertTrue(sealed.pending.sealed_media)
+        self.assertFalse(manager.has_pending_text("target"))
+
+        # First text owner is superseded cleanly; image owner becomes ready immediately.
+        self.assertEqual(await waiter, "superseded")
+        self.assertEqual(await manager.wait_for_quiet(sealed, image_event), "ready")
+
+        # Any later text message starts a fresh pending batch instead of dropping the image.
+        next_batch = manager.reserve("target", later_text_event, "下一句")
+        self.assertIsNot(next_batch.pending, sealed.pending)
+
+        merged = await manager.finish(sealed, image_event)
+        self.assertEqual([item[1] for item in merged], ["看这个表情", ""])
+        self.assertTrue(await manager.abort(next_batch, event=later_text_event))
+
 
 class PrivateDeliveryDedupTests(unittest.TestCase):
     def test_same_key_is_duplicate_within_the_window_and_expires(self):

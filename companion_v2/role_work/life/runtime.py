@@ -19,7 +19,7 @@ from companion_v2.role_work.journal.models import JournalKind
 
 from .calendar_work import require_window, reserve_routine_slot, routine_for
 from .configuration import GROUP, target_for, values
-from .scheduling import next_bedtime
+from .scheduling import next_bedtime, sleep_due_window_expired
 
 
 class RoleLifeRuntime:
@@ -218,7 +218,8 @@ class RoleLifeRuntime:
             raise TaskError("life_reading_active", "wait for the current reading or cancel it before sleeping")
         now = self.app.now()
         base_need = self.settings["sleep_minutes"] if self.settings else minutes
-        profile = clock.profile(self.context, now=now)
+        sleep_enabled = self.settings["sleep_enabled"] if self.settings else None
+        profile = clock.profile(self.context, now=now, sleep_enabled=sleep_enabled)
         target = (25 if sleep_kind == "nap" else recommended_sleep_minutes(base_need,
             profile["sleep_debt_minutes"], profile["workload_score"])) if sleep_kind != "manual" else minutes
         receipt = sleep_receipt(kind=sleep_kind, base_need_minutes=base_need, target_minutes=target,
@@ -237,10 +238,13 @@ class RoleLifeRuntime:
         timezone_id = settings["sleep_timezone"]
         zone = ZoneInfo(timezone_id)
         bedtime = time.fromisoformat(settings["sleep_time"])
-        local_now, due_local = now.astimezone(zone), due.astimezone(zone)
+        due_local = due.astimezone(zone)
         closes_at = due + timedelta(minutes=settings["sleep_window_minutes"])
-        if (now > closes_at and due_local.date() != local_now.date()
-                and local_now.time() < bedtime):
+        if sleep_due_window_expired(now, due, window_minutes=settings["sleep_window_minutes"],
+                                    sleep_minutes=settings["sleep_minutes"]):
+            self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, timezone_id, bedtime,
+                                            settings["sleep_variation_minutes"])
+            self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
             return False
         if now < closes_at and not night_sleep_ready(self.app.role_state.body_clock.profile(self.context, now=now)):
             return False
@@ -463,9 +467,12 @@ class RoleLifeRuntime:
             if pending and item["start"] > stamp(now) and routine_for(item) == "reading"), None)
         current = [item for item in page["items"]
                    if item["state"] == "accepted" and item["start"] <= stamp(now)]
-        # Leave an overlapping commitment or other planned activity its time.
-        if page["scan_truncated"] or any(routine_for(item) is None for item in current):
+        # Leave an overlapping commitment its time, without letting an unrelated
+        # role_plan suppress an explicitly scheduled reading or writing slot.
+        if page["scan_truncated"] or any(item.get("kind") == "commitment" for item in current):
             current = []
+        else:
+            current = [item for item in current if routine_for(item) is not None]
         writing = any(key.startswith("writing:") for other in self.app.life_runtime.routines.values()
                       if other.owner == self.owner for key in other._workers)
         if writing or self.app.role_state.body_clock.active(context, "reading"):
@@ -475,8 +482,16 @@ class RoleLifeRuntime:
                 if routine_for(item) != "writing":
                     continue
                 key = "writing:" + item["id"] + ":" + str(item["sequence"])
-                if (key not in self.results and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
+                prior = self.results.get(key)
+                retryable_prior = (
+                    prior is not None
+                    and getattr(prior, "failure", None) is not None
+                    and getattr(writer, "is_retryable_failure", lambda _: False)(prior.failure.code)
+                )
+                if ((prior is None or retryable_prior)
+                        and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
                         and writer.ready(context, item)):
+                    self.results.pop(key, None)
                     self.launch(key, lambda: writer.run(self, item))
                     return
         if (writer is not None and (self._next_writing_plan_check is None or now >= self._next_writing_plan_check)
