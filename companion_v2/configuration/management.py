@@ -438,7 +438,8 @@ class PhoneManagement(GroupEditor):
                     # Older dashboard bridges forward only the machine code from an error envelope.
                     source = "role" if config_source == "role_config" else config_source
                     return {"adb_error": {"code": error.code, "adb_path": diag["configured_adb_path"],
-                                          "source": source, "role_id": diag["resolved_role_id"]}}
+                                          "source": source, "role_id": diag["resolved_role_id"]},
+                            "adb_diagnostic": diag}
                 raise TaskError(error.code, str(error), details=diag) from None
             raise TaskError(error.code, "ADB did not complete the requested operation") from None
         if action != "use":

@@ -121,6 +121,13 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
         weather:{role_location:"杭州",condition:"小雨",temperature_c:14},activities:["乘车去展馆"]}};
       return ok({local_date:outfitPhoto.local_date,state:"created"});
     }
+    if(endpoint===ROLE+"/image-materials/album/hide"){
+      const before=album.length;
+      for(let index=album.length-1;index>=0;index--){
+        if(body.image_ids.includes(album[index].image_id))album.splice(index,1);
+      }
+      return ok({hidden:before-album.length});
+    }
     if(endpoint===ROLE+"/image-materials/references/withdraw"){
       const item=references.find(item=>item.asset_id===body.asset_id);if(item.revision!==body.expected_revision)return fail("reference_revision_conflict");
       item.state="withdrawn";item.revision++;return ok({withdrawn:true});
@@ -207,6 +214,27 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
       assert.equal(posts.filter(item=>item.endpoint.endsWith("/daily-outfit/generate")).length,1);
       assert.deepEqual(errors,[]);
       console.log("PASS daily outfit preview with reference images and wardrobe disabled");
+      return;
+    }
+    if(process.argv.includes("--album-only")){
+      for(const width of [1440,390]){
+        await page.setViewportSize({width,height:900});
+        if(width===1440)await open("gallery");
+        await frame.locator("[data-output-album-select]").first().click();
+        await frame.locator('[data-output-native-action="album-hide"]').click();
+        await frame.locator("#confirmationDialog[open]").waitFor();
+        assert.equal(posts.filter(item=>item.endpoint.endsWith("/album/hide")).length,0);
+        if(width===1440){
+          await frame.locator("#confirmationCancel").click();
+          await frame.locator("[data-output-album-select]").first().click();
+        }else{
+          await frame.locator("#confirmationAccept").click();
+          await frame.getByText("已从图库删除 1 张图片",{exact:false}).waitFor();
+        }
+      }
+      assert.deepEqual(posts.find(item=>item.endpoint.endsWith("/album/hide"))?.body,{image_ids:["image-1"]});
+      assert.deepEqual(errors,[]);
+      console.log("PASS sandbox album confirmation and cancellation on mobile and desktop");
       return;
     }
     await frame.locator('.output-image-frame[data-image-state="ready"]').waitFor();

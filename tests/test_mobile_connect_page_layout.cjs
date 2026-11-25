@@ -268,5 +268,5 @@ test("手机使用页用编辑器的角色入口扫描，并显示 ADB 配置来
   assert.equal(requests[0].path, "targets/t1/roles/r1/config/phone-connection");
   assert.equal(requests[0].body.include_diagnostics, true);
   assert.match(statusNotice.textContent, /E:\/Android\/平台工具\/adb\.exe.*角色层.*role-t1/);
-  assert.equal(download.hidden, true);
+  assert.equal(download.hidden, false);
 });

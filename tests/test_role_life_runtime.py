@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import unittest
 from unittest.mock import patch
@@ -81,6 +81,12 @@ class LifeFixture(HostFixture):
 
     async def settle(self):
         await self.until(lambda: not self.app.life_runtime.active_handles)
+
+    async def open_reading_slot(self):
+        await self.until(lambda: self.manager.life.next_reading_at is not None)
+        self.assertEqual(self.called, [])
+        start = datetime.fromisoformat(self.manager.life.next_reading_at)
+        self.advance(self.app, (start - self.clock.now()).total_seconds())
 
 
 class LifeRuntimeTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
@@ -177,6 +183,9 @@ class LifeRuntimeTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         original = "甲" * 6000 + "乙" * 111
         await self.add_text(original)
         await self.configure(reading_enabled=True)
+        await self.open_reading_slot()
+        await self.until(lambda: any(a["state"] == "completed" for a in self.status()["activities"]))
+        self.advance(self.app, 21)
         await self.until(lambda: all(a["state"] == "completed" for a in self.status()["activities"]))
         inputs = [json.loads(e.original.context.materials[0].payload) for e in self.called]
         self.assertEqual(sorted((x["start"], x["end"]) for x in inputs), [(0, 6000), (6000, 6111)])
@@ -256,6 +265,7 @@ class LifeRuntimeTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
             return answered("invalid json")
         self.model_behavior = bad
         await self.configure(reading_enabled=True)
+        await self.open_reading_slot()
         await self.until(lambda: self.status()["activities"][0]["state"] == "paused")
         await self.settle()
         self.assertEqual(len(self.called), 1)

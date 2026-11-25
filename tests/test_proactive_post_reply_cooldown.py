@@ -118,7 +118,7 @@ class ProactivePostReplyCooldownTests(ContactScheduleFixture, unittest.IsolatedA
 
     async def test_media_turn_without_text_refreshes_cooldown_and_interaction(self):
         _host, app, context = await self._setup_native_app(
-            idle_seconds=900, proactive_intensity_preset="off",
+            idle_seconds=900, proactive_intensity_preset="custom",
         )
         observations = NativeConversationObservations(app.messages)
         turns = NativeConversationTurns(app.runtime)
@@ -171,7 +171,7 @@ class ProactivePostReplyCooldownTests(ContactScheduleFixture, unittest.IsolatedA
 
     async def test_absorbed_followup_turn_never_shadows_running_owner_turn(self):
         _host, app, context = await self._setup_native_app(
-            idle_seconds=60, proactive_intensity_preset="off",
+            idle_seconds=60, proactive_intensity_preset="custom",
         )
         observations = NativeConversationObservations(app.messages)
         turns = NativeConversationTurns(app.runtime)
@@ -222,7 +222,7 @@ class ProactivePostReplyCooldownTests(ContactScheduleFixture, unittest.IsolatedA
 
     async def test_early_inflight_admission_blocks_plan_and_delivery_text(self):
         _host, app, context = await self._setup_native_app(
-            idle_seconds=60, proactive_intensity_preset="off",
+            idle_seconds=60, proactive_intensity_preset="custom",
         )
         observations = NativeConversationObservations(app.messages)
         turns = NativeConversationTurns(app.runtime)
@@ -301,7 +301,7 @@ class ProactivePostReplyCooldownTests(ContactScheduleFixture, unittest.IsolatedA
 
         _host, app, context = await self._setup_native_app(
             idle_seconds=60,
-            proactive_intensity_preset="off",
+            proactive_intensity_preset="custom",
             enable_llm_proactive_persona_judge=True,
             proactive_persona_judge_threshold=60,
         )

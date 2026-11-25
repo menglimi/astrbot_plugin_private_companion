@@ -88,6 +88,8 @@ class ProactiveTickOffloadAndCoveringScanTests(unittest.IsolatedAsyncioTestCase)
         coord._maintenance_contexts = {}
         coord._cursor = 0
         coord._native_cursor = 0
+        coord._role_cursor = 0
+        coord.role_bindings = dict
         coord._diagnostics_cleaned_at = None
         coord._account_available = lambda _ctx: True
         coord.notify = lambda: None

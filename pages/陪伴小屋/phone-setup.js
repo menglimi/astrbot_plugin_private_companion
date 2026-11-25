@@ -16,7 +16,7 @@ window.CompanionPhoneSetup = (() => {
     configuration_edit_conflict: "角色配置刚刚更新，请重新选择这台手机。",
   };
   const states = {device:"已连接", unauthorized:"待手机授权", offline:"已离线"};
-  const sourceLabels = {role_config:"当前角色设置", "phone.json":"旧版 phone.json", default:"默认自动查找"};
+  const sourceLabels = {role_config:"角色层", "phone.json":"旧版 phone.json", default:"默认自动查找"};
 
   function adbNotFoundMessage(diag) {
     if (!diag || typeof diag !== "object") return messages.adb_not_found;
@@ -102,8 +102,16 @@ window.CompanionPhoneSetup = (() => {
       noticeNode.textContent = message;
       noticeNode.classList.toggle("is-error", Boolean(code));
       const showDownload = code === "adb_not_found"
-        && (!diag || !diag.reason || diag.reason === "auto_discovery_empty");
+        && (!diag || !diag.reason || ["auto_discovery_empty", "explicit_path_missing"].includes(diag.reason));
       one("[data-phone-download]").hidden = !showDownload;
+    }
+
+    function showAdbDiagnostic(diag) {
+      if (diag?.reason?.startsWith("explicit_path_")) {
+        const advanced = root.parentElement?.querySelector(".phone-advanced");
+        if (advanced) advanced.open = true;
+      }
+      notice(adbNotFoundMessage(diag), "adb_not_found", diag);
     }
 
     function syncStatus(status = handle()?.state.status) {
@@ -179,13 +187,13 @@ window.CompanionPhoneSetup = (() => {
         if (!active()) return;
         if (response?.adb_error?.code === "adb_not_found") {
           const detail = response.adb_error;
-          const diag = handle()?.state?.status?.adb_diagnostic || {
+          const diag = response.adb_diagnostic || {
             reason: detail.adb_path ? "explicit_path_missing" : "auto_discovery_empty",
             configured_adb_path: detail.adb_path,
             config_source: detail.source === "role" ? "role_config" : detail.source,
             resolved_role_id: detail.role_id,
           };
-          notice(adbNotFoundMessage(diag), detail.code, diag);
+          showAdbDiagnostic(diag);
           return;
         }
         if (action === "use") {
@@ -216,11 +224,7 @@ window.CompanionPhoneSetup = (() => {
           const diag = (error?.details && typeof error.details === "object" && error.details.reason)
             ? error.details
             : (handle()?.state?.status?.adb_diagnostic || null);
-          if (diag && typeof diag.reason === "string" && diag.reason.startsWith("explicit_path_")) {
-            const advanced = root.parentElement?.querySelector(".phone-advanced");
-            if (advanced) advanced.open = true;
-          }
-          notice(adbNotFoundMessage(diag), code, diag);
+          showAdbDiagnostic(diag);
           return;
         }
         notice(messages[code] || window.CompanionProduct.errorLabel(code), code);
