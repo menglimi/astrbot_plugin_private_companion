@@ -646,6 +646,71 @@
   color: var(--t-text-faint);
 }
 
+.qw-unit-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid color-mix(in srgb, var(--t-accent) 28%, var(--t-line));
+  border-radius: var(--r-pill);
+  background: var(--t-surface-soft);
+  color: var(--t-accent-ink);
+  font: inherit;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+
+.qw-unit-toggle:hover {
+  border-color: var(--t-accent);
+  background: var(--t-accent-quiet);
+}
+
+.qw-unit-toggle.is-fiat {
+  background: var(--t-accent-quiet);
+  border-color: color-mix(in srgb, var(--t-accent) 44%, var(--t-line));
+}
+
+.qw-unit-toggle:focus-visible {
+  outline: 2px solid var(--t-focus);
+  outline-offset: 2px;
+}
+
+.qw-sub-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid color-mix(in srgb, var(--t-accent) 22%, var(--t-line));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--t-accent-quiet) 58%, var(--t-surface-soft));
+  color: var(--t-text-soft);
+  font-size: var(--fs-micro);
+  line-height: 1.4;
+}
+
+.qw-sub-strip strong {
+  color: var(--t-accent-ink);
+  font-weight: 650;
+}
+
+.qw-sub-label {
+  color: var(--t-accent-ink);
+  font-weight: 600;
+}
+
+.qw-sub-meta {
+  color: var(--t-text-faint);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .qw-progress-wrap {
   display: grid;
   gap: var(--sp-1);

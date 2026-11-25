@@ -6229,7 +6229,7 @@ const searchIndex=[
   ['生图模型','在线生图、ComfyUI 与 SD WebUI 连接','image','manage','models',{subtab:'image',aliases:['ComfyUI','SD WebUI','文生图','改图','画图']}],
   ['联网搜索模型','DeepSeek 与外置联网搜索服务配置','globe','manage','models',{subtab:'search',aliases:['联网搜索','搜索服务','DeepSeek 搜索','网页搜索']}],
   ['计价与汇率','模型单价配置、币种显示与实时汇率','coins','manage','models',{subtab:'pricing',aliases:['模型单价','单价','汇率','费用','价格','成本']}],
-  ['额度看板','多站点余额监控、自动识别接入与陪伴余额感知联动','wallet-cards','manage','models',{subtab:'quota',aliases:['多站点余额','中转站余额','NewAPI 额度','神人站','余额看板','quota']}],
+  ['额度看板','多站点余额监控、指定主站、双单位切换与陪伴余额感知联动','wallet-cards','manage','models',{subtab:'quota',aliases:['多站点余额','中转站余额','NewAPI 额度','神人站','余额看板','指定主站','主站','主站点','切换主站','账户余额','quota']}],
   ['Laya 决策模型','Laya 决策接口、连接测试与运行日志','cpu','manage','models',{subtab:'laya',aliases:['Laya','外置决策']}],
   ['治理与维护','Token 费用统计、运行诊断、投递排障与缓存状态','settings-2','manage','maintenance',{aliases:['运行诊断','运行状态','排障','Token 统计','费用统计']}],
   ['每日巡视','每日状态巡视时刻、记录与保留时长','scan-heart','manage','maintenance',{subtab:'patrol',aliases:['巡视','状态巡视']}],
@@ -6867,6 +6867,13 @@ async function openSearchSetting(result){
       return;
     }
     if(location.modelsTab)window.CompanionModelsPage?.selectTab?.(location.modelsTab,{notify:false});
+    if(location.quotaFocus){
+      window.CompanionModelsPage?.focusQuota?.(location.quotaFocus);
+      if(location.selector){
+        waitAndFocusTarget({root:location.root||'#modelWorkspace',selector:location.selector,highlight:true},jump);
+      }
+      return;
+    }
     if(location.modelsTask){
       const safeTask=globalThis.CSS?.escape?.(location.modelsTask)||String(location.modelsTask).replace(/["\\]/g,'\\$&');
       const taskSel=`[data-fncard="${safeTask}"], [data-model-open="${safeTask}"], [data-model-kind="${safeTask}"], [data-task-kind="${safeTask}"], [data-model-task="${safeTask}"]`;

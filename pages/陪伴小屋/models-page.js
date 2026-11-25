@@ -2840,15 +2840,39 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function semanticBanner() {
     return `<div class="model-note cfg"><span>向量嵌入、候选重排和视觉分析不在任务路由里，而在「学习与反思 → 语义目录」统一配置；列表为空时先在 AstrBot 模型服务中加载对应模型。</span><button type="button" class="button small" data-go="manage" data-manage="learning" data-manage-subtab="semantic">打开向量模型配置</button></div>`;
   }
-  function tabBar(s) { const tabs = [["fn", "功能模型", ICONS.fn, snapshot(s).length],
-      ["voice", "语音模型", ICONS.voice, s.voice.data ? s.voice.data.providers.length : ""],
-      ["image", "生图模型", ICONS.image, s.image.data ? s.image.data.actions.length : ""],
-      ["search", "搜索服务", ICONS.search, s.search?.data?.deepseek_provider_id ? "已绑定" : ""],
-      ["laya", "Laya 决策", ICONS.decision, s.laya.data ? (s.laya.data.enabled ? "启用" : "") : ""],
-      ["pricing", "计价与汇率", ICONS.pricing, pricingWorkbench()?.tabBadge?.(s.pricing) || ""],
-      ["quota", "额度看板", ICONS.quota, quotaWorkbench()?.tabBadge?.(s.quota) || ""]];
-    return `<div class="model-tabs" role="tablist" aria-label="模型配置分类">${tabs.map(([id, label, ic, count]) =>
-      `<button type="button" role="tab" data-model-tab="${id}" aria-selected="${s.tab === id}" class="${s.tab === id ? "on" : ""}">${icon(ic)}${label}${count !== "" ? `<span class="c">${count}</span>` : ""}</button>`).join("")}</div>`; }
+  function tabBar(s) {
+    const primaryTabs = [
+      ["fn", "功能模型", ICONS.fn, snapshot(s).length, false],
+      ["voice", "语音模型", ICONS.voice, s.voice.data ? s.voice.data.providers.length : "", false],
+      ["image", "生图模型", ICONS.image, s.image.data ? s.image.data.actions.length : "", false],
+      ["search", "搜索服务", ICONS.search, s.search?.data?.deepseek_provider_id ? "已绑定" : "", true],
+      ["laya", "Laya 决策", ICONS.decision, s.laya.data ? (s.laya.data.enabled ? "启用" : "") : "", true],
+    ];
+    const opsTabs = [
+      ["pricing", "计价与汇率", ICONS.pricing, pricingWorkbench()?.tabBadge?.(s.pricing) || "", false],
+      ["quota", "额度看板", ICONS.quota, quotaWorkbench()?.tabBadge?.(s.quota) || "", false],
+    ];
+    const renderTab = ([id, label, ic, count, isDot]) =>
+      `<button type="button" role="tab" data-model-tab="${id}" aria-selected="${s.tab === id}" class="${s.tab === id ? "on" : ""}">${icon(ic)}<span>${label}</span>${count !== "" ? (isDot ? `<span class="c-dot" title="${esc(count)}" aria-label="${esc(count)}"></span>` : `<span class="c">${esc(count)}</span>`) : ""}</button>`;
+    return `<div class="model-tabs-wrap" data-model-tabs-wrap><div class="model-tabs" role="tablist" aria-label="模型配置分类">${primaryTabs.map(renderTab).join("")}<span class="model-tabs-sep" aria-hidden="true"></span>${opsTabs.map(renderTab).join("")}</div></div>`;
+  }
+  function syncModelTabsOverflow() {
+    if (!root?.querySelector) return;
+    const wrap = root.querySelector("[data-model-tabs-wrap]");
+    const bar = wrap?.querySelector?.(".model-tabs");
+    if (!wrap || !bar) return;
+    const updateFade = () => {
+      const maxScroll = Math.max(0, (bar.scrollWidth || 0) - (bar.clientWidth || 0));
+      const left = bar.scrollLeft || 0;
+      wrap.dataset.fadeLeft = left > 4 ? "1" : "0";
+      wrap.dataset.fadeRight = maxScroll - left > 4 ? "1" : "0";
+    };
+    if (!bar._fadeBound && typeof bar.addEventListener === "function") {
+      bar._fadeBound = true;
+      bar.addEventListener("scroll", updateFade, { passive: true });
+    }
+    updateFade();
+  }
   /* ---------- functional subtabs (2-level flattened IA) ---------- */
   function subtabBar(s) { const tabs = [
       ["cfg", "任务路由", "cfg", "统一查看主备链路，点击任意任务在右侧抽屉精调"],
@@ -3829,6 +3853,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       }
       syncLiveDock(s);
       syncLiveOverlay(spec);
+      syncModelTabsOverflow();
     } else {
       const prevCard = root.querySelector?.("[data-fncard]");
       const prevKind = prevCard?.dataset?.fncard || prevCard?.getAttribute?.("data-fncard") || "";
@@ -3888,9 +3913,18 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       if (notify) onTabChange?.(id);
       loadTabData(state, id);
       render();
+      const activeTab = root.querySelector?.(`.model-tabs [data-model-tab="${id}"]`);
+      activeTab?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+      syncModelTabsOverflow();
     } else {
       loadTabData(state, id);
     }
+    return true;
+  }
+  function focusQuota(section = "awareness") {
+    if (!state || !root?.isConnected) return false;
+    selectTab("quota", { notify: false });
+    if (section === "awareness") quotaWorkbench()?.openAwareness?.(quotaCtx(state));
     return true;
   }
   function handlePointerDown(event) {
@@ -4143,5 +4177,5 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   }
   const isBusy = () => Boolean(state && (state.busy || state.globalBusy || state.voice?.busy || state.voice?.ttsBusy
     || state.voice?.ttsTesting || state.image?.busy || state.image?.configSaving || state.laya?.busy || state.search?.busy || pricingWorkbench()?.isBusy?.(state.pricing) || quotaWorkbench()?.isBusy?.(state.quota)));
-  return { mount, unmount, selectTab, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
+  return { mount, unmount, selectTab, focusQuota, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
 })();

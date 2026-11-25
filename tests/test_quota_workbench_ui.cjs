@@ -1278,3 +1278,155 @@ test("Live DOM: modal shell persists (===) with zero re-animation, zero scroll j
 
   window.CompanionModelsPage.unmount();
 });
+
+test("Dual-unit toggle switches custom currency display in-place, persists preference, and renders active subscription sub-line", async () => {
+  const h = quotaHarness();
+  const payload = sampleQuotaPayload({
+    summary: {
+      display_currency: "CNY",
+      display_symbol: "¥",
+      usd_cny_rate: 7.2,
+      total_stations: 1,
+      ok_count: 1,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      fiat_remaining: 0,
+      fiat_remaining_including_custom: 63.61,
+      custom_converted_remaining: 63.61,
+      custom_converted_count: 1,
+      cny_remaining: 0,
+      usd_remaining: 0,
+      cny_station_count: 0,
+      usd_station_count: 0,
+      non_fiat_station_count: 1,
+      health_by_id: { "st-cookie": "ok" },
+      converted_remaining_by_id: { "st-cookie": 63.61 },
+    },
+    stations: [
+      {
+        id: "st-cookie",
+        name: "饼干中转站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://cookie.example.com",
+        enabled: true,
+        participate_in_awareness: true,
+        low_threshold: 10,
+        critical_threshold: 2,
+        has_token: true,
+        has_proxy: false,
+        fiat_currency: "CNY",
+        fiat_per_base_unit: 0.1,
+        display_unit_mode: "native",
+      },
+    ],
+    snapshots: {
+      "st-cookie": {
+        station_id: "st-cookie",
+        ok: true,
+        remaining: 636.06,
+        total: 1000,
+        used: 363.94,
+        display_type: "CREDIT",
+        symbol: "🍪",
+        fiat_currency: "CNY",
+        fiat_symbol: "¥",
+        fiat_per_base_unit: 0.1,
+        fiat_remaining: 63.61,
+        fiat_total: 100.0,
+        fiat_used: 36.39,
+        fiat_last_used_cost: 0.15,
+        last_used_model: "claude-sonnet-4",
+        last_used_cost: 1.5,
+        last_used_at: "2026-11-25T06:00:00+08:00",
+        subscriptions: [
+          { title: "月卡 Plus", remaining: 4180, total: 5000, fiat_remaining: 418, active: true },
+          { title: "周卡", remaining: 820, total: 1000, fiat_remaining: 82, active: true },
+        ],
+        checked_at: "2026-11-25T06:10:00+08:00",
+      },
+    },
+    awareness: { mode: "primary", primary_station_id: "st-cookie", target_currency: "CNY" },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>636\.06<\/span>[\s\S]*?qw-balance-unit">🍪<\/span>/);
+  assert.match(h.root.innerHTML, /≈ ¥63\.61/);
+  assert.match(h.root.innerHTML, /data-qw-toggle-unit="st-cookie"/);
+  assert.match(h.root.innerHTML, /🍪 ↔ ¥/);
+  assert.match(h.root.innerHTML, /qw-sub-strip/);
+  assert.match(h.root.innerHTML, /订阅余量[\s\S]*?5,000 🍪 ≈ ¥500/);
+  assert.match(h.root.innerHTML, /2 个套餐/);
+  assert.match(h.root.innerHTML, /含折合共 ¥63\.61/);
+
+  // Toggle unit mode native -> fiat
+  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  await flush();
+
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>¥63\.61<\/span>/);
+  assert.match(h.root.innerHTML, /qw-balance-conv[^>]*>636\.06 🍪<\/span>/);
+  const saveReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations");
+  assert.ok(saveReq, "Unit toggle should silently persist display_unit_mode");
+  assert.equal(saveReq.values.probe_after_save, false);
+  assert.equal(saveReq.values.station.display_unit_mode, "fiat");
+
+  h.page.unmount();
+});
+
+test("Primary station KPI, 1-click set primary, focusQuota(awareness), and 5+2 models tabs polish work together", async () => {
+  const h = quotaHarness();
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(sampleQuotaPayload());
+  await flush();
+
+  const html = h.root.innerHTML;
+  // 5+2 tab separator wrapper & divider
+  assert.match(html, /class="model-tabs-wrap"/);
+  assert.match(html, /class="model-tabs-sep"/);
+
+  // Hero KPI #4 and primary card badge + 1-click set primary button
+  assert.match(html, /主站 · DeepSeek 官方/);
+  assert.match(html, /★ 主站/);
+  assert.match(html, /data-qw-set-primary="st-relay"/);
+  assert.match(html, /设为主站/);
+
+  // 1-click set primary on st-relay
+  h.root.click("[data-qw-set-primary]", { qwSetPrimary: "st-relay" });
+  await flush();
+  const awReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/awareness");
+  assert.ok(awReq, "Clicking 设为主站 should POST model/quota/awareness");
+  assert.equal(awReq.values.awareness.mode, "primary");
+  assert.equal(awReq.values.awareness.primary_station_id, "st-relay");
+  assert.ok(awReq.values.awareness.participating_station_ids.includes("st-relay"));
+  awReq.resolve(sampleQuotaPayload({
+    edit_token: "tok-v2",
+    awareness: { mode: "primary", primary_station_id: "st-relay", target_currency: "CNY" },
+  }));
+  await flush();
+  assert.match(h.root.innerHTML, /主站 · 主力中转站/);
+
+  // Deep-link focusQuota("awareness") opens the awareness policy panel
+  h.page.focusQuota("awareness");
+  await flush();
+  assert.match(h.root.innerHTML, /qw-awareness-panel/);
+  assert.match(h.root.innerHTML, /data-qw-aw-field="primary_station_id"/);
+
+  // Switch to search tab with deepseek_provider_id bound -> renders compact green .c-dot instead of wide text pill
+  h.root.click("[data-model-tab]", { modelTab: "search" });
+  await flush();
+  const searchReq = h.requests.find(r => r.method === "GET" && r.route === "model/search");
+  if (searchReq) {
+    searchReq.resolve({ deepseek_provider_id: "ds_official", providers: [] });
+    await flush();
+    assert.match(h.root.innerHTML, /data-model-tab="search"[\s\S]*?<span class="c-dot" title="已绑定"/);
+  }
+
+  h.page.unmount();
+});
