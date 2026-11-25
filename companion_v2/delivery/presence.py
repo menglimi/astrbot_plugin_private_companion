@@ -232,13 +232,14 @@ class PresenceCoordinator:
                                 {**result, "batch_id": turn["batch_id"] if turn else None}, context.key)
             batch = turn["batch_id"] if turn else None
             if batch != reported_batch or result.get("state") != "accepted":
-                logger.info("[CompanionV2] QQ 输入提示 recipient=%s turn_id=%s state=%s code=%s",
+                logger.info("[CompanionV2] 输入提示 recipient=%s turn_id=%s state=%s code=%s",
                             context.scope.native_scope_id, batch, result.get("state"), result.get("code", ""))
                 reported_batch = batch
             if result.get("state") != "accepted":
                 return
             try:
-                await asyncio.wait_for(wake.wait(), timeout=values["typing_refresh_seconds"])
+                refresh = values["typing_refresh_seconds"]
+                await asyncio.wait_for(wake.wait(), timeout=min(refresh, result.get("max_refresh_seconds", refresh)))
             except asyncio.TimeoutError:
                 pass
 
