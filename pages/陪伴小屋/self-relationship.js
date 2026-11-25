@@ -77,7 +77,7 @@
       root.innerHTML = `<div class="self-relationship-empty"><strong>选择要编辑的核心用户</strong>${options}</div>${error}`;
       return;
     }
-    const platform = api.platformLabel?.({platform_id: person.platform}) || person.platform || "未知平台";
+    const platform = api.platformLabel?.({platform_id: person.platform, platform_name: person.platform_name}) || person.platform || "未知平台";
     const account = person.account_name || person.account_id || "未知账号";
     const name = person.display_name || person.native_account_id || "未命名用户";
     const identity = `<header class="self-relationship-identity"><span class="self-relationship-avatar" aria-hidden="true"><i data-lucide="user-round"></i></span><div class="self-relationship-identity-main"><div class="self-relationship-name-row"><h3>${esc(name)}</h3><span class="self-relationship-badge">核心用户</span>${options}</div><div class="self-relationship-meta"><span><b>角色</b>${esc(api.roleLabel(role))}</span><span><b>Bot</b>${esc(account)}</span>${hint(`平台：${platform}；用户账号：${person.native_account_id || "—"}。这里只选择关系资料的编辑对象，不会切换页面的会话。`, "查看用户信息")}</div></div><button type="button" class="self-relationship-refresh" data-self-relationship-action="reload" aria-label="重新读取" title="重新读取"><i data-lucide="refresh-cw"></i></button></header>`;

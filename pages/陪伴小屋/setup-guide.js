@@ -2964,7 +2964,7 @@ window.CompanionSetup = (() => {
   function bindingFacts(binding) {
     if (!binding || !binding.participant_id) return "";
     return `<dl class="setup-facts">
-      <div><dt>平台</dt><dd>${escape(product()?.platformLabel?.(binding) || "QQ · OneBot")}</dd></div>
+      <div><dt>平台</dt><dd>${escape(product()?.platformLabel?.(binding) || "当前平台")}</dd></div>
       <div><dt>Bot 账号</dt><dd>${escape(legacyAccountLabel(binding))}</dd></div>
       <div><dt>私聊对象</dt><dd>${escape(legacyTargetLabel(binding))}</dd></div>
       <div><dt>AstrBot 人格</dt><dd>${escape(binding.persona_id === "[%None]" ? "默认人格" : binding.persona_id || "跟随当前会话")}</dd></div>

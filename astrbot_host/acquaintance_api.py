@@ -692,6 +692,7 @@ class AcquaintanceWebAPI:
                     group.update(group_name=name, display_name=name)
             names = display_names(controller)
             name_options = {"cached_only": True} if stored_only else {}
+            group_access["accounts"] = names.with_platform_family(group_access["accounts"], "platform_id", **name_options)
             persons, groups = await asyncio.gather(names.persons(result["persons"], **name_options),
                                                   names.targets(groups, **name_options))
             await self._resolve_operator(username)

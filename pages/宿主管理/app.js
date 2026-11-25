@@ -185,7 +185,7 @@
     const text = String(value ?? "").trim();
     return text || fallback;
   };
-  const platformLabel = value => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）"})[value] || "当前平台";
+  const platformLabel = value => ({telegram:"Telegram",qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）"})[value] || "当前平台";
   const nativeId = value => String(value ?? "").trim();
   const numericId = value => /^\d+$/.test(nativeId(value)) ? nativeId(value) : "";
   const topologyScope = (target) => {

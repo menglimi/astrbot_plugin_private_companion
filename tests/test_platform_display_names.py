@@ -57,6 +57,38 @@ class PlatformDisplayNameTests(unittest.IsolatedAsyncioTestCase):
         self.context = NS(get_platform_inst=lambda platform_id: platform if platform_id == "qq-main" else None)
         self.names = PlatformDisplayNames(self.context)
 
+    async def test_named_instance_reports_telegram_on_targets_and_cached_identity_pages(self):
+        platform = NS(meta=lambda: NS(name="telegram", id="default"))
+        context = NS(get_platform_inst=lambda key: platform,
+                     get_config=lambda: {"platform": [{"id": "default", "type": "telegram", "enable": True}]})
+        names = PlatformDisplayNames(context)
+        target, = await names.targets([dict(platform_id="default", account_id="default", participant_id="200")])
+        self.assertEqual(target["platform_name"], "telegram")
+        person, = await names.persons([dict(platform="default", account_id="default", native_account_id="200")],
+                                      cached_only=True)
+        self.assertEqual(person["platform_name"], "telegram")
+
+    async def test_stored_private_labels_hide_only_telegram_platform_placeholders(self):
+        for family, name, expected in (("telegram", "Unknown", ""), ("telegram", "Unknown Artist", "Unknown Artist"),
+                                       ("qq_official", "Unknown", "Unknown")):
+            target = dict(platform_id="offline", platform_name=family, display_name=name, participant_id="200")
+            with self.subTest(family=family, name=name):
+                labeled, = await self.names.targets([target], cached_only=True)
+                self.assertEqual(labeled["display_name"], expected)
+
+    async def test_offline_family_uses_enabled_rows_or_a_unique_disabled_instance(self):
+        enabled = dict(id="shared", type="qq_official", enable=True)
+        disabled = dict(id="shared", type="telegram", enable=False)
+        for rows, expected in (([enabled, disabled], "qq_official"), ([disabled, enabled], "qq_official"),
+                               ([disabled], "telegram"), ([disabled, dict(enabled, enable=False)], "unknown"), ([], "unknown"),
+                               ([dict(disabled, enable=True), dict(enabled, enable=False)], "telegram"),
+                               ([dict(disabled, enable=True), enabled], "unknown")):
+            with self.subTest(rows=rows):
+                self.context.get_config = lambda: {"platform": rows}
+                target, = await self.names.targets([dict(platform_id="shared")], cached_only=True)
+                person, = await self.names.persons([dict(platform="shared")], cached_only=True)
+                self.assertEqual([target.get("platform_name"), person.get("platform_name")], [expected, expected])
+
     async def test_remarks_group_names_and_login_names_are_account_scoped_and_cached(self):
         self.responses.update({
             ("100", "get_friend_list"): [{"user_id": 200, "nickname": "昵称", "remark": "好友备注"}],
@@ -114,7 +146,7 @@ class PlatformDisplayNameTests(unittest.IsolatedAsyncioTestCase):
     async def test_administrator_names_and_disconnected_accounts_do_not_query(self):
         person = dict(platform="qq-main", account_id="100", native_account_id="200",
                       display_name="管理员称呼", admin_nickname="管理员称呼", name_basis="administrator")
-        self.assertEqual(await self.names.persons([person]), [person])
+        self.assertEqual(await self.names.persons([person]), [dict(person, platform_name="aiocqhttp")])
         self.clients.clear()
         self.assertEqual(await self.names.lookup("qq-main", "100", "private", "200"), "")
         self.assertEqual(await self.names.lookup("qq-other", "100", "group", "300"), "")

@@ -67,14 +67,14 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     group_memory_api: null,
     reply_api: "/" + HOST + "/targets/first/roles/synthetic-role/reply"};
   const privateTarget = {target_id: "first", scope_kind: "private", participant_id: "200",
-    platform_id: "qq-main", bot_id: "bot-a", account_id: "100", display_name: "朋友备注",
+    platform_id: "qq-main", platform_name: "aiocqhttp", bot_id: "bot-a", account_id: "100", display_name: "朋友备注",
     roles: [privateRole]};
   const groupRole = {...privateRole, state_api: null, life_api: null, growth_api: null, memory_api: null,
     relationships_api: null, reply_api: "/" + HOST + "/targets/group/roles/synthetic-role/reply",
     model_api: "/" + HOST + "/targets/group/roles/synthetic-role/model",
     role_config_api: "/" + HOST + "/targets/group/roles/synthetic-role/config",
     group_memory_api: "/" + HOST + "/targets/group/roles/synthetic-role/group-memory"};
-  const groupTarget = {target_id: "group", scope_kind: "group", group_id: "300", platform_id: "qq-main",
+  const groupTarget = {target_id: "group", scope_kind: "group", group_id: "300", platform_id: "qq-main", platform_name: "aiocqhttp",
     bot_id: "bot-a", account_id: "100", display_name: "读书群", roles: [groupRole]};
   const catalog = {
     installation_id: "synthetic", operator_id: "dashboard:synthetic-admin", operator_name: "本地管理员",
@@ -1474,4 +1474,20 @@ test("account-link routes are not exposed through other workspace channels", asy
     assert.equal(owner.messages.at(-1).ok, false);
   }
   assert.equal(h.calls.length, 0);
+});
+
+test("QQ Official keeps its numeric account label for either transport", async () => {
+  const h = await harness();
+  for (const platform_name of ["qq_official", "qq_official_webhook"]) {
+    assert.equal(h.product.accountLabel({platform_name, account_id: "123"}), "QQ 123");
+  }
+});
+
+test("Telegram account labels follow the adapter family for numeric and named instances", async () => {
+  const h = await harness();
+  for (const account_id of ["12345", "private-bot"]) {
+    const row = {platform_id:"default", platform_name:"telegram", account_id};
+    assert.equal(h.product.accountLabel(row), "Telegram " + account_id);
+    assert.equal(h.product.platformLabel(row), "Telegram");
+  }
 });

@@ -35,7 +35,11 @@ const bridge={apiGet: async(path)=>path.endsWith('/account-links/history')?wrap(
   {scope:{platform:'微信',native_scope_id:'示例用户'},speaker:'assistant',at:'2026-11-15T09:21:00+08:00',text:'这一条保留微信原记录归属。'}],next_cursor:null}):
   path.endsWith('/account-links')?wrap(fixture):path.endsWith('/member-settings')?wrap({sections:{},section_errors:{}}):wrap({identity_tier:'standard',items:[]}),
   apiPost:async(path,body)=>{document.getElementById('result').textContent=JSON.stringify(body,null,2);return wrap(fixture);}};
-window.CompanionPrivateMembers.mount(document.getElementById('panel'),person,{bridge});
+window.CompanionPrivateMembers.mount(document.getElementById('panel'), person, {
+  bridge,
+  peerLabel: item => (item.platform === 'qq' ? 'QQ' : '微信') + ' ' + item.native_account_id,
+  accountLabel: item => item.account_name || item.account_id
+});
 window.CompanionPrivateMembers.selectPane('links');
 """.replace("__FIXTURE__", json.dumps(fixture, ensure_ascii=False))
     html = '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>账号关联 · 离线验收</title><style>' + css + '\nbody{font-family:system-ui,Microsoft YaHei,sans-serif;margin:0;padding:24px;background:#f4f1ea;color:#282520}main{max-width:1024px;margin:auto}#panel{background:#fffdf8;padding:24px;border-radius:20px}pre{white-space:pre-wrap;overflow-wrap:anywhere}button,select,input{font:inherit}h1{font-size:22px}#demo-note{padding:12px;background:#f2e8d9;border-radius:8px}@media(max-width:600px){body{padding:8px}#panel{padding:12px}}</style><main><h1>关联用户 · 离线交互验收</h1><p id="demo-note">仅使用虚构账号。此页不会访问真实机器人或发送消息；字段清单为代表性子集，表单代码与正式页面相同。</p><div id="panel"></div><details><summary>模拟提交内容</summary><pre id="result">尚未提交</pre></details></main><script>' + editor + '</script><script>' + bootstrap + '</script></html>'
