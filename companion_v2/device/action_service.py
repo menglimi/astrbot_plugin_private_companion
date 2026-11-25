@@ -26,7 +26,7 @@ from companion_v2.model_gateway.models import ModelTaskProfile
 from companion_v2.sources.privacy import redact_text
 
 from .adb import AdbClient, AdbError
-from .annotate import annotate_screen, image_size
+from .annotate import annotate_screen, image_mime_type, image_size
 from .configuration import PhoneSettings, PhoneSettingsReader, load_settings
 from .checkout import (CANCEL_COMMAND, MEITUAN_CUTLERY_SUBMIT, MEITUAN_EXPRESS_PAYMENT, QUICK_APPROVAL,
                        CheckoutDecision, checkout_boundary, checkout_frame, checkout_screenshot,
@@ -363,7 +363,7 @@ class PhoneActionService:
         return DeliveryContent(record.notice, (image,))
 
     def _queue_notice(self, record, at):
-        if not record.notice or not record.notice_at:
+        if self.app is None or not record.notice or not record.notice_at:
             return
         issued = datetime.fromisoformat(record.notice_at)
         deadline = issued + NOTICE_LIFETIME
@@ -565,6 +565,8 @@ class PhoneActionService:
         except AdbError as error:
             if stored.screen_read:
                 notice = SCREEN_CAPTURE_ERRORS.get(error.code, "这次没能取得手机当前画面。")
+            elif error.code == "adb_screenshot_secure":
+                notice = "当前手机页面开启了隐私防截屏保护，无法读取画面。"
             else:
                 notice = ("手机已亮屏，请在手机上解锁后重新发起任务。" if error.code == "adb_unlock_required"
                           else "读取手机画面失败，请检查手机。")
@@ -588,7 +590,7 @@ class PhoneActionService:
                 return await self._execute(run, stored, observation, session, reused,
                                            skill_tap=screen.tap(observation, reused), reused=True)
         history = tuple(_history_step(item) for item in stored.history)
-        image = self._prompt_image(record, observation, run, at)
+        image = await asyncio.to_thread(self._prompt_image, record, observation, run, at)
         ordering = ""
         allowed = settings.allowed
         if stored.shopping and "tap" in allowed:
@@ -604,7 +606,7 @@ class PhoneActionService:
         request = self._prompt_request(run, at, image,
             INSTRUCTION + ordering +
             "\n本轮允许的动作：" + ", ".join(sorted(allowed)) +
-            "\n\n" + decision_prompt(stored.goal, observation, history))
+            "\n\n" + decision_prompt(stored.goal, observation, history, screenshot_attached=image is not None))
         try:
             completion = await self.gateway.generate(run, request)
         except TaskError as error:
@@ -861,16 +863,17 @@ class PhoneActionService:
             else:
                 content = annotate_screen(observation.screenshot, observation.elements, boxes=observation.stable)
                 width, height = image_size(content)
-                descriptor = ImageDescriptor(0, "image/png", width, height, len(content),
+                descriptor = ImageDescriptor(0, image_mime_type(content), width, height, len(content),
                                              hashlib.sha256(content).hexdigest())
             identifier = "phone-shot-" + digest([record.task_id, observation.step])[:32]
             source = SourceRef(identifier, "device.phone", run.task.spec.context.scope,
                                VersionRef(identifier, 1), at)
             image = PhonePromptImage(source, source, descriptor, base64.b64encode(content).decode("ascii"))
-        except (OSError, ValueError, TypeError, TaskError):
+        except (ImportError, OSError, ValueError, TypeError, TaskError):
             return None
         if not record.screen_read:
-            self._store_screenshot(f"{record.task_id}-{observation.step}.png", content)
+            suffix = ".jpg" if descriptor.mime_type == "image/jpeg" else ".png"
+            self._store_screenshot(f"{record.task_id}-{observation.step}{suffix}", content)
         return image
 
     def _store_screenshot(self, filename: str, data: bytes) -> bool:
@@ -881,7 +884,7 @@ class PhoneActionService:
         except OSError:
             return False
         try:
-            files = sorted((*folder.glob("*.png"), *folder.glob("phone-checkout-*.jpg")),
+            files = sorted((*folder.glob("*.png"), *folder.glob("*.jpg")),
                            key=lambda path: path.stat().st_mtime, reverse=True)
             for old in files[40:]:
                 old.unlink(missing_ok=True)

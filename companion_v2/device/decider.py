@@ -88,8 +88,20 @@ def parse_decision(text: str, *, checkout=False) -> PhoneAction | CheckoutDecisi
         raise DecisionError("phone_decision_invalid", str(error)) from error
 
 
-def decision_prompt(goal: str, observation: PhoneObservation, history: Sequence[PhoneStep]) -> str:
-    lines = [f"goal: {goal}", "", "observation:", observation.prompt_text(), ""]
+def decision_prompt(
+    goal: str,
+    observation: PhoneObservation,
+    history: Sequence[PhoneStep],
+    *,
+    screenshot_attached: bool | None = None,
+) -> str:
+    lines = [
+        f"goal: {goal}",
+        "",
+        "observation:",
+        observation.prompt_text(screenshot_attached=screenshot_attached),
+        "",
+    ]
     if history:
         lines.append("history:")
         for step in history[-4:]:

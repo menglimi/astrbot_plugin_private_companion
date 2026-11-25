@@ -1026,6 +1026,7 @@ class AstrBotMultiController:
             from companion_v2.expression.reaction_configuration import migrate_window_values
             migrate_legacy_policy_values(runtime)
             migrate_window_values(runtime)
+            self._migrate_role_configuration_layers(runtime, settings)
         except BaseException:
             runtime.close()
             raise
@@ -1036,6 +1037,39 @@ class AstrBotMultiController:
         core_target = self._core_target(parked) if parked is not None else None
         authority.core_target_id = core_target.target_id if core_target is not None else None
         return runtime, authority, last_restore
+
+    def _migrate_role_configuration_layers(self, runtime, settings, *, previous_settings=None):
+        """Backfill split role-layer configuration rows onto canonical role targets."""
+        if runtime is None or settings is None:
+            return
+        from companion_v2.configuration.role_migration import migrate_role_configuration_aliases
+
+        aliases = list(settings.role_aliases.items())
+        if previous_settings is not None:
+            old_by_persona = {
+                (item.bot_id, item.persona_id): item.role_id
+                for item in getattr(previous_settings, "personas", ())
+            }
+            for item in getattr(settings, "personas", ()):
+                old_role_id = old_by_persona.get((item.bot_id, item.persona_id))
+                if old_role_id and old_role_id != item.role_id:
+                    aliases.append((old_role_id, item.role_id, item.bot_id))
+        persona_bindings = [
+            (item.bot_id, item.persona_id, item.role_id)
+            for item in getattr(settings, "personas", ())
+        ]
+        result = migrate_role_configuration_aliases(
+            runtime,
+            role_aliases=aliases,
+            persona_bindings=persona_bindings,
+            observed_at=self.now(),
+        )
+        if result["fields_copied"]:
+            logger.info(
+                "[CompanionV2] 已合并重复角色层配置 targets=%s fields=%s",
+                result["targets_migrated"],
+                result["fields_copied"],
+            )
 
     def _configured_private_session(self, platform_id, account_id, participant_id):
         session = self.session
@@ -1278,6 +1312,12 @@ class AstrBotMultiController:
                     raise TaskError("host_terminated", "the shared host is stopping or terminated")
                 if expected_config is not None and self.config != expected_config:
                     raise TaskError("legacy_plan_stale", "插件配置在等待保存期间已变化，请重新试算。")
+                previous_settings = self.settings
+                if previous_settings is None:
+                    try:
+                        previous_settings = MultiHostSettings.parse(self.config)
+                    except Exception:
+                        previous_settings = None
                 settings, profile_root, adopting_legacy_profile = self._resolve_settings(candidate)
                 save = getattr(self, "save_plugin_config", None)
                 if not callable(save):
@@ -1347,6 +1387,8 @@ class AstrBotMultiController:
                         with self.runtime.transaction():
                             authority.initialize(manifest, reviewed=True,
                                                  allow_legacy_staging=adopting_legacy_profile)
+                            self._migrate_role_configuration_layers(
+                                self.runtime, settings, previous_settings=previous_settings)
                             save(candidate)
                         self.runtime.close()
                         self.runtime = self.authority = None

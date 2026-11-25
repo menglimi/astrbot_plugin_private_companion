@@ -241,6 +241,7 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                                  # 于是 assertEqual 把"多了一个真分区"报成失败——这正是本会话
                                  # 反复出现的模式：新增能力却不更新按字面枚举的名单。
                                  "qzone",
+                                 "device.phone",
                                  "relay",
                                  "relationship_profile",
                                  "role_profile", "screen", "wardrobe", "web_understanding", "proactive.contact",
@@ -249,6 +250,8 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(expected_sections.issubset(status))
             self.assertEqual(set(status), expected_sections)
             self.assertEqual(status["quota"]["scope"], "role")
+            self.assertEqual(status["device.phone"]["scope"], "role")
+            self.assertIn("adb_diagnostic", status["device.phone"])
             self.assertEqual(status["budget"]["scope"], "installation")
             self.assertEqual(status["library"]["scope"], "role")
             self.assertEqual(status["role_profile"]["scope"], "role")
@@ -314,7 +317,7 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                                 ("conversation", "expression", "model", "screen", "person",
                                  "role", "knowledge", "library", "photo", "wardrobe",
                                  "proactive", "private_access", "relationship", "content",
-                                 "qzone", "system"), name)
+                                 "qzone", "system", "device"), name)
             # The workbench renders its layer rail from these, so every section
             # must publish the chain and a per-field source, not just its values.
             for name, section in status.items():

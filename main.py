@@ -498,7 +498,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             followups.finish_event(event)
         finish_core_reply_tracking(event, log_completion=False)
         if isinstance(prepared, dict):
-            phase = "completed" if reason == "follow_up_captured" else "failed"
+            phase = "absorbed" if reason == "follow_up_captured" else "failed"
             self._observe_core_phase(prepared, phase)
         restore_core_reply_event(event)
         finish_core_reply_presence(event, force=True)

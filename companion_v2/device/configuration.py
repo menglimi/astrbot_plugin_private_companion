@@ -276,10 +276,10 @@ class PhoneSettingsReader:
         return self.read_for(context.actor, self.target_for(context), at)
 
     def read_for(self, actor, target, at):
-        settings, _ = self.resolve_for(actor, target, at)
+        settings, _ = self.read_with_source(actor, target, at)
         return settings
 
-    def resolve_for(self, actor, target, at):
+    def read_with_source(self, actor, target, at):
         snapshot = require(self.configuration.read(actor, target=target, group_id=GROUP, observed_at=at))
         if (self.fallback_root is not None and (self.fallback_root / SETTINGS_FILE).is_file()
                 and all(field.source is None for field in snapshot.fields.values())):
@@ -289,7 +289,7 @@ class PhoneSettingsReader:
                 pass
         values = {key.removeprefix(GROUP + "."): field.value for key, field in snapshot.fields.items()}
         source = snapshot.fields[GROUP + ".adb_path"].source
-        return settings_from_values(values), source.layer.value if source is not None else "default"
+        return settings_from_values(values), "role_config" if source is not None else "default"
 
 
 def load_settings(root: str | Path) -> PhoneSettings:

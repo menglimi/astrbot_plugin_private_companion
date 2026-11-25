@@ -6,6 +6,8 @@ reply batches or platform receipts, and do not run a model or send a message.
 
 from datetime import datetime
 import json
+import threading
+import time
 
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, stamp
 from companion_v2.storage.native_conversation_schema import (
@@ -29,6 +31,79 @@ from .reset import source_current
 
 
 TABLE = "conversation_native_turns"
+TERMINAL_TURN_STATES = ("completed", "failed", "absorbed")
+VALID_TURN_STATES = ("prepared", "running", "completed", "failed", "absorbed")
+_INFLIGHT_TTL_SECONDS = 600.0
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _inflight_map(runtime):
+    mapping = getattr(runtime, "_native_inflight_turns", None)
+    if mapping is None:
+        mapping = {}
+        try:
+            setattr(runtime, "_native_inflight_turns", mapping)
+        except (AttributeError, TypeError):
+            return None
+    return mapping
+
+
+def begin_inflight_turn(runtime, context_key, turn_id):
+    """Record an in-memory foreground admission before background SQLite writes land."""
+    if runtime is None or not context_key or not turn_id:
+        return
+    with _INFLIGHT_LOCK:
+        mapping = _inflight_map(runtime)
+        if mapping is None:
+            return
+        mapping.setdefault(context_key, {})[turn_id] = time.monotonic() + _INFLIGHT_TTL_SECONDS
+
+
+def end_inflight_turn(runtime, context_key, turn_id):
+    """Release an in-memory foreground admission once the turn reaches a terminal phase."""
+    if runtime is None or not context_key or not turn_id:
+        return
+    with _INFLIGHT_LOCK:
+        mapping = getattr(runtime, "_native_inflight_turns", None)
+        if not mapping:
+            return
+        turns = mapping.get(context_key)
+        if not turns:
+            return
+        turns.pop(turn_id, None)
+        if not turns:
+            mapping.pop(context_key, None)
+
+
+def clear_inflight_turns(runtime):
+    """Clear all in-memory foreground admissions for one runtime (shutdown/recovery)."""
+    if runtime is None:
+        return
+    with _INFLIGHT_LOCK:
+        mapping = getattr(runtime, "_native_inflight_turns", None)
+        if mapping:
+            mapping.clear()
+
+
+def has_inflight_turn(runtime, context_key):
+    """True while an admitted foreground turn has not yet reached a terminal phase."""
+    if runtime is None or not context_key:
+        return False
+    now = time.monotonic()
+    with _INFLIGHT_LOCK:
+        mapping = getattr(runtime, "_native_inflight_turns", None)
+        if not mapping:
+            return False
+        turns = mapping.get(context_key)
+        if not turns:
+            return False
+        expired = [tid for tid, deadline in turns.items() if deadline <= now]
+        for tid in expired:
+            turns.pop(tid, None)
+        if not turns:
+            mapping.pop(context_key, None)
+            return False
+        return True
 
 
 def turns_available(runtime):
@@ -52,7 +127,8 @@ def project(row, runtime=None):
 def latest(runtime, context_key):
     if not turns_available(runtime):
         return None
-    return project(runtime.read_one("""SELECT * FROM conversation_native_turns WHERE context_key = ?
+    return project(runtime.read_one("""SELECT * FROM conversation_native_turns
+        WHERE context_key = ? AND generation_state != 'absorbed'
         ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)), runtime=runtime)
 
 
@@ -86,7 +162,7 @@ def latest_scope(runtime, scope):
             marks = ",".join("?" for _ in chunk)
             candidate = runtime.read_one(
                 f"""SELECT rowid AS _rid, * FROM conversation_native_turns
-                    WHERE context_hash IN ({marks})
+                    WHERE context_hash IN ({marks}) AND generation_state != 'absorbed'
                     ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
                 chunk,
             )
@@ -100,7 +176,8 @@ def latest_scope(runtime, scope):
             data.pop("_rid", None)
             return project(data, runtime=runtime)
     return project(runtime.read_one("""SELECT * FROM conversation_native_turns
-        WHERE json_extract(context_json, '$.audience.scope.installation_id') = ?
+        WHERE generation_state != 'absorbed'
+          AND json_extract(context_json, '$.audience.scope.installation_id') = ?
           AND json_extract(context_json, '$.audience.scope.platform') = ?
           AND json_extract(context_json, '$.audience.scope.kind') = ?
           AND json_extract(context_json, '$.audience.scope.native_scope_id') = ?
@@ -231,7 +308,80 @@ def latest_role_contexts(runtime, *, kind, limit=8):
     return resolve_rows_context(runtime, rows)
 
 
+def has_open_turn(runtime, context_key, *, scope_kind=None):
+    """True when any admitted turn for this context is still prepared or running."""
+    if not turns_available(runtime):
+        return False
+    if scope_kind:
+        return runtime.read_one(
+            """SELECT 1 FROM conversation_native_turns
+               WHERE scope_kind = ? AND context_key = ?
+                 AND generation_state IN ('prepared', 'running')
+               LIMIT 1""",
+            (scope_kind, context_key),
+        ) is not None
+    return runtime.read_one(
+        """SELECT 1 FROM conversation_native_turns
+           WHERE context_key = ?
+             AND generation_state IN ('prepared', 'running')
+           LIMIT 1""",
+        (context_key,),
+    ) is not None
+
+
+def latest_turn_activity(runtime, context_key, *, end=None, after=None):
+    """Newest native turn activity (including media turns and absorbed follow-ups)."""
+    if not turns_available(runtime):
+        return None
+    clauses = ["context_key = ?"]
+    params = [context_key]
+    if end is not None:
+        clauses.append("observed_at <= ?")
+        params.append(end)
+    if after is not None:
+        clauses.append("observed_at >= ?")
+        params.append(after)
+    return runtime.read_one(
+        f"""SELECT turn_id, input_observation_id, observed_at, phase_at, last_sent_at, generation_state
+            FROM conversation_native_turns
+            WHERE {' AND '.join(clauses)}
+            ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
+        tuple(params),
+    )
+
+
+def latest_assistant_reply_at(runtime, context_key, *, end=None):
+    """Latest confirmed assistant reply timestamp for this context, or None."""
+    if not table_exists(runtime, "conversation_native_observations"):
+        return None
+    clauses = [
+        "context_key = ?",
+        "kind = 'assistant'",
+        "delivery_state = 'send_returned'",
+    ]
+    params = [context_key]
+    if end is not None:
+        clauses.append("effective_at <= ?")
+        params.append(end)
+    row = runtime.read_one(
+        f"""SELECT effective_at FROM conversation_native_observations
+            WHERE {' AND '.join(clauses)}
+            ORDER BY effective_at DESC, rowid DESC LIMIT 1""",
+        tuple(params),
+    )
+    if row is None or not row["effective_at"]:
+        return None
+    try:
+        return datetime.fromisoformat(row["effective_at"])
+    except ValueError:
+        return None
+
+
 def foreground_busy(runtime, context):
+    if has_inflight_turn(runtime, context.key):
+        return True
+    if has_open_turn(runtime, context.key, scope_kind=context.scope.kind.value):
+        return True
     row = latest_scope(runtime, context.scope)
     return row is not None and row["generation_state"] in ("prepared", "running")
 
@@ -262,6 +412,7 @@ class NativeConversationTurns:
 
     def interrupt_open(self, *, at):
         """Close runs whose host runner disappeared; never retry model or send."""
+        clear_inflight_turns(self.runtime)
         with self.runtime.transaction() as connection:
             return connection.execute("""UPDATE conversation_native_turns
                 SET generation_state = 'failed', phase_at = ?
@@ -296,7 +447,7 @@ class NativeConversationTurns:
                  scope_kind, role_binding_key, ctx_hash))
 
     def mark(self, prepared, state, *, at):
-        if state not in ("prepared", "running", "completed", "failed"):
+        if state not in VALID_TURN_STATES:
             raise ValueError("invalid native generation phase")
         context, turn_id = prepared["context"], prepared["turn_id"]
         observed = getattr(prepared.get("native_input"), "at", at)
@@ -311,7 +462,9 @@ class NativeConversationTurns:
                     or not role_instruction_matches(connection, current["role_instruction"], prepared["instruction"])):
                 raise TaskError("native_turn_conflict", "the admitted native turn changed")
             if current is not None and (current["phase_at"] > stamped_at
-                    or current["generation_state"] in ("completed", "failed") and state in ("prepared", "running")):
+                    or current["generation_state"] in TERMINAL_TURN_STATES and state in OPEN_TURN_STATES):
+                if state in TERMINAL_TURN_STATES:
+                    end_inflight_turn(self.runtime, context.key, turn_id)
                 return
             stored_ctx, ctx_hash = store_context_json(
                 connection,
@@ -329,6 +482,8 @@ class NativeConversationTurns:
                 ON CONFLICT(turn_id) DO UPDATE SET generation_state = excluded.generation_state, phase_at = excluded.phase_at""",
                 (turn_id, context.key, stored_ctx, stored_role, stamped_observed, state, stamped_at,
                  scope_kind, role_binding_key, ctx_hash))
+        if state in TERMINAL_TURN_STATES:
+            end_inflight_turn(self.runtime, context.key, turn_id)
 
     def sent(self, turn_id, observed_at, *, observation_id=None):
         with self.runtime.transaction() as connection:

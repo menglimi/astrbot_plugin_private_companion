@@ -596,7 +596,11 @@ window.CompanionProduct = (() => {
     const dataOnly = response && typeof response === "object" && !Array.isArray(response)
       && Object.keys(response).length === 1 && hasOwn(response, "data");
     const wrapped = isEnvelope(response) ? response : dataOnly && isEnvelope(response.data) ? response.data : null;
-    if (wrapped?.status === "error") throw fail(codeOf(wrapped) || "invalid_response", true);
+    if (wrapped?.status === "error") {
+      const err = fail(codeOf(wrapped) || "invalid_response", true);
+      if (wrapped.data && typeof wrapped.data === "object" && !Array.isArray(wrapped.data)) err.details = wrapped.data;
+      throw err;
+    }
     let value = wrapped ? wrapped.data : response;
     /* A bridge shim may preserve one anonymous data layer without the
        envelope fields.  Only unwrap the exact {data: ...} shape. */
@@ -635,13 +639,20 @@ window.CompanionProduct = (() => {
         ? error.code : (CODE.test(error?.message || "") ? error.message : "");
       if (code) {
         const confirmed = error.confirmed === true || !isUncertainCode(code);
-        if (errors[code]) throw fail(code, confirmed);
+        const details = error?.details && typeof error.details === "object" ? error.details : undefined;
+        if (errors[code]) {
+          const err = fail(code, confirmed);
+          if (details) err.details = details;
+          throw err;
+        }
         if (confirmed) throw Object.assign(
           new Error(method === "POST"
             ? `保存没有通过（错误码：${code}），草稿已保留，请按提示调整后再试。`
             : `读取没有完成（错误码：${code}），请刷新后重试。`),
-          {code, confirmed: true});
-        throw fail(code, false);
+          {code, confirmed: true, ...(details ? {details} : {})});
+        const err = fail(code, false);
+        if (details) err.details = details;
+        throw err;
       }
       if (/initialized|explicit V2 profile/i.test(error.message)) throw fail("staging_not_initialized", true);
       if (/Dashboard|sign in/i.test(error.message)) throw fail("dashboard_identity_required", true);

@@ -16,6 +16,34 @@ window.CompanionPhoneSetup = (() => {
     configuration_edit_conflict: "角色配置刚刚更新，请重新选择这台手机。",
   };
   const states = {device:"已连接", unauthorized:"待手机授权", offline:"已离线"};
+  const sourceLabels = {role_config:"当前角色设置", "phone.json":"旧版 phone.json", default:"默认自动查找"};
+
+  function adbNotFoundMessage(diag) {
+    if (!diag || typeof diag !== "object") return messages.adb_not_found;
+    const path = typeof diag.configured_adb_path === "string" ? diag.configured_adb_path.trim() : "";
+    const source = sourceLabels[diag.config_source] || "";
+    const roleId = typeof diag.resolved_role_id === "string" ? diag.resolved_role_id.trim() : "";
+    const botId = typeof diag.resolved_bot_id === "string" ? diag.resolved_bot_id.trim() : "";
+    const scopeParts = [
+      source ? `来源：${source}` : "",
+      roleId ? `角色：${roleId}` : "",
+      botId ? `账号：${botId}` : "",
+    ].filter(Boolean);
+    const scopeNote = scopeParts.length ? `（${scopeParts.join(" · ")}）` : "";
+    if (diag.reason === "explicit_path_is_dir") {
+      return `高级设置里的 ADB 路径填成了文件夹「${path}」，请改成指向里面的 adb.exe 或 adb 文件${scopeNote}。`;
+    }
+    if (diag.reason === "explicit_path_missing") {
+      return `找不到高级设置里填写的 ADB 文件「${path}」，请核对路径是否拼写正确或已被移动${scopeNote}。`;
+    }
+    if (diag.reason === "explicit_path_not_executable") {
+      return `高级设置里的 ADB 文件「${path}」无法作为可执行程序运行，请核对文件与权限${scopeNote}。`;
+    }
+    if (diag.reason === "auto_discovery_empty") {
+      return `未在系统 PATH 或常见目录找到 ADB，且当前尚未填写自定义路径${scopeNote}。可先下载 Android Platform-Tools，或在下方「高级设置」填写 adb 路径。`;
+    }
+    return messages.adb_not_found + scopeNote;
+  }
 
   function markup() {
     return `<header class="phone-setup-head"><h3 id="phoneSetupTitle">连接 Android 手机</h3><span data-phone-enabled hidden></span></header>
@@ -52,33 +80,30 @@ window.CompanionPhoneSetup = (() => {
       <a class="text-button phone-setup-download" data-phone-download href="https://developer.android.com/tools/releases/platform-tools" target="_blank" rel="noopener noreferrer" hidden>下载 Android Platform-Tools</a>`;
   }
 
-  function mount(root, {editor}) {
+  function mount(root, {editor, configApi = editor?.endpoint}) {
     if (!root) return null;
-    if (root.phoneSetup) return root.phoneSetup;
-    const configApi = editor?.endpoint;
-    if (typeof configApi !== "string" || !configApi.startsWith(prefix)) {
+    if (typeof configApi !== "string" || !configApi.startsWith(prefix) || !editor) {
       root.textContent = "当前角色的手机设置不可用。";
       return null;
     }
+    const nextEndpoint = configApi.slice(prefix.length) + "/phone-connection";
+    if (root.phoneSetup) {
+      root.phoneSetup.rebind({configApi, endpoint: nextEndpoint, editor});
+      return root.phoneSetup;
+    }
     let mode = "usb", busy = false, devices = [], activation = null;
-    const endpoint = configApi.slice(prefix.length) + "/phone-connection";
+    const binding = {configApi, endpoint: nextEndpoint, editor};
     const one = selector => root.querySelector(selector);
-    const handle = () => editor.state.instances[0];
+    const handle = () => binding.editor.state.instances[0];
     root.innerHTML = markup();
     const results = one("[data-phone-results]"), noticeNode = one("[data-phone-notice]");
 
-    function notice(message, code = "", offerDownload = code === "adb_not_found") {
+    function notice(message, code = "", diag = null) {
       noticeNode.textContent = message;
       noticeNode.classList.toggle("is-error", Boolean(code));
-      one("[data-phone-download]").hidden = !offerDownload;
-    }
-
-    function adbNotFound(detail) {
-      const path = detail.adb_path;
-      const source = ({role:"角色层", default:"默认值", "phone.json":"phone.json"})[detail.source] || "未知来源";
-      const summary = path ? "宿主找不到已配置的 ADB 可执行文件。" : messages.adb_not_found;
-      notice(summary + '实际读取路径为「' + (path || "空，使用自动查找") + '」，来源为' + source
-        + '，当前配置角色为「' + detail.role_id + '」。', detail.code, !path);
+      const showDownload = code === "adb_not_found"
+        && (!diag || !diag.reason || diag.reason === "auto_discovery_empty");
+      one("[data-phone-download]").hidden = !showDownload;
     }
 
     function syncStatus(status = handle()?.state.status) {
@@ -87,6 +112,20 @@ window.CompanionPhoneSetup = (() => {
       const enabled = status?.settings?.enabled === true;
       label.textContent = enabled ? "已启用" : "未启用";
       label.classList.toggle("is-enabled", enabled);
+    }
+
+    function rebind(next) {
+      const changed = next.endpoint !== binding.endpoint || next.editor !== binding.editor;
+      binding.configApi = next.configApi;
+      binding.endpoint = next.endpoint;
+      binding.editor = next.editor;
+      if (changed) {
+        devices = [];
+        activation = null;
+        drawResults();
+        notice("");
+      }
+      syncStatus();
     }
 
     function drawResults() {
@@ -116,6 +155,8 @@ window.CompanionPhoneSetup = (() => {
 
     async function run(action, params = {}) {
       if (busy) return;
+      const {endpoint, editor: currentEditor} = binding;
+      const active = () => root.isConnected && endpoint === binding.endpoint && currentEditor === binding.editor;
       const instance = handle(), status = instance?.state.status;
       if (action === "use") {
         if (!status?.edit_token) { notice("暂未读到角色设置，请稍后重试。", "settings_pending"); return; }
@@ -135,15 +176,22 @@ window.CompanionPhoneSetup = (() => {
       try {
         const response = await window.CompanionProduct.request("POST", endpoint,
           {action, ...params, include_diagnostics:true}, {timeoutMs:50000});
-        if (!root.isConnected) return;
+        if (!active()) return;
         if (response?.adb_error?.code === "adb_not_found") {
-          adbNotFound(response.adb_error);
+          const detail = response.adb_error;
+          const diag = handle()?.state?.status?.adb_diagnostic || {
+            reason: detail.adb_path ? "explicit_path_missing" : "auto_discovery_empty",
+            configured_adb_path: detail.adb_path,
+            config_source: detail.source === "role" ? "role_config" : detail.source,
+            resolved_role_id: detail.role_id,
+          };
+          notice(adbNotFoundMessage(diag), detail.code, diag);
           return;
         }
         if (action === "use") {
           activation = null;
-          await editor.read("device.phone");
-          if (root.isConnected) notice("已设为当前角色的操作手机。");
+          await currentEditor.read("device.phone");
+          if (active()) notice("已设为当前角色的操作手机。");
           return;
         }
         devices = Array.isArray(response?.devices) ? response.devices : [];
@@ -160,10 +208,22 @@ window.CompanionPhoneSetup = (() => {
           notice(matching.some(item => item.state === "device") ? "" : "手机暂不可用，重新连接后再查找。");
         }
       } catch (error) {
-        if (!root.isConnected) return;
+        if (!active()) return;
         const code = error?.code || error?.message || "phone_connection_failed";
-        if (action === "use") await editor.read("device.phone");
-        if (root.isConnected) notice(messages[code] || window.CompanionProduct.errorLabel(code), code);
+        if (action === "use") await currentEditor.read("device.phone");
+        if (!active()) return;
+        if (code === "adb_not_found") {
+          const diag = (error?.details && typeof error.details === "object" && error.details.reason)
+            ? error.details
+            : (handle()?.state?.status?.adb_diagnostic || null);
+          if (diag && typeof diag.reason === "string" && diag.reason.startsWith("explicit_path_")) {
+            const advanced = root.parentElement?.querySelector(".phone-advanced");
+            if (advanced) advanced.open = true;
+          }
+          notice(adbNotFoundMessage(diag), code, diag);
+          return;
+        }
+        notice(messages[code] || window.CompanionProduct.errorLabel(code), code);
       } finally {
         busy = false;
         controls.forEach(control => { control.disabled = false; });
@@ -195,8 +255,8 @@ window.CompanionPhoneSetup = (() => {
     });
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
     syncStatus();
-    root.phoneSetup = {syncStatus};
+    root.phoneSetup = {syncStatus, rebind, get endpoint() { return binding.endpoint; }};
     return root.phoneSetup;
   }
-  return {mount};
+  return {mount, adbNotFoundMessage};
 })();

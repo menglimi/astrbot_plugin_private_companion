@@ -1237,6 +1237,7 @@ class MultiHostSession:
         """Prepare only V2 identity and prompt data for AstrBot's normal reply pipeline."""
         async with self._intake[target.target_id]:
             presence, typing_context, typing_turn, prepared_ok = None, None, None, False
+            inflight_context_key, inflight_turn_id = None, None
             try:
                 self.application.require_running()
                 connection_lease = (plan.connection_lease if plan is not None and plan.connection_lease is not None
@@ -1261,6 +1262,9 @@ class MultiHostSession:
                 self.bridge.connections.assert_current(connection_lease)
                 self._validate_core_group_admission(group_admission, context, captured)
                 turn_id = "core-reply:" + digest([context.key, captured.event_id])
+                from companion_v2.conversation.native_turns import begin_inflight_turn
+                begin_inflight_turn(self.runtime, context.key, turn_id)
+                inflight_context_key, inflight_turn_id = context.key, turn_id
                 presence = self.application.presence
                 if presence is not None:
                     typing_context, typing_turn = context, turn_id
@@ -1544,8 +1548,12 @@ class MultiHostSession:
                              target.target_id, type(error).__name__)
                 return CoreReplyOutcome.failed("host_core_reply_prepare_failed", "core reply admission could not be prepared")
             finally:
-                if not prepared_ok and presence is not None and typing_context is not None:
-                    presence.finish_native_reply(typing_context, typing_turn)
+                if not prepared_ok:
+                    if inflight_context_key and inflight_turn_id:
+                        from companion_v2.conversation.native_turns import end_inflight_turn
+                        end_inflight_turn(self.runtime, inflight_context_key, inflight_turn_id)
+                    if presence is not None and typing_context is not None:
+                        presence.finish_native_reply(typing_context, typing_turn)
 
     def _actor_is_core(self, context):
         try:

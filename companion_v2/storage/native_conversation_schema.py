@@ -15,7 +15,7 @@ from companion_v2.storage.native_dedup import (
 OPEN_TURN_STATES = ("prepared", "running")
 
 TABLE = "conversation_native_observations"
-SCHEMA_KEY = "native_conversation.v3"
+SCHEMA_KEY = "native_conversation.v4"
 
 TABLE_STATEMENTS = (
     *DEDUP_TABLE_STATEMENTS,
@@ -36,7 +36,7 @@ TABLE_STATEMENTS = (
         turn_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, context_json TEXT NOT NULL,
         role_instruction TEXT NOT NULL, input_observation_id TEXT,
         observed_at TEXT NOT NULL, generation_state TEXT NOT NULL
-            CHECK(generation_state IN ('prepared', 'running', 'completed', 'failed')),
+            CHECK(generation_state IN ('prepared', 'running', 'completed', 'failed', 'absorbed')),
         phase_at TEXT NOT NULL, last_sent_at TEXT,
         scope_kind TEXT NOT NULL DEFAULT '',
         role_binding_key TEXT NOT NULL DEFAULT '',
@@ -388,6 +388,38 @@ def ensure_native_conversation_migrations(connection) -> bool:
             connection.execute(
                 "ALTER TABLE conversation_native_turns ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
             )
+            turns_changed = True
+        turns_ddl_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversation_native_turns'"
+        ).fetchone()
+        turns_ddl = (turns_ddl_row[0] or "") if turns_ddl_row is not None else ""
+        if turns_ddl and "'absorbed'" not in turns_ddl:
+            connection.execute("""CREATE TABLE conversation_native_turns_new (
+                turn_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, context_json TEXT NOT NULL,
+                role_instruction TEXT NOT NULL, input_observation_id TEXT,
+                observed_at TEXT NOT NULL, generation_state TEXT NOT NULL
+                    CHECK(generation_state IN ('prepared', 'running', 'completed', 'failed', 'absorbed')),
+                phase_at TEXT NOT NULL, last_sent_at TEXT,
+                scope_kind TEXT NOT NULL DEFAULT '',
+                role_binding_key TEXT NOT NULL DEFAULT '',
+                context_hash TEXT NOT NULL DEFAULT ''
+            )""")
+            connection.execute("""INSERT INTO conversation_native_turns_new (
+                rowid, turn_id, context_key, context_json, role_instruction, input_observation_id,
+                observed_at, generation_state, phase_at, last_sent_at,
+                scope_kind, role_binding_key, context_hash
+            ) SELECT
+                rowid, turn_id, context_key, context_json, role_instruction, input_observation_id,
+                observed_at, generation_state, phase_at, last_sent_at,
+                scope_kind, role_binding_key, context_hash
+            FROM conversation_native_turns""")
+            connection.execute("DROP TABLE conversation_native_turns")
+            connection.execute("ALTER TABLE conversation_native_turns_new RENAME TO conversation_native_turns")
+            for statement in INDEX_STATEMENTS:
+                if "conversation_native_turns" in statement:
+                    connection.execute(statement)
+            for statement in TURN_TRIGGER_STATEMENTS:
+                connection.execute(statement)
             turns_changed = True
         if turns_changed or connection.execute(
             "SELECT 1 FROM conversation_native_turns WHERE scope_kind = '' OR role_binding_key = '' LIMIT 1"
