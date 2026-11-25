@@ -52,10 +52,11 @@ window.CompanionPhoneSetup = (() => {
       <a class="text-button phone-setup-download" data-phone-download href="https://developer.android.com/tools/releases/platform-tools" target="_blank" rel="noopener noreferrer" hidden>下载 Android Platform-Tools</a>`;
   }
 
-  function mount(root, {configApi, editor}) {
+  function mount(root, {editor}) {
     if (!root) return null;
     if (root.phoneSetup) return root.phoneSetup;
-    if (typeof configApi !== "string" || !configApi.startsWith(prefix) || !editor) {
+    const configApi = editor?.endpoint;
+    if (typeof configApi !== "string" || !configApi.startsWith(prefix)) {
       root.textContent = "当前角色的手机设置不可用。";
       return null;
     }
@@ -66,10 +67,18 @@ window.CompanionPhoneSetup = (() => {
     root.innerHTML = markup();
     const results = one("[data-phone-results]"), noticeNode = one("[data-phone-notice]");
 
-    function notice(message, code = "") {
+    function notice(message, code = "", offerDownload = code === "adb_not_found") {
       noticeNode.textContent = message;
       noticeNode.classList.toggle("is-error", Boolean(code));
-      one("[data-phone-download]").hidden = code !== "adb_not_found";
+      one("[data-phone-download]").hidden = !offerDownload;
+    }
+
+    function adbNotFound(detail) {
+      const path = detail.adb_path;
+      const source = ({role:"角色层", default:"默认值", "phone.json":"phone.json"})[detail.source] || "未知来源";
+      const summary = path ? "宿主找不到已配置的 ADB 可执行文件。" : messages.adb_not_found;
+      notice(summary + '实际读取路径为「' + (path || "空，使用自动查找") + '」，来源为' + source
+        + '，当前配置角色为「' + detail.role_id + '」。', detail.code, !path);
     }
 
     function syncStatus(status = handle()?.state.status) {
@@ -124,8 +133,13 @@ window.CompanionPhoneSetup = (() => {
       controls.forEach(control => { control.disabled = true; });
       notice(({scan:"正在查找手机…", pair:"正在配对…", connect:"正在连接…", use:"正在保存…"})[action]);
       try {
-        const response = await window.CompanionProduct.request("POST", endpoint, {action, ...params}, {timeoutMs:50000});
+        const response = await window.CompanionProduct.request("POST", endpoint,
+          {action, ...params, include_diagnostics:true}, {timeoutMs:50000});
         if (!root.isConnected) return;
+        if (response?.adb_error?.code === "adb_not_found") {
+          adbNotFound(response.adb_error);
+          return;
+        }
         if (action === "use") {
           activation = null;
           await editor.read("device.phone");

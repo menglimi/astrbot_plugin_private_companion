@@ -10,21 +10,25 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
+from astrbot_host.phone_command import receive_phone_command
 from companion_v2.device.action_service import (
     PhoneActionService, PhoneSettings, PhoneTaskRecord, load_settings, phone_profile,
 )
-from companion_v2.device.adb import UiElement
+from companion_v2.device.adb import AdbClient, UiElement
 from companion_v2.device.session import PhoneObservation, PhoneSession
 from companion_v2.device.skills import PREFIX as SKILL_PREFIX, PhoneSkillMemory, SkillScreen
 from companion_v2.adapters.astrbot.model_wire import build_wire
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import TaskContext, TaskError
+from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import AudienceRef
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.storage.runtime import StorageRuntime
 from tests.test_conversation_images import image_bytes
+from tests.test_device_adb import FakeAdb
 from tests.test_host_application import HostFixture
 from tests.test_management_access import NOW, SCOPE
 from tests.test_role_tool_loop import answered
@@ -141,6 +145,100 @@ class PhoneCheckoutFlowTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.providers = tuple(replace(p, capabilities=("text", "image"))
                                for p in self.providers)
         self.registry = FieldRegistry(version="test-phone", fields=configuration_fields(self.profiles))
+
+    async def test_ordinary_task_reports_result_and_carries_ineffective_tap_to_the_next_task(self):
+        app = (await self.start()).application
+        context = TaskContext(self.important, self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+                              AudienceRef(SCOPE, (self.important.subject,)))
+        service = app.phone_actions
+        service._settings_reader = Mock()
+        service._settings_reader.read.return_value = PhoneSettings(enabled=True, serial="test-device")
+        client = Mock()
+        service._client_factory = lambda settings: client
+        picture = image_bytes("blue", size=(200, 400))
+        button = UiElement("下载", "", "com.example.store", "android.widget.Button", True, True,
+                           (30, 250, 150, 300), 1)
+        screen = PhoneObservation(0, 200, 400, (button,), "same-screen", len(picture), picture)
+
+        async def decide(envelope):
+            if len(self.called) == 1:
+                return answered('{"kind":"tap","x":90,"y":275}')
+            self.assertIn("相同页面上点击 (90, 275) 曾没有产生可观察的变化",
+                          envelope.original.instruction)
+            if len(self.called) == 2:
+                return answered('{"kind":"fail","reason":"下载按钮没有响应。"}')
+            return answered('{"kind":"done","reason":"已核对安装状态。"}')
+
+        self.model_behavior = decide
+        with patch.object(PhoneSession, "observe", return_value=screen):
+            first = service.create(context, "下载淘宝")["task_id"]
+            await self.until(lambda: service._read(first).step == 1)
+            self.clock.advance(timedelta(seconds=10))
+            app.notify()
+            await self.until(lambda: len(self.sent) == 1)
+            self.assertIn("下载按钮没有响应", self.sent[0].text)
+            queue = app.outbound.queue
+            deferred = []
+
+            def temporarily_unavailable(request):
+                if request.owner == "phone.notice" and not deferred:
+                    deferred.append(request.delivery_id)
+                    return Outcome.failed("test_notice_queue_unavailable", "temporary queue error")
+                return queue(request)
+
+            with patch.object(app.outbound, "queue", side_effect=temporarily_unavailable):
+                second = service.create(context, "检查淘宝是否安装")["task_id"]
+                await self.until(lambda: len(self.sent) == 2)
+            self.assertEqual(len(deferred), 1)
+            self.assertIn("手机任务已完成", self.sent[1].text)
+            self.assertEqual(service._read(second).state, "done")
+            client.tap.assert_called_once_with(90, 275)
+            service.advance().unwrap()
+            self.assertEqual(self.runtime.read_one(
+                "SELECT COUNT(*) FROM background_deliveries WHERE owner='phone.notice'", ())[0], 2)
+
+    async def test_private_screen_command_reads_one_screenshot_and_replies_without_phone_input(self):
+        app = (await self.start()).application
+        context = TaskContext(self.important, self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+                              AudienceRef(SCOPE, (self.important.subject,)))
+        service = app.phone_actions
+        service._settings_reader = Mock()
+        service._settings_reader.read.return_value = PhoneSettings(enabled=True, serial="SER123")
+        adb = FakeAdb()
+        screen = image_bytes("blue", size=(200, 400))
+        adb.responses[("-s", "SER123", "shell", "wm", "size")] = "Physical size: 200x400\n"
+        adb.responses[("-s", "SER123", "exec-out", "screencap", "-p")] = screen
+        service._client_factory = lambda settings: AdbClient("adb.exe", serial=settings.serial, runner=adb)
+
+        async def describe(envelope):
+            request = envelope.original
+            self.assertIn("goal: 手机当前显示什么？", request.instruction)
+            self.assertIn("签到", request.instruction)
+            self.assertIn("只描述当前画面", request.instruction)
+            self.assertNotIn("100px", request.instruction)
+            self.assertEqual(base64.b64decode(request.images[0].data_base64), screen)
+            self.assertEqual(build_wire(envelope, model_name="test").image_count, 1)
+            return answered('{"action":"done","reason":"当前显示签到页，页面写着今日已签到。"}')
+
+        self.model_behavior = describe
+        event = SimpleNamespace(unified_msg_origin="qq:FriendMessage:200", text="查看手机屏幕")
+        captured = SimpleNamespace(event_id="screen-request", route=SimpleNamespace(scope=SCOPE),
+                                    principal=context.actor.principal, recipients=context.audience,
+                                    role=context.role_binding.role, text=event.text)
+        session = SimpleNamespace(application=app, profile=SimpleNamespace(target=context),
+                                  bridge=SimpleNamespace(capture=AsyncMock(return_value=Outcome.success(captured))))
+        controller = SimpleNamespace(session=session, claims=lambda _: True, now=self.clock.now)
+        with patch("astrbot_host.phone_command.authenticate_notice_route", return_value=object()):
+            self.assertTrue((await receive_phone_command(controller, event, target=None)).is_success)
+            await self.until(lambda: bool(self.sent))
+            self.assertTrue((await receive_phone_command(controller, event, target=None)).is_success)
+
+        self.assertEqual(len(service._records()), 1)
+        self.assertEqual(len(self.called), 1)
+        self.assertEqual(self.sent[0].context, context)
+        self.assertIn("今日已签到", self.sent[0].text)
+        self.assertFalse(any("input" in command for command in adb.calls))
+        self.assertFalse((Path(self.runtime.data_root) / "phone").exists())
 
     async def checkout(self, *, label="提交订单", changed=False, supports_images=True, quick_approval=False):
         self.sender = replace(self.sender, supports_images=supports_images)

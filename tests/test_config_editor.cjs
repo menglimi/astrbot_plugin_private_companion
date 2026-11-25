@@ -2094,7 +2094,7 @@ async function contactLoaded(changes = {}, token = TOKEN('a')) {
 }
 
 test('legacy proactive intensity aliases normalize before validation and save canonically', async () => {
-  const aliases = {'': 'off', manual: 'off', none: 'off', default: 'off', standard: 'balanced',
+  const aliases = {'': 'custom', manual: 'custom', none: 'custom', default: 'custom', standard: 'balanced',
     active: 'high_private', private: 'high_private', group: 'high_group',
     online: 'live', '直播': 'live', '高频': 'live'};
   const {window} = harness([]);

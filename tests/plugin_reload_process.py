@@ -102,6 +102,7 @@ async def run():
                 await asyncio.sleep(0.025)
             assert controller._accepting, controller.last_failure
             assert controller.session.application.state == "running"
+            await controller.session.account_recovery.refresh(wait=True)
             assert metadata.module is sys.modules[entry_name]
             assert metadata.star_cls_type is metadata.module.PrivateCompanionV2StagingPlugin
             refs = importlib.import_module("companion_v2.foundation.refs")

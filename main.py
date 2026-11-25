@@ -44,6 +44,7 @@ from .astrbot_host.core_reply import (
     adopt_core_reply_event,
     finish_core_reply_presence,
     inject_core_reply_prompt,
+    is_core_sendable_message,
     prepare_core_reply_event,
     repair_tool_call_history,
     restore_core_reply_event,
@@ -51,6 +52,7 @@ from .astrbot_host.core_reply import (
 )
 from .astrbot_host.core_reply_tools import inject_core_reply_tools, inject_core_turn_notes
 from .astrbot_host.core_reply_preparation import measure_core_preparation
+from .astrbot_host.core_reply_presence import agent_presence_begin, agent_presence_done, observe_native_reply_presence
 from .astrbot_host.core_reply_decision import prepare_core_reply_decision
 from .astrbot_host.core_reply_closing import prepare_private_closing_decision
 from .astrbot_host.native import warm_session_settings
@@ -105,7 +107,7 @@ from .astrbot_host.calendar_command import parse_calendar_command
 from .astrbot_host.functional_commands import classify_functional_command, inject_functional_command_instruction
 from .astrbot_host.group_command import receive_group_llm_command
 from .astrbot_host.reset_command import receive_reset_command
-from .astrbot_host.phone_command import receive_phone_confirmation
+from .astrbot_host.phone_command import receive_phone_command
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
 from companion_v2.conversation.group_timing import SELF_MENTION
 from companion_v2.conversation import debounce_log
@@ -447,7 +449,8 @@ class PrivateCompanionV2StagingPlugin(Star):
     def _private_debounce_manager(self):
         manager = getattr(self, "_private_debounce", None)
         if manager is None:
-            manager = PrivateDebounce()
+            from .astrbot_host.private_semantic_debounce import classifier_from_config
+            manager = PrivateDebounce(semantic=classifier_from_config(getattr(self, "config", None) or {}))
             self._private_debounce = manager
         return manager
 
@@ -715,6 +718,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         return lock
 
     async def initialize(self) -> None:
+        self._private_debounce_manager()
         if self._session_settings_warm_task is None or self._session_settings_warm_task.done():
             self._session_settings_warm_task = asyncio.create_task(
                 warm_session_settings(), name="companion-v2-session-settings-warmup")
@@ -1043,9 +1047,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                 finish_core_reply_telemetry(event)
             else:
                 observe_core_reply_delivery(event, stage)
+                if stage in {"started", "stream_started", "returned"}:
+                    presence_stage = "returned" if stage == "returned" else "delivering"
+                    observe_native_reply_presence(getattr(session, "application", None), prepared, presence_stage)
 
         def finish_core_reply_end():
-            from .astrbot_host.core_reply_presence import observe_native_reply_presence
             application = getattr(getattr(self.staging, "session", None), "application", None)
             observe_native_reply_presence(application, prepared, "finished")
 
@@ -1250,7 +1256,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                                       channel=channel, event_ref=event_ref, stage="admission")
                 return
         if channel == "private":
-            phone_command = await receive_phone_confirmation(self.staging, event, target=target)
+            phone_command = await receive_phone_command(self.staging, event, target=target)
             if phone_command is not None:
                 suppress_default_reply(event)
                 if phone_command.failure is not None:
@@ -2254,6 +2260,7 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_agent_begin(priority=-1000000)
     async def observe_companion_core_agent_begin(self, event: AstrMessageEvent, run_context):
+        agent_presence_begin(event)
         from .astrbot_host.core_reply_media_prompt import finalize_core_reply_media_prompt
         finalize_core_reply_media_prompt(event, run_context)
         from .astrbot_host.core_reply_voice_authoring import prepare_core_voice_authoring
@@ -2283,6 +2290,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         close_core_reply_tool_guard(event, run_context)
         restore_core_tool_dispatch(event, run_context)
         observe_core_agent_done(event, run_context, response)
+        agent_presence_done(event, response)
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         prepared = state.get("prepared") if isinstance(state, dict) else None
         self._observe_core_phase(prepared, "completed" if getattr(response, "role", None) == "assistant" else "failed")
@@ -2292,6 +2300,37 @@ class PrivateCompanionV2StagingPlugin(Star):
         followup_guard = getattr(self, "_core_followup_guard", None)
         if followup_guard is not None:
             followup_guard.finish_turn(event)
+        self._watch_empty_core_reply(event, state, prepared, response)
+
+    def _watch_empty_core_reply(self, event, state, prepared, response):
+        if (not isinstance(prepared, dict) or prepared.get("channel") != "private"
+                or not prepared.get("event_ref") or getattr(response, "role", None) != "assistant"
+                or getattr(response, "tools_call_name", None)
+                or is_core_sendable_message(getattr(response, "completion_text", ""))
+                or is_core_sendable_message(getattr(response, "result_chain", None))):
+            return
+
+        # An empty result can skip after_message_sent. Let the native message
+        # task finish first, so any remaining delivery can still be observed.
+        owner = state.get("_delivery_net_task")
+        if owner is None or owner.done():
+            return
+
+        def record_if_unsent(task):
+            if (task.cancelled() or event.is_stopped()
+                    or event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is not state
+                    or state.get("prepared") is not prepared
+                    or state.get("silent_suppressed") or state.get("denial_notified")
+                    or state.get("_text_presentation_removed")
+                    or state.get("group_participation", {}).get("mode") == "skip"
+                    or state.get("send_attempts") or getattr(event, "_has_send_oper", False)):
+                return
+            event_ref = prepared["event_ref"]
+            self._record_no_reply(event, "core_reply_no_delivery", origin_key=prepared.get("origin_key"),
+                                  channel="private", event_ref=event_ref, stage="delivery",
+                                  turn=event_ref, code="empty_result")
+
+        owner.add_done_callback(record_if_unsent)
 
     @filter.on_using_llm_tool()
     async def observe_companion_core_tool_begin(self, event: AstrMessageEvent, tool, tool_args):

@@ -391,12 +391,13 @@ def decode_text_response(raw_text, wire):
     """Decode a completed text response from a native non-OpenAI provider."""
     if not isinstance(raw_text, str) or len(raw_text) > 131072:
         raise ValueError("final result exceeds the wire limit")
-    value = strict_json(unwrap_code_fence(raw_text))
+    json_text = unwrap_code_fence(raw_text)
+    value = strict_json(json_text)
     if wire.output_format != "conversation":
         if not isinstance(value, dict) or len(raw_text) > 65536:
             raise ValueError("private writing requires a bounded structured result")
         # The journal owner validates fields and provenance before saving anything.
-        return ModelDraft(raw_text, ()), ()
+        return ModelDraft(json_text if wire.output_format == "content_authoring" else raw_text, ()), ()
     if not isinstance(value, dict) or set(value) not in (
             {"text", "claims"}, {"text", "claims", "images"},
             {"action", "text", "claims"}, {"action", "text", "claims", "images"}):

@@ -941,8 +941,19 @@ class MediaOffloadVacuumBatcherAndApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(health_data["opportunities"]["inline_reaction_blobs"], 1)
                 self.assertEqual(health_data["opportunities"]["inline_native_image_blobs"], 1)
 
-                # Invoke one-click compaction via POST /storage/compact.
+                # Reject a full rewrite before compaction changes any stored data.
                 req.payload = json.dumps({"ttl_days": 14, "vacuum": True}).encode("utf-8")
+                for disk_usage in ({"return_value": NS(free=0)}, {"side_effect": OSError}):
+                    with (
+                        patch("astrbot_host.storage_api.request", req),
+                        patch("companion_v2.storage.compaction.shutil.disk_usage", **disk_usage),
+                    ):
+                        rejected = await api.compact()
+                    self.assertEqual(rejected["status"], "error")
+                    self.assertEqual(rejected["data"]["code"], "storage_insufficient_disk_for_vacuum")
+                self.assertEqual(database_health_report(runtime)["opportunities"]["un_deduped_native_turns"], 10)
+
+                # Invoke one-click compaction via POST /storage/compact.
                 with patch("astrbot_host.storage_api.request", req):
                     compact_resp = await api.compact()
                 self.assertEqual(compact_resp["status"], "ok")

@@ -435,6 +435,9 @@ class NativeExtensionRegistry(AstrBotToolPort):
         self.application, self.runtime = application, runtime
         if getattr(application, "daily_outfit", None) is not None:
             application.daily_outfit.port = self
+        proactive_images = getattr(getattr(application, "proactive", None), "images", None)
+        if proactive_images is not None:
+            proactive_images.port = self
         # The real V2 application always exposes ``tasks.identity``.  Keep
         # registry attachment tolerant of a lightweight host fixture (or a
         # partially constructed application) and defer the Screen consumer
@@ -576,6 +579,9 @@ class NativeExtensionRegistry(AstrBotToolPort):
             self._guard(host_tool_id, invocation)
 
     def outfit_image_route(self, context, identity=None):
+        return self.role_image_route(context, identity)
+
+    def role_image_route(self, context, identity=None):
         external = self.application.external if self.application else None
         if external is None:
             return None
@@ -598,19 +604,26 @@ class NativeExtensionRegistry(AstrBotToolPort):
         return persona["prompt"]
 
     async def generate_outfit_image(self, run, prompt, identity):
+        return await self.generate_role_image(
+            run, prompt, identity, invocation_id=run.task.spec.request_ref, call_id="daily-outfit")
+
+    async def generate_role_image(self, run, prompt, identity, *, invocation_id, call_id, on_dispatch=None):
         context = run.task.spec.context
-        declaration = self.outfit_image_route(context, identity)
+        declaration = self.role_image_route(context, identity)
         if declaration is None:
-            raise TaskError("daily_outfit_image_unavailable", "the role has no active Image route")
+            code = "daily_outfit_image_unavailable" if call_id == "daily-outfit" else "proactive_image_route_unavailable"
+            raise TaskError(code, "the role has no active Image route")
         arguments = {"prompt": prompt}
         if declaration.descriptor.tool.action == "image.edit":
             arguments.update(reference_ids=[identity], reference_indices=[], reference_roles=["identity"])
-        invocation = ExternalToolInvocation(run.task.spec.request_ref, run.task.task_id, "daily-outfit",
+        if on_dispatch is None:
+            run.begin_effect()
+        invocation = ExternalToolInvocation(invocation_id, run.task.task_id, call_id,
             context, declaration.descriptor, encode_prompt(arguments), run.task.spec.deadline_at, run.validate, run)
-        run.begin_effect()
-        return await self.invoke(declaration.host_tool_id, invocation, role_references_only=True)
+        return await self.invoke(declaration.host_tool_id, invocation, role_references_only=True,
+                                 on_dispatch=on_dispatch)
 
-    async def invoke(self, host_tool_id, invocation, *, role_references_only=False):
+    async def invoke(self, host_tool_id, invocation, *, role_references_only=False, on_dispatch=None):
         entry = self._entries.get(host_tool_id)
         if entry is None or entry[0].descriptor != invocation.descriptor:
             raise TaskError("native_provider_changed", "the original native declaration is unavailable")
@@ -681,6 +694,8 @@ class NativeExtensionRegistry(AstrBotToolPort):
                     self.camera.recheck(invocation, camera_check)
                 if image_references is not None:
                     image_references.recheck()
+                if not guarded and on_dispatch is not None:
+                    on_dispatch()
                 guarded = True
 
             guard()

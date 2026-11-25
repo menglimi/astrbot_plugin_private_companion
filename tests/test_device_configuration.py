@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import shutil
@@ -10,7 +11,7 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 
-from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationError
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationError, EffectiveValue
 from companion_v2.device.configuration import (
     GROUP, PhoneConfigurationOwner, PhoneSettingsReader, configuration_fields, load_settings,
     settings_from_values, validate,
@@ -77,10 +78,10 @@ class PhoneConfigurationTests(unittest.TestCase):
 
         class FakeConfiguration:
             def read(self, actor, *, target, group_id, observed_at):
-                values = {field.field_id: field.default for field in fields}
-                values[GROUP + ".enabled"] = True
-                values[GROUP + ".unicode_input"] = "adbkeyboard"
-                return Outcome.success(SimpleNamespace(values=values))
+                values = {field.field_id: EffectiveValue(field.default, None, False) for field in fields}
+                values[GROUP + ".enabled"] = EffectiveValue(True, target, True, 1)
+                values[GROUP + ".unicode_input"] = EffectiveValue("adbkeyboard", target, True, 1)
+                return Outcome.success(SimpleNamespace(fields=values))
 
         context = SimpleNamespace(actor=object(), role_binding=SimpleNamespace(role=ROLE),
                                   scope=SimpleNamespace(installation_id="install", bot_id="bot-a"))
@@ -89,8 +90,6 @@ class PhoneConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.unicode_input, "adbkeyboard")
 
     def test_phone_json_wins_only_until_the_group_has_an_explicit_value(self):
-        from companion_v2.configuration.models import EffectiveValue
-
         fields = self.fields
         root = tempfile.mkdtemp(prefix="phone-fallback-test-")
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
@@ -106,7 +105,7 @@ class PhoneConfigurationTests(unittest.TestCase):
                           for field in fields}
                 if self.explicit:
                     values[GROUP + ".enabled"] = EffectiveValue(False, target, True, 1)
-                return Outcome.success(SimpleNamespace(values=values))
+                return Outcome.success(SimpleNamespace(fields=values))
 
         context = SimpleNamespace(actor=object(), role_binding=SimpleNamespace(role=ROLE),
                                   scope=SimpleNamespace(installation_id="install", bot_id="bot-a"))
@@ -114,6 +113,31 @@ class PhoneConfigurationTests(unittest.TestCase):
                         .read(context, NOW).enabled)
         self.assertFalse(PhoneSettingsReader(FakeConfiguration(True), fallback_root=root)
                          .read(context, NOW).enabled)
+
+    def test_verified_aliases_fill_missing_fields_without_resurrecting_a_reset(self):
+        alias = replace(self.target, role=replace(ROLE, subject_id="旧人格"))
+        other_bot = replace(alias, bot_id="other-bot")
+        adb_path = GROUP + ".adb_path"
+        enabled = GROUP + ".enabled"
+        path = "E:/Android/platform-tools/adb.exe"
+        changes = {adb_path: path, enabled: True, GROUP + ".connect": "127.0.0.1:37345"}
+        for target in (alias, other_bot):
+            self.owner.write(target, self.fields, changes=changes, reset=(), expected_revision=0, observed_at=NOW)
+        self.owner.write(self.target, self.fields, changes={enabled: False}, reset=(),
+                         expected_revision=0, observed_at=NOW)
+        aliases = {(self.target.bot_id, alias.role.subject_id): ROLE.subject_id}
+        self.owner.merge_role_aliases(aliases, NOW)
+        effective = self.owner.read(self.target, self.fields)
+        self.assertFalse(effective.fields[enabled].value)
+        self.assertEqual(effective.fields[adb_path].value, path)
+        self.assertEqual(effective.fields[GROUP + ".connect"].value, "127.0.0.1:37345")
+        self.assertIsNone(self.owner.read(alias, self.fields).fields[adb_path].source)
+        self.assertEqual(self.owner.read(other_bot, self.fields).fields[adb_path].value, path)
+
+        self.owner.write(self.target, self.fields, changes={}, reset=(adb_path,),
+                         expected_revision=effective.revision, observed_at=NOW)
+        self.owner.merge_role_aliases(aliases, NOW)
+        self.assertEqual(self.owner.read(self.target, self.fields).fields[adb_path].value, "")
 
 
 class PhoneJsonBootstrapTests(unittest.TestCase):

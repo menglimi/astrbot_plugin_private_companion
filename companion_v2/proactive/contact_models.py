@@ -50,6 +50,7 @@ class ContactJob:
     expression_style: dict | None = None
     dialogue_history: dict | None = None
     diagnostic_image_intent: str | None = None
+    diagnostic_generated_image: bool = False
     voice_policy: VoiceReplyPolicy | None = None
     plan: dict | None = None
     plan_call_id: str | None = None

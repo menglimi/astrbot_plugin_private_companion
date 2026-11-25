@@ -85,29 +85,68 @@
 #replyWorkspace.expression-voice-focus .wb-group>.wb-help{margin:0;max-width:72ch;
   color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
 #replyWorkspace.expression-voice-focus .wb-fields{display:grid;
-  grid-template-columns:minmax(0,1fr);
-  gap:var(--sp-3) var(--sp-5);max-width:none;
+  grid-template-columns:minmax(0,1fr);align-items:stretch;
+  gap:var(--sp-3);max-width:none;
   padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
-#replyWorkspace.expression-voice-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
-  gap:var(--sp-1) var(--sp-2);padding:var(--sp-1) 0;
-  border:0;border-radius:0;background:transparent}
+/* 语音配置卡：用轻质圆角子卡 + 左侧柔和覆盖边线替代无图例的高矮参差层轨竖条，
+   保证同行控件底部基线严格对齐、ⓘ 固定右上角不孤立换行、数字框与单位同行不拆散。 */
+#replyWorkspace.expression-voice-focus .wb-field{
+  grid-template-columns:0 minmax(0,1fr);align-items:stretch;
+  gap:var(--sp-1) 0;height:100%;box-sizing:border-box;
+  padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface-soft);
+  transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease;
+}
+#replyWorkspace.expression-voice-focus .wb-field>.wb-rail{display:none}
+#replyWorkspace.expression-voice-focus .wb-field:not(.is-inherited){
+  border-left:3px solid var(--t-accent);background:var(--t-surface);
+}
+#replyWorkspace.expression-voice-focus .wb-field.is-dirty{
+  border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line-firm));
+  border-left:3px solid var(--t-accent-solid);background:var(--t-surface);
+}
+#replyWorkspace.expression-voice-focus .wb-field.is-dirty::before{display:none}
+#replyWorkspace.expression-voice-focus .wb-field:hover{
+  border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line-firm));
+}
 #replyWorkspace.expression-voice-focus .wb-field>.wb-field-main{grid-column:2}
-#replyWorkspace.expression-voice-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
-#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main{grid-template-columns:minmax(0,1fr);gap:0;justify-content:normal;align-items:start}
-#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0;font-size:var(--fs-tiny);
-  font-weight:600;line-height:1.5}
-#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-help{grid-column:1;grid-row:auto;
-  max-width:none;font-size:var(--fs-micro);line-height:1.6}
-#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control{grid-column:1;grid-row:auto;
-  justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
-#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
+#replyWorkspace.expression-voice-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:var(--sp-1)}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main{
+  display:flex;flex-direction:column;height:100%;gap:var(--sp-1);min-width:0;
+}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-label{
+  grid-column:1;grid-row:auto;
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:nowrap;gap:var(--sp-2);
+  min-width:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600;line-height:1.45;
+}
+#replyWorkspace.expression-voice-focus .wb-label .wb-context{flex:none;margin-left:auto}
+#replyWorkspace.expression-voice-focus .wb-label .wb-context-toggle{
+  width:20px;height:20px;opacity:.68;
+  transition:opacity var(--dur-fast) ease,color var(--dur-fast) ease;
+}
+#replyWorkspace.expression-voice-focus .wb-field:hover .wb-context-toggle,
+#replyWorkspace.expression-voice-focus .wb-context-toggle:focus-visible{opacity:1;color:var(--t-accent-ink)}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-help{
+  grid-column:1;grid-row:auto;
+  max-width:none;font-size:var(--fs-micro);line-height:1.6;color:var(--t-text-faint);
+}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control{
+  grid-column:1;grid-row:auto;
+  justify-self:stretch;width:100%;max-width:none;
+  margin-top:auto;padding-top:var(--sp-2);justify-content:flex-start;
+}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-switch{min-height:36px}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{
+  justify-content:flex-start;align-items:center;flex-wrap:wrap;gap:var(--sp-1) var(--sp-2);
+}
 #replyWorkspace.expression-voice-focus .wb-control input,
 #replyWorkspace.expression-voice-focus .wb-control select,
 #replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
   min-height:36px;font-size:var(--fs-tiny)}
+#replyWorkspace.expression-voice-focus .wb-control .wb-number input{flex:0 0 112px;width:112px;min-width:88px;max-width:140px}
+#replyWorkspace.expression-voice-focus .wb-control .wb-number .wb-range{margin-left:auto}
 #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:92px;line-height:1.7;resize:vertical}
-#replyWorkspace.expression-voice-focus .wb-field:hover,
-#replyWorkspace.expression-voice-focus .wb-field.is-inherited{background:transparent}
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-word-editor),
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords),
 #replyWorkspace.expression-voice-focus .wb-group:not([data-wb-group="voice_primary"]):not([data-wb-group="voice_extra"]) .wb-field:has(textarea){
@@ -124,20 +163,21 @@
   #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
     grid-template-columns:repeat(3,minmax(0,1fr))}
 }
-@container wb-group (min-width:760px){
-  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice"] .wb-fields,
-  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_render"] .wb-fields{
-    grid-template-columns:repeat(4,minmax(0,1fr))}
-}
 @container wb-group (min-width:1080px){
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice"] .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_render"] .wb-fields,
   #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_engine"] .wb-fields{
     grid-template-columns:repeat(4,minmax(0,1fr))}
 }
-#replyWorkspace.expression-voice-focus .wb-actions{grid-column:1/-1;position:sticky;bottom:var(--sp-2);z-index:4;
-  margin:var(--sp-1) 0 0;padding:var(--sp-2) var(--sp-3);
-  border:1px solid var(--t-line);border-radius:var(--r-sm);
-  background:color-mix(in srgb,var(--t-surface-raised) 92%,transparent);
-  backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
+#replyWorkspace.expression-voice-focus .wb-actions{grid-column:1/-1;position:static;bottom:auto;z-index:4;
+  margin:var(--sp-1) 0 0;padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  background:var(--t-surface);box-shadow:none}
+#replyWorkspace.expression-voice-focus .wb-actions.is-dirty{
+  position:sticky;bottom:var(--sp-3);z-index:6;
+  border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line-firm));
+  background:var(--t-surface-raised);box-shadow:var(--t-shadow-lift);
+}
 
 @container expression-modules (max-width:760px){
   .voice-hero{grid-template-columns:minmax(0,1fr)}
@@ -148,8 +188,12 @@
   .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:760px){
-  /* 手机上常驻底部保存条会遮住字段，改成随内容排在最后。 */
-  #replyWorkspace.expression-voice-focus .wb-actions{position:static;bottom:auto}
+  /* 手机上常驻底部保存条会遮住字段，脏态也统一随内容排在最后。 */
+  #replyWorkspace.expression-voice-focus .wb-actions,
+  #replyWorkspace.expression-voice-focus .wb-actions.is-dirty{position:static;bottom:auto}
+}
+@media(pointer:coarse),(max-width:760px){
+  #replyWorkspace.expression-voice-focus .wb-label .wb-context-toggle{width:32px;height:32px;opacity:.82}
 }
 @media(max-width:560px){
   #replyWorkspace.expression-voice-focus .wb-fields,
@@ -164,7 +208,7 @@
   .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
 }
 @media(prefers-reduced-motion:reduce){
-  .voice-wave i{transition:none}
+  .voice-wave i,#replyWorkspace.expression-voice-focus .wb-field,#replyWorkspace.expression-voice-focus .wb-label .wb-context-toggle{transition:none}
 }
 
 
@@ -193,7 +237,8 @@
 .voice-global-body{padding:var(--sp-3) var(--sp-4) var(--sp-4);border-top:1px solid var(--t-line)}
 .voice-global-body .host-options-jumps{margin:0 0 var(--sp-3)}
 @media(max-width:560px){
-  .voice-global-summary{align-items:flex-start;flex-direction:column;gap:var(--sp-1)}
+  .voice-global-summary{position:relative;align-items:flex-start;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) calc(var(--sp-5) + var(--sp-3)) var(--sp-3) var(--sp-3)}
+  .voice-global-summary::after{position:absolute;top:var(--sp-3);right:var(--sp-3)}
   .voice-global-body{padding:var(--sp-3)}
 }
 

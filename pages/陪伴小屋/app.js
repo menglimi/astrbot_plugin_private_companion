@@ -523,6 +523,10 @@ async function probeHost(){
     toast(error?.message||'配置接续失败，请在「开始使用」页查看状态后重试。');
     navigate('manage','setup');
   });
+  if(window.CompanionMemoryCompanionHint){
+    window.CompanionMemoryCompanionHint.subscribe(()=>renderShellSide());
+    void window.CompanionMemoryCompanionHint.load().then(()=>renderShellSide());
+  }
 }
 function onProductChanged(reason){
   if(reason?.kind==='browser-preferences'){updateHostChrome();if(reason.message)toast(reason.message);return;}
@@ -760,16 +764,23 @@ function renderStageBar(){
 function liteHomeSuspended(){
   return litePerformanceMode&&(document.hidden||Boolean(window.CompanionShell?.section));
 }
-let shellSideHost=null,shellSideStateCard='',shellSideAge='',shellSideSchedule='';
+function memoryCompanionHintCard(){
+  const api=window.CompanionMemoryCompanionHint;
+  if(!api)return '';
+  const status=api.current();
+  if(!status||!api.shouldShowBanner(status))return '';
+  return api.renderCard(status,{compact:true,allowDismiss:true,context:'home'});
+}
+let shellSideHost=null,shellSideHint='',shellSideStateCard='',shellSideAge='',shellSideSchedule='';
 function renderShellSide(){
   const host=$('#shellSide');
   if(!host||liteHomeSuspended())return;
   host.setAttribute('aria-label',arrangementDraft?'布置房间工作台':'此刻的状态与今日安排');
   if(arrangementDraft)return;
-  const nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
+  const nextHint=memoryCompanionHintCard(),nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
   const rendered=host===shellSideHost&&Boolean(host.innerHTML)&&!host.innerHTML.includes('id="roomEditor"');
-  if(rendered&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
-  if(rendered&&nextStateCard===shellSideStateCard){
+  if(rendered&&nextHint===shellSideHint&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
+  if(rendered&&nextHint===shellSideHint&&nextStateCard===shellSideStateCard){
     const ageNode=host.querySelector?.('[data-home-state-age]');
     const agendaHost=host.querySelector?.('[data-home-agenda-clock]');
     const ageCompatible=nextAge===shellSideAge||(Boolean(ageNode)&&Boolean(nextAge));
@@ -789,8 +800,9 @@ function renderShellSide(){
       return;
     }
   }
-  host.innerHTML=homeStateBand()+homeScheduleBand();
+  host.innerHTML=nextHint+homeStateBand()+homeScheduleBand();
   shellSideHost=host;
+  shellSideHint=nextHint;
   shellSideStateCard=nextStateCard;
   shellSideAge=nextAge;
   shellSideSchedule=nextSchedule;
@@ -1316,7 +1328,7 @@ function mountPanelWorkspaces(){
     :window.CompanionUnderstandingPage?.unmount());
   const expressionHost=$('#expressionWorkspace');
   if(expressionHost){
-    const selected=learningScope('expression');
+    const selected=learningScope('expression',product.selection())||learningScope('expression');
     guarded('表达学习',()=>selected
       ?window.CompanionExpressionLearningPage?.mount(expressionHost,{replyApi:selected.role.reply_api,
         scopeKind:selected.target.scope_kind,scopeKey:selected.key,
@@ -4671,9 +4683,7 @@ function renderConfigEditors(){
       'device.phone':{navigationLimit:0,onStatus:status=>setup?.phoneSetup?.syncStatus(status)}
     });
     if(editor)configEditorMounts.push(editor);
-    const role=product.role();
-    const configApi=role?.config_api||(role?.reply_api?.endsWith('/reply')?role.reply_api.slice(0,-6)+'/config':'');
-    window.CompanionPhoneSetup?.mount(setup,{editor,configApi});
+    window.CompanionPhoneSetup?.mount(setup,{editor});
   }
    /* proactive.contact（160 项、四层）同样长期是「编辑器与声明都在、却没有挂载点」
       的缺口——它连编辑器与声明都没有。主动联系页保留完整直接配置；感知页按来源
@@ -5611,18 +5621,18 @@ function renderUnderstanding(){
       <div class="understanding-stats" data-understanding-stats="overview" aria-live="polite"></div>
       <div class="understanding-shortcuts">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="decision">
-          <span><strong>群聊回应理解</strong></span>${I('arrow-up-right')}
+          <span><strong>群聊回应理解</strong><small>调整群聊唤醒、旁听与回应判断</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="identity">
-          <span><strong>关系站位</strong></span>${I('arrow-up-right')}
+          <span><strong>关系站位</strong><small>查看角色与私聊、群聊成员关系</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-understanding-scroll="permissions">
-          <span><strong>角色级理解许可</strong></span>${I('arrow-up-right')}
+          <span><strong>角色级理解许可</strong><small>定位到下方私聊与群聊许可开关</small></span>${I('arrow-up-right')}
         </button>
       </div>
       <section id="understandingPermissions" class="understanding-permissions" aria-label="适用范围">
         <header class="understanding-panel-heading">
-          <div><span>子面板 06</span><h3>适用范围</h3></div>
+          <div><span>角色级默认</span><h3>适用范围</h3></div>
           <span class="understanding-scope-badge">角色级 · 与角色共用</span>
         </header>
         <div data-understanding-editor-slot="overview"><div id="contextImageWorkspace" class="understanding-editor-workspace"></div></div>
@@ -5633,10 +5643,10 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="image"></div>
       <div class="understanding-shortcuts understanding-shortcuts-two">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="decision">
-          <span><strong>身份与现实承诺护栏</strong></span>${I('arrow-up-right')}
+          <span><strong>身份与现实承诺护栏</strong><small>管理看图与现实承诺的安全边界</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="models">
-          <span><strong>识图模型</strong></span>${I('arrow-up-right')}
+          <span><strong>识图模型</strong><small>配置图像理解与视觉转述路由</small></span>${I('arrow-up-right')}
         </button>
       </div>
     </section>
@@ -5645,7 +5655,7 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="video"></div>
       <div class="understanding-shortcuts understanding-shortcuts-one">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="models">
-          <span><strong>视频转述模型</strong></span>${I('arrow-up-right')}
+          <span><strong>视频转述模型</strong><small>配置原生视频理解与抽帧视觉模型</small></span>${I('arrow-up-right')}
         </button>
       </div>
     </section>
@@ -5658,12 +5668,20 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="web">${configEditors('webUnderstandingWorkspace',['web_understanding'],'网页理解')}</div>
     </section>
     <section class="understanding-panel" role="tabpanel" data-understanding-panel="forwards" hidden>
-      <div class="understanding-stats" data-understanding-stats="forwards" aria-live="polite"></div>
-      <button type="button" class="understanding-shortcut understanding-host-link" data-go="manage" data-manage="host">
-        <span><strong>转发摄取上限</strong></span>${I('arrow-up-right')}
-      </button>
+      <div class="understanding-stats understanding-stats-compact" data-understanding-stats="forwards" aria-live="polite"></div>
+      <section class="understanding-card understanding-forward-window-card" aria-label="当前窗口合并转发改写">
+        <header class="understanding-panel-heading">
+          <div><span>当前窗口</span><h3>合并转发改写开关</h3></div>
+          <span class="understanding-scope-badge">可按窗口覆盖 · 可继承角色默认</span>
+        </header>
+        <div data-understanding-editor-slot="forwards"></div>
+      </section>
       <div id="forwardIntakeWorkspace" class="understanding-forward-workspace"></div>
-      <div data-understanding-editor-slot="forwards"></div>
+      <div class="understanding-shortcuts understanding-shortcuts-one">
+        <button type="button" class="understanding-shortcut understanding-host-link" data-go="manage" data-manage="host">
+          <span><strong>账号与会话</strong><small>检查宿主连接、V2 初始化与运行状态</small></span>${I('arrow-up-right')}
+        </button>
+      </div>
     </section>
   </div>`;
 }
@@ -5787,9 +5805,8 @@ function learningChoices(key){
     .filter(role=>matchesCottageRole(target,role)&&learningRoleApi(target,role,key))
     .map(role=>({target,role:{...role,bot_id:target.bot_id}})));
 }
-function learningScope(key){
+function learningScope(key,selection=key==='expression'?product.roleSelection?.():product.selection()){
   const choices=learningChoices(key);
-  const selection=key==='expression'?product.roleSelection?.():product.selection();
   const found=choices.find(item=>item.target.target_id===selection?.target_id&&item.role.role_id===selection?.role_id);
   return found?{...found,key:JSON.stringify([key,found.target.bot_id,found.target.target_id,found.role.role_id])}:null;
 }
@@ -5853,7 +5870,9 @@ function renderLearningPage(){
   }else if(learningTab==='review'){
     content=`<section id="learningReviewWorkspace" class="learning-review-workspace" aria-label="学习审阅中心">${consoleLoading('正在汇总待审阅内容…')}</section>`;
   }else if(learningTab==='expression'){
+    const group=learningScope('expression',product.selection())?.target.scope_kind==='group';
     content=learningExpressionSources().length?`
+        ${group?renderExpressionLearning():''}
         <section id="expressionSignalsWorkspace" class="expression-signals-workspace" aria-label="表达规则库">${consoleLoading('正在读取表达规则…')}</section>
         <section id="expressionSamplesWorkspace" class="expression-samples-workspace" aria-label="表达学习观察素材">${consoleLoading('正在读取观察素材…')}</section>`
       :`<div class="learning-hub-empty" role="status">暂无表达学习记录</div>`;
@@ -7046,6 +7065,16 @@ function openSearch(initialQuery=''){
 }
 document.addEventListener('click',event=>{
   const el=event.target.closest('button,a');if(!el)return;
+  if(el.dataset.mcHintAction&&window.CompanionMemoryCompanionHint?.handleAction){
+    if(!el.closest('#memoryWorkspace')&&!el.closest('.setup-shell')){
+      event.preventDefault();
+      void window.CompanionMemoryCompanionHint.handleAction(el.dataset.mcHintAction,{
+        onUpdate:()=>renderShellSide(),
+        notify:message=>{if(message)toast(message);},
+      });
+      return;
+    }
+  }
   if(el.hasAttribute('data-profile-avatar-remove')){
     event.preventDefault();setProfileAvatar('');toast('头像已移除，保存角色档案后生效');return;
   }

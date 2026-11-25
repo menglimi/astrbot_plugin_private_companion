@@ -175,7 +175,7 @@ test("contact-page.css：修复拨盘区 170px 挤压、素材工具栏溢出与
   assert.match(css, /@container\s+ct-main\s*\(\s*max-width:\s*780px\s*\)[\s\S]*?\.ct-controls\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
   assert.match(css, /\.ct-material-tools\s*\{[^}]*repeat\(\s*auto-fit\s*,\s*minmax\(\s*min\(\s*160px\s*,\s*100%\s*\)\s*,\s*1fr\s*\)\)/);
   assert.match(css, /\.ct-field-pair\s*\{[^}]*repeat\(\s*2\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
-  assert.match(css, /calc\(\s*var\(--sp-1\)\s*\*\s*-1\s*\)/);
+  assert.match(css, /calc\(\s*\(\s*var\(--ct-track\)\s*-\s*var\(--ct-thumb\)\s*\)\s*\/\s*2\s*\)/);
 });
 
 test("maintenance-page.css：4 列页签导航、缓存/联动容器折行与高对比语义色", () => {

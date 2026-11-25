@@ -328,9 +328,9 @@ test('expression settings expose per-scope collection controls and preserve stor
   await flush();
   assert.match(node.innerHTML, /从私聊自动收录/);
   assert.match(node.innerHTML, /从群聊自动收录/);
-  assert.match(node.innerHTML, /允许主动消息带图/);
-  assert.match(node.innerHTML, /模型要图后的发送概率 \/ %/);
-  assert.match(node.innerHTML, /不是每条回复\/主动消息的带图率/);
+  assert.match(node.innerHTML, /允许主动消息带表情包/);
+  assert.match(node.innerHTML, /表情包触发概率 \/ %/);
+  assert.match(node.innerHTML, /主动联系使用表情包需开启/);
   assert.match(node.innerHTML, /私聊收录概率 \/ %/);
   assert.match(node.innerHTML, /value="10"/);
   assert.match(node.innerHTML, /semantic-catalog-stats/);

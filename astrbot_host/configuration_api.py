@@ -178,7 +178,11 @@ class ConfigurationWebAPI:
             raw = await request.body()
             if request.query or len(raw) > 2048:
                 raise ValueError("invalid phone connection request")
-            data = _document(raw, expected={"action"}, optional=("address", "code", "serial", "edit_token", "operation_key"))
+            data = _document(raw, expected={"action"},
+                             optional=("address", "code", "serial", "edit_token", "operation_key", "include_diagnostics"))
+            include_diagnostics = data.pop("include_diagnostics", False)
+            if type(include_diagnostics) is not bool:
+                raise ValueError("invalid diagnostic flag")
             controller = self.controller
             if controller._terminated:
                 raise TaskError("staging_host_terminated", "plugin is stopped")
@@ -189,7 +193,8 @@ class ConfigurationWebAPI:
 
             def connect():
                 operator = dashboard_operator(runtime, username, at=controller.now())
-                return PhoneManagement(session.application, context).connection(operator, data)
+                return PhoneManagement(session.application, context).connection(
+                    operator, data, include_diagnostics=include_diagnostics)
 
             result = await asyncio.to_thread(connect)
             if data.get("action") == "use":

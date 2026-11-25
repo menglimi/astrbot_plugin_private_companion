@@ -39,11 +39,13 @@ def bedtime_at(owner, local_day: date, timezone_id: str, local_time: time, maxim
 
 def next_bedtime(now: datetime, owner, timezone_id: str, local_time: time, maximum_minutes: int) -> datetime:
     zone = ZoneInfo(timezone_id)
-    day = now.astimezone(zone).date()
-    candidate = bedtime_at(owner, day, timezone_id, local_time, maximum_minutes)
-    if candidate < now:
-        candidate = bedtime_at(owner, day + timedelta(days=1), timezone_id, local_time, maximum_minutes)
-    return candidate
+    # A late bedtime from the previous date can fall after midnight.
+    day = (now.astimezone(zone) - timedelta(minutes=maximum_minutes)).date()
+    while True:
+        candidate = bedtime_at(owner, day, timezone_id, local_time, maximum_minutes)
+        if candidate >= now:
+            return candidate
+        day += timedelta(days=1)
 
 
 def sleep_rhythm(now: datetime, next_sleep_at: datetime | None, body_sleep: dict | None) -> dict:

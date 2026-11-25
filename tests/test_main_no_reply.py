@@ -113,6 +113,39 @@ class MainNoReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event.stopped)
         self.assertFalse(getattr(event, "call_llm", False))
 
+    async def test_empty_private_reply_is_recorded_after_the_message_task(self):
+        from astrbot.core.message.message_event_result import MessageChain
+        from astrbot.core.provider.entities import LLMResponse
+        from tests.test_core_reply_pipeline import PipelineEvent
+
+        for index, outcome in enumerate(("empty", "sent", "silent")):
+            with self.subTest(outcome=outcome):
+                event = PipelineEvent()
+                event_ref = f"{index:032x}"
+                prepared = {"channel": "private", "event_ref": event_ref, "origin_key": self.target.key}
+                query = "SELECT reason_code, code FROM inbound_no_replies WHERE event_ref = ?"
+
+                async def message_task():
+                    ENTRY.prepare_core_reply_event(event, prepared, authorize=AsyncMock())
+                    response = LLMResponse(role="assistant",
+                        completion_text="<pc_reaction_expression> </pc_reaction_expression>")
+                    await self.plugin.observe_companion_model_session(event, response)
+                    await self.plugin.observe_companion_core_agent_done(event, None, response)
+                    self.assertEqual(response.completion_text, "")
+                    self.assertIsNone(self.runtime.read_one(query, (event_ref,)))
+                    if outcome == "sent":
+                        await event.send(MessageChain().message("工具已投递正文"))
+                    elif outcome == "silent":
+                        event.stop_event()
+
+                await asyncio.create_task(message_task())
+                await asyncio.sleep(0)  # The task's delivery observer runs on the next loop turn.
+                row = self.runtime.read_one(query, (event_ref,))
+                if outcome == "empty":
+                    self.assertEqual((row["reason_code"], row["code"]), ("core_reply_no_delivery", "empty_result"))
+                else:
+                    self.assertIsNone(row)
+
     async def test_unregistered_persona_suppresses_astrbot_default_reply(self):
         self.staging.claims = lambda _event: True
         self.staging.target_for_event = lambda _event: self.target

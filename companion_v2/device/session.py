@@ -111,9 +111,9 @@ class PhoneObservation:
     stable: bool = True
     observed_at: str = field(default_factory=_now)
 
-    def prompt_text(self) -> str:
+    def prompt_text(self, *, annotated: bool = True) -> str:
         lines = [f"屏幕 {self.width}x{self.height}，第 {self.step} 步，截图摘要 {self.screenshot_sha256[:12]}。"]
-        if self.screenshot:
+        if self.screenshot and annotated:
             if self.stable:
                 lines.append("已附上截图：红色网格每 100px 一条，数字是坐标；绿框为可点节点，框内 [n] 是节点序号。")
             else:
@@ -183,26 +183,39 @@ class PhoneSession:
         self.ime_restore_seconds = ime_restore_seconds
         self._started = 0.0
 
-    def observe(self, step: int) -> PhoneObservation:
-        error = take_ime_restore_error(self.client)
-        if error is not None:
-            raise error
-        self.client.ensure_interactive()
+    def observe(self, step: int, *, read_only: bool = False) -> PhoneObservation:
+        if read_only:
+            self.client.require_readable_screen()
+        else:
+            error = take_ime_restore_error(self.client)
+            if error is not None:
+                raise error
+            self.client.ensure_interactive()
         width, height = self.client.screen_size()
         first = self.client.screenshot()
-        elements = self.client.ui_dump()
+        elements = self._screen_elements(read_only)
         second = self.client.screenshot()
         stable = first == second
         if not stable:
             # The tree is slow enough to describe the next frame.  Re-dump once
             # against a fresh screenshot; if it still moves, say so instead of
             # drawing boxes that no longer match the picture.
-            elements = self.client.ui_dump()
+            elements = self._screen_elements(read_only)
             third = self.client.screenshot()
             stable = third == second
             second = third
+        if read_only:
+            self.client.require_readable_screen()
         return PhoneObservation(step, width, height, elements,
                                 hashlib.sha256(second).hexdigest(), len(second), second, stable)
+
+    def _screen_elements(self, read_only: bool) -> tuple[UiElement, ...]:
+        try:
+            return self.client.ui_dump()
+        except AdbError as error:
+            if read_only and error.code in ("adb_ui_failed", "adb_ui_invalid"):
+                return ()
+            raise
 
     def execute(self, action: PhoneAction) -> str:
         if action.kind not in self.allowed:

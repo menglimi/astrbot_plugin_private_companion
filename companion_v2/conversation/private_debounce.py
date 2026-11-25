@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 DEFAULTS = {
     "private_debounce_enabled": True,
+    "private_debounce_semantic_enabled": False,
     "private_debounce_min_ms": 1500,
     "private_debounce_max_ms": 4000,
     "private_debounce_total_ms": 8000,
@@ -39,9 +40,10 @@ class Policy:
     min_seconds: float = 1.5
     max_seconds: float = 4.0
     total_seconds: float = 8.0
+    semantic_enabled: bool = False
 
     def __post_init__(self):
-        if type(self.enabled) is not bool:
+        if type(self.enabled) is not bool or type(self.semantic_enabled) is not bool:
             raise ValueError("private debounce switch must be boolean")
         for name in ("min_seconds", "max_seconds", "total_seconds"):
             value = getattr(self, name)
@@ -53,9 +55,9 @@ class Policy:
             raise ValueError("private debounce total is shorter than one window")
 
     @classmethod
-    def from_milliseconds(cls, enabled, minimum, maximum, total):
+    def from_milliseconds(cls, enabled, minimum, maximum, total, *, semantic_enabled=False):
         return cls(enabled=enabled, min_seconds=minimum / 1000,
-                   max_seconds=maximum / 1000, total_seconds=total / 1000)
+                   max_seconds=maximum / 1000, total_seconds=total / 1000, semantic_enabled=semantic_enabled)
 
 
 def visible_characters(text):

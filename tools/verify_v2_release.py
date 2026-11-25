@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -25,6 +26,7 @@ MIGRATION_ACCEPTANCE_MODULES = (
     "tests.test_storage_api",
     "tests.test_data_root_compat",
     "tests.test_configuration_migration",
+    "tests.test_legacy_discovery_profile_state",
     "tests.test_legacy_persona_mapping",
     "tests.test_upgrade_source",
     "tests.test_astrbot_native",
@@ -286,14 +288,21 @@ def main():
     args = parser.parse_args()
     report = verify(args.release, args.extract_to)
     if args.host_check:
-        # These checks run only from the extracted candidate package and use local doubles.
+        source_tests = Path(__file__).resolve().parents[1] / "tests"
+        if not (source_tests / "multi_life_entry_process.py").is_file():
+            raise ValueError("--host-check requires the tests directory from the source checkout")
+        # Test helpers resolve the plugin root relative to their own files.
         with TemporaryDirectory(prefix="companion-v2-release-host-check-") as temporary:
-            environment = _host_check_environment(temporary, report["core"])
-            output = _run_host_process(report["core"], environment,
+            candidate = Path(temporary) / CORE_ID
+            shutil.copytree(report["core"], candidate)
+            shutil.copytree(source_tests, candidate / "tests", ignore=shutil.ignore_patterns("__pycache__"))
+            core = str(candidate)
+            environment = _host_check_environment(temporary, core)
+            output = _run_host_process(core, environment,
                 ["-m", "tests.multi_life_entry_process"],
                 "candidate host lifecycle check", timeout=90)
-            report["migration_acceptance"] = _run_migration_acceptance(report["core"], environment)
-            reload_output = _run_host_process(report["core"], environment,
+            report["migration_acceptance"] = _run_migration_acceptance(core, environment)
+            reload_output = _run_host_process(core, environment,
                 ["-m", "tests.plugin_reload_process"],
                 "candidate plugin reload check", timeout=300)
             report["reload_check"] = json.loads(next(line for line in reversed(

@@ -18,14 +18,16 @@ class RoleBodyClock:
     def __init__(self, tasks, life):
         self.tasks, self.life, self.runtime = tasks, life, tasks.runtime
 
-    def _records(self, context, *, states=None, kind=None, limit=200):
+    def _records(self, context, *, states=None, kind=None, request_id=None, limit=200):
         owner_key = digest(role_owner(context))
         state_clause = "" if not states else " AND state IN (" + ",".join("?" for _ in states) + ")"
         kind_clause = "" if kind is None else " AND json_extract(record_json, '$.work.kind') = ?"
+        request_clause = "" if request_id is None else " AND json_extract(record_json, '$.work.request_id') = ?"
         rows = self.runtime.read_all("""SELECT record_json FROM role_activities
             WHERE owner_key = ? AND json_extract(record_json, '$.scope.kind') = 'private'"""
-            + state_clause + kind_clause + " ORDER BY updated_at DESC, activity_id DESC LIMIT ?",
-            (owner_key, *(state.value for state in (states or ())), *((kind,) if kind else ()), limit))
+            + state_clause + kind_clause + request_clause + " ORDER BY updated_at DESC, activity_id DESC LIMIT ?",
+            (owner_key, *(state.value for state in (states or ())), *((kind,) if kind else ()),
+             *((request_id,) if request_id is not None else ()), limit))
         records = []
         for row in rows:
             try:
@@ -44,6 +46,9 @@ class RoleBodyClock:
 
     def episodes(self, context):
         return tuple(reversed(self._records(context, kind="sleep")))
+
+    def scheduled_sleep(self, context, request_id):
+        return next(iter(self._records(context, kind="sleep", request_id=request_id, limit=1)), None)
 
     def workload(self, context, *, now=None):
         now = now or self.tasks.now()

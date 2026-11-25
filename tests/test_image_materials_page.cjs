@@ -453,3 +453,36 @@ test("点击每日穿搭图复用高清 Lightbox 并校验左侧配置卡操作�
   assert.match(CSS, /\.output-page \.wb-save,\.output-page \.wb-actions \.button\{[^}]*white-space:nowrap/);
   assert.match(CSS, /\.image-materials-outfit-trigger\{[^}]*cursor:zoom-in/);
 });
+
+test("衣柜默认隐藏已撤回衣物，点击切换按钮后单独分组展示", async () => {
+  const current = inventory({
+    wardrobe: [
+      {item_id: "item-active", name: "浅灰羊毛大衣", tags: ["秋冬"], state: "active", asset_id: null},
+      {item_id: "item-old-1", name: "旧版校服", tags: ["已淘汰"], state: "withdrawn", asset_id: null},
+      {item_id: "item-old-2", name: "旧版睡衣", tags: ["居家"], state: "withdrawn", asset_id: null},
+    ],
+  });
+  current.wardrobe_counts = {active: 1, withdrawn: 2};
+  const fixture = harness({response: request => {
+    if (request.pathname.endsWith("/album")) return Promise.resolve(ok({items: [], next_cursor: null}));
+    if (request.pathname.endsWith("/daily-outfit/photo")) return Promise.resolve(ok(emptyOutfit));
+    return Promise.resolve(ok(current));
+  }});
+  fixture.page.mount(fixture.node);
+  await tick();
+
+  assert.match(fixture.node.innerHTML, /1 \/ 24 件生效/);
+  assert.match(fixture.node.innerHTML, /浅灰羊毛大衣/);
+  assert.doesNotMatch(fixture.node.innerHTML, /旧版校服/);
+  assert.doesNotMatch(fixture.node.innerHTML, /旧版睡衣/);
+  assert.match(fixture.node.innerHTML, /显示已撤回 \(2\)/);
+
+  fixture.node.click("[data-im-toggle-withdrawn-wardrobe]");
+  assert.match(fixture.node.innerHTML, /隐藏已撤回/);
+  assert.match(fixture.node.innerHTML, /已撤回衣物（2）/);
+  assert.match(fixture.node.innerHTML, /旧版校服/);
+  assert.match(fixture.node.innerHTML, /旧版睡衣/);
+
+  fixture.node.click("[data-im-toggle-withdrawn-wardrobe]");
+  assert.doesNotMatch(fixture.node.innerHTML, /旧版校服/);
+});

@@ -55,7 +55,9 @@ from companion_v2.references.wardrobe import (
     WardrobeConfigurationOwner,
     configuration_fields as wardrobe_fields,
 )
-from companion_v2.storage.generated_album import album_filename, sync_generated_album_folder
+from companion_v2.storage.generated_album import (
+    ALBUM_HIDDEN_KEY_PREFIX, album_filename, hidden_album_ids, sync_generated_album_folder,
+)
 from companion_v2.storage.runtime import StorageRuntime
 
 
@@ -66,7 +68,6 @@ ALBUM_MAX_LIMIT = 60
 ALBUM_SYNC_PAGE_LIMIT = 60
 ALBUM_SELECTION_LIMIT = 24
 ALBUM_EXPORT_BYTES = 32 * 1024 * 1024
-ALBUM_HIDDEN_KEY_PREFIX = "image.album.hidden.v1:"
 ALBUM_THUMBNAIL_SIZE = 360
 ALBUM_THUMBNAIL_QUALITY = 74
 ALBUM_THUMBNAIL_MEMORY_CAP = 512
@@ -402,7 +403,10 @@ class ReferenceMaterialManagement:
         reference_options, wardrobe_options = self._settings(context)
         assets = (*self.repository.list(owner, state=ReferenceState.ACTIVE),
                   *self.repository.list(owner, state=ReferenceState.WITHDRAWN))
-        items = self.repository.list_items(owner, state=None)
+        active_items = self.repository.list_items(owner, state=ReferenceState.ACTIVE)
+        withdrawn_items = self.repository.list_items(owner, state=ReferenceState.WITHDRAWN, order_by_updated=True)
+        items = (*active_items, *withdrawn_items)
+        withdrawn_total = self.repository.count_items(owner, state=ReferenceState.WITHDRAWN)
         reference_views = []
         for asset in assets:
             view = _asset_view(self.repository, owner, asset)
@@ -432,6 +436,7 @@ class ReferenceMaterialManagement:
                           "description": item.description, "tags": item.tags,
                           "asset_id": item.asset_id, "state": item.state.value,
                           "revision": item.revision} for item in items],
+            "wardrobe_counts": {"active": len(active_items), "withdrawn": withdrawn_total},
             "daily_outfit": daily,
         }
 
@@ -541,15 +546,7 @@ class ReferenceMaterialManagement:
         return list(image_ids)
 
     def _hidden_album_ids(self, context):
-        key = ALBUM_HIDDEN_KEY_PREFIX + context.key
-        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?", (key,))
-        if row is None:
-            return set()
-        try:
-            values = json.loads(row["value"])
-        except (TypeError, ValueError):
-            return set()
-        return {item for item in values if type(item) is str and item} if isinstance(values, list) else set()
+        return hidden_album_ids(self.runtime, context)
 
     def _hide_album_ids(self, context, image_ids):
         key = ALBUM_HIDDEN_KEY_PREFIX + context.key

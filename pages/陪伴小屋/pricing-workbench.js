@@ -2,6 +2,7 @@
 "use strict";
 window.CompanionPricingWorkbench = (() => {
   const PRICING_DISPLAY_CACHE_KEY = "companion-pricing-display.v1";
+  const PRICING_UNIT_VIEW_KEY = "companion-pricing-unit-view.v1";
   const MODELS_PENDING_TAB_KEY = "companion-models-pending-tab.v1";
 
   const MODE_OPTIONS = [
@@ -159,6 +160,30 @@ window.CompanionPricingWorkbench = (() => {
     return false;
   }
 
+  function readUnitViewPrefs() {
+    try {
+      if (typeof localStorage === "undefined") return {};
+      const raw = localStorage.getItem(PRICING_UNIT_VIEW_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      const out = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof k === "string" && (v === "fiat" || v === "native")) out[k] = v;
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  function saveUnitViewPrefs(map) {
+    try {
+      if (typeof localStorage === "undefined") return;
+      localStorage.setItem(PRICING_UNIT_VIEW_KEY, JSON.stringify(map || {}));
+    } catch {}
+  }
+
   function createState() {
     return {
       data: null,
@@ -169,6 +194,7 @@ window.CompanionPricingWorkbench = (() => {
       syncingRates: false,
       syncingCatalog: false,
       togglingSource: "",
+      updatingSourceCurrency: "",
       detectingProvider: "",
       selectingKey: "",
       validatingKey: "",
@@ -184,6 +210,8 @@ window.CompanionPricingWorkbench = (() => {
       activeModelByProvider: {},
       openCandidates: {},
       clusterMultDraft: {},
+      sourceUnitView: readUnitViewPrefs(),
+      sourceRateDraft: {},
       exprResults: {},
       search: "",
       residueOpen: false,
@@ -421,7 +449,7 @@ window.CompanionPricingWorkbench = (() => {
     if (mode === "tiered_expr") {
       return {
         mode: "tiered_expr",
-        currency: "USD",
+        currency: rule.currency === "CNY" ? "CNY" : "USD",
         expr: rule.expr == null ? "" : String(rule.expr),
         tiers: (Array.isArray(rule.tiers) ? rule.tiers : []).map((t, idx) => ({
           name: String(t.name || `tier_${idx + 1}`),
@@ -568,7 +596,7 @@ window.CompanionPricingWorkbench = (() => {
         }));
       const out = {
         mode: "tiered_expr",
-        currency: "USD",
+        currency: draftRule.currency === "CNY" ? "CNY" : "USD",
         expr: exprText || null,
         tiers,
         default_expr: defaultText || null,
@@ -704,7 +732,7 @@ window.CompanionPricingWorkbench = (() => {
 
   function isBusy(p) {
     return Boolean(p && (
-      p.busy || p.syncingRates || p.syncingCatalog || p.togglingSource
+      p.busy || p.syncingRates || p.syncingCatalog || p.togglingSource || p.updatingSourceCurrency
       || p.detectingProvider || p.selectingKey || p.resetting || p.clearingResidue
     ));
   }
@@ -933,7 +961,7 @@ window.CompanionPricingWorkbench = (() => {
     }
     if (mode === "tiered_expr") {
       const n = (rule.tiers || []).length;
-      return n ? `表达式 (${n} 档)` : "表达式公式";
+      return n ? `${sym} 表达式 (${n} 档)` : `${sym} 表达式公式`;
     }
     if (mode === "per_turn") {
       return `${sym}${formatRateNumber(rule.price)} / 次调用`;
@@ -942,6 +970,147 @@ window.CompanionPricingWorkbench = (() => {
       return `${sym}${formatRateNumber(rule.price)} / 次请求`;
     }
     return "已配置";
+  }
+
+  function customUnitInfoForSource(src) {
+    if (!src || src.kind !== "newapi") return null;
+    const smeta = src.site_meta && typeof src.site_meta === "object" ? src.site_meta : null;
+    if (!smeta) return null;
+    const qdt = String(smeta.quota_display_type || "").trim().toUpperCase();
+    if (!["CUSTOM", "POINTS", "POINT", "CREDIT"].includes(qdt)) return null;
+    const symbol = String(smeta.custom_currency_symbol || "").trim();
+    if (!symbol || symbol === "¤") return null;
+    const customRate = Number(smeta.custom_currency_exchange_rate);
+    if (!Number.isFinite(customRate) || customRate <= 0) return null;
+    const fiatCurrency = src.currency === "CNY" ? "CNY" : "USD";
+    const fiatSym = currencySymbol(fiatCurrency);
+    const effScaleCandidates = [
+      src.effective_unit_scale,
+      src.fiat_per_base_unit,
+      smeta.effective_unit_scale,
+      smeta.quota_fiat_per_base_unit,
+      smeta.site_recharge_price,
+      smeta.recharge_price,
+    ];
+    let effectiveFiatPerBase = 1;
+    for (const c of effScaleCandidates) {
+      const n = Number(c);
+      if (Number.isFinite(n) && n > 0) {
+        effectiveFiatPerBase = n;
+        break;
+      }
+    }
+    const nativePerFiat = customRate / effectiveFiatPerBase;
+    if (!Number.isFinite(nativePerFiat) || nativePerFiat <= 0) return null;
+    return {
+      sourceId: src.source_id,
+      symbol,
+      customRate,
+      fiatCurrency,
+      fiatSym,
+      fiatLabel: fiatCurrency === "CNY" ? "¥ 人民币" : "$ 美元",
+      effectiveFiatPerBase,
+      nativePerFiat,
+      ratioText: `${formatRateNumber(nativePerFiat)} ${symbol} = ${fiatSym}1`,
+      hasManualRate: src.fiat_per_base_unit != null && Number(src.fiat_per_base_unit) > 0,
+    };
+  }
+
+  function ruleSummaryCustomUnit(rule, customInfo) {
+    if (!rule || typeof rule !== "object" || !customInfo) return "";
+    const cur = rule.currency === "CNY" ? "CNY" : "USD";
+    if (cur !== customInfo.fiatCurrency) return "";
+    const mode = rule.mode || "per_token";
+    const mult = customInfo.nativePerFiat;
+    const sym = customInfo.symbol;
+    const fmt = v => (v == null || !Number.isFinite(Number(v))) ? null : `${formatRateNumber(Number(v) * mult)} ${sym}`;
+    if (mode === "per_token") {
+      if (rule.free || Number(rule.multiplier) === 0) return "";
+      const inp = fmt(rule.input);
+      const cached = fmt(rule.input_cached);
+      const out = fmt(rule.output);
+      if (!inp && !out) return "";
+      return `入 ${inp || "继承"} / 读 ${cached || "—"} / 出 ${out || "继承"} /M`;
+    }
+    if (mode === "per_tier") {
+      const b = rule.base || {};
+      const inp = fmt(b.input);
+      const out = fmt(b.output);
+      if (!inp || !out) return "";
+      return `阶梯 · 基价 ${inp}/${out}`;
+    }
+    if (mode === "per_turn") {
+      const p = fmt(rule.price);
+      return p ? `${p} / 次调用` : "";
+    }
+    if (mode === "per_request") {
+      const p = fmt(rule.price);
+      return p ? `${p} / 次请求` : "";
+    }
+    return "";
+  }
+
+  function dualSummaryParts(rule, customInfo, viewMode = "fiat") {
+    const fiatText = rule ? ruleSummary(rule) : "点击配置单价";
+    const nativeText = (rule && customInfo) ? ruleSummaryCustomUnit(rule, customInfo) : "";
+    if (!nativeText) {
+      return {dual: false, main: fiatText, sub: "", fiatText, nativeText: ""};
+    }
+    const isNative = viewMode === "native";
+    return {
+      dual: true,
+      main: isNative ? nativeText : fiatText,
+      sub: isNative ? `（约 ${fiatText}）` : `（${nativeText}）`,
+      fiatText,
+      nativeText,
+    };
+  }
+
+  function renderDualSummaryInner(rule, customInfo, viewMode = "fiat") {
+    const parts = dualSummaryParts(rule, customInfo, viewMode);
+    if (!parts.dual) return esc(parts.main);
+    return `<span class="pw-dual-main">${esc(parts.main)}</span><span class="pw-dual-sub">${esc(parts.sub)}</span>`;
+  }
+
+  function syncUnitViewInPlace(ctx, sourceId, nextMode) {
+    const {p, render, root} = ctx;
+    p.sourceUnitView ||= {};
+    p.sourceUnitView[sourceId] = nextMode;
+    saveUnitViewPrefs(p.sourceUnitView);
+    try {
+      const container = root?.();
+      if (!container?.querySelectorAll) {
+        render();
+        return;
+      }
+      const toggleBtns = [...container.querySelectorAll("[data-pricing-unit-view]")].filter(
+        el => el.dataset?.pricingUnitView === sourceId,
+      );
+      if (!toggleBtns.length) {
+        render();
+        return;
+      }
+      for (const btn of toggleBtns) {
+        const on = btn.dataset?.unitMode === nextMode;
+        btn.classList?.toggle?.("on", on);
+        btn.setAttribute?.("aria-pressed", on ? "true" : "false");
+      }
+      const dualEls = [...container.querySelectorAll("[data-pw-dual-src]")].filter(
+        el => el.dataset?.pwDualSrc === sourceId,
+      );
+      for (const el of dualEls) {
+        const fiatText = el.dataset?.pwFiat || "";
+        const nativeText = el.dataset?.pwNative || "";
+        if (!fiatText || !nativeText) continue;
+        const isNative = nextMode === "native";
+        const mainEl = el.querySelector?.(".pw-dual-main");
+        const subEl = el.querySelector?.(".pw-dual-sub");
+        if (mainEl) mainEl.textContent = isNative ? nativeText : fiatText;
+        if (subEl) subEl.textContent = isNative ? `（约 ${fiatText}）` : `（${nativeText}）`;
+      }
+    } catch {
+      render();
+    }
   }
 
   function estimateProviderCostMicrousd(item, usdCnyRate = 7.2) {
@@ -1246,6 +1415,58 @@ window.CompanionPricingWorkbench = (() => {
     }
   }
 
+  async function updateSourceCurrency(ctx, sourceId, currencyOverride, opts = {}) {
+    const {p, path, api, render, isCurrent, ticket, fail} = ctx;
+    if (!p.data || p.loading || isBusy(p)) return;
+    const source = (p.data.sources || []).find(item => item.source_id === sourceId);
+    if (!source) return;
+    const nextOverride = currencyOverride === "CNY" || currencyOverride === "USD" ? currencyOverride : "auto";
+    const hasFiatRate = Object.hasOwn(opts, "fiatPerBaseUnit");
+    const rateOnly = Boolean(opts.rateOnly);
+    const reqBody = {
+      source_id: sourceId,
+      currency_override: nextOverride,
+      sync: true,
+      revision: p.data.revision,
+    };
+    if (hasFiatRate) {
+      reqBody.fiat_per_base_unit = opts.fiatPerBaseUnit;
+    }
+    const t = ticket();
+    p.updatingSourceCurrency = sourceId;
+    p.syncNotice = rateOnly
+      ? `正在更新 ${source.label} 的折算率并重新同步…`
+      : `正在更新 ${source.label} 的结算币种并重新同步…`;
+    render();
+    try {
+      const result = await api("POST", path + "/pricing/sources/currency", reqBody, 45000);
+      if (!isCurrent(t)) return;
+      if (hasFiatRate && p.sourceRateDraft) delete p.sourceRateDraft[sourceId];
+      syncDataPreserveDraft(p, result);
+      const labelText = nextOverride === "CNY" ? "人民币 CNY (¥)" : nextOverride === "USD" ? "美元 USD ($)" : "自动识别";
+      p.bad = false;
+      if (rateOnly) {
+        p.syncNotice = result?.sync?.error_count
+          ? `${source.label} 折算率已更新，但重新同步出现异常。`
+          : opts.fiatPerBaseUnit == null
+            ? `${source.label} 已恢复自动折算率并完成重新同步。`
+            : `${source.label} 折算率已更新并完成重新同步。`;
+      } else {
+        p.syncNotice = result?.sync?.error_count
+          ? `${source.label} 币种已设为 ${labelText}，但重新同步出现异常。`
+          : `${source.label} 结算币种已切换为 ${labelText} 并完成重新同步。`;
+      }
+    } catch (err) {
+      if (!isCurrent(t)) return;
+      if ((err?.code || err?.message) === "pricing_config_conflict") p.stale = true;
+      p.bad = true;
+      p.syncNotice = fail(err, rateOnly ? "更新价格源折算率失败。" : "更新价格源币种失败。");
+    } finally {
+      p.updatingSourceCurrency = "";
+      if (isCurrent(t)) render();
+    }
+  }
+
   async function detectNewApi(ctx, providerId) {
     const {p, path, api, render, isCurrent, ticket, fail} = ctx;
     if (!p.data || p.loading || isBusy(p)) return;
@@ -1262,10 +1483,32 @@ window.CompanionPricingWorkbench = (() => {
       const det = result?.detection || {};
       syncDataPreserveDraft(p, result);
       if (det.ok) {
+        const displayName = det.site_name || det.source_id;
+        let curNote = "";
+        if (det.quota_display_type === "CUSTOM" && det.custom_currency_symbol) {
+          const sym = det.custom_currency_symbol;
+          const fiatLabel = det.currency === "CNY" ? "CNY ¥" : "USD $";
+          const crate = Number(det.custom_currency_exchange_rate);
+          const scale = Number(det.effective_unit_scale || det.recharge_price || 1);
+          const ratioStr = Number.isFinite(crate) && crate > 0 && Number.isFinite(scale) && scale > 0
+            ? `（${formatRateNumber(crate / scale)} ${sym} = ${det.currency === "CNY" ? "¥" : "$"}1）`
+            : "";
+          curNote = ` · ${fiatLabel}${ratioStr}`;
+        } else if (det.currency === "CNY") {
+          curNote = " · 人民币 CNY";
+        } else if (det.currency === "USD") {
+          curNote = " · 美元 USD";
+        }
         const dedupNote = det.deduplicated ? "（已复用同域名价格源）" : "";
+        const groupNote = det.detected_group && det.detected_group_ratio != null
+          ? ` · 推荐分组 ${det.detected_group} (${formatRateNumber(det.detected_group_ratio)}×)`
+          : "";
+        const skipNote = Number(det.skipped_expr_count) > 0
+          ? ` · 跳过 ${Number(det.skipped_expr_count)} 个特殊私有公式`
+          : "";
         const keyNote = det.needs_key ? " · 返回 0 条模型，可能需要网关密钥或配置可见价格" : "";
         p.bad = false;
-        p.syncNotice = `探测成功：已接入 ${det.source_id}（${Number(det.models) || 0} 个模型）${dedupNote}${keyNote}。`;
+        p.syncNotice = `探测成功：已接入 ${displayName}（${Number(det.models) || 0} 个模型${curNote}）${dedupNote}${groupNote}${skipNote}${keyNote}。`;
       } else {
         p.bad = true;
         p.syncNotice = det.error || "未探测到兼容的 New API /api/pricing 接口。";
@@ -1346,11 +1589,12 @@ window.CompanionPricingWorkbench = (() => {
       return;
     }
     const canon = canonicalizeRule(activeRule);
-    // Strict API contract: POST /pricing/expr/validate ONLY allows expr, tiers, default_expr, cluster_multiplier, sample!
+    // Strict API contract: POST /pricing/expr/validate ONLY allows expr, tiers, default_expr, cluster_multiplier, currency, sample!
     const body = {};
     if (canon.expr) body.expr = canon.expr;
     if (canon.tiers && canon.tiers.length) body.tiers = canon.tiers;
     if (canon.default_expr) body.default_expr = canon.default_expr;
+    if (canon.currency === "CNY" || canon.currency === "USD") body.currency = canon.currency;
     const clusterMult = Number(p.draft.pricing_multipliers?.[item.cluster_id] ?? item.cluster_multiplier ?? 1);
     if (Number.isFinite(clusterMult) && clusterMult !== 1) body.cluster_multiplier = clusterMult;
 
@@ -1521,7 +1765,7 @@ window.CompanionPricingWorkbench = (() => {
       const existingExpr = baseRule?.mode === "tiered_expr" ? cloneRuleForDraft(baseRule) : null;
       p.draft.pricing_rules[targetKey] = existingExpr || {
         mode: "tiered_expr",
-        currency: "USD",
+        currency: prevCurrency,
         expr: "",
         tiers: [],
         default_expr: "",
@@ -1623,7 +1867,16 @@ window.CompanionPricingWorkbench = (() => {
     p.pulseTimer = setTimeout(() => {
       p.pulseProvider = "";
       p.pulseTimer = null;
-      if (!isCurrent || isCurrent(t)) render();
+      if (isCurrent && !isCurrent(t)) return;
+      try {
+        const container = root();
+        const cards = container?.querySelectorAll ? [...container.querySelectorAll("[data-pw-card]")] : [];
+        for (const el of cards) {
+          if (el.dataset?.pwCard === pid || el.classList?.contains?.("is-pulse")) {
+            el.classList?.remove?.("is-pulse");
+          }
+        }
+      } catch {}
     }, 1600);
   }
 
@@ -1728,15 +1981,26 @@ window.CompanionPricingWorkbench = (() => {
         `状态：${meta.label}`,
         `模型数：${formatTokensFull(src.model_count)}`,
       ];
+      if (src.kind === "newapi") {
+        const smeta = src.site_meta && typeof src.site_meta === "object" ? src.site_meta : {};
+        const curStr = src.currency === "CNY" ? "CNY (¥)" : "USD ($)";
+        const qdt = smeta.quota_display_type || "";
+        tipParts.push(`结算币种：${curStr}${src.currency_override && src.currency_override !== "auto" ? "（手动覆盖）" : qdt === "CUSTOM" ? `（站内自定义单位 ${smeta.custom_currency_symbol || ""}）` : ""}`);
+        if (smeta.recharge_price != null) tipParts.push(`站内参考充值价：1 单位 = ¥${formatRateNumber(smeta.recharge_price)}`);
+      }
       if (src.last_ok_at) tipParts.push(`最近成功：${formatShortTime(src.last_ok_at)}`);
       if (src.last_sync_at && src.last_sync_at !== src.last_ok_at) tipParts.push(`最近尝试：${formatShortTime(src.last_sync_at)}`);
       if (src.error) tipParts.push(`错误：${src.error}`);
       if (src.needs_key) tipParts.push("提示：该网关返回 0 条模型，可能需要鉴权密钥");
       tipParts.push("点击切换启用/停用");
+      const curBadgeHtml = src.kind === "newapi" && src.currency
+        ? `<span class="pw-source-cur">${esc(src.currency === "CNY" ? "¥" : "$")}</span>`
+        : "";
       return `<button type="button" class="pw-source-chip ${meta.cls}${src.enabled ? " is-enabled" : ""}" data-pricing-source-toggle="${esc(src.source_id)}" title="${esc(tipParts.join("\n"))}" ${locked ? "disabled" : ""}>
         <span class="pw-source-dot" aria-hidden="true"></span>
         <span class="pw-source-status">${esc(busyThis ? "切换中" : meta.label)}</span>
         <span class="pw-source-label">${esc(src.label)}</span>
+        ${curBadgeHtml}
         <span class="pw-source-count">${formatTokensFull(src.model_count)}</span>
       </button>`;
     }).join("");
@@ -1804,7 +2068,7 @@ window.CompanionPricingWorkbench = (() => {
   function renderNestedOverrideEditor(pid, idx, overrideRule, locked) {
     const rule = overrideRule || cloneRuleForDraft({mode: "per_token", currency: "USD"});
     const mode = rule.mode || "per_token";
-    const cur = mode === "tiered_expr" ? "USD" : (rule.currency === "CNY" ? "CNY" : "USD");
+    const cur = rule.currency === "CNY" ? "CNY" : "USD";
     const sym = currencySymbol(cur);
     let body = "";
     if (mode === "per_token") {
@@ -1826,8 +2090,8 @@ window.CompanionPricingWorkbench = (() => {
       </div>`;
     } else if (mode === "tiered_expr") {
       body = `<div class="pw-field">
-        <span class="pw-label">覆盖表达式 (USD 微美元口径)</span>
-        <textarea rows="2" class="pw-mono-input" spellcheck="false" data-pricing-sched-ovr-expr data-pid="${esc(pid)}" data-idx="${idx}" placeholder="例如：v1: p * 1.5 + c * 6" ${locked ? "disabled" : ""}>${esc(rule.expr || "")}</textarea>
+        <span class="pw-label">覆盖表达式 (${cur} 微单位口径)</span>
+        <textarea rows="2" class="pw-mono-input" spellcheck="false" data-pricing-sched-ovr-expr data-pid="${esc(pid)}" data-idx="${idx}" placeholder="例如：tier(&quot;standard&quot;, p * 0.75 + cr * 0.075 + c * 3.75)" ${locked ? "disabled" : ""}>${esc(rule.expr || "")}</textarea>
       </div>`;
     } else {
       body = `<div class="pw-field">
@@ -1845,7 +2109,7 @@ window.CompanionPricingWorkbench = (() => {
         </div>
         <div class="pw-field">
           <span class="pw-label">单价币种</span>
-          <select data-pricing-sched-ovr-currency data-pid="${esc(pid)}" data-idx="${idx}" ${locked || mode === "tiered_expr" ? "disabled" : ""}>
+          <select data-pricing-sched-ovr-currency data-pid="${esc(pid)}" data-idx="${idx}" ${locked ? "disabled" : ""}>
             <option value="USD" ${cur === "USD" ? "selected" : ""}>USD ($)</option>
             <option value="CNY" ${cur === "CNY" ? "selected" : ""}>CNY (¥)</option>
           </select>
@@ -1960,16 +2224,23 @@ window.CompanionPricingWorkbench = (() => {
       summaryPill = `<span class="pw-badge is-muted">内置参考 · ${esc(item.preset_match.label || item.preset_match.preset_id)}</span>`;
     }
 
+    const sourcesById = new Map((p.data?.sources || []).map(s => [s.source_id, s]));
     const tableRows = cands.map(c => {
       const isSelected = sel && sel.price_key === c.price_key;
       const pct = Math.round((Number(c.score) || 0) * 100);
+      const candCustom = customUnitInfoForSource(sourcesById.get(c.source_id));
+      const candViewMode = candCustom ? (p.sourceUnitView?.[candCustom.sourceId] === "native" ? "native" : "fiat") : "fiat";
+      const candParts = dualSummaryParts(c.rule, candCustom, candViewMode);
+      const candDualAttrs = candParts.dual
+        ? ` data-pw-dual-src="${esc(candCustom.sourceId)}" data-pw-fiat="${esc(candParts.fiatText)}" data-pw-native="${esc(candParts.nativeText)}"`
+        : "";
       return `<tr class="${isSelected ? "is-selected" : ""}">
         <td>
           <span class="pw-cand-src">${esc(c.source_label || c.source_id)}</span>
           ${c.is_own_gateway ? ' <span class="pw-badge is-ok">本网关</span>' : ""}
         </td>
         <td class="pw-mono">${esc(c.model_id)}</td>
-        <td class="pw-num">${esc(ruleSummary(c.rule))}</td>
+        <td class="pw-num"${candDualAttrs}>${renderDualSummaryInner(c.rule, candCustom, candViewMode)}</td>
         <td class="pw-num">${pct}%</td>
         <td class="pw-cand-op">
           ${isSelected
@@ -1999,7 +2270,7 @@ window.CompanionPricingWorkbench = (() => {
   function renderModeEditor(p, item, model, activeRule, ruleKey, locked) {
     const pid = item.id;
     const mode = activeRule.mode || "per_token";
-    const cur = mode === "tiered_expr" ? "USD" : (activeRule.currency === "CNY" ? "CNY" : "USD");
+    const cur = activeRule.currency === "CNY" ? "CNY" : "USD";
     const sym = currencySymbol(cur);
 
     if (mode === "per_token") {
@@ -2121,8 +2392,8 @@ window.CompanionPricingWorkbench = (() => {
           ${EXPR_VARIABLES.map(([v, desc]) => `<span class="pw-var-chip"><code>${v}</code>${desc}</span>`).join("")}
         </div>
         <div class="pw-field">
-          <span class="pw-label">计价表达式（兼容 New API <code>v1:</code> 语法，始终按 USD 微美元口径结算）</span>
-          <textarea rows="3" class="pw-mono-input" spellcheck="false" data-pricing-expr-field="expr" data-pid="${esc(pid)}" placeholder="例如：v1: len > 200000 ? (p * 4 + cr * 0.4 + c * 18) : (p * 2 + cr * 0.2 + c * 12)" ${locked ? "disabled" : ""}>${esc(activeRule.expr || "")}</textarea>
+          <span class="pw-label">计价表达式（兼容 New API <code>billing_expr</code> / <code>tier()</code> / <code>v1:</code> 语法，按所选 ${cur} 微单位口径结算）</span>
+          <textarea rows="3" class="pw-mono-input" spellcheck="false" data-pricing-expr-field="expr" data-pid="${esc(pid)}" placeholder="例如：len &lt;= 200000 ? tier(&quot;standard&quot;, p * 2 + cr * 0.2 + c * 12) : tier(&quot;long_context&quot;, p * 4 + cr * 0.4 + c * 18)" ${locked ? "disabled" : ""}>${esc(activeRule.expr || "")}</textarea>
         </div>
         <div class="pw-subblock">
           <div class="pw-subblock-head">
@@ -2137,7 +2408,7 @@ window.CompanionPricingWorkbench = (() => {
         </div>
         <div class="pw-expr-actions">
           <button type="button" class="button small primary" data-pricing-expr-validate="${esc(pid)}" ${locked || validating ? "disabled" : ""}>${validating ? "试算中…" : "验证并试算"}</button>
-          <span class="pw-muted">表达式结果 ÷ 1,000,000 × 聚类倍率 = 美元费用；表达式模式下币种固定为 USD。</span>
+          <span class="pw-muted">表达式结果 ÷ 1,000,000 × 聚类倍率 = 单次 ${cur === "CNY" ? "人民币 (¥)" : "美元 ($)"} 费用；可在上方单价币种处切换 USD / CNY。</span>
         </div>
         ${previewHtml}
       </div>`;
@@ -2162,7 +2433,7 @@ window.CompanionPricingWorkbench = (() => {
 
   /* ---------- Rendering: Provider Model Card ---------- */
 
-  function renderProviderCard(p, item, {isDeleted = false} = {}) {
+  function renderProviderCard(p, item, {isDeleted = false, linkedCustomInfo = null} = {}) {
     const pid = item.id;
     const isOpen = p.expandedProvider === pid;
     const isPulsing = p.pulseProvider === pid;
@@ -2177,7 +2448,12 @@ window.CompanionPricingWorkbench = (() => {
 
     const baseRule = baseRuleForModel(p, item, model);
     const effectiveRuleForSummary = isCustom && draftRule ? canonicalizeRule(draftRule) : baseRule;
-    const summaryText = effectiveRuleForSummary ? ruleSummary(effectiveRuleForSummary) : "点击配置单价";
+    const cardUnitView = linkedCustomInfo ? (p.sourceUnitView?.[linkedCustomInfo.sourceId] === "native" ? "native" : "fiat") : "fiat";
+    const summaryParts = dualSummaryParts(effectiveRuleForSummary, linkedCustomInfo, cardUnitView);
+    const summaryDualAttrs = summaryParts.dual
+      ? ` data-pw-dual-src="${esc(linkedCustomInfo.sourceId)}" data-pw-fiat="${esc(summaryParts.fiatText)}" data-pw-native="${esc(summaryParts.nativeText)}"`
+      : "";
+    const summaryInnerHtml = renderDualSummaryInner(effectiveRuleForSummary, linkedCustomInfo, cardUnitView);
     const displayCur = p.draft?.display_currency || p.data?.display_currency || "CNY";
     const fxRate = p.data?.exchange_rate?.effective_usd_cny || 7.2;
     const estMicro = estimateProviderCostMicrousd(item, fxRate);
@@ -2198,7 +2474,7 @@ window.CompanionPricingWorkbench = (() => {
           }
       );
       const activeMode = displayRule.mode || "per_token";
-      const cur = activeMode === "tiered_expr" ? "USD" : (displayRule.currency === "CNY" ? "CNY" : "USD");
+      const cur = displayRule.currency === "CNY" ? "CNY" : "USD";
       const candModels = Array.isArray(item.candidates) && item.candidates.length ? item.candidates : (model ? [model] : []);
       const dirtyAny = isDirty(p);
 
@@ -2212,7 +2488,7 @@ window.CompanionPricingWorkbench = (() => {
           <div class="pw-toolbar-left">
             <div class="pw-inline-field">
               <span class="pw-label">单价币种</span>
-              <select data-pricing-rule-currency="${esc(pid)}" ${locked || activeMode === "tiered_expr" ? "disabled" : ""} title="${activeMode === "tiered_expr" ? "表达式模式固定按 USD 微美元结算" : "选择单价录入币种"}">
+              <select data-pricing-rule-currency="${esc(pid)}" ${locked ? "disabled" : ""} title="选择单价录入币种">
                 <option value="USD" ${cur === "USD" ? "selected" : ""}>USD ($)</option>
                 <option value="CNY" ${cur === "CNY" ? "selected" : ""}>CNY (¥)</option>
               </select>
@@ -2267,7 +2543,7 @@ window.CompanionPricingWorkbench = (() => {
             <span class="pw-num">${formatTokensCompact(item.total_tokens)} tok</span>
             ${item.calls > 0 ? `<span class="pw-muted">${formatTokensFull(item.calls)} 次调用</span>` : ""}
             ${costLabel ? `<span class="pw-cost-pill">${esc(costLabel)}</span>` : ""}
-            <span class="pw-price-summary">${esc(summaryText)}</span>
+            <span class="pw-price-summary"${summaryDualAttrs}>${summaryInnerHtml}</span>
           </span>
         </span>
         <span class="pw-chevron" aria-hidden="true">${isOpen ? "▾" : "▸"}</span>
@@ -2341,7 +2617,115 @@ window.CompanionPricingWorkbench = (() => {
         ? p.clusterMultDraft[cid]
         : String(Number.isFinite(mult) ? mult : 1);
       const probeTarget = (selected.providers || []).find(item => item.has_api_base) || null;
-      const linkedNewApi = (selected.providers || []).find(item => item.newapi_source_id)?.newapi_source_id || null;
+      const linkedNewApi = selected.newapi_source_id
+        || (selected.providers || []).find(item => item.newapi_source_id)?.newapi_source_id
+        || null;
+      const linkedSrc = linkedNewApi
+        ? (data.sources || []).find(s => s.source_id === linkedNewApi) || null
+        : null;
+      const linkedMeta = (linkedSrc && linkedSrc.site_meta && typeof linkedSrc.site_meta === "object")
+        ? linkedSrc.site_meta
+        : null;
+      const groupRatioMap = (linkedMeta && linkedMeta.group_ratio && typeof linkedMeta.group_ratio === "object")
+        ? linkedMeta.group_ratio
+        : {};
+      const groupEntries = Object.entries(groupRatioMap)
+        .filter(([, r]) => Number.isFinite(Number(r)))
+        .sort((a, b) => Number(a[1]) - Number(b[1]) || a[0].localeCompare(b[0]));
+      const groupHint = selected.newapi_group_hint && typeof selected.newapi_group_hint === "object"
+        ? selected.newapi_group_hint
+        : null;
+      const linkedCur = linkedSrc?.currency === "CNY" ? "CNY" : "USD";
+      const linkedCurOvr = linkedSrc?.currency_override === "CNY" || linkedSrc?.currency_override === "USD"
+        ? linkedSrc.currency_override
+        : "auto";
+      const linkedQdt = String(linkedMeta?.quota_display_type || "").toUpperCase();
+      const linkedCustomSym = String(linkedMeta?.custom_currency_symbol || "").trim();
+      const linkedRechargePrice = linkedMeta?.site_recharge_price ?? linkedMeta?.recharge_price;
+      const linkedCustomInfo = customUnitInfoForSource(linkedSrc);
+      const linkedCnyHint = (linkedMeta?.cny_recharge_hint && typeof linkedMeta.cny_recharge_hint === "object")
+        ? linkedMeta.cny_recharge_hint
+        : null;
+      const linkedQuotaName = String(linkedMeta?.quota_station_name || "").trim();
+      const linkedSourceBadge = linkedSrc
+        ? (linkedCustomInfo
+          ? `${linkedSrc.label} · ${linkedCur === "CNY" ? "CNY ¥" : "USD $"}（${linkedCustomInfo.ratioText}）`
+          : `${linkedSrc.label} · ${linkedCur === "CNY" ? "CNY ¥" : linkedQdt === "CUSTOM" && linkedCurOvr === "auto" ? `自定义${linkedCustomSym ? " " + linkedCustomSym : ""}` : "USD $"}`)
+        : "New API 源";
+
+      let newApiBarHtml = "";
+      if (linkedSrc && (groupEntries.length > 0 || groupHint || linkedQdt === "CUSTOM" || linkedCustomInfo || linkedCnyHint || linkedMeta)) {
+        const autoCurDesc = linkedCur === "CNY"
+          ? (linkedCustomInfo ? `CNY ¥ · ${linkedCustomInfo.ratioText}` : "CNY ¥")
+          : linkedQdt === "CUSTOM"
+            ? `自定义${linkedCustomSym ? " " + linkedCustomSym : ""}`
+            : "USD $";
+        const hintRatio = groupHint && Number.isFinite(Number(groupHint.ratio)) ? Number(groupHint.ratio) : null;
+        const showApplyHint = Boolean(groupHint?.group && hintRatio !== null && Math.abs(hintRatio - mult) > 1e-6);
+        const unitViewMode = linkedCustomInfo && p.sourceUnitView?.[linkedSrc.source_id] === "native" ? "native" : "fiat";
+        const rateInputVal = linkedCustomInfo
+          ? (Object.hasOwn(p.sourceRateDraft || {}, linkedSrc.source_id)
+            ? p.sourceRateDraft[linkedSrc.source_id]
+            : formatRateNumber(linkedCustomInfo.nativePerFiat))
+          : "";
+        const dualToggleHtml = linkedCustomInfo
+          ? `<div class="pw-dual-toggle" role="group" aria-label="双单位单价视图切换">
+              <span class="pw-label">单价视图</span>
+              <div class="pw-seg">
+                <button type="button" data-pricing-unit-view="${esc(linkedSrc.source_id)}" data-unit-mode="fiat" aria-pressed="${unitViewMode === "fiat"}" class="${unitViewMode === "fiat" ? "on" : ""}">${esc(linkedCustomInfo.fiatLabel)}</button>
+                <button type="button" data-pricing-unit-view="${esc(linkedSrc.source_id)}" data-unit-mode="native" aria-pressed="${unitViewMode === "native"}" class="${unitViewMode === "native" ? "on" : ""}">${esc(linkedCustomInfo.symbol)} 原币</button>
+              </div>
+            </div>
+            <div class="pw-dual-rate-editor">
+              <span class="pw-label">换算率</span>
+              <span class="pw-unit-input">
+                <input type="number" min="0.0001" max="100000" step="0.01" data-pricing-custom-rate-input="${esc(linkedSrc.source_id)}" value="${esc(rateInputVal)}" aria-label="自定义币种折算率" ${locked ? "disabled" : ""}>
+                <i>${esc(linkedCustomInfo.symbol)} = ${esc(linkedCustomInfo.fiatSym)}1</i>
+              </span>
+              <button type="button" class="button small" data-pricing-custom-rate-apply="${esc(linkedSrc.source_id)}" ${locked ? "disabled" : ""}>应用</button>
+              ${linkedCustomInfo.hasManualRate ? `<button type="button" class="button small" data-pricing-custom-rate-reset="${esc(linkedSrc.source_id)}" ${locked ? "disabled" : ""}>恢复自动</button>` : ""}
+            </div>`
+          : "";
+        const customNoticeHtml = linkedQdt === "CUSTOM" && linkedCurOvr === "auto" && linkedCur !== "CNY"
+          ? `<span class="pw-newapi-hint is-warn">该站使用自定义代币${linkedCustomSym ? ` ${esc(linkedCustomSym)}` : ""}${linkedRechargePrice != null ? `（站内充值参考：1 单位 = ¥${formatRateNumber(linkedRechargePrice)}）` : ""}，如按人民币结算请在此一键切换为 CNY。</span>`
+          : "";
+        const cnyHintHtml = linkedCnyHint && linkedCurOvr === "auto" && linkedCur === "USD" && linkedCnyHint.recharge_price != null
+          ? `<div class="pw-newapi-hint-row">
+              <span class="pw-newapi-hint is-warn">检测到该站在线充值价为 ¥${formatRateNumber(linkedCnyHint.recharge_price)} / 基准单位，若按人民币结算可一键切换。</span>
+              <button type="button" class="button small" data-pricing-apply-cny-hint="${esc(linkedSrc.source_id)}" data-recharge-price="${esc(linkedCnyHint.recharge_price)}" ${locked ? "disabled" : ""}>按充值价切换为 CNY ¥</button>
+            </div>`
+          : "";
+        const customRulesWarnHtml = showApplyHint && selected.has_custom_rules
+          ? '<span class="pw-newapi-hint">提示：聚类倍率会同时作用于该供应商下的已自定义模型规则。</span>'
+          : "";
+        newApiBarHtml = `<div class="pw-newapi-bar" aria-label="New API 网关分组与币种辅助">
+          <div class="pw-newapi-bar-row">
+            ${linkedQuotaName ? `<span class="pw-badge is-ok">已联动额度看板 · ${esc(linkedQuotaName)}</span>` : ""}
+            ${groupHint?.group && hintRatio !== null ? `<div class="pw-newapi-chip-group">
+              <span class="pw-badge is-accent">识别分组 · ${esc(groupHint.group)} (${formatRateNumber(hintRatio)}×)</span>
+              ${showApplyHint ? `<button type="button" class="button small" data-pricing-apply-group-mult="${esc(cid)}" data-ratio="${esc(hintRatio)}" ${locked ? "disabled" : ""}>一键应用 ${formatRateNumber(hintRatio)}×</button>` : '<span class="pw-muted">当前倍率已匹配</span>'}
+            </div>` : ""}
+            ${groupEntries.length > 0 ? `<div class="pw-inline-field">
+              <span class="pw-label">站点分组倍率</span>
+              <select data-pricing-group-select="${esc(cid)}" aria-label="按站点分组填入聚类倍率" ${locked ? "disabled" : ""}>
+                <option value="">选择分组填入倍率…</option>
+                ${groupEntries.map(([g, r]) => `<option value="${esc(r)}">${esc(g)} (${formatRateNumber(r)}×)</option>`).join("")}
+              </select>
+            </div>` : ""}
+            <div class="pw-inline-field">
+              <span class="pw-label">价格源币种</span>
+              <select data-pricing-source-currency="${esc(linkedSrc.source_id)}" aria-label="New API 价格源结算币种" ${locked ? "disabled" : ""}>
+                <option value="auto" ${linkedCurOvr === "auto" ? "selected" : ""}>自动识别 (${esc(autoCurDesc)})</option>
+                <option value="CNY" ${linkedCurOvr === "CNY" ? "selected" : ""}>CNY (¥ 人民币)</option>
+                <option value="USD" ${linkedCurOvr === "USD" ? "selected" : ""}>USD ($ 美元)</option>
+              </select>
+            </div>
+            ${dualToggleHtml}
+          </div>
+          ${customNoticeHtml}${cnyHintHtml}${customRulesWarnHtml}
+        </div>`;
+      }
+
       const activeItems = selected.providers.filter(item => item.bound || (Number(item.total_tokens) || 0) > 0);
       const unusedItems = selected.providers.filter(item => !(item.bound || (Number(item.total_tokens) || 0) > 0));
 
@@ -2351,7 +2735,7 @@ window.CompanionPricingWorkbench = (() => {
             <h4>${esc(selected.name)}</h4>
             <span class="pw-badge is-muted">${selected.providers.length} 个模型</span>
             <span class="pw-badge ${mult !== 1 ? "is-accent" : "is-muted"}">当前 ${formatRateNumber(mult)}×</span>
-            ${linkedNewApi ? `<span class="pw-badge is-ok">已接 New API 源</span>` : ""}
+            ${linkedNewApi ? `<span class="pw-badge is-ok" title="${esc(linkedNewApi)}">已接 ${esc(linkedSourceBadge)}</span>` : ""}
           </div>
           <span class="pw-cluster-sub">累计 ${formatTokensFull(selected.cluster_total_tokens)} token · ${selected.active_count} 个在用</span>
         </div>
@@ -2365,10 +2749,11 @@ window.CompanionPricingWorkbench = (() => {
           ${probeTarget ? `<button type="button" class="button small" data-pricing-detect-newapi="${esc(probeTarget.id)}" ${locked ? "disabled" : ""}>${p.detectingProvider === probeTarget.id ? "探测中…" : (linkedNewApi ? "重新探测 New API 价格源" : "探测并启用 New API 价格源")}</button>` : ""}
         </div>
       </div>
+      ${newApiBarHtml}
       <div class="pw-cards">
-        ${activeItems.map(item => renderProviderCard(p, item)).join("")}
+        ${activeItems.map(item => renderProviderCard(p, item, {linkedCustomInfo})).join("")}
         ${activeItems.length && unusedItems.length ? '<div class="pw-list-divider">已配置 · 暂未产生调用</div>' : ""}
-        ${unusedItems.map(item => renderProviderCard(p, item)).join("")}
+        ${unusedItems.map(item => renderProviderCard(p, item, {linkedCustomInfo})).join("")}
       </div>`;
     }
 
@@ -2538,13 +2923,39 @@ window.CompanionPricingWorkbench = (() => {
       return;
     }
 
-    // Rule currency select
+    const groupSelectCid = t.dataset?.pricingGroupSelect;
+    if (groupSelectCid) {
+      if (t.value !== "") {
+        p.clusterMultDraft[groupSelectCid] = t.value;
+        p.bad = false;
+        p.notice = `已将所选分组倍率 ${formatRateNumber(Number(t.value))}× 填入输入框，点击「应用」生效。`;
+        render();
+      }
+      return;
+    }
+
+    const srcCurId = t.dataset?.pricingSourceCurrency;
+    if (srcCurId) {
+      if (p.sourceRateDraft) delete p.sourceRateDraft[srcCurId];
+      void updateSourceCurrency(ctx, srcCurId, t.value, {fiatPerBaseUnit: null});
+      return;
+    }
+
+    const customRateSid = t.dataset?.pricingCustomRateInput;
+    if (customRateSid) {
+      p.sourceRateDraft ||= {};
+      p.sourceRateDraft[customRateSid] = t.value;
+      return;
+    }
+
+    // Rule currency select (enabled for all 5 modes including tiered_expr)
     const curPid = t.dataset?.pricingRuleCurrency;
     if (curPid) {
       const item = findProvider(p.data, curPid);
       if (!item) return;
-      const {rule} = ensureDraftRule(p, item, activeModelFor(p, item));
-      if (rule.mode !== "tiered_expr") rule.currency = t.value === "CNY" ? "CNY" : "USD";
+      const {key, rule} = ensureDraftRule(p, item, activeModelFor(p, item));
+      rule.currency = t.value === "CNY" ? "CNY" : "USD";
+      delete p.exprResults[key];
       p.bad = false; p.notice = "";
       render();
       return;
@@ -2750,7 +3161,7 @@ window.CompanionPricingWorkbench = (() => {
       const prevCur = period.override?.currency === "CNY" ? "CNY" : "USD";
       period.override = cloneRuleForDraft(
         nextMode === "per_tier" ? {mode: "per_tier", currency: prevCur, base: {input: 0, output: 0}, context_tiers: [], service_tiers: []}
-          : nextMode === "tiered_expr" ? {mode: "tiered_expr", currency: "USD", expr: ""}
+          : nextMode === "tiered_expr" ? {mode: "tiered_expr", currency: prevCur, expr: ""}
           : nextMode === "per_turn" || nextMode === "per_request" ? {mode: nextMode, currency: prevCur, price: 0}
           : {mode: "per_token", currency: prevCur},
       );
@@ -2759,7 +3170,7 @@ window.CompanionPricingWorkbench = (() => {
     }
     if (t.matches("[data-pricing-sched-ovr-currency]")) {
       period.override ||= cloneRuleForDraft({mode: "per_token", currency: "USD"});
-      if (period.override.mode !== "tiered_expr") period.override.currency = t.value === "CNY" ? "CNY" : "USD";
+      period.override.currency = t.value === "CNY" ? "CNY" : "USD";
       render();
       return;
     }
@@ -2876,6 +3287,79 @@ window.CompanionPricingWorkbench = (() => {
     const multReset = t.closest("[data-pricing-cluster-mult-reset]");
     if (multReset) {
       void applyClusterMultiplier(ctx, multReset.dataset.pricingClusterMultReset, 1);
+      return;
+    }
+
+    const applyGroupBtn = t.closest("[data-pricing-apply-group-mult]");
+    if (applyGroupBtn) {
+      const cid = applyGroupBtn.dataset.pricingApplyGroupMult;
+      const ratio = applyGroupBtn.dataset.ratio;
+      if (cid && ratio != null && ratio !== "") {
+        void applyClusterMultiplier(ctx, cid, ratio);
+      }
+      return;
+    }
+
+    const unitViewBtn = t.closest("[data-pricing-unit-view]");
+    if (unitViewBtn) {
+      const sid = unitViewBtn.dataset.pricingUnitView;
+      const nextMode = unitViewBtn.dataset.unitMode === "native" ? "native" : "fiat";
+      if (sid) syncUnitViewInPlace(ctx, sid, nextMode);
+      return;
+    }
+
+    const customRateApplyBtn = t.closest("[data-pricing-custom-rate-apply]");
+    if (customRateApplyBtn && p.data) {
+      const sid = customRateApplyBtn.dataset.pricingCustomRateApply;
+      const src = (p.data.sources || []).find(s => s.source_id === sid);
+      const customInfo = customUnitInfoForSource(src);
+      if (src && customInfo) {
+        const raw = Object.hasOwn(p.sourceRateDraft || {}, sid)
+          ? p.sourceRateDraft[sid]
+          : formatRateNumber(customInfo.nativePerFiat);
+        const nativePerFiat = Number(raw);
+        if (!Number.isFinite(nativePerFiat) || nativePerFiat <= 0 || nativePerFiat > 100000) {
+          p.bad = true;
+          p.syncNotice = "自定义币种折算率必须是大于 0 且不超过 100000 的有效数字。";
+          render();
+          return;
+        }
+        const fiatPerBase = Number((customInfo.customRate / nativePerFiat).toFixed(6));
+        if (!Number.isFinite(fiatPerBase) || fiatPerBase <= 0 || fiatPerBase > 100000) {
+          p.bad = true;
+          p.syncNotice = "折算后的法币单价超出允许范围，请核对输入数值。";
+          render();
+          return;
+        }
+        const curOvr = src.currency_override === "CNY" || src.currency_override === "USD"
+          ? src.currency_override
+          : "auto";
+        void updateSourceCurrency(ctx, sid, curOvr, {fiatPerBaseUnit: fiatPerBase, rateOnly: true});
+      }
+      return;
+    }
+
+    const customRateResetBtn = t.closest("[data-pricing-custom-rate-reset]");
+    if (customRateResetBtn && p.data) {
+      const sid = customRateResetBtn.dataset.pricingCustomRateReset;
+      const src = (p.data.sources || []).find(s => s.source_id === sid);
+      if (src) {
+        const curOvr = src.currency_override === "CNY" || src.currency_override === "USD"
+          ? src.currency_override
+          : "auto";
+        void updateSourceCurrency(ctx, sid, curOvr, {fiatPerBaseUnit: null, rateOnly: true});
+      }
+      return;
+    }
+
+    const applyCnyHintBtn = t.closest("[data-pricing-apply-cny-hint]");
+    if (applyCnyHintBtn && p.data) {
+      const sid = applyCnyHintBtn.dataset.pricingApplyCnyHint;
+      const rechargePrice = Number(applyCnyHintBtn.dataset.rechargePrice);
+      const opts = Number.isFinite(rechargePrice) && rechargePrice > 0
+        ? {fiatPerBaseUnit: Number(rechargePrice.toFixed(6))}
+        : {};
+      if (sid) void updateSourceCurrency(ctx, sid, "CNY", opts);
       return;
     }
 
@@ -3118,6 +3602,8 @@ window.CompanionPricingWorkbench = (() => {
     formatTokensFull,
     formatMoney,
     ruleSummary,
+    customUnitInfoForSource,
+    dualSummaryParts,
     estimateProviderCostMicrousd,
   };
 })();

@@ -118,6 +118,7 @@
 .phone-setup-results strong, .phone-setup-results small { display: block; overflow-wrap: anywhere; }
 .phone-setup-results small { color: var(--t-text-faint); font-size: var(--fs-micro); }
 .phone-found-icon { display: grid; flex: none; width: 32px; height: 32px; place-items: center; border-radius: var(--r-xs); color: var(--t-accent); background: var(--t-accent-quiet); }
+.phone-setup-notice { overflow-wrap: anywhere; }
 .phone-setup-notice:empty { display: none; }
 .phone-setup .phone-setup-notice.is-error { color: var(--t-risk-ink); }
 .phone-setup-download { justify-self: start; }

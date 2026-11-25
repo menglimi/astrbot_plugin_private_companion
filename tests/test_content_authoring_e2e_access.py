@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import timedelta
+import json
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from tests import astrbot_data_root  # noqa: F401 - isolate SDK root before AstrBot imports
 from tests import test_astrbot_staging_host as host_support  # noqa: F401
@@ -16,6 +18,8 @@ from astrbot_host.core_reply import prepare_core_reply_event
 from astrbot_host.core_reply_tools import close_core_reply_tools, inject_core_reply_tools
 from astrbot_host.integration_registry import IntegrationRegistry
 from astrbot_host.native_extensions.scheduled_authoring import ScheduledAuthoring
+from companion_v2.adapters.astrbot.model_wire import decode_text_response
+from companion_v2.agenda.models import Schedule
 from companion_v2.capabilities.models import CapabilityAuthorizationState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
@@ -28,16 +32,19 @@ from companion_v2.conversation.content.authoring_service import (
 from companion_v2.conversation.content.authoring_tasks import DRAFT_KIND, authoring_profiles
 from companion_v2.conversation.content.authoring_workflow import INSTRUCTION as AUTHORING_INSTRUCTION
 from companion_v2.conversation.flow import ConversationPolicy
-from companion_v2.execution.models import TaskContext, encode, require
+from companion_v2.execution.models import ClaimResult, TaskContext, encode, require
+from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import AudienceRef
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.identity_policy.personas import ConversationRoute
 from companion_v2.model_gateway.routing import configuration_fields
+from companion_v2.role_work.life.management import RoleLifeManagement
 from tests.native_content_support import NativeContentFixture
 from tests.test_astrbot_core_reply import FakeEvent
 from tests.test_host_application import HostFixture
 from tests.test_management_access import NOW, SCOPE
+from tests.test_role_tool_loop import answered
 
 
 class ContentAuthoringHostAccessTests(NativeContentFixture, HostFixture, unittest.IsolatedAsyncioTestCase):
@@ -164,6 +171,49 @@ class ContentAuthoringHostAccessTests(NativeContentFixture, HostFixture, unittes
         )
         self.assertIn(AUTHORING_INSTRUCTION, switched_request.system_prompt)
 
+    async def test_scheduled_draft_waits_for_a_slot_and_saves_fenced_json(self):
+        host = await self.start_assembled_only_host()
+        app = host.application
+        context = self.private_context(self.promote_private_user_to_core())
+        life = app.life_runtime.bind(context, "原人格")
+        manager = RoleLifeManagement(app, context)
+        status = manager.status(self.core)
+        (await manager.command(self.core, dict(action="configure", changes={"enabled": True},
+             edit_token=status["edit_token"], view_token=status["view_token"], operation_key="enable-life"))).unwrap()
+        life.refresh()
+        start = self.clock.now() + timedelta(minutes=2)
+        app.calendar.command(context, identifier="writing", action="create", expected_revision=0,
+            operation_key="writing-calendar", planning={"mode": "routine", "routine": "writing"},
+            data={"kind": "role_plan", "title": "写一篇新故事", "detail": "海边随笔",
+                  "schedule": json.loads(encode(Schedule(start, "UTC"))), "duration_minutes": 30, "presence": ""})
+
+        async def model(envelope):
+            self.assertEqual(envelope.original.output_format, "content_authoring")
+            self.assertIn("finished", envelope.original.instruction)
+            raw = '```json\n{"title":"岸边","work_type":"随笔","body":"潮水退去。"}\n```'
+            draft, _ = decode_text_response(raw, SimpleNamespace(output_format="content_authoring"))
+            return answered(draft.text)
+
+        self.model_behavior = model
+        claim = app.tasks.claim_task
+        refused = []
+
+        def first_claim(ctx, task_id):
+            if task_id.startswith("content-authoring-") and not refused:
+                refused.append(task_id)
+                return Outcome.success(ClaimResult(None, "task_lane_full"))
+            return claim(ctx, task_id)
+
+        def receipt():
+            row = app.runtime.read_one("SELECT value FROM runtime_metadata WHERE key LIKE 'content.calendar:%'", ())
+            return json.loads(row["value"]) if row is not None else {}
+
+        with patch.object(app.tasks, "claim_task", side_effect=first_claim):
+            self.advance(app, 120)
+            await self.until(lambda: receipt().get("state") in {"written", "failed"})
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(receipt()["state"], "written", receipt())
+
     async def test_scheduled_authoring_ready_self_heals_deadlock_and_logs_rate_limited_denials(self):
         host = await self.start_assembled_only_host()
         app = host.application
@@ -192,6 +242,20 @@ class ContentAuthoringHostAccessTests(NativeContentFixture, HostFixture, unittes
             ),
             7,
         )
+
+        # An empty catalogue can still reserve a writing window for a new work.
+        now = self.clock.now()
+        until = now + timedelta(days=7)
+        page = app.calendar.occurrences(core_context, start=now, end=until, diagnostics=True)
+        planned = scheduled.plan_continuation(
+            core_context, now, {"planning_enabled": True, "planning_timezone": "UTC"},
+            page, sleep_plan=None,
+        )
+        items = app.calendar.occurrences(core_context, start=now, end=until, diagnostics=True)["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["start"], planned)
+        self.assertEqual(items[0]["planning"]["routine"], "writing")
+        self.assertEqual(items[0]["title"], "文学创作")
 
         # Explicit role disable blocks ready() and emits a rate-limited warning with error.code.
         now_tick = [1000.0]

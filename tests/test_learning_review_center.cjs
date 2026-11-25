@@ -380,12 +380,15 @@ test("learning-hub.css 清理串扰、非法 -var()、双栏独立滚动、对�
     assert.match(match[2], /\.learning-review-workspace/, `审阅筛选器样式必须限定在 .learning-review-workspace 内：${match[2]}`);
   }
 
-  // 双栏几何与独立滚动容器
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*grid-template-columns:minmax\(270px,340px\) minmax\(0,1fr\)/);
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*max-height:clamp\(420px,calc\(100dvh - 320px\),760px\)/);
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue,\.learning-review-workspace \.lh-review-detail\{[^}]*display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden/);
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue-list\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-detail-body\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
+  // 自然页面流式展开 + 右侧详情台 sticky 全视口吸顶，禁止固定小盒锁高与滚轮截留
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*grid-template-columns:minmax\(270px,340px\) minmax\(0,1fr\)[^}]*align-items:start[^}]*height:auto;max-height:none/);
+  assert.doesNotMatch(hubCss, /max-height:clamp\(420px,calc\(100dvh - 320px\),760px\)/, "不得锁死 420–760px 矮盒限制双栏高度");
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue\{[^}]*height:auto;overflow:visible/);
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-detail\{[^}]*position:sticky;top:var\(--sp-3\)[^}]*max-height:calc\(100dvh - 32px\)/);
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue-list\{[^}]*overflow-y:visible;overscroll-behavior:auto/);
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-detail-body\{[^}]*overflow-y:auto;overscroll-behavior:auto/);
+  assert.doesNotMatch(hubCss, /overscroll-behavior:contain/, "审阅中心不得截留滚轮阻断主页面自然滚动");
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-empty-state\{/);
   assert.match(hubCss, /@container learning-hub \(max-width:820px\)/);
 
   // 选中行与三色语义徽章对比度分离（无伪装融合）

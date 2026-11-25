@@ -783,10 +783,10 @@ test("Issue #12：理解页 media_permissions 两列成对、屏蔽 web 页签�
   );
   assert.ok(
     threeColStats
-      && threeColStats.selector.includes("video")
       && threeColStats.selector.includes("forwards")
+      && !threeColStats.selector.includes("video")
       && !threeColStats.selector.includes(":not([data-understanding-panel=overview])"),
-    "仅 3 张卡的 video/forwards 使用 3 列，image/file/web 保持 4 列无 3+1 孤儿卡",
+    "仅 3 项指标的 forwards 使用 3 列，overview/image/video/file/web（均为 4 卡）保持 4 列无 3+1 孤儿卡",
   );
 });
 

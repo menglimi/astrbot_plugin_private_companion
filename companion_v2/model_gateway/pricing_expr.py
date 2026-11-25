@@ -30,9 +30,12 @@ MAX_CALL_ARGS = 32
 MAX_SINGLE_MULTIPLIER = 100.0
 MAX_CHAINED_MULTIPLIER = 10_000.0
 
+SUPPORTED_EXPR_CURRENCIES = ("USD", "CNY")
+
 NUMERIC_VARIABLES = frozenset({
     "p", "c", "cr", "cc", "cc1h", "len",
     "r", "total", "img", "audio", "ws",
+    "ai", "ao", "ii", "io", "vi", "vo",
     "input", "output", "cached", "cache_creation",
 })
 STRING_VARIABLES = frozenset({
@@ -44,6 +47,7 @@ ALLOWED_FUNCTIONS = frozenset({
     "min", "max", "abs", "ceil", "floor", "round", "clamp",
     "int", "float",
     "lower", "upper", "contains", "startsWith", "endsWith",
+    "tier",
 })
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -573,7 +577,15 @@ def _check_string(value: Any, *, context: str = "字符串") -> str:
     return value
 
 
-def _call_builtin(name: str, args: list[Any]) -> Any:
+def _call_builtin(name: str, args: list[Any], *, tier_sink: list[str] | None = None) -> Any:
+    if name == "tier":
+        if len(args) != 2:
+            raise TieredExprEvaluationError("tier() 需要 2 个参数 (name, cost)")
+        tier_name = _check_string(args[0], context="tier() 档位名").strip()[:64]
+        cost = _check_number(args[1], context="tier() 费用")
+        if tier_sink is not None and tier_name:
+            tier_sink.append(tier_name)
+        return cost
     if name in ("min", "max"):
         if not args:
             raise TieredExprEvaluationError(f"{name}() 至少需要 1 个参数")
@@ -691,7 +703,12 @@ def _compare_pair(op: ast.cmpop, left: Any, right: Any) -> bool:
     raise TieredExprEvaluationError(f"不支持的比较运算符: {type(op).__name__}")
 
 
-def eval_compiled_expr(compiled: CompiledExpr, variables: dict[str, Any]) -> Any:
+def eval_compiled_expr(
+    compiled: CompiledExpr,
+    variables: dict[str, Any],
+    *,
+    tier_sink: list[str] | None = None,
+) -> Any:
     """Execute a compiled AST expression with strict depth and step limits."""
     steps = 0
 
@@ -790,7 +807,7 @@ def eval_compiled_expr(compiled: CompiledExpr, variables: dict[str, Any]) -> Any
             if not isinstance(node.func, ast.Name):
                 raise TieredExprEvaluationError("仅支持直接调用白名单内置函数")
             args = [interpret(arg, depth + 1) for arg in node.args]
-            return _call_builtin(node.func.id, args)
+            return _call_builtin(node.func.id, args, tier_sink=tier_sink)
         raise TieredExprEvaluationError(f"不支持的执行节点: {type(node).__name__}")
 
     try:
@@ -799,23 +816,35 @@ def eval_compiled_expr(compiled: CompiledExpr, variables: dict[str, Any]) -> Any
         raise TieredExprEvaluationError("表达式递归求值超出栈深度限制") from error
 
 
+def _normalize_expr_currency(value: object) -> str:
+    if value is None or value == "":
+        return "USD"
+    if type(value) is str and value in SUPPORTED_EXPR_CURRENCIES:
+        return value
+    raise PricingExprSyntaxError("单价币种仅支持 USD 或 CNY")
+
+
 def normalize_tiered_expr_rule(
     raw: object,
     *,
     max_multiplier: float = MAX_CHAINED_MULTIPLIER,
+    currency: str | None = None,
 ) -> dict[str, Any]:
     """Validate and normalize a ``tiered_expr`` rule dict (single expr or tiers)."""
     if type(raw) is str:
+        norm_currency = _normalize_expr_currency(currency)
         compiled = compile_expr(raw)
         return {
             "mode": "tiered_expr",
-            "currency": "USD",
+            "currency": norm_currency,
             "expr": compiled.original,
             "tiers": [],
             "default_expr": None,
         }
     if type(raw) is not dict:
         raise PricingExprSyntaxError("表达式规则必须是对象或字符串")
+
+    norm_currency = _normalize_expr_currency(raw.get("currency") if "currency" in raw else currency)
 
     raw_expr = raw.get("expr")
     if raw_expr is None:
@@ -885,7 +914,7 @@ def normalize_tiered_expr_rule(
 
     result: dict[str, Any] = {
         "mode": "tiered_expr",
-        "currency": "USD",
+        "currency": norm_currency,
         "expr": expr_clean,
         "tiers": tiers,
         "default_expr": default_clean,
@@ -983,6 +1012,12 @@ def build_expr_variables(
         "img": 0,
         "audio": 0,
         "ws": 0,
+        "ai": 0,
+        "ao": 0,
+        "ii": 0,
+        "io": 0,
+        "vi": 0,
+        "vo": 0,
         "input": p_val,
         "output": out,
         "cached": cr_val,
@@ -1036,28 +1071,29 @@ def evaluate_tiered_expr_rule(
 
     matched_tier = ""
     raw_value: Any = None
+    tier_sink: list[str] = []
     if compiled_tiers:
         matched = False
         for name, cond_compiled, expr_compiled in compiled_tiers:
             if cond_compiled is None or bool(eval_compiled_expr(cond_compiled, env)):
-                raw_value = eval_compiled_expr(expr_compiled, env)
-                matched_tier = name
+                raw_value = eval_compiled_expr(expr_compiled, env, tier_sink=tier_sink)
+                matched_tier = tier_sink[-1] if tier_sink else name
                 matched = True
                 break
         if not matched:
             if compiled_default is not None:
-                raw_value = eval_compiled_expr(compiled_default, env)
-                matched_tier = "default"
+                raw_value = eval_compiled_expr(compiled_default, env, tier_sink=tier_sink)
+                matched_tier = tier_sink[-1] if tier_sink else "default"
             elif compiled_expr is not None:
-                raw_value = eval_compiled_expr(compiled_expr, env)
-                matched_tier = "expr"
+                raw_value = eval_compiled_expr(compiled_expr, env, tier_sink=tier_sink)
+                matched_tier = tier_sink[-1] if tier_sink else "expr"
             else:
                 raise TieredExprEvaluationError("没有任何档位条件匹配当前调用且未配置默认表达式")
     else:
         if compiled_expr is None:
             raise TieredExprEvaluationError("tiered_expr 缺少可执行的计价表达式")
-        raw_value = eval_compiled_expr(compiled_expr, env)
-        matched_tier = "expr"
+        raw_value = eval_compiled_expr(compiled_expr, env, tier_sink=tier_sink)
+        matched_tier = tier_sink[-1] if tier_sink else "expr"
 
     numeric = _check_number(raw_value, context="表达式最终结果")
     if numeric < 0.0:
@@ -1095,11 +1131,12 @@ def validate_tiered_expr_rule(
     usd_cny_rate: float = 7.2,
     sample: dict[str, Any] | None = None,
     max_multiplier: float = MAX_SINGLE_MULTIPLIER,
+    currency: str | None = None,
 ) -> dict[str, Any]:
     """Validate a tiered_expr rule and return sample USD/CNY previews."""
     rate = float(usd_cny_rate) if type(usd_cny_rate) in (int, float) and math.isfinite(float(usd_cny_rate)) and usd_cny_rate > 0 else 7.2
     try:
-        normalized = normalize_tiered_expr_rule(raw, max_multiplier=max_multiplier)
+        normalized = normalize_tiered_expr_rule(raw, max_multiplier=max_multiplier, currency=currency)
         _, _, _, used_vars = _compile_rule(normalized)
     except PricingExprError as error:
         return {
@@ -1107,10 +1144,12 @@ def validate_tiered_expr_rule(
             "error": error.reason,
             "code": error.code,
             "used_variables": [],
+            "currency": "USD",
             "usd_cny_rate": round(rate, 6),
             "samples": [],
         }
 
+    rule_currency = str(normalized.get("currency") or "USD")
     scenarios: list[tuple[str, dict[str, Any]]] = []
     if isinstance(sample, dict) and sample:
         def _nonneg_int(val: Any) -> int:
@@ -1135,9 +1174,15 @@ def validate_tiered_expr_rule(
     previews: list[dict[str, Any]] = []
     try:
         for label, case in scenarios:
-            microusd_f, matched_tier = evaluate_tiered_expr_rule(normalized, **case)
-            cost_usd = microusd_f / 1_000_000.0
-            cost_cny = cost_usd * rate
+            raw_micro, matched_tier = evaluate_tiered_expr_rule(normalized, **case)
+            if rule_currency == "CNY":
+                cost_cny = raw_micro / 1_000_000.0
+                cost_usd = cost_cny / rate
+                cost_microusd = int(round(cost_usd * 1_000_000.0))
+            else:
+                cost_usd = raw_micro / 1_000_000.0
+                cost_cny = cost_usd * rate
+                cost_microusd = int(round(raw_micro))
             total_in = (
                 case["other_input_tokens"]
                 + case["cached_input_tokens"]
@@ -1155,7 +1200,7 @@ def validate_tiered_expr_rule(
                     "len": total_in,
                     "tier": case["service_tier"],
                 },
-                "cost_microusd": int(round(microusd_f)),
+                "cost_microusd": cost_microusd,
                 "cost_usd": round(cost_usd, 8),
                 "cost_cny": round(cost_cny, 8),
                 "matched_tier": matched_tier,
@@ -1166,6 +1211,7 @@ def validate_tiered_expr_rule(
             "error": error.reason,
             "code": error.code,
             "used_variables": sorted(used_vars),
+            "currency": rule_currency,
             "usd_cny_rate": round(rate, 6),
             "samples": [],
         }
@@ -1175,7 +1221,247 @@ def validate_tiered_expr_rule(
         "error": None,
         "code": None,
         "used_variables": sorted(used_vars),
+        "currency": rule_currency,
         "usd_cny_rate": round(rate, 6),
         "samples": previews,
         "normalized": normalized,
     }
+
+
+_LINEAR_LOWER_VARS = frozenset({"p", "cr", "cc", "c"})
+
+
+def _ast_nonneg_number(node: ast.AST) -> float | None:
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+        return _ast_nonneg_number(node.operand)
+    if isinstance(node, ast.Constant) and not isinstance(node.value, bool) and type(node.value) in (int, float):
+        val = float(node.value)
+        if math.isfinite(val) and val >= 0.0:
+            return val
+    return None
+
+
+def _unwrap_tier_call(node: ast.AST) -> ast.AST | None:
+    if (
+        isinstance(node, ast.Call)
+        and not node.keywords
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "tier"
+        and len(node.args) == 2
+        and isinstance(node.args[0], ast.Constant)
+        and type(node.args[0].value) is str
+    ):
+        return node.args[1]
+    return None
+
+
+def _extract_linear_4var_rates(
+    node: ast.AST,
+    *,
+    scale: float,
+    max_price: float,
+) -> dict[str, float | None] | None:
+    """Extract lossless linear coefficients for ``{p, cr, cc, c}`` or return ``None``."""
+    coeffs: dict[str, float] = {}
+    has_term = False
+
+    def _collect(sub: ast.AST) -> bool:
+        nonlocal has_term
+        if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Add):
+            return _collect(sub.left) and _collect(sub.right)
+        zero_const = _ast_nonneg_number(sub)
+        if zero_const is not None:
+            if zero_const != 0.0:
+                return False
+            has_term = True
+            return True
+        if isinstance(sub, ast.Name) and sub.id in _LINEAR_LOWER_VARS:
+            coeffs[sub.id] = coeffs.get(sub.id, 0.0) + 1.0
+            has_term = True
+            return True
+        if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mult):
+            left_num = _ast_nonneg_number(sub.left)
+            right_num = _ast_nonneg_number(sub.right)
+            if isinstance(sub.left, ast.Name) and sub.left.id in _LINEAR_LOWER_VARS and right_num is not None:
+                coeffs[sub.left.id] = coeffs.get(sub.left.id, 0.0) + right_num
+                has_term = True
+                return True
+            if isinstance(sub.right, ast.Name) and sub.right.id in _LINEAR_LOWER_VARS and left_num is not None:
+                coeffs[sub.right.id] = coeffs.get(sub.right.id, 0.0) + left_num
+                has_term = True
+                return True
+        return False
+
+    if not _collect(node) or not has_term:
+        return None
+
+    def _scaled(val: float | None) -> float | None:
+        if val is None:
+            return None
+        out = round(val * scale, 6)
+        if not math.isfinite(out) or out < 0.0 or out > max_price:
+            return -1.0
+        return out
+
+    inp = _scaled(coeffs.get("p", 0.0))
+    out = _scaled(coeffs.get("c", 0.0))
+    cached = _scaled(coeffs["cr"]) if "cr" in coeffs else None
+    creation = _scaled(coeffs["cc"]) if "cc" in coeffs else None
+    if any(v is not None and v < 0.0 for v in (inp, out, cached, creation)):
+        return None
+    return {
+        "input": inp,
+        "input_cached": cached,
+        "cache_creation": creation,
+        "output": out,
+    }
+
+
+def _extract_len_lte_threshold(node: ast.AST) -> int | None:
+    if (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.LtE)
+        and len(node.comparators) == 1
+        and isinstance(node.left, ast.Name)
+        and node.left.id == "len"
+    ):
+        num = _ast_nonneg_number(node.comparators[0])
+        if num is not None and num >= 1.0 and num == int(num) and int(num) <= 10**9:
+            return int(num)
+    return None
+
+
+def lower_newapi_billing_expr(
+    source: str,
+    *,
+    currency: str = "USD",
+    unit_scale: float = 1.0,
+    max_price: float = 1_000_000.0,
+) -> tuple[dict[str, Any], str]:
+    """Validate a New API ``billing_expr`` and losslessly lower simple patterns.
+
+    Returns ``(rule_dict, lowering_kind)`` where ``lowering_kind`` is one of
+    ``"per_token"``, ``"per_tier"``, or ``"tiered_expr"``.
+    Raises ``PricingExprError`` when the expression is invalid or unsupported.
+    """
+    norm_currency = _normalize_expr_currency(currency)
+    scale = float(unit_scale)
+    if not math.isfinite(scale) or scale < 0.0 or scale > 10_000.0:
+        raise PricingExprSyntaxError("汇率换算系数无效")
+
+    compiled = compile_expr(source)
+    body = compiled.tree.body
+
+    # Case 1: Single tier("name", linear_4var) -> lossless per_token rule
+    single_inner = _unwrap_tier_call(body)
+    if single_inner is not None:
+        rates = _extract_linear_4var_rates(single_inner, scale=scale, max_price=max_price)
+        if rates is not None:
+            inp = rates["input"]
+            cached = rates["input_cached"]
+            creation = rates["cache_creation"]
+            out = rates["output"]
+            return (
+                {
+                    "mode": "per_token",
+                    "currency": norm_currency,
+                    "input": inp,
+                    "input_cached": cached,
+                    "cache_creation": creation,
+                    "output": out,
+                    "multiplier": 1.0,
+                    "free": (
+                        inp == 0.0
+                        and out == 0.0
+                        and (cached is None or cached == 0.0)
+                        and (creation is None or creation == 0.0)
+                    ),
+                    "configured": {
+                        "input": inp is not None,
+                        "input_cached": cached is not None,
+                        "cache_creation": creation is not None,
+                        "output": out is not None,
+                    },
+                },
+                "per_token",
+            )
+
+    # Case 2: Ascending len <= T1 ? tier(...) : ... : tier(...) -> lossless per_tier rule
+    if isinstance(body, ast.IfExp):
+        thresholds: list[int] = []
+        branches: list[dict[str, float | None]] = []
+        cursor: ast.AST = body
+        ok_chain = True
+        while isinstance(cursor, ast.IfExp):
+            thresh = _extract_len_lte_threshold(cursor.test)
+            branch_inner = _unwrap_tier_call(cursor.body)
+            branch_rates = (
+                _extract_linear_4var_rates(branch_inner, scale=scale, max_price=max_price)
+                if branch_inner is not None
+                else None
+            )
+            if thresh is None or branch_rates is None:
+                ok_chain = False
+                break
+            if thresholds and thresh <= thresholds[-1]:
+                ok_chain = False
+                break
+            thresholds.append(thresh)
+            branches.append(branch_rates)
+            cursor = cursor.orelse
+            if len(thresholds) > 32:
+                ok_chain = False
+                break
+        if ok_chain and thresholds:
+            final_inner = _unwrap_tier_call(cursor)
+            final_rates = (
+                _extract_linear_4var_rates(final_inner, scale=scale, max_price=max_price)
+                if final_inner is not None
+                else None
+            )
+            if final_rates is not None:
+                branches.append(final_rates)
+                # Only lower to per_tier when every branch consistently includes/omits cr and cc;
+                # mixed usage across branches must stay tiered_expr for 100% lossless semantics.
+                cached_flags = {b["input_cached"] is not None for b in branches}
+                create_flags = {b["cache_creation"] is not None for b in branches}
+                if len(cached_flags) == 1 and len(create_flags) == 1:
+                    base_rates = branches[0]
+                    context_tiers: list[dict[str, Any]] = []
+                    for idx, thresh in enumerate(thresholds):
+                        tier_rates = branches[idx + 1]
+                        context_tiers.append({
+                            "threshold_tokens": thresh,
+                            "input": tier_rates["input"],
+                            "input_cached": tier_rates["input_cached"],
+                            "cache_creation": tier_rates["cache_creation"],
+                            "output": tier_rates["output"],
+                        })
+                    return (
+                        {
+                            "mode": "per_tier",
+                            "currency": norm_currency,
+                            "base": {
+                                "input": base_rates["input"],
+                                "input_cached": base_rates["input_cached"],
+                                "cache_creation": base_rates["cache_creation"],
+                                "output": base_rates["output"],
+                            },
+                            "context_tiers": context_tiers,
+                            "service_tiers": [],
+                            "multiplier": 1.0,
+                        },
+                        "per_tier",
+                    )
+
+    # Case 3: Keep full tiered_expr (e.g., cc1h, ai, strict '<', service_tier, complex math)
+    if abs(scale - 1.0) > 1e-12:
+        scale_str = f"{round(scale, 6):g}"
+        expr_text = f"({compiled.stripped}) * {scale_str}"
+    else:
+        expr_text = compiled.original
+    validation = validate_tiered_expr_rule({"expr": expr_text, "currency": norm_currency})
+    if not validation["valid"]:
+        raise PricingExprSyntaxError(validation["error"] or "表达式验证失败")
+    return validation["normalized"], "tiered_expr"

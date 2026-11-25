@@ -147,21 +147,24 @@ class ScheduledAuthoring:
         ):
             return
         try:
-            self.admit(context, "save_candidate")
             port = self.admit(context, "list")
             works = catalogue(
                 port.service.repository.path, self.consumer.access, context
             )
-            if any(work["needs_writing"] for work in works):
-                return reserve_routine_slot(
-                    self.app.calendar,
-                    context,
-                    routine="writing",
-                    timezone=settings["planning_timezone"],
-                    now=now,
-                    items=page["items"],
-                    sleep_plan=sleep_plan,
-                )
+            if works and not any(work["needs_writing"] for work in works):
+                return
+            self.admit(context, "save_candidate" if works else "create")
+            return reserve_routine_slot(
+                self.app.calendar,
+                context,
+                routine="writing",
+                timezone=settings["planning_timezone"],
+                now=now,
+                items=page["items"],
+                sleep_plan=sleep_plan,
+                title=None if works else "文学创作",
+                detail=None if works else "写一篇短作或新作品开篇。",
+            )
         except (TaskError, ContentError, sqlite3.Error) as error:
             code = getattr(error, "code", type(error).__name__)
             self._warn_blocked(context, "plan_continuation", code)

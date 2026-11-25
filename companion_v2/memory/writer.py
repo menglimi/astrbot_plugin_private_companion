@@ -21,6 +21,20 @@ from .access import MemoryAccess
 from .models import AtomRef, Proposal, MemoryPolicy, owner_key, text, timestamp
 
 
+DEGRADED_READ_CODES = frozenset({
+    "memory_inactive",
+    "memory_forgotten",
+    "memory_expired",
+    "memory_not_current",
+    "memory_session_mismatch",
+    "source_revoked",
+    "source_expired",
+    "memory_source_unavailable",
+    "memory_evidence_forgotten",
+    "conversation_context_reset",
+})
+
+
 class MemoryWriter:
     def __init__(self, tasks, *, policy=MemoryPolicy(), operator=None, settings=None):
         self.tasks, self.runtime, self.policy = tasks, tasks.runtime, policy
@@ -79,21 +93,56 @@ class MemoryWriter:
             require(self.sources.validate_reference(codec.source(json.loads(head["source_json"])), observed_at=now))
         return value, item
 
+    @staticmethod
+    def _project_active(row, value, item):
+        return {"atom_id": row["atom_id"], "revision": row["revision"], "state": row["state"],
+            "namespace": item.namespace, "subject": item.subject, "predicate": item.predicate,
+            "object": item.object, "qualifiers": item.qualifiers, "polarity": item.polarity,
+            "attribution": item.attribution, "representation": item.representation, "retention": item.retention,
+            "context_mode": item.context_mode,
+            "valid_from": stamp(item.valid_from) if item.valid_from else None,
+            "valid_to": stamp(item.valid_to) if item.valid_to else None, "confidence": item.confidence,
+            "observed_at": value["observed_at"], "accepted_by": value.get("accepted_by"), "updated_at": row["updated_at"],
+            "evidence": json.loads(encode(item.evidence)), "source": json.loads(row["source_json"])}
+
+    @staticmethod
+    def _project_degraded(row, reason_code):
+        return {
+            "atom_id": row["atom_id"],
+            "revision": row["revision"],
+            "state": row["state"],
+            "representation": None,
+            "object": None,
+            "updated_at": row["updated_at"],
+            "unavailable_reason": reason_code,
+            "read_only": True,
+        }
+
     @outcome
     def read(self, context, reference, *, at=None):
         self.access.check(context)
         with self.runtime.read_snapshot():
             row = self._head(context, reference)
             value, item = self._valid(context, row, at=at)
-            return {"atom_id": row["atom_id"], "revision": row["revision"], "state": row["state"],
-                "namespace": item.namespace, "subject": item.subject, "predicate": item.predicate,
-                "object": item.object, "qualifiers": item.qualifiers, "polarity": item.polarity,
-                "attribution": item.attribution, "representation": item.representation, "retention": item.retention,
-                "context_mode": item.context_mode,
-                "valid_from": stamp(item.valid_from) if item.valid_from else None,
-                "valid_to": stamp(item.valid_to) if item.valid_to else None, "confidence": item.confidence,
-                "observed_at": value["observed_at"], "accepted_by": value.get("accepted_by"), "updated_at": row["updated_at"],
-                "evidence": json.loads(encode(item.evidence)), "source": json.loads(row["source_json"])}
+            return self._project_active(row, value, item)
+
+    @outcome
+    def read_or_degraded(self, context, reference, *, degraded_codes=DEGRADED_READ_CODES, at=None):
+        """Read one authorized fact, degrading inactive or unreadable heads within a single snapshot."""
+        self.access.check(context)
+        with self.runtime.read_snapshot():
+            row = self._head(context, reference, allow_inactive=True)
+            if row["state"] != "active":
+                if "memory_inactive" in degraded_codes:
+                    return self._project_degraded(row, "memory_inactive")
+                raise TaskError("memory_inactive", "memory is not active")
+            try:
+                value, item = self._valid(context, row, at=at)
+            except TaskError as error:
+                if error.code in degraded_codes:
+                    return self._project_degraded(row, error.code)
+                raise
+            return self._project_active(row, value, item)
 
     def _validate_proposal(self, context, item, action):
         self.access.check(context, action)

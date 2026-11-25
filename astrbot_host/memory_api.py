@@ -558,10 +558,12 @@ class MemoryWebAPI:
                 reflection_manager, context = self._build_reflection_manager(
                     session, runtime, resolved_username, observed_at)
                 management = reflection_manager.manager
-                item = management.writer.read(context, AtomRef(atom_id, revision))
+                item = management.writer.read_or_degraded(context, AtomRef(atom_id, revision))
                 if item.failure:
                     return item
                 value = item.unwrap()
+                if value.get("read_only"):
+                    return Outcome.success({"item": value, "sources": [], "session_id": None})
                 engine = MemoryQuery(management.writer)
                 session_id = "memory-page-query-" + uuid4().hex
                 engine.begin(context, session_id)

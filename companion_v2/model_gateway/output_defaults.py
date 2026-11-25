@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import replace
 from types import MappingProxyType
 
-from .models import MAX_MODEL_OUTPUT_TOKENS
+from .models import MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
 
 
 # 结构化任务统一 30000 输出上限。Provider 或产品上限更低时按低的算；用户把全局
@@ -91,5 +91,15 @@ def with_thinking_margins(profiles):
     Only the registry default carried by each profile changes here; an explicit
     value saved by the user lives in configuration and keeps overriding it.
     """
-    return tuple(replace(profile, max_output_tokens=default_output_tokens(profile.kind, profile.max_output_tokens))
-                 for profile in profiles)
+    adjusted = []
+    for index, profile in enumerate(profiles):
+        if not isinstance(profile, ModelTaskProfile):
+            raise TypeError(
+                f"with_thinking_margins expected ModelTaskProfile at index {index}, "
+                f"got {type(profile).__name__}"
+            )
+        adjusted.append(replace(
+            profile,
+            max_output_tokens=default_output_tokens(profile.kind, profile.max_output_tokens),
+        ))
+    return tuple(adjusted)

@@ -14,6 +14,8 @@ def observe_native_reply_presence(application, prepared, stage):
         return
     if stage == "finished":
         presence.finish_native_reply(context, turn_id)
+    elif stage == "returned":
+        presence.note_native_reply_sent(context)
     else:
         presence.native_reply_stage(context, turn_id, stage)
 

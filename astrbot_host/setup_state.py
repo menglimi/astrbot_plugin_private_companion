@@ -8,9 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 3
-# 与旧版配置引导一致的八步：窗口、模型、人格与世界知识、关系教学、主动功能与强度、
-# 日程与观察、群聊配置，最后是主动消息测试（测试完成才算 ready）。
+SCHEMA_VERSION = 4
+# 与旧版配置引导一致的步骤键：窗口、模型、人格与世界知识、关系教学、主动功能与强度、
+# 日程与观察、群聊配置，最后可经由主动消息测试或一键体检确认完成（ready）。
 SETUP_STEPS = ("model", "knowledge", "relationships", "proactive", "life", "group")
 
 
@@ -27,7 +27,8 @@ class SetupStepsIncomplete(ValueError):
 
 def empty_state() -> dict:
     return {"schema_version": SCHEMA_VERSION, "completed": [],
-            "skipped": [], "proactive_test": None, "ready": False}
+            "skipped": [], "proactive_test": None, "ready": False,
+            "finished_at": None, "finished_by": None}
 
 
 class SetupStateStore:
@@ -65,16 +66,29 @@ class SetupStateStore:
                 raise ValueError("setup progress has an unsupported shape")
             document = {"schema_version": SCHEMA_VERSION, "completed": document["completed"],
                         "skipped": document["skipped"], "proactive_test": document["proactive_test"],
-                        "ready": document["ready"]}
+                        "ready": document["ready"], "finished_at": None, "finished_by": None}
+        elif document.get("schema_version") == 3:
+            old_fields = {"schema_version", "completed", "skipped", "proactive_test", "ready"}
+            if set(document) != old_fields:
+                raise ValueError("setup progress has an unsupported shape")
+            document = {**document, "schema_version": SCHEMA_VERSION,
+                        "finished_at": None, "finished_by": None}
+        expected_fields = {
+            "schema_version", "completed", "skipped", "proactive_test", "ready",
+            "finished_at", "finished_by",
+        }
         if (document.get("schema_version") != SCHEMA_VERSION
-                or set(document) != {"schema_version", "completed", "skipped", "proactive_test", "ready"}
+                or set(document) != expected_fields
                 or type(document.get("completed")) is not list
                 or type(document.get("skipped")) is not list
                 or any(item not in SETUP_STEPS for item in document["completed"] + document["skipped"])
                 or len(set(document["completed"])) != len(document["completed"])
                 or len(set(document["skipped"])) != len(document["skipped"])
                 or set(document["completed"]) & set(document["skipped"])
-                or type(document.get("ready")) is not bool):
+                or type(document.get("ready")) is not bool
+                or (document["finished_at"] is not None and (type(document["finished_at"]) is not str or not document["finished_at"].strip()))
+                or (document["finished_by"] is not None and (type(document["finished_by"]) is not str or not document["finished_by"].strip()))
+                or (bool(document["finished_at"]) != bool(document["finished_by"]))):
             raise ValueError("setup progress has an unsupported shape")
         test = document["proactive_test"]
         if test is not None:
@@ -112,7 +126,9 @@ class SetupStateStore:
                     type(test.get("confirmed_at")) is not str
                     or type(test.get("confirmed_by")) is not str or not test["confirmed_by"].strip()):
                 raise ValueError("setup test recipient confirmation is invalid")
-        if document["ready"] != bool(test and test.get("state") in ("delivered", "received")):
+        has_test_ready = bool(test and test.get("state") in ("delivered", "received"))
+        has_manual_finish = bool(document["finished_at"] and document["finished_by"])
+        if document["ready"] != (has_test_ready or has_manual_finish):
             raise ValueError("setup completion does not match the proactive test receipt")
         return document
 
@@ -248,5 +264,16 @@ class SetupStateStore:
             raise ValueError("there is no unconfirmed proactive test")
         receipt.update(state="received", confirmed_by=confirmed_by, confirmed_at=confirmed_at)
         state["ready"] = True
+        self.write(state)
+        return state
+
+    def finish(self, *, finished_by: str, finished_at: str) -> dict:
+        if (type(finished_by) is not str or not finished_by.strip()
+                or type(finished_at) is not str or not finished_at.strip()):
+            raise ValueError("setup completion requires a reviewer and timestamp")
+        state = self.read()
+        state["ready"] = True
+        state["finished_by"] = finished_by.strip()
+        state["finished_at"] = finished_at.strip()
         self.write(state)
         return state

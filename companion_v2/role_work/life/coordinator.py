@@ -30,22 +30,29 @@ class RoleLifeCoordinator:
     @staticmethod
     def route(context):
         s = context.scope
-        return (s.installation_id, s.platform, s.bot_id, s.account_id, s.native_scope_id,
-                context.role_binding.role.subject_id)
+        return (s.installation_id, s.platform, s.bot_id, s.account_id, s.native_scope_id)
+
+    def _can_reuse_binding(self, routine, context, role_instruction):
+        if (routine._retired or routine._closed or routine.instruction != role_instruction
+                or self.route(routine.context) != self.route(context)
+                or routine.context.role_binding.role != context.role_binding.role):
+            return False
+        binding = self.app.tasks.identity.resolve_role(routine.context.scope, observed_at=self.app.now())
+        return binding.is_success and binding.unwrap() == routine.context.role_binding
 
     def bind(self, context, role_instruction, *, guard=None):
         if self._closed:
             raise TaskError("life_closed", "routine coordinator is closed")
         routine = self.routines.get(context.key)
+        if (routine is not None and routine.context.key != context.key
+                and not self._can_reuse_binding(routine, context, role_instruction)):
+            del self.routines[context.key]
+            routine = None
         if routine is None:
             # The Dashboard and native intake can name the same private route
-            # with different conversation IDs.  Adopt the existing routine
-            # instead of creating a second one whose activities/grants use a
-            # different context key.
+            # with different conversation IDs. Reuse a binding while its authority is current.
             for candidate in self.routines.values():
-                if (not getattr(candidate, "_retired", False)
-                        and candidate.instruction in (None, role_instruction)
-                        and self.route(candidate.context) == self.route(context)):
+                if self._can_reuse_binding(candidate, context, role_instruction):
                     routine = candidate
                     self.routines[context.key] = candidate
                     break

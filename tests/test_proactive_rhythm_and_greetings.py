@@ -7,16 +7,21 @@ the synthetic sender, and never open a platform connection.
 
 from datetime import datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from companion_v2.configuration.models import ConfigurationError
+from companion_v2.conversation.native_turns import NativeConversationTurns
+from companion_v2.execution.models import TaskError
 from companion_v2.proactive import rhythm
 from companion_v2.proactive.configuration import (CURVE_CEILING, CURVE_FLOOR, DEFAULT_HOUR_CURVE, GROUP,
                                                   configuration_fields, curve_text, hour_activity_curve)
 from companion_v2.proactive.greetings import ANCHOR_PURPOSE, INSOMNIA_PURPOSE
 from companion_v2.proactive.preferences import ContactPreferences
 from tests.contact_schedule_support import ContactScheduleFixture
+from tests.test_role_presence import FakePresence
+from tests.test_role_tool_loop import answered
 
 
 class StubContext:
@@ -25,7 +30,7 @@ class StubContext:
 
 def stub_values(**changes):
     values = {"proactive_hour_activity_enabled": False, "proactive_hour_activity_curve": DEFAULT_HOUR_CURVE,
-              "quiet_timezone": "UTC", "proactive_intensity_preset": "off", "interval_seconds": 600,
+              "quiet_timezone": "UTC", "proactive_intensity_preset": "custom", "interval_seconds": 600,
               "idle_seconds": 600, "enable_proactive_burst": False, "proactive_burst_max_messages": 2,
               "proactive_intensity_body_chars": 0, "proactive_burst_gap_min_seconds": 45,
               "proactive_burst_gap_max_seconds": 180, "unanswered_slowdown_start": 1,
@@ -44,7 +49,7 @@ class RhythmConfigurationTests(unittest.TestCase):
 
     def test_rhythm_and_anchor_fields_are_registered_with_bounded_defaults(self):
         fields = self.fields()
-        for name, default in (("enable_proactive_burst", False), ("proactive_intensity_preset", "off"),
+        for name, default in (("enable_proactive_burst", False), ("proactive_intensity_preset", "custom"),
                               ("proactive_hour_activity_enabled", False),
                               ("proactive_hour_activity_curve", curve_text(DEFAULT_HOUR_CURVE)),
                               ("enable_daily_greetings", False), ("allow_insomnia_night_message", False),
@@ -140,6 +145,110 @@ class RhythmConfigurationTests(unittest.TestCase):
 class RhythmSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase):
     def records(self, app):
         return [json.loads(row["record_json"]) for row in self.contacts(app)]
+
+    async def test_off_blocks_planning_and_pending_automatic_delivery(self):
+        host, _ = await self.scheduled(automatic=False)
+        app = host.application
+        schedule = app.contact_schedule
+        context = self.contact_context()
+        self.settings(app, {"automatic_enabled": True, "proactive_intensity_preset": "off"}).unwrap()
+        self.advance(app, 60)
+        row = schedule.latest_conversation(context)
+        self.assertIsNone(schedule._plan(row, self.clock.now()))
+        diagnostic = schedule.diagnostic_for(context, at=self.clock.now())
+        self.assertEqual(diagnostic["evaluation"]["reason_code"], "contact_intensity_off")
+        self.assertEqual(self.contact_calls(), [])
+
+        async def turn_off_before_dispatch(envelope):
+            self.settings(app, {"proactive_intensity_preset": "off"}).unwrap()
+            with self.assertRaises(TaskError):
+                envelope.before_dispatch()
+            return self.receipt(envelope, "not_sent")
+
+        self.send_behavior = turn_off_before_dispatch
+        self.settings(app, {"proactive_intensity_preset": "custom"}).unwrap()
+        app.notify()
+        await self.until(lambda: bool(self.contacts(app)))
+        await self.delivery_state(app, self.contacts(app)[0]["task_id"], "failed")
+        self.assertEqual(len(self.contact_calls()), 1)
+
+    async def test_late_foreground_send_restarts_the_idle_period(self):
+        async def slow_reply(_envelope):
+            self.clock.advance(timedelta(seconds=90))
+            return answered("这条回复等了一会儿。")
+
+        self.model_behavior = slow_reply
+        host, _ = await self.scheduled(automatic=False)
+        app = host.application
+        schedule = app.contact_schedule
+        context = self.contact_context()
+        row = schedule.latest_conversation(context)
+        replied_at = self.clock.now()
+        origin, _, _ = schedule._origin(context, row["batch_id"], replied_at)
+        self.settings(app, {"automatic_enabled": True}).unwrap()
+        self.clock.advance(timedelta(seconds=8))
+        self.assertIsNone(schedule._plan(row, self.clock.now()))
+        with self.assertRaises(TaskError) as held:
+            schedule.validate_origin(context, origin, self.clock.now())
+        self.assertEqual(held.exception.code, "contact_conversation_active")
+        self.clock.advance(timedelta(seconds=52))
+        plan = schedule._plan(row, self.clock.now())
+        self.assertEqual(plan[1].opened_at, replied_at + timedelta(seconds=60))
+
+    async def test_native_send_receipt_enforces_burst_floor_even_with_zero_idle(self):
+        host, _ = await self.scheduled(automatic=False)
+        app = host.application
+        context = self.contact_context()
+        self.clock.advance(timedelta(seconds=60))
+        input_at = self.clock.now()
+        self.clock.advance(timedelta(seconds=180))
+        replied_at = self.clock.now()
+        turns = NativeConversationTurns(app.runtime)
+        turns.mark({"context": context, "turn_id": "native-slow-reply", "instruction": "原人格",
+                    "native_input": SimpleNamespace(at=input_at)}, "completed", at=replied_at)
+        self.settings(app, {"idle_seconds": 0, "enable_proactive_burst": True,
+                            "proactive_burst_gap_min_seconds": 45}).unwrap()
+        preferences = self.preferences(app)
+        rhythm = app.contact_schedule.rhythm
+        self.assertEqual(rhythm.first_opening(context, preferences, replied_at, input_at=input_at), input_at)
+        turns.sent("native-slow-reply", replied_at)
+        self.assertEqual(rhythm.first_opening(context, preferences, replied_at + timedelta(seconds=8),
+                                             input_at=input_at), replied_at + timedelta(seconds=45))
+
+    async def test_native_reply_blocks_an_already_queued_contact_before_dispatch(self):
+        host, _ = await self.scheduled(automatic=False, presence_port=FakePresence())
+        app = host.application
+        schedule = app.contact_schedule
+        context = self.contact_context()
+        checks = []
+
+        async def reply_before_dispatch(envelope):
+            turn_id = "native-reply-before-contact"
+            app.presence.begin_native_reply(context, turn_id)
+            with self.assertRaises(TaskError) as active:
+                envelope.before_dispatch()
+            checks.append(active.exception.code)
+
+            # AstrBot has returned from sending, but the background receipt has
+            # yet to reach conversation_native_turns.
+            replied_at = self.clock.now()
+            app.presence.note_native_reply_sent(context)
+            app.presence.finish_native_reply(context, turn_id)
+            self.clock.advance(timedelta(seconds=8))
+            with self.assertRaises(TaskError) as cooling:
+                envelope.before_dispatch()
+            checks.append(cooling.exception.code)
+            self.assertEqual(schedule.rhythm.first_opening(context, self.preferences(app), self.clock.now(),
+                input_at=replied_at - timedelta(seconds=60)), replied_at + timedelta(seconds=45))
+            return self.receipt(envelope, "not_sent")
+
+        self.send_behavior = reply_before_dispatch
+        self.settings(app, {"automatic_enabled": True, "idle_seconds": 0, "enable_proactive_burst": True,
+                            "proactive_burst_gap_min_seconds": 45}).unwrap()
+        self.advance(app, 60)
+        await self.until(lambda: bool(self.contacts(app)))
+        await self.delivery_state(app, self.contacts(app)[0]["task_id"], "failed")
+        self.assertEqual(checks, ["contact_conversation_active", "contact_conversation_active"])
 
     async def test_burst_round_adds_one_bounded_follow_up_then_closes(self):
         host, _ = await self.scheduled()

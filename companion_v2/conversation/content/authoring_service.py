@@ -113,12 +113,12 @@ def select_work_id(title, items):
     return next(iter(matches))
 
 
-def prompt(request, materials, *, settings, work_type=""):
+def prompt(request, materials, *, settings, work_type="", scheduled=False):
     """Render one validated request, including this installation's direction."""
     direction = settings.direction_prompt.strip()
     brief = request["brief"] if not direction else f"{direction}\n{request['brief']}"
     return authoring.authoring_prompt(request["action"], brief, materials,
-        base_version=request["base_version"], work_type=work_type)
+        base_version=request["base_version"], work_type=work_type, scheduled=scheduled)
 
 
 def parse_draft(raw, *, action):

@@ -446,10 +446,10 @@ test('强度档位别名归一：显示归一后的档位，否则「设成实�
   assert.equal(tierOf('直播'), 'live');
   assert.equal(tierOf('高频'), 'live');
   assert.equal(tierOf('standard'), 'balanced');
-  assert.equal(tierOf('manual'), 'off');
-  assert.equal(tierOf(''), 'off');
-  /* 未知档位落到 off，而不是猜一个：猜测会让界面显示一个后端没存的档位。 */
-  assert.equal(tierOf('turbo'), 'off');
+  assert.equal(tierOf('manual'), 'custom');
+  assert.equal(tierOf(''), 'custom');
+  assert.equal(tierOf('turbo'), 'custom');
+  assert.equal(tierOf('off'), 'off');
 });
 
 test('免打扰判定覆盖跨午夜与两侧端点', () => {
@@ -530,6 +530,12 @@ test('总开关与自动联系开关分别呈现全局默认', async () => {
   automaticOff.page.openGateSettingsView();
   assert.match(automaticOff.element.innerHTML, /后台自动联系默认/);
   assert.doesNotMatch(automaticOff.element.innerHTML, /当前对象尚未授予联系权限/);
+
+  const tierOff = harness();
+  await boot(tierOff, {...baseSettings(), automatic_enabled:true, quiet_enabled:false,
+    proactive_intensity_preset:'off'});
+  assert.match(tierOff.element.innerHTML, /全局自动联系已关闭/);
+  assert.match(tierOff.element.innerHTML, /data-tier="custom"/);
 });
 
 test('全局设置页不显示逐用户授权结果', async () => {
@@ -657,11 +663,11 @@ test('设置视图渲染出的字段清单与本页写出口完全一致', async
       view + ' 的字段清单变了。加字段要连这份清单一起改；少字段说明有控件没接上。');
   }
   assert.equal(seen.size, 135, '设置视图合起来必须是 135 个 data-field 绑定');
-  /* 强度档位是五档共用一个字段，走 data-tier 而不是 data-field：
+  /* 强度档位共用一个字段，走 data-tier 而不是 data-field：
      只数 data-field 会把它整个漏掉。三个问候锚点同理（它们不是控件，是环上的热点）。 */
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]' ? {dataset: {view: 'dial'}} : null}});
   const dial = h.element.innerHTML;
-  assert.equal((dial.match(/data-tier="/g) || []).length, 5, '强度档位五档都要在');
+  assert.equal((dial.match(/data-tier="/g) || []).length, 6, '强度档位六档都要在');
   assert.ok(dial.includes('data-tier="balanced"'), '当前档位要有对应的按钮可点');
   assert.equal((dial.match(/data-anchor="/g) || []).length, 3, '三个问候锚点要画在环上');
 });
@@ -1314,11 +1320,11 @@ test('消息测试是一级视图，未读到设置时也可以打开', async ()
   assert.equal(h.page.state.data.view, 'tests');
   assert.ok(h.element.innerHTML.includes('ct-tests'), '静态测试指令不应依赖后端设置状态');
   assert.ok(h.element.innerHTML.includes('ct-head-test'), '页头应保留消息测试直达入口');
-  assert.equal((h.element.innerHTML.match(/data-test-id="/g) || []).length, 17);
-  assert.equal((h.element.innerHTML.match(/data-test-coverage="ready"/g) || []).length, 17);
+  assert.equal((h.element.innerHTML.match(/data-test-id="/g) || []).length, 18);
+  assert.equal((h.element.innerHTML.match(/data-test-coverage="ready"/g) || []).length, 18);
   assert.equal((h.element.innerHTML.match(/data-test-coverage="partial"/g) || []).length, 0);
   assert.equal((h.element.innerHTML.match(/data-test-coverage="missing"/g) || []).length, 0);
-  assert.match(h.element.innerHTML, /生产器已接通 <strong>17<\/strong>/);
+  assert.match(h.element.innerHTML, /生产器已接通 <strong>18<\/strong>/);
   assert.ok(!h.element.innerHTML.includes('当前没有独立 invitation 生产器'));
   for (const purpose of ['affection','care','play','repair','invitation']) {
     const start = h.element.innerHTML.indexOf(`data-test-id="${purpose}"`);
@@ -1570,7 +1576,7 @@ test('消息测试支持按类别、覆盖状态和内容筛选', async () => {
   const h = harness();
   await boot(h);
   const ids = ['affection','care','play','repair','chat','greeting','followup','invitation',
-    'reminder','meal','life','creation','news','environment','screen','mobile_location','reaction_image'];
+    'reminder','meal','life','creation','news','environment','screen','mobile_location','generated_image','reaction_image'];
   const cards = ids.map(testId => ({dataset: {testId}, hidden: false}));
   const count = {textContent: ''}, empty = {hidden: true};
   h.element.querySelectorAll = selector => selector === '[data-test-card]' ? cards : [];
@@ -1586,29 +1592,29 @@ test('消息测试支持按类别、覆盖状态和内容筛选', async () => {
   assert.match(html, /data-test-copy="affection"><svg viewBox="0 0 24 24"[^>]*><rect x="8" y="8"/,
     '复制指令按钮使用复制图标');
   assert.ok(html.includes('尚无独立生产器'));
-  assert.equal(count.textContent, '17 / 17 类');
+  assert.equal(count.textContent, '18 / 18 类');
 
   const bucket = {value: 'daily', closest: selector => selector === '[data-test-bucket-filter]' ? bucket : null};
   h.element.dispatch('change', {target: bucket});
   assert.deepEqual(cards.filter(card => !card.hidden).map(card => card.dataset.testId),
     ['greeting','followup','invitation','reminder','meal']);
-  assert.equal(count.textContent, '5 / 17 类');
+  assert.equal(count.textContent, '5 / 18 类');
 
   bucket.value = 'extension';
   h.element.dispatch('change', {target: bucket});
   assert.deepEqual(cards.filter(card => !card.hidden).map(card => card.dataset.testId),
-    ['mobile_location','reaction_image']);
-  assert.equal(count.textContent, '2 / 17 类');
+    ['mobile_location','generated_image','reaction_image']);
+  assert.equal(count.textContent, '3 / 18 类');
 
   const coverage = {value: 'ready', closest: selector => selector === '[data-test-coverage-filter]' ? coverage : null};
   h.element.dispatch('change', {target: coverage});
   assert.deepEqual(cards.filter(card => !card.hidden).map(card => card.dataset.testId),
-    ['mobile_location','reaction_image']);
-  assert.equal(count.textContent, '2 / 17 类');
+    ['mobile_location','generated_image','reaction_image']);
+  assert.equal(count.textContent, '3 / 18 类');
 
   const search = {value: '撤权', closest: selector => selector === '[data-test-search]' ? search : null};
   h.element.dispatch('input', {target: search});
-  assert.equal(count.textContent, '0 / 17 类');
+  assert.equal(count.textContent, '0 / 18 类');
   assert.equal(empty.hidden, false, '无匹配时显示空状态');
   assert.equal(h.page.state.data.touched.size, 0, '筛选不能修改配置');
 });
@@ -1694,10 +1700,11 @@ test('主动消息类型卡片可确认后运行真实诊断并显示结果', as
   assert.equal(h.localStore.size, 0, 'a final result clears the durable replay guard');
 });
 
-test('手机地点和带图主动消息映射到各自的扩展诊断链路', async () => {
+test('手机地点、带图和带表情包分别进入对应的测试链路', async () => {
   for (const [id, expected, confirmationText] of [
     ['mobile_location', {purpose:'environment', confirm_delivery:true, synthetic_event:false, variant:'mobile_location'}, /不伪造坐标/],
-    ['reaction_image', {purpose:'chat', confirm_delivery:true, synthetic_event:false, diagnostic_image:true}, /授权图库检索一张表情原图/],
+    ['reaction_image', {purpose:'chat', confirm_delivery:true, synthetic_event:false, diagnostic_image:true}, /授权图库检索一张表情包原图/],
+    ['generated_image', {purpose:'chat', confirm_delivery:true, synthetic_event:false, diagnostic_generated_image:true}, /通过复核后生成一张日常静物图/],
   ]) {
     const h = harness();
     await boot(h);
@@ -2023,7 +2030,7 @@ test('唯一核心管理员自动使用，不显示选择框；收件人读取�
   await failed.settle();
   failed.fail(failed.requests.at(-1), 'proactive_recipients_unavailable');
   await failed.settle();
-  assert.match(failed.element.innerHTML, /收件人读取失败/);
+  assert.match(failed.element.innerHTML, /role="alert">当前宿主没有可用的测试收件人列表.*proactive_recipients_unavailable/);
   failed.element.dispatch('click', {target:{closest:sel => sel === '[data-test-run]' ? {dataset:{testRun:'news'}} : null}});
   assert.equal(failed.page.state.data.confirmTest, '');
 });

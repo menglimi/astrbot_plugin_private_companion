@@ -69,7 +69,7 @@ window.CompanionImageMaterialsPage = (() => {
     galleryBaseOrder: [], galleryDraftOrder: [],
     wardrobeName: "", wardrobeDescription: "", wardrobeTags: "", wardrobeAssetId: "", wardrobeKey: "",
     action: "", notice: "", noticeError: false,
-    uploadOpen: false, wardrobeOpen: false,
+    uploadOpen: false, wardrobeOpen: false, showWithdrawnWardrobe: false,
   };
 
   const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -190,6 +190,14 @@ window.CompanionImageMaterialsPage = (() => {
   const options = (values, selected) => Object.entries(values).map(([value, label]) => `<option value="${esc(value)}" ${selected === value ? "selected" : ""}>${esc(label)}</option>`).join("");
   function activeWardrobe() {
     return (state.inventory?.wardrobe || []).filter(item => item?.state === "active");
+  }
+  function withdrawnWardrobe() {
+    return (state.inventory?.wardrobe || []).filter(item => item?.state !== "active");
+  }
+  function withdrawnWardrobeCount() {
+    const reported = state.inventory?.wardrobe_counts?.withdrawn;
+    const listed = withdrawnWardrobe().length;
+    return Number.isInteger(reported) && reported > listed ? reported : listed;
   }
 
   function setNotice(message, isError = false) {
@@ -338,15 +346,24 @@ window.CompanionImageMaterialsPage = (() => {
     </div>`;
   }
 
+  function renderWardrobeItem(item, daily) {
+    const active = item.state === "active";
+    const selected = daily?.item_id === item.item_id;
+    return `<li class="image-materials-record ${active ? "" : "is-withdrawn"}${selected ? " is-daily" : ""}"><div><strong>${esc(item.name || "未命名衣物")}</strong><span>${esc((item.tags || []).join("、") || item.description || "未填写描述")}${item.asset_id ? " · 已关联图片" : ""}</span></div><div class="image-materials-record-action">${active && dailyEnabled() ? `<button type="button" class="button small" data-im-daily="${esc(item.item_id)}" ${writesLocked() || selected ? "disabled" : ""}>${state.action === "daily-" + item.item_id ? "正在选择…" : selected ? "今日参考" : "设为今日参考"}</button>` : ""}${active ? `<button type="button" class="button small danger" data-im-withdraw-wardrobe="${esc(item.item_id)}" ${writesLocked() ? "disabled" : ""}>撤回</button>` : ""}${!active ? "<em>已撤回</em>" : ""}</div></li>`;
+  }
+
   function renderWardrobeList() {
-    const records = state.inventory?.wardrobe || [];
+    const active = activeWardrobe();
+    const withdrawn = withdrawnWardrobe();
     const daily = state.inventory?.daily_outfit;
-    if (!records.length) return statusCard("衣柜还是空的", "", "empty");
-    return `<ul class="image-materials-record-list image-materials-wardrobe-list">${records.map(item => {
-      const active = item.state === "active";
-      const selected = daily?.item_id === item.item_id;
-      return `<li class="image-materials-record ${active ? "" : "is-withdrawn"}${selected ? " is-daily" : ""}"><div><strong>${esc(item.name || "未命名衣物")}</strong><span>${esc((item.tags || []).join("、") || item.description || "未填写描述")}${item.asset_id ? " · 已关联图片" : ""}</span></div><div class="image-materials-record-action">${active && dailyEnabled() ? `<button type="button" class="button small" data-im-daily="${esc(item.item_id)}" ${writesLocked() || selected ? "disabled" : ""}>${state.action === "daily-" + item.item_id ? "正在选择…" : selected ? "今日参考" : "设为今日参考"}</button>` : ""}${active ? `<button type="button" class="button small danger" data-im-withdraw-wardrobe="${esc(item.item_id)}" ${writesLocked() ? "disabled" : ""}>撤回</button>` : ""}${!active ? "<em>已撤回</em>" : ""}</div></li>`;
-    }).join("")}</ul>`;
+    if (!active.length && !withdrawn.length) return statusCard("衣柜还是空的", "", "empty");
+    const activeBlock = active.length
+      ? `<ul class="image-materials-record-list image-materials-wardrobe-list">${active.map(item => renderWardrobeItem(item, daily)).join("")}</ul>`
+      : statusCard("衣柜里还没有生效衣物", "已撤回的衣物默认折叠收纳，点击上方按钮即可展开查看。", "empty");
+    const withdrawnBlock = state.showWithdrawnWardrobe && withdrawn.length
+      ? `<div class="image-materials-withdrawn-group"><h5 class="image-materials-withdrawn-title">已撤回衣物（${withdrawn.length}）</h5><ul class="image-materials-record-list image-materials-wardrobe-list is-withdrawn-list">${withdrawn.map(item => renderWardrobeItem(item, daily)).join("")}</ul></div>`
+      : "";
+    return activeBlock + withdrawnBlock;
   }
 
   const outfitInProgress = value => ["created", "admitted", "running", "retry_scheduled", "cancelling"].includes(value?.state);
@@ -462,7 +479,7 @@ window.CompanionImageMaterialsPage = (() => {
       ${error ? statusCard("素材状态暂不可读", errorText({message:error}, "请刷新后重试。"), "error") : ""}
       <section class="image-materials-outfit" data-im-outfit-photo aria-label="每日穿搭图">${renderOutfitPhoto()}</section>
       <section class="image-materials-library"><header class="image-materials-section-head"><h4>参考图库</h4><span class="image-materials-count">${activeReferences().length} / 24 张生效</span><div class="image-materials-section-tools"><button type="button" class="button small primary" data-im-toggle-upload aria-expanded="${state.uploadOpen}" aria-controls="image-materials-upload">${state.uploadOpen ? "收起上传" : "添加参考图"}</button><button type="button" class="button small" data-im-refresh ${state.inventoryLoading || state.albumLoading || state.action ? "disabled" : ""}>刷新状态</button><button type="button" class="button small" data-im-save-gallery ${!galleryOrderDirty() || state.action || state.inventoryLoading ? "disabled" : ""}>${state.action === "save-gallery" ? "正在保存…" : "保存图库"}</button></div></header>${renderUploadForm()}${renderReferenceList()}</section>
-      <div class="image-materials-columns">${renderAlbum()}<section class="image-materials-section image-materials-wardrobe-section"><header class="image-materials-section-head"><h4>衣柜</h4><span class="image-materials-count">${activeWardrobe().length} 件生效</span></header><button type="button" class="button small image-materials-add-wardrobe" data-im-toggle-wardrobe aria-expanded="${state.wardrobeOpen}" aria-controls="image-materials-wardrobe-add">${state.wardrobeOpen ? "收起新增" : "新增衣物"}</button>${renderWardrobeForm()}${renderWardrobeList()}</section></div>
+      <div class="image-materials-columns">${renderAlbum()}<section class="image-materials-section image-materials-wardrobe-section"><header class="image-materials-section-head"><h4>衣柜</h4><span class="image-materials-count">${activeWardrobe().length} / 24 件生效</span></header><div class="image-materials-wardrobe-tools"><button type="button" class="button small image-materials-add-wardrobe" data-im-toggle-wardrobe aria-expanded="${state.wardrobeOpen}" aria-controls="image-materials-wardrobe-add">${state.wardrobeOpen ? "收起新增" : "新增衣物"}</button>${withdrawnWardrobeCount() > 0 ? `<button type="button" class="button small" data-im-toggle-withdrawn-wardrobe aria-pressed="${state.showWithdrawnWardrobe}">${state.showWithdrawnWardrobe ? "隐藏已撤回" : `显示已撤回 (${withdrawnWardrobeCount()})`}</button>` : ""}</div>${renderWardrobeForm()}${renderWardrobeList()}</section></div>
     </section>`;
     window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}});
   }
@@ -538,7 +555,7 @@ window.CompanionImageMaterialsPage = (() => {
       state.selectedImage = ""; state.selectedRoles = new Set(["identity"]); state.referenceLabel = ""; state.referenceKey = operationKey("reference");
       state.wardrobeName = ""; state.wardrobeDescription = ""; state.wardrobeTags = ""; state.wardrobeAssetId = ""; state.wardrobeKey = operationKey("wardrobe");
       state.searchQuery = ""; state.filterRole = "";
-      state.uploadOpen = false; state.wardrobeOpen = false;
+      state.uploadOpen = false; state.wardrobeOpen = false; state.showWithdrawnWardrobe = false;
     }
     render();
     if (!nextScope || !role()?.image_material_api) return;
@@ -813,12 +830,13 @@ window.CompanionImageMaterialsPage = (() => {
     if (target.matches("[data-im-wardrobe-asset]")) { state.wardrobeAssetId = target.value; render(); }
   }
   function click(event) {
-    const target = event.target.closest("[data-im-open-outfit],[data-im-refresh],[data-im-load-more],[data-im-select],[data-im-register],[data-im-upload],[data-im-save-gallery],[data-im-move-ref],[data-im-edit-ref],[data-im-quick-roles],[data-im-save-ref],[data-im-cancel-edit],[data-im-withdraw-ref],[data-im-wardrobe-submit],[data-im-withdraw-wardrobe],[data-im-daily],[data-im-toggle-upload],[data-im-toggle-wardrobe],[data-im-generate-outfit]");
+    const target = event.target.closest("[data-im-open-outfit],[data-im-refresh],[data-im-load-more],[data-im-select],[data-im-register],[data-im-upload],[data-im-save-gallery],[data-im-move-ref],[data-im-edit-ref],[data-im-quick-roles],[data-im-save-ref],[data-im-cancel-edit],[data-im-withdraw-ref],[data-im-wardrobe-submit],[data-im-withdraw-wardrobe],[data-im-daily],[data-im-toggle-upload],[data-im-toggle-wardrobe],[data-im-toggle-withdrawn-wardrobe],[data-im-generate-outfit]");
     if (!target || !state.root?.contains(target) || target.disabled) return;
     if (target.matches("[data-im-open-outfit]")) { openOutfitLightbox(); return; }
     if (state.action) return;
     if (target.matches("[data-im-toggle-upload]")) { state.uploadOpen = !state.uploadOpen; render(); return; }
     if (target.matches("[data-im-toggle-wardrobe]")) { state.wardrobeOpen = !state.wardrobeOpen; render(); return; }
+    if (target.matches("[data-im-toggle-withdrawn-wardrobe]")) { state.showWithdrawnWardrobe = !state.showWithdrawnWardrobe; render(); return; }
     if (target.matches("[data-im-refresh]")) { refresh(); return; }
     if (target.matches("[data-im-generate-outfit]")) { generateOutfitPhoto(); return; }
     if (target.matches("[data-im-load-more]")) { loadAlbum(state.ticket, true); return; }
@@ -854,7 +872,7 @@ window.CompanionImageMaterialsPage = (() => {
     state.editRevision = 0; state.editUsage = defaultUsage();
     state.wardrobeName = ""; state.wardrobeDescription = ""; state.wardrobeTags = ""; state.wardrobeAssetId = ""; state.wardrobeKey = operationKey("wardrobe");
     state.action = ""; setNotice("");
-    state.uploadOpen = false; state.wardrobeOpen = false;
+    state.uploadOpen = false; state.wardrobeOpen = false; state.showWithdrawnWardrobe = false;
     if (!state.root) return;
     state.abort = new AbortController();
     state.root.addEventListener("click", click, {signal: state.abort.signal});

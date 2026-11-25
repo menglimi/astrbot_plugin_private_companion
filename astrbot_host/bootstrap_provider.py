@@ -41,6 +41,44 @@ def provider_name(provider, identifier: str = "") -> str:
     return (name.strip() if isinstance(name, str) and name.strip() else identifier)[:120]
 
 
+def provider_model_name(provider) -> str:
+    getter = getattr(provider, "get_model", None)
+    if callable(getter):
+        try:
+            value = getter()
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:160]
+        except Exception:
+            pass
+    config = getattr(provider, "provider_config", None)
+    if isinstance(config, dict):
+        for candidate in (
+            (config.get("model_config") or {}).get("model") if isinstance(config.get("model_config"), dict) else None,
+            config.get("model"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()[:160]
+    direct = getattr(provider, "model_name", None)
+    return direct.strip()[:160] if isinstance(direct, str) and direct.strip() else ""
+
+
+def provider_capabilities(provider, *, video_type=None) -> list[str]:
+    """Return user-visible model capability tags matching AstrBot modalities."""
+    from companion_v2.adapters.astrbot.provider import host_capabilities
+
+    config = getattr(provider, "provider_config", None)
+    config_dict = config if isinstance(config, dict) else {}
+    caps = list(host_capabilities(config_dict))
+    declared = config_dict.get("modalities")
+    declared_set = ({item.strip().casefold() for item in declared if isinstance(item, str) and item.strip()}
+                    if isinstance(declared, list) else set())
+    if "video" in declared_set or (video_type is not None and isinstance(provider, video_type)
+                                   and (not declared_set or "video" in declared_set or "audio" in declared_set)):
+        if "video" not in caps:
+            caps.append("video")
+    return caps
+
+
 def _supported(provider, expected_type) -> bool:
     """``expected_type`` 可以是类、类元组，或 native_types 的文本 provider 判定器。"""
     if expected_type is None:
@@ -61,7 +99,7 @@ def text_provider_predicate(native_types):
     return checker if callable(checker) else getattr(native_types, "provider_types", None)
 
 
-def text_provider_catalog(context, expected_type) -> list[dict]:
+def text_provider_catalog(context, expected_type, *, video_type=None) -> list[dict]:
     """Return loaded providers that the V2 text transport can wrap."""
     try:
         inventory = list(context.get_all_providers() or [])
@@ -75,10 +113,39 @@ def text_provider_catalog(context, expected_type) -> list[dict]:
             identifier = provider_identifier(provider)
             if not identifier:
                 continue
-            found[identifier] = {"id": identifier, "name": provider_name(provider, identifier)}
+            found[identifier] = {
+                "id": identifier,
+                "name": provider_name(provider, identifier),
+                "model": provider_model_name(provider),
+                "capabilities": provider_capabilities(provider, video_type=video_type),
+            }
         except (AttributeError, TypeError, ValueError):
             continue
     return sorted(found.values(), key=lambda item: (item["name"].lower(), item["id"]))
+
+
+def active_chat_provider_info(context, expected_type, *, video_type=None) -> dict | None:
+    """Read-only summary of AstrBot's current primary chat provider."""
+    if context is None:
+        return None
+    getter = getattr(context, "get_using_provider", None)
+    if not callable(getter):
+        return None
+    try:
+        active = getter()
+    except Exception:
+        return None
+    if active is None or not _supported(active, expected_type):
+        return None
+    identifier = provider_identifier(active)
+    if not identifier:
+        return None
+    return {
+        "id": identifier,
+        "name": provider_name(active, identifier),
+        "model": provider_model_name(active),
+        "capabilities": provider_capabilities(active, video_type=video_type),
+    }
 
 
 def resolve_bootstrap_provider(context, expected_type, configured_id: str = "") -> BootstrapProvider:

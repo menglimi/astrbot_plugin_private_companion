@@ -142,6 +142,7 @@
   let bindingConfig = null;
   let modelConfig = null;
   let modelSaving = false;
+  let modelRestartRequired = false;
   let bindingsDirty = false;
   let groupTargetsDirty = false;
   let groupTargetDraft = null;
@@ -1368,7 +1369,9 @@
       const running = isAccepting() || status?.state === "running";
       const fallbackText = savedFallback ? ` · 备用：${modelProviderName(savedFallback)}` : "";
       note.textContent = running
-        ? `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。宿主已在运行，保存后将在下次启动或重载时生效。`
+        ? (modelRestartRequired
+          ? `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。已保存，需重载插件后生效。`
+          : `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。宿主运行中，保存后将即时热生效。`)
         : `当前陪伴通用模型（全局默认）：${modelProviderName(current)}${fallbackText}。保存角色映射后即可点「准备并启动」。`;
       note.dataset.kind = "info";
     }
@@ -1392,11 +1395,16 @@
     try {
       const result = await api("POST", `${accountApi}/model-provider`, body, 60000);
       if (result?.model) modelConfig = result.model;
+      modelRestartRequired = Boolean(result?.restart_required);
       if (fallbackSelect?.dataset) delete fallbackSelect.dataset.touched;
       let refreshed = true;
       try { await readStatus(); } catch { refreshed = false; }
       if (!refreshed) {
         notice("陪伴通用模型（全局默认）已保存；运行状态暂未读到，请点「刷新状态」核对后再准备启动。", "info");
+      } else if (result?.restart_required) {
+        notice("陪伴通用模型（全局默认）已保存；当前宿主仍在运行，将在下次启动或重载插件后生效。", "info");
+      } else if (result?.prepared && isAccepting()) {
+        notice("陪伴通用模型（全局默认）已保存并即时生效。", "success");
       } else if (result?.prepared) {
         notice("陪伴通用模型（全局默认）已保存，角色运行环境已准备。现在可以点「准备并启动」。", "success");
       } else if (result?.initialization_error) {

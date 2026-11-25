@@ -16,7 +16,7 @@ window.CompanionConfigEditors = (() => {
     model: "llm", "模型": "llm", llm_judge: "llm", "llm-judge": "llm",
   });
   const PROACTIVE_INTENSITY_ALIASES = Object.freeze({
-    "": "off", manual: "off", none: "off", default: "off", standard: "balanced",
+    "": "custom", manual: "custom", none: "custom", default: "custom", standard: "balanced",
     active: "high_private", private: "high_private", group: "high_group",
     online: "live", "直播": "live", "高频": "live",
   });
@@ -378,11 +378,11 @@ window.CompanionConfigEditors = (() => {
     },
     "image.output": {
       title: "生图偏好",
-      note: "工具优先：每轮都开放图片工具；规则快判：仅当前消息命中明确要图表达时开放。群聊开关与生图权限只约束用户请求，主动生成不受影响；主动图库附图概率与上限只约束图库图片；AI 生图张数由「生图每日额度」管理。",
+      note: "主动生图使用角色的文生图服务，并计入「生图每日额度」。图库表情包在「表情配图」中设置。",
       scopeNote: "按角色生效",
       labels: {trigger_mode:"非指令生图", allow_user_requests:"允许用户请求生图",
         group_enabled:"允许群聊生图", request_permission:"生图权限",
-        proactive_probability:"主动图库附图概率", proactive_max_daily:"主动图库附图每日上限",
+        proactive_enabled:"允许主动生图", proactive_probability:"主动生图概率", proactive_max_daily:"主动生图每日上限",
         prompt_format:"表达方式", style:"画面风格",
         style_prompt:"自定义风格", negative_mode:"负面策略", negative_prompt:"自定义负面提示词",
         text2img_fixed_prompt:"文生图 · 固定提示词", text2img_negative_prompt:"文生图 · 负面提示词",
@@ -404,12 +404,13 @@ window.CompanionConfigEditors = (() => {
         selfie_fixed_prompt:2,selfie_negative_prompt:2,edit_fixed_prompt:2,edit_negative_prompt:2,
         scene_presets_json:7},
       order:["trigger_mode","allow_user_requests","group_enabled","request_permission",
-        "proactive_probability","proactive_max_daily",
+        "proactive_enabled","proactive_probability","proactive_max_daily",
         "prompt_format","style","style_prompt","negative_mode","negative_prompt",
         "text2img_fixed_prompt","text2img_negative_prompt","selfie_fixed_prompt","selfie_negative_prompt",
         "edit_fixed_prompt","edit_negative_prompt","scene_presets_json"],
-      sections:[{id:"triggers",title:"生图触发",fields:["trigger_mode","allow_user_requests",
-        "group_enabled","request_permission","proactive_probability","proactive_max_daily"]},
+      sections:[{id:"triggers",title:"对话生图",fields:["trigger_mode","allow_user_requests",
+        "group_enabled","request_permission"]},
+        {id:"proactive",title:"主动生图",fields:["proactive_enabled","proactive_probability","proactive_max_daily"]},
         {id:"style",title:"风格与策略",fields:["prompt_format","style","style_prompt","negative_mode","negative_prompt"]},
         {id:"prompts",title:"各类画面提示词",fields:["text2img_fixed_prompt","text2img_negative_prompt",
           "selfie_fixed_prompt","selfie_negative_prompt","edit_fixed_prompt","edit_negative_prompt"]},
@@ -1493,17 +1494,17 @@ window.CompanionConfigEditors = (() => {
         automatic_enabled: "关闭时资讯、天气、余额、屏幕这些自动契机都不再发起；提醒与约定由日程自己负责，不受这里影响。",
         note: "写成自己的话，作为联系偏好写进提示词；不改变权限、频率或去重。",
         interval_seconds: "两次主动开口之间的最短间隔；连续未回应的次数越多，实际间隔按下面的倍数放大。",
-        idle_seconds: "对方说完话后的这段安静时间里不会开口，避免刚聊完就又被找上。",
+        idle_seconds: "收到消息或送达回复后，重新计算这段安静时间。",
         event_max_age_seconds: "角色活动、日记、近期私聊材料和旧式关系线索只在这段时间内有效；不限制主动跟进或未完话头，也不覆盖日程、天气和预警来源的有效期。",
         max_contacts_24h: "按当前私聊窗口免打扰时区的本地自然日统计已确认发送的联系。待回执发送暂时占用，明确未发送、失败或取消后释放；模型跳过不计入实际联系。",
         unanswered_slowdown_start: "从这里开始，每多一次未回应就多放慢一档。",
         unanswered_pause_after: "连续未回应达到该次数后停止常规联系，直到对方再次开口；0 表示不暂停。",
         unanswered_max_interval_multiplier: "放慢的上限倍数，避免间隔无限增长。",
-        proactive_intensity_preset: "档位缩放间隔与安静门槛、限制一轮的条数、给一个长度提示；它不会放宽任何额度或权限。",
+        proactive_intensity_preset: "关闭档位暂停自动联系。自定义档位沿用已配置的间隔、等候和连发设置。",
         proactive_intensity_body_chars: "0 表示使用档位自带的长短提示。",
         enable_proactive_burst: "连发只接着一条普通话题继续：提醒、预警、问候与分享不会拖出一串消息。",
         proactive_burst_max_messages: "一轮的总条数上限；档位要求的条数更少时以档位为准。",
-        proactive_burst_gap_min_seconds: "每轮的间隔由这两个值确定性地抽一次，重启后不会重新抽。",
+        proactive_burst_gap_min_seconds: "启用连发后，回复送达到下一次主动联系也要满足此下限。",
         proactive_burst_gap_max_seconds: "比最小值小时按最小值处理。",
         proactive_hour_activity_enabled: "关闭时保持固定的时段网格，不做小时加权。",
         proactive_hour_activity_curve: "必须写满 24 个数字（0.05–2.00），按免打扰时区的小时对齐；数量不对会被拒绝，而不是悄悄回退到默认曲线。",
@@ -1521,7 +1522,7 @@ window.CompanionConfigEditors = (() => {
         dedup_sent_window_minutes: "这段时间内发过相同内容的联系不会重发。",
         dedup_weather_window_minutes: "天气问候、天气突变与官方预警共用这条更长的窗口。",
         dedup_min_shared_tokens: "短话题的判定门槛；共享词数不够就判为新话题。",
-        dedup_min_overlap_ratio: "较长话题按重叠比例判定；0 表示不看比例，只看共享词数。",
+        dedup_min_overlap_ratio: "比较长话题时参考词面重叠比例。设为 0 时按场景和语义判断。",
         dedup_policies: "逗号分隔的路线名，只能填 semantic、content_fingerprint、life_event、event_revision、event_anchor、conversation_anchor、daily_slot；写错或重复会被拒绝。",
         silence_min_confidence: "模型给出的把握低于这个门槛时，这次机会记为沉默而不发送；0 表示不设门槛。",
         silence_feedback_penalty: "被忽略或打断后，同类机会的权重按这个幅度下调。",
@@ -1627,7 +1628,7 @@ window.CompanionConfigEditors = (() => {
       /* 枚举字段在注册表里都是 TEXT，取值合法性由 ContactField / NewsSource 校验；
          选项必须与后端常量一致，否则保存会被拒。 */
       choices: {
-        proactive_intensity_preset: {off: "不调整", balanced: "均衡", high_private: "私聊更主动",
+        proactive_intensity_preset: {off: "关闭自动联系", custom: "自定义", balanced: "均衡", high_private: "私聊更主动",
                                      high_group: "群聊更主动", live: "高频"},
         news_source_kind: {host: "默认数据源", disabled: "停用资讯源", bilibili: "B 站动态",
                            rss: "RSS / Atom", json: "HTTPS JSON", search: "网络搜索",
@@ -2028,6 +2029,7 @@ window.CompanionConfigEditors = (() => {
     }
 
     return {
+      endpoint,
       /* 草稿由工作台自行从 sessionStorage 恢复。 */
       restore() {},
       paint() {

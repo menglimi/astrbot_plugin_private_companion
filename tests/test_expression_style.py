@@ -160,6 +160,9 @@ class SampleCatalogTests(unittest.TestCase):
         def read_snapshot(self):
             yield
 
+        def has_table(self, table_name):
+            return False
+
         def read_all(self, query, parameters):
             if "FROM expression_style_runs" in query:
                 return []

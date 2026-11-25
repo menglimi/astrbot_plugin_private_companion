@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import timedelta
 import json
 import unittest
+from unittest.mock import patch
 
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import TaskContext, digest
@@ -83,6 +84,20 @@ class LifeFixture(HostFixture):
 
 
 class LifeRuntimeTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_a_snoozed_sleep_is_checked_again_by_the_host(self):
+        await self.setup_life()
+        await self.configure(sleep_enabled=False)
+        routine = self.manager.life
+        sleep = routine.start_sleep("night", 2, sleep_kind="night")
+        with patch("companion_v2.role_work.life.body_clock.oversleep_extension",
+                   side_effect=lambda activity, **_: 0 if activity.sleep.oversleep_minutes else 15):
+            self.advance(self.app, (sleep.work.due_at - self.clock.now()).total_seconds())
+            await self.until(lambda: routine.activity(sleep.activity_id).sleep.oversleep_minutes == 15)
+            extended = routine.activity(sleep.activity_id)
+            self.assertIs(extended.state, State.ACTIVE)
+            self.advance(self.app, (extended.work.due_at - self.clock.now()).total_seconds())
+            await self.until(lambda: routine.activity(sleep.activity_id).state is State.COMPLETED)
+
     async def test_unknown_read_result_is_not_automatically_or_explicitly_replayed(self):
         await self.setup_life()
         book = (await self.add_text())[0]

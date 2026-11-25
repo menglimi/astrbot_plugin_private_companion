@@ -10,7 +10,7 @@ from .configuration import GROUP
 from . import rhythm
 from .official_alert_events import SOURCE_OWNER as OFFICIAL_ALERT_SOURCE_OWNER
 from .prompt_templates import effective_template
-from .prompts import (DIAGNOSTIC_PRESENTATION_INSTRUCTION, GREETING_INSTRUCTION, INSOMNIA_GREETING_INSTRUCTION,
+from .prompts import (DIAGNOSTIC_PRESENTATION_INSTRUCTION, GENERATED_IMAGE_INSTRUCTION, GREETING_INSTRUCTION, INSOMNIA_GREETING_INSTRUCTION,
                       ORIGIN_INSTRUCTIONS, PURPOSE_INSTRUCTIONS, SKIP_REASONS,
                       SOURCE_ORIGINS, TOPIC_CONTINUITY_INSTRUCTION)
 
@@ -25,7 +25,7 @@ PLAN_INSTRUCTION = """这是一次主动联系的内部规划，不写用户可�
 
 WRITE_INSTRUCTION = """这是一次已经决定开启的主动联系新回合。contact_brief 是内部规划，只提供切口，不是待续写的上一句；近期历史是去重和关系参考，不是待回复队列。即使角色上一条消息看起来没说完，也从本轮 brief 的独立角度自然开口，不接自己的话，不用“哦/那/所以/接着”把旧回复补完。
 真实联系只根据 contact_evidence、近期真实对话和当前角色状态写可核验事实；合成演练按专门说明理解，brief 中没有来源支持的事实不得照写。用户与角色的经历不能互换，计划不当完成，日记与梦不当亲历。保持原人格、关系距离和当下时间感，不催促回复，不重复用户已回答的问题。正文要有具体内容，不机械复述 brief 或播报状态。
-只输出一个 JSON 对象，text 是用户可见正文，不写决策、来源编号或内部说明。通常格式为 {"text":"自然的主动消息"}；本轮启用的 reaction_intent、voice_intent、voice_text、poke_intent 才可按各自规则增加。"""
+只输出一个 JSON 对象，text 是用户可见正文，不写决策、来源编号或内部说明。通常格式为 {"text":"自然的主动消息"}；本轮启用的附图、语音或戳一戳字段可按各自规则增加。"""
 
 ALERT_SCOPE_INSTRUCTION = ("官方预警只在通告原文明确覆盖配置城市全市或明确列出目标镇街，且没有排除目标时才能联系。"
     "仅有经纬度、级别或模糊的部分地区描述不证明覆盖。写作时从标题或正文摘录连续原文到 coverage_quote，"
@@ -54,6 +54,9 @@ def _diagnostic_guidance(job, *, writing):
     if job.diagnostic_image_intent:
         instruction += ("本轮还需验收授权图库的主动图片投递；除人格边界或安全要求不合适外选择 send。"
             "正文必须独立完整，图片由程序检索，不声称图片已经发送。")
+    if getattr(job, "diagnostic_generated_image", False):
+        instruction += ("本轮是日常静物创作分享，绘图主题由程序提供；正文独立成立，不声称已生成或发送。"
+            "除角色边界不合适外选择 send。")
     if writing:
         instruction += DIAGNOSTIC_PRESENTATION_INSTRUCTION
     return instruction
@@ -113,7 +116,8 @@ def plan_output(text):
 
 
 def write_request_for(base, job, records, preferences, *, reactions_available, voice_available,
-                      poke_available, extra_instruction, variable_extra_instruction=""):
+                      poke_available, extra_instruction, variable_extra_instruction="",
+                      generated_images_available=False):
     brief = PromptMaterial(GROUP, "contact_brief", json.dumps(job.plan, ensure_ascii=False))
     materials = (*_compact_materials(base, history_count=2), brief)
     news = job.intent.purpose == "news" or "news_event" in (job.automatic_origin or {})
@@ -144,6 +148,7 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
             and greeting_event.get("kind") == "insomnia_night" else "",
         ALERT_SCOPE_INSTRUCTION if official_alert else "",
         WRITE_REACTION_INSTRUCTION if reactions_available else "",
+        GENERATED_IMAGE_INSTRUCTION if generated_images_available else "",
         ("声音更适合这句话时可增加 voice_intent:true；中文直接朗读 text，只有外语配音才增加 voice_text，"
          "不补充新问题或事实；正文始终完整保留。语音使用" +
          {"zh": "中文", "ja": "日语", "en": "英语"}.get(getattr(job.voice_policy, "language", "zh"), "中文") +
@@ -161,7 +166,8 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
 
 def write_output(text, confidence):
     data = json.loads(text)
-    allowed = {"text", "reaction_intent", "voice_intent", "voice_text", "poke_intent", "coverage", "coverage_quote"}
+    allowed = {"text", "reaction_intent", "image_prompt", "voice_intent", "voice_text", "poke_intent",
+               "coverage", "coverage_quote"}
     if (type(data) is not dict or set(data) - allowed or type(data.get("text")) is not str
             or not data["text"].strip()):
         raise ValueError("contact writing requires a body without a send decision")

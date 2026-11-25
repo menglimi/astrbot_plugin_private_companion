@@ -678,14 +678,24 @@ window.CompanionExpressionSignalsPage = (() => {
   }
   async function cleanupUnavailable() {
     if (busy || writing || !sources.length) return;
-    if (!window.confirm("清理后这些候选会进入「已拒绝」，不能再采纳。确定清理所有原文已失效的待审候选？")) return;
     const current = mountTicket;
+    const endpoints = sources.map(source => source.apiBase);
+    const confirmed = await window.CompanionConfirm?.({
+      title: "清理失效候选",
+      message: "清理后这些候选会进入「已拒绝」，不能再采纳。确定清理所有原文已失效的待审候选？",
+      confirmText: "清理", cancelText: "取消", danger: true,
+    });
+    if (!mounted(current) || busy || writing) return;
+    if (confirmed == null) { notice = "当前页面无法弹出确认框，未执行清理。"; error = true; render(); return; }
+    if (confirmed !== true || sources.length !== endpoints.length
+        || sources.some((source, index) => source.apiBase !== endpoints[index])) return;
     busy = true; writing = true; notice = ""; error = false; render();
     let rejected = 0, failed = false;
     try {
-      for (const source of sources) {
+      for (const endpoint of endpoints) {
+        if (!mounted(current)) return;
         try {
-          const result = await api("POST", source.apiBase + "/style/cleanup", {
+          const result = await api("POST", endpoint + "/style/cleanup", {
             operation_key: operationKey("cleanup"),
           });
           rejected += Number(result.rejected || 0);

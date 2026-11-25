@@ -18,7 +18,7 @@
   transition: background .2s, border-color .2s; }
 .care-thumb { position: absolute; top: 50%; left: 2px; width: 1.1rem; height: 1.1rem;
   margin-top: -.55rem; border-radius: 50%; background: var(--t-surface-raised);
-  box-shadow: 0 1px 3px rgba(60, 45, 30, .25); transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+  box-shadow: var(--t-shadow); transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
 .care-master input:checked + .care-track { background: var(--t-accent-solid);
   border-color: var(--t-accent-solid); }
 .care-master input:checked + .care-track .care-thumb { transform: translateX(1.15rem); }

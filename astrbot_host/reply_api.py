@@ -187,6 +187,21 @@ class ReplyWebAPI:
                             return getattr(manager, method)(
                                 operator=operator, context=session.profile.target, **arguments)
 
+                        if method == "learn":
+                            manager = ExpressionStyleManagement(session.application)
+
+                            def prepare_learn():
+                                operator = dashboard_operator(runtime, username, at=observed_at)
+                                return manager.prepare_learn(operator=operator, context=session.profile.target)
+
+                            prepared = await asyncio.to_thread(prepare_learn)
+                            if prepared.failure is not None:
+                                return outcome_response(prepared)
+                            payload = prepared.unwrap()
+                            if payload["launch"] is None:
+                                return outcome_response(Outcome.success(payload["result"]))
+                            result = session.application.expression_style.launch_prepared(*payload["launch"])
+                            return outcome_response(Outcome.success(result))
                         return outcome_response(await asyncio.to_thread(execute_mutation))
 
                 def execute_read():

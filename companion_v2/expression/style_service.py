@@ -2291,18 +2291,19 @@ class ExpressionStyleService:
             start = self._scan_look % len(candidates)
         return candidates[start:] + candidates[:start]
 
-    def start(self, context, instruction):
+    def prepare_start(self, context, instruction):
+        """Thread-safe preflight for manual learning; must not touch the event loop."""
         if self.closed or KIND not in self.gateway.router.profiles:
             raise TaskError("model_task_unregistered", "expression learning model is unavailable")
         work_key = self._work_key(context)
         with self._lock():
             worker = self.workers.get(work_key)
         if worker is not None and not worker.done():
-            return {"state": "running"}
+            return {"state": "running"}, None
         at = self.tasks.now()
         job = self.prepare(context, instruction, at)
         if job is None:
-            return self._get_result(work_key, {"state": "insufficient_samples"})
+            return self._get_result(work_key, {"state": "insufficient_samples"}), None
         # The operator asked for this batch explicitly, so a refusal recorded for
         # it must not outlive the edit they probably just made: the automatic scan
         # honours the record, an explicit "learn now" is the way out of it.
@@ -2311,13 +2312,28 @@ class ExpressionStyleService:
             logger.info("[CompanionV2] 表达学习按手动请求清除确定性失败记录 material=%s mode=%s request=%s",
                         str(job.get("material_hash") or "")[:12], job["policy"].learning_mode, request_key[:12])
             self._clear_stop(request_key)
-        worker = asyncio.create_task(self.run(context, instruction),
-                                     name="companion:expression-learn")
+        return None, (work_key, context, instruction)
+
+    def launch_prepared(self, work_key, context, instruction):
+        """Spawn the background learning task on the running asyncio event loop."""
+        if self.closed or KIND not in self.gateway.router.profiles:
+            raise TaskError("model_task_unregistered", "expression learning model is unavailable")
         with self._lock():
+            worker = self.workers.get(work_key)
+            if worker is not None and not worker.done():
+                return {"state": "running"}
+            worker = asyncio.create_task(self.run(context, instruction),
+                                         name="companion:expression-learn")
             self.workers[work_key] = worker
         worker.add_done_callback(lambda done: self.app.notify())
         self.app.notify()
         return {"state": "queued"}
+
+    def start(self, context, instruction):
+        immediate, pending = self.prepare_start(context, instruction)
+        if immediate is not None:
+            return immediate
+        return self.launch_prepared(*pending)
 
     def status(self, context):
         """Read-only view of why this exact window is or is not learning.

@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shutil
 import sqlite3
 import time
 from typing import Any
 
+from companion_v2.execution.models import TaskError
 from companion_v2.storage.image_payloads import MARKER_PREFIX as CONV_IMG_MARKER, migrate_image_payloads
 from companion_v2.storage.native_dedup import (
     CONTEXT_REF_LEN,
@@ -39,6 +41,24 @@ from companion_v2.storage.telemetry_archive import (
 )
 
 _AUTO_VACUUM_LABELS = {0: "none", 1: "full", 2: "incremental"}
+_COMPACT_SIDECARS = ("semantic_catalog", "native_image", "telemetry_archive", "memory_search")
+
+
+def _require_vacuum_space(path: Path, db_bytes: int) -> None:
+    # VACUUM can need two copies while rebuilding. Leave space for SQLite metadata and WAL growth.
+    minimum = int(db_bytes * 2.2) + 64 * 1024 * 1024
+    try:
+        free = shutil.disk_usage(path.parent).free
+    except OSError as error:
+        raise TaskError("storage_insufficient_disk_for_vacuum", "无法获取数据库所在磁盘的可用空间。") from error
+    if free < minimum:
+        raise TaskError("storage_insufficient_disk_for_vacuum", "数据库所在磁盘的可用空间不足，无法执行全量整理。")
+
+
+def _sqlite_database_bytes(connection) -> int:
+    pages = connection.execute("PRAGMA page_count").fetchone()[0]
+    page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+    return pages * page_size
 
 
 def _file_size(path: Path) -> int:
@@ -340,6 +360,8 @@ def _maintain_sidecar_sqlite(
             busy_timeout_ms=5000,
         )
         mode = int(conn.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+        if vacuum or (enable_incremental_vacuum and mode != 2):
+            _require_vacuum_space(path, _sqlite_database_bytes(conn))
         if enable_incremental_vacuum and mode != 2:
             conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
             conn.execute("VACUUM")
@@ -392,6 +414,10 @@ def compact_and_slim_databases(
         ttl_days=ttl_days,
         now=now,
     )
+    for name in ("main", *_COMPACT_SIDECARS):
+        info = before["databases"].get(name)
+        if info and info["exists"] and (vacuum or (enable_incremental_vacuum and info["auto_vacuum"] != "incremental")):
+            _require_vacuum_space(paths[name], max(info["db_bytes"], info["page_count"] * info["page_size"]))
 
     steps: dict[str, Any] = {}
 
@@ -433,6 +459,8 @@ def compact_and_slim_databases(
         if connection is not None and not connection.in_transaction:
             try:
                 mode = int(connection.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+                if vacuum or (enable_incremental_vacuum and mode != 2):
+                    _require_vacuum_space(paths["main"], _sqlite_database_bytes(connection))
                 if enable_incremental_vacuum and mode != 2:
                     connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
                     connection.execute("VACUUM")
@@ -460,7 +488,7 @@ def compact_and_slim_databases(
     if main_error is not None:
         vacuum_stats["main"]["error"] = main_error
 
-    for sidecar_name in ("semantic_catalog", "native_image", "telemetry_archive", "memory_search"):
+    for sidecar_name in _COMPACT_SIDECARS:
         sidecar_path = paths.get(sidecar_name)
         if sidecar_path is not None and sidecar_path.is_file():
             vacuum_stats[sidecar_name] = _maintain_sidecar_sqlite(

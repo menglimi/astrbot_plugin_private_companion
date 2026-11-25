@@ -225,6 +225,16 @@ class AdbClientTests(unittest.TestCase):
         self.assertEqual(state["wakefulness"], "asleep")
         self.assertTrue(state["on"])
 
+    def test_read_only_observation_reports_lock_without_sending_device_input(self):
+        adb = FakeAdb()
+        adb.responses[("-s", "SER123", "shell", "dumpsys", "window", "policy")] = (
+            "KeyguardServiceDelegate\n  showing=true\n  secure=false\n")
+        session = PhoneSession(self.client(adb), goal="查看手机屏幕")
+        with self.assertRaises(AdbError) as caught:
+            session.observe(0, read_only=True)
+        self.assertEqual(caught.exception.code, "adb_unlock_required")
+        self.assertFalse(any("input" in command or "screencap" in command for command in adb.calls))
+
     def test_ensure_awake_uses_wakeup_and_reports_a_dead_screen(self):
         class Dark(FakeAdb):
             def __call__(self, args, timeout):

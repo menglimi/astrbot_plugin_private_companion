@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import logging
 import time
 from typing import Any
 
 from companion_v2.conversation import debounce_log
 from companion_v2.conversation.private_debounce import Policy, merge_texts, quiet_seconds
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,7 +64,8 @@ class PrivateDebounce:
     """Shared per-target debounce state for one running plugin instance."""
 
     def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True,
-                 resolution_timeout=DEFAULT_RESOLUTION_TIMEOUT_SECONDS):
+                 resolution_timeout=DEFAULT_RESOLUTION_TIMEOUT_SECONDS, semantic=None):
+        self.semantic = semantic
         self.policy = policy
         self._clock = clock
         self._log_enabled = log_enabled
@@ -321,6 +326,7 @@ class PrivateDebounce:
     async def wait_for_quiet(self, reservation, event):
         """Wait until this event is still latest after its quiet window."""
         pending = reservation.pending
+        judged_version, extended_until = None, 0.0
         while True:
             async with self._lock:
                 if self._closed or pending.state == "closed":
@@ -339,12 +345,30 @@ class PrivateDebounce:
                     return "bypass"
                 quiet_deadline = pending.latest_received + quiet_seconds(pending.latest_text, policy)
                 total_deadline = pending.created + policy.total_seconds
-                timeout = min(quiet_deadline, total_deadline) - self._clock()
-                if timeout <= 0:
+                if judged_version == version:
+                    quiet_deadline = max(quiet_deadline, extended_until)
+                now = self._clock()
+                timeout = min(quiet_deadline, total_deadline) - now
+                judge = (timeout <= 0 and now < total_deadline and self.semantic is not None
+                         and policy.semantic_enabled and judged_version != version)
+                if timeout <= 0 and not judge:
                     return "ready"
+                text = self.combined(reservation) if judge else ""
                 pending.wake.clear()
                 if pending.version != version:
                     continue
+            if judge:
+                score = await self.semantic.score(text, total_deadline - now)
+                async with self._lock:
+                    if pending.version != version or pending.state != "active":
+                        continue
+                    judged_version = version
+                    incomplete = score is not None and score < self.semantic.threshold
+                    extended_until = pending.latest_received + self.semantic.wait_seconds if incomplete else 0.0
+                    if self._log_enabled:
+                        logger.info("私聊语义收口 inputs=%d score=%s action=%s", len(pending.entries),
+                                    score, "wait" if incomplete else "reply")
+                continue
             try:
                 await asyncio.wait_for(pending.wake.wait(), timeout=timeout)
             except asyncio.TimeoutError:
@@ -416,6 +440,8 @@ class PrivateDebounce:
             for item in pending:
                 item.state = "closed"
                 item.wake.set()
+        if self.semantic is not None:
+            self.semantic.close()
 
 
 class PrivateDeliveryDedup:

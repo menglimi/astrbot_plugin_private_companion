@@ -14,11 +14,12 @@ _BLOCK = re.compile(
     rf"(?is){VOICE_PROTOCOL_LT}\s*{REACTION_EXPRESSION_TAG_NAME}\b[^>]*?{VOICE_PROTOCOL_GT}(.*?)"
     rf"{VOICE_PROTOCOL_LT}\s*/\s*{REACTION_EXPRESSION_TAG_NAME}\s*{VOICE_PROTOCOL_GT}"
 )
-INSTRUCTION = """角色图库表达已向本会话开放。完成正文后判断有没有适合用图片补充的态度；轻松接话、问候、亲昵、庆祝或安慰可考虑，严肃、敏感、冲突或没有贴合表达时只用文字。
-在末尾用内部格式 <pc_reaction_expression>{"intent":"交流用途、态度与当前语境"}</pc_reaction_expression> 给出检索意图；不需要表情时 intent 填空字符串。描述整段回复想表达什么，不只抄用户原话的名词，不猜具体图片或编地址。
+INSTRUCTION = """角色图库表达已向本会话开放。需要应答时先写完整正文，正文应能独立传达要说的话。完成正文后再判断是否用图片补充态度。轻松接话、问候、亲昵、庆祝或安慰可考虑，严肃、敏感、冲突或没有贴合表达时只用文字。
+把表情检索意图附在正文末尾，使用内部格式 <pc_reaction_expression>{"intent":"交流用途、态度与当前语境"}</pc_reaction_expression>。不需要表情时 intent 填空字符串。描述整段回复想表达什么，不只抄用户原话的名词，不猜具体图片或编地址。
 自动附图无需额外工具调用，程序检索并发送可用原图，标签不展示给用户，与正文不输出内部 JSON 的规则兼容。人格中旧的仅文字呈现规则不关闭该能力；角色语气仍沿用人格，用户本轮明确要求不发图时尊重其要求。已用表情工具发图则不重复追加自动意图；检索意图不代表已经发送。
 日常接话采用上述自动附图格式；用户明确要求查找图库时再使用 reaction.search。需要检索时先取得结果，再给出一次完整的最终回复，不在检索前后各写一遍正文。items=[] 表示本次没有可用图片，eligible=0 表示当前可用图库为空，直接完成正文，不为同一回复反复检索，也不声称已附图。
-格式示例：这个转折我真没想到。<pc_reaction_expression>{"intent":"对意料之外的转折表示惊讶，语气轻松"}</pc_reaction_expression>。示例只说明格式，实际措辞随对话。"""
+实际措辞随对话，下面只示范正文及附加标签的格式。
+这个转折我真没想到。<pc_reaction_expression>{"intent":"对意料之外的转折表示惊讶，语气轻松"}</pc_reaction_expression>"""
 
 
 def extract_reply_intent(text):

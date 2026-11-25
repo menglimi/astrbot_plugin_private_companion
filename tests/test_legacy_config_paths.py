@@ -79,5 +79,84 @@ class LegacyConfigArchiveTests(unittest.TestCase):
             self.assertEqual(v1_host_config_path(runtime), saved)
 
 
+class LegacyOverridePathNormalizationTests(unittest.TestCase):
+    def test_normalize_v1_override_path_handles_wrappers_errors_markers_and_descend(self):
+        from unittest.mock import patch
+        from astrbot_host.legacy_api import _normalize_v1_override_path
+        from companion_v2.execution.models import TaskError
+
+        with self.assertRaises(TaskError) as empty_err:
+            _normalize_v1_override_path("   ")
+        self.assertEqual(empty_err.exception.code, "legacy_path_empty")
+
+        with patch("astrbot_host.legacy_api.os.name", "posix"):
+            with self.assertRaises(TaskError) as win_err:
+                _normalize_v1_override_path(r"D:\AstrBot\data\plugin_data\astrbot_plugin_private_companion")
+            self.assertEqual(win_err.exception.code, "legacy_path_windows_on_posix")
+
+        with self.assertRaises(TaskError) as rel_err:
+            _normalize_v1_override_path("relative/path/here")
+        self.assertEqual(rel_err.exception.code, "legacy_path_not_absolute")
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            missing = root / "does-not-exist"
+            with self.assertRaises(TaskError) as missing_err:
+                _normalize_v1_override_path(str(missing))
+            self.assertEqual(missing_err.exception.code, "legacy_path_not_found")
+
+            # Quoted path and file:// URI resolve cleanly.
+            v1 = root / "data" / "plugin_data" / V1_PLUGIN_DATA_NAME
+            v1.mkdir(parents=True)
+            marker = v1 / "companions.json"
+            marker.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(_normalize_v1_override_path(f'"{v1}"'), v1.resolve())
+            self.assertEqual(_normalize_v1_override_path(v1.as_uri()), v1.resolve())
+            # Marker file falls back to its containing directory.
+            self.assertEqual(_normalize_v1_override_path(str(marker)), v1.resolve())
+            # Auto-descend from plugin_data/ and data/ into astrbot_plugin_private_companion.
+            self.assertEqual(_normalize_v1_override_path(str(root / "data" / "plugin_data")), v1.resolve())
+            self.assertEqual(_normalize_v1_override_path(str(root / "data")), v1.resolve())
+
+            # Non-marker regular file raises legacy_path_is_file.
+            random_file = root / "notes.txt"
+            random_file.write_text("hi", encoding="utf-8")
+            with self.assertRaises(TaskError) as file_err:
+                _normalize_v1_override_path(str(random_file))
+            self.assertEqual(file_err.exception.code, "legacy_path_is_file")
+
+    def test_memory_archive_tolerates_symlinked_ancestor_but_rejects_symlinked_db(self):
+        import os
+        import sqlite3
+        from companion_v2.legacy.memory_archive import build_memory_database_plan
+        from companion_v2.execution.models import TaskError
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            real_parent = root / "real_storage" / "astrbot_plugin_memory_companion"
+            real_parent.mkdir(parents=True)
+            db_path = real_parent / "memory_companion.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT)")
+            conn.commit()
+            conn.close()
+
+            link_parent = root / "sdcard_link"
+            try:
+                os.symlink(real_parent.parent, link_parent, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks require elevated privilege in this environment")
+
+            via_link_dir = link_parent / "astrbot_plugin_memory_companion"
+            plan = build_memory_database_plan(via_link_dir, db_path.name)
+            self.assertEqual(plan.source_root, real_parent.resolve())
+
+            symlinked_db = real_parent / "linked.db"
+            os.symlink(db_path, symlinked_db)
+            with self.assertRaises(TaskError):
+                build_memory_database_plan(real_parent, symlinked_db.name)
+
+
 if __name__ == "__main__":
     unittest.main()

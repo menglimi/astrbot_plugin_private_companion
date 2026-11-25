@@ -81,7 +81,7 @@ DEFAULTS = {
     # 默认走规则引导：明确的图片请求会追加直接调用提示，工具目录保持稳定。
     "allow_user_requests": True, "trigger_mode": "rules",
     "group_enabled": True, "request_permission": "everyone",
-    "proactive_probability": 0.35, "proactive_max_daily": 1,
+    "proactive_enabled": False, "proactive_probability": 0.35, "proactive_max_daily": 1,
     "prompt_format": "traditional", "style": "realistic", "style_prompt": "",
     "negative_mode": "safe_default", "negative_prompt": "",
     "text2img_fixed_prompt": "clean composition, environmental storytelling",

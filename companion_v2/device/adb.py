@@ -369,6 +369,14 @@ class AdbClient:
         secure = re.search(r"^\s*secure=(true|false)\b", delegate, re.M)
         return (showing.group(1) if showing else "", secure.group(1) if secure else "")
 
+    def require_readable_screen(self) -> None:
+        """Check the current screen without waking or dismissing the keyguard."""
+        display = self.display_state()
+        if display["on"] is False or display["wakefulness"] in ("asleep", "dozing"):
+            raise AdbError("adb_screen_off", "the phone screen is off")
+        if self._keyguard()[0] == "true":
+            raise AdbError("adb_unlock_required", "the phone screen is locked")
+
     def ensure_interactive(self) -> None:
         """Wake the display and dismiss a confirmed swipe-only lock screen."""
         state = self.ensure_awake()

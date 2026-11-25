@@ -363,10 +363,12 @@ class PhoneManagement(GroupEditor):
     layers = phone_fields()[0].layers
     error_prefix = "device_phone"
 
+    def _target(self):
+        return self.app.phone_settings.target_for(self.context)
+
     @outcome
-    def connection(self, operator, data):
+    def connection(self, operator, data, *, include_diagnostics=False):
         from ..device.adb import AdbClient, AdbError, discover_adb
-        from ..device.configuration import PhoneSettingsReader
 
         action = data["action"]
         arguments = {"scan": (), "pair": ("address", "code"), "connect": ("address",),
@@ -383,8 +385,7 @@ class PhoneManagement(GroupEditor):
             raise TaskError("device_phone_connection_invalid", "invalid phone configuration version")
         target = self._authorize(operator, "configuration.read" if action == "scan" else "configuration.write")
         self.app.tasks.check_generation()
-        settings = PhoneSettingsReader(self.app.configuration, fallback_root=self.runtime.data_root).read_for(
-            operator, target, self.app.now())
+        settings, source = self.app.phone_settings.resolve_for(operator, target, self.app.now())
         try:
             adb = AdbClient(discover_adb(settings.adb), timeout=8)
             if action == "pair":
@@ -393,6 +394,10 @@ class PhoneManagement(GroupEditor):
                 adb.connect(data["address"])
             devices = adb.devices()
         except AdbError as error:
+            if error.code == "adb_not_found" and include_diagnostics:
+                # Older dashboard bridges forward only the machine code from an error envelope.
+                return {"adb_error": {"code": error.code, "adb_path": settings.adb.strip(),
+                                      "source": source, "role_id": target.role.subject_id}}
             raise TaskError(error.code, "ADB did not complete the requested operation") from None
         if action != "use":
             return {"devices": [{"serial": item.serial, "model": item.model, "state": item.state,

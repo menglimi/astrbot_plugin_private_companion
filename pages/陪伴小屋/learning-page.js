@@ -192,7 +192,15 @@ window.CompanionLearningPage = (() => {
     } finally { clearTimeout(timeout); }
   }
   async function api(method, path, body) {
-    const response = await bounded(method === "GET" ? bridge.apiGet(path, body) : bridge.apiPost(path, body));
+    let response;
+    try {
+      response = await bounded(method === "GET" ? bridge.apiGet(path, body) : bridge.apiPost(path, body));
+    } catch (error) {
+      if (error?.code) throw error;
+      const code = typeof error?.message === "string" ? error.message.trim() : "";
+      if (CODE.test(code)) throw problem(code);
+      throw error;
+    }
     const wrapped = ["ok","error"].includes(response?.status) && response?.data !== undefined ? response
       : ["ok","error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
     if (wrapped?.status === "error") throw problem(CODE.test(wrapped.data?.code || wrapped.message || "")

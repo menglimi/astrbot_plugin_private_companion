@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ from .image_payloads import image_extension
 
 
 GENERATED_ALBUM_DIRNAME = "generated-album"
+ALBUM_HIDDEN_KEY_PREFIX = "image.album.hidden.v1:"
 _SAFE_ROLE_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 _SHORT_ID_SUFFIX_RE = re.compile(r"-([0-9a-f]{12})$")
 _WINDOWS_RESERVED_NAMES = frozenset({
@@ -26,6 +28,18 @@ _WINDOWS_RESERVED_NAMES = frozenset({
     *(f"com{index}" for index in range(1, 10)),
     *(f"lpt{index}" for index in range(1, 10)),
 })
+
+
+def hidden_album_ids(runtime, context):
+    row = runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?",
+                           (ALBUM_HIDDEN_KEY_PREFIX + context.key,))
+    if row is None:
+        return set()
+    try:
+        values = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return set()
+    return {item for item in values if type(item) is str and item} if isinstance(values, list) else set()
 
 
 def _is_windows_reserved(name: str) -> bool:

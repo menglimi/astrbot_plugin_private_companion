@@ -67,18 +67,26 @@ from companion_v2.capabilities.ownership import (
 MEMORY_OWNER_MODULE_NAMES = (
     "data.plugins.astrbot_plugin_remember_you.main",
     "astrbot_plugin_remember_you.main",
+    "data.plugins.astrbot_plugin_memory_companion.main",
+    "astrbot_plugin_memory_companion.main",
 )
 
 # 声明自己是谁。``display_name`` 用于页面文案；模块没写 display_name 时用插件 ID
 # 兜底，宁可显示机器名也不假装知道它叫什么。
 MEMORY_OWNER_PLUGIN_ID = "astrbot_plugin_memory_companion"
 MEMORY_OWNER_DISPLAY_NAME = "我会牢牢记住你"
+MEMORY_OWNER_REPO_URL = "https://github.com/menglimi/astrbot_plugin_memory_companion"
 MEMORY_OWNER_ACCESSORS = ("get_memory_companion_bridge", "get_active_bridge")
 
 # 插件注册表里可能用这几个字段之一表明身份，逐个比对（去掉连字符/下斜杠后比较）。
-_MEMORY_OWNER_IDENTITIES = frozenset(
-    {MEMORY_OWNER_PLUGIN_ID, "astrbot-plugin-memory-companion", "MemoryCompanion", "memory_companion"}
-)
+_MEMORY_OWNER_IDENTITIES = frozenset({
+    MEMORY_OWNER_PLUGIN_ID,
+    "astrbot-plugin-memory-companion",
+    "astrbot_plugin_remember_you",
+    "astrbot-plugin-remember-you",
+    "MemoryCompanion",
+    "memory_companion",
+})
 
 
 @dataclass(frozen=True)
@@ -258,6 +266,88 @@ def read_memory_ownership(context) -> MemoryOwnership:
     return read_memory_owner(context).ownership
 
 
+def _registered_memory_companion_star(context):
+    """在宿主插件注册表里查找「我会牢牢记住你」条目（只读）。"""
+
+    if context is None:
+        return None
+    try:
+        entries = context.get_all_stars() if callable(getattr(context, "get_all_stars", None)) else None
+    except Exception:
+        return None
+    for metadata in tuple(entries or ()):
+        if (_matches(getattr(metadata, "name", None))
+                or _matches(getattr(metadata, "module_path", None))
+                or _matches(getattr(metadata, "root_dir_name", None))):
+            return metadata
+    return None
+
+
+def read_memory_companion_status(context, *, ownership=None) -> dict:
+    """返回「我会牢牢记住你」配合插件的安装与联动状态（五态只读）。
+
+    五种明确状态（供总览提示、新手引导、记忆页复用）：
+      - ``connected``：已安装并启用，且正在作为外部长期记忆提供方协同工作；
+      - ``disabled``：已安装在 AstrBot 插件列表中，但当前处于停用状态；
+      - ``bridge_disabled``：已安装并启用，但协作桥接开关关闭或句柄不可读；
+      - ``external_other``：已接入其他第三方模型侧记忆插件；
+      - ``missing``：未检测到「我会牢牢记住你」，当前仅启用本插件轻量内置记忆。
+    """
+
+    if ownership is None:
+        doc = read_memory_ownership(context).document()
+    elif isinstance(ownership, MemoryOwnership):
+        doc = ownership.document()
+    elif isinstance(ownership, dict):
+        doc = {
+            "owner": str(ownership.get("owner") or RENDER_SELF),
+            "reason": str(ownership.get("reason") or REASON_MODULE_ABSENT),
+            "module": str(ownership.get("module") or ""),
+            "provider": str(ownership.get("provider") or ""),
+            "display_name": str(ownership.get("display_name") or ""),
+        }
+    else:
+        doc = read_memory_ownership(context).document()
+
+    owner = doc["owner"]
+    reason = doc["reason"]
+    provider = doc["provider"]
+    module = doc["module"]
+    display_name = doc["display_name"]
+    is_companion = (
+        provider == MEMORY_OWNER_PLUGIN_ID
+        or display_name == MEMORY_OWNER_DISPLAY_NAME
+        or _matches(provider)
+        or _matches(module)
+        or "astrbot_plugin_remember_you" in _identity(module)
+    )
+
+    if owner == RENDER_EXTERNAL:
+        state = "connected" if is_companion else "external_other"
+    else:
+        star = _registered_memory_companion_star(context)
+        if star is not None:
+            state = "disabled" if not bool(getattr(star, "activated", True)) else "bridge_disabled"
+        elif is_companion and reason in (
+            REASON_HANDLE_DISABLED,
+            REASON_HANDLE_UNREADABLE,
+            REASON_DECLARATION_ABSENT,
+        ):
+            state = "bridge_disabled"
+        else:
+            state = "missing"
+
+    return {
+        "state": state,
+        "plugin_id": MEMORY_OWNER_PLUGIN_ID,
+        "display_name": MEMORY_OWNER_DISPLAY_NAME,
+        "repo_url": MEMORY_OWNER_REPO_URL,
+        "owner": owner,
+        "reason": reason,
+        "external_name": display_name if owner == RENDER_EXTERNAL else "",
+    }
+
+
 def memory_owner_provider(context=None):
     """组装用的窄端口：注入一个函数，核心只认 ``state()``。"""
 
@@ -277,8 +367,10 @@ __all__ = [
     "MEMORY_OWNER_DISPLAY_NAME",
     "MEMORY_OWNER_MODULE_NAMES",
     "MEMORY_OWNER_PLUGIN_ID",
+    "MEMORY_OWNER_REPO_URL",
     "MemoryOwnerHandle",
     "memory_owner_provider",
+    "read_memory_companion_status",
     "read_memory_owner",
     "read_memory_ownership",
 ]

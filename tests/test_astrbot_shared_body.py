@@ -175,9 +175,11 @@ class SharedBodyHostTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.native.provider.client.state.calls), 1)
 
     async def test_native_persona_change_cannot_complete_an_old_roles_sleep_timer(self):
+        self.window_personas["qq-main:FriendMessage:201"] = "original"
         await self.ready()
         await self.command("sleep", minutes=1)
-        self.native.selections["qq-main"] = "second"
+        self.window_personas["qq-main:FriendMessage:200"] = "second"
+        self.window_personas["qq-main:FriendMessage:201"] = "second"
         self.clock.advance(timedelta(minutes=2))
         self.app.life_runtime.advance()
         await self.until(lambda: not any(not worker.done() for routine in self.app.life_runtime.routines.values()

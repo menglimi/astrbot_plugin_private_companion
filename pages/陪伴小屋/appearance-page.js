@@ -106,7 +106,7 @@ window.CompanionAppearancePage = (() => {
   function blank() {
     return { ready: false, theme: "courtyard", density: "standard", radius: "standard",
              typeScale: "m", motion: "full", followLight: false, largeText: false,
-             systemReduced: false, notice: "" };
+             systemReduced: false, memoryCompanionHintDismissed: false, notice: "" };
   }
 
   /* 读当前外观。product 还没就绪时（宿主注入比页面脚本晚）用默认值，
@@ -122,6 +122,10 @@ window.CompanionAppearancePage = (() => {
     if (api && typeof api.followLight === "function") next.followLight = !!api.followLight();
     next.largeText = !!window.CompanionDisplayPreferences?.largeText?.();
     next.systemReduced = !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const hintState = window.CompanionMemoryCompanionHint?.current?.();
+    if (hintState && typeof hintState.hint_dismissed === "boolean") {
+      next.memoryCompanionHintDismissed = hintState.hint_dismissed;
+    }
     next.ready = !!current;
     return next;
   }
@@ -205,6 +209,22 @@ window.CompanionAppearancePage = (() => {
     </section>`;
   }
 
+  function hintsSection() {
+    const showHint = !state.memoryCompanionHintDismissed;
+    return `<section class="ap-surface ap-assist-panel" aria-label="提示与引导">
+      <header class="ap-panel-head"><div class="ap-panel-title"><h2>提示与引导</h2>
+        <p>关闭「不再提示」后可随时在这里找回；同样按当前 Dashboard 账号保存到插件数据。</p></div></header>
+      <div class="ap-assist-grid">
+      <label class="ap-switch-row">
+        <span><b>显示「我会牢牢记住你」记忆搭档安装提醒</b>
+          <small>未安装或未启用配合记忆插件时，在陪伴小屋首页顶部提醒你补齐长期记忆。</small></span>
+        <span class="ap-switch${showHint ? " on" : ""}" role="switch" tabindex="0"
+          aria-checked="${showHint}" data-ap-hint="memoryCompanion" aria-label="显示「我会牢牢记住你」记忆搭档安装提醒"></span>
+      </label>
+      </div>
+    </section>`;
+  }
+
   function previewSection() {
     /* 预览窗是这一页的核心：四个维度都作用在它身上。
        它按当前设置渲染内外两套属性，所以「改了会怎样」当场可见，
@@ -260,6 +280,15 @@ window.CompanionAppearancePage = (() => {
         </header>
         ${dimensionSection()}
         ${assistSection()}
+      </section>
+      <section class="ap-section" aria-labelledby="ap-section-hints-title">
+        <header class="ap-section-head">
+          <span class="ap-section-number">03</span>
+          <span class="ap-section-copy"><h2 id="ap-section-hints-title">提示与引导</h2>
+            <small>管理可关闭的友好提示，随时找回曾隐藏的建议卡片。</small></span>
+          <span class="ap-section-badge">按账号保存</span>
+        </header>
+        ${hintsSection()}
       </section>
       <p class="ap-footer-note">主题、密度、圆角、字号、动效与辅助文字保存在当前 AstrBot 账号下；使用同一 Dashboard 账号登录其他设备时会同步。</p>
     </div>${state.notice ? `<div class="ap-notice" role="status">${esc(state.notice)}</div>` : ""}`;
@@ -369,14 +398,62 @@ window.CompanionAppearancePage = (() => {
       refreshSummary();
       return;
     }
+    const hintSwitch = target.closest("[data-ap-hint]");
+    if (hintSwitch && hintSwitch.dataset.apHint === "memoryCompanion") {
+      const nextDismissed = !state.memoryCompanionHintDismissed;
+      const hintApi = window.CompanionMemoryCompanionHint;
+      const api = product();
+      const savePromise = typeof hintApi?.setDismissed === "function"
+        ? hintApi.setDismissed(nextDismissed)
+        : typeof api?.request === "function"
+        ? api.request("POST", "page/hint-preferences", {key: "memoryCompanion", dismissed: nextDismissed})
+          .then(res => Boolean(res?.dismissedHints?.memoryCompanion ?? nextDismissed))
+        : null;
+      if (!savePromise) {
+        state.notice = "页面连接尚未就绪，请稍后重新读取提示偏好。";
+        render();
+        return;
+      }
+      state.memoryCompanionHintDismissed = nextDismissed;
+      setSwitch(hintSwitch, !nextDismissed);
+      void savePromise.then(saved => {
+        if (!state) return;
+        state.memoryCompanionHintDismissed = Boolean(saved);
+        setSwitch(hintSwitch, !state.memoryCompanionHintDismissed);
+      }).catch(() => {
+        if (!state) return;
+        state.memoryCompanionHintDismissed = !nextDismissed;
+        state.notice = "提示偏好保存未完成，请检查连接后重试。";
+        render();
+      });
+      return;
+    }
   }
 
   function onKeydown(event) {
     if (event.key !== " " && event.key !== "Enter") return;
-    const switcher = event.target.closest?.("[data-ap-follow],[data-ap-large]");
+    const switcher = event.target.closest?.("[data-ap-follow],[data-ap-large],[data-ap-hint]");
     if (!switcher) return;
     event.preventDefault();
     switcher.click();
+  }
+
+  function syncHintPreference(ticket) {
+    const hintApi = window.CompanionMemoryCompanionHint;
+    const api = product();
+    const loader = typeof hintApi?.load === "function"
+      ? hintApi.load().then(info => (info && typeof info.hint_dismissed === "boolean" ? info.hint_dismissed : null))
+      : typeof api?.request === "function"
+      ? api.request("GET", "page/hint-preferences").then(res => (typeof res?.dismissedHints?.memoryCompanion === "boolean"
+        ? res.dismissedHints.memoryCompanion : null))
+      : null;
+    if (!loader) return;
+    void loader.then(dismissed => {
+      if (dismissed === null || ticket !== version || !root || !state) return;
+      state.memoryCompanionHintDismissed = dismissed;
+      const node = root.querySelector?.("[data-ap-hint='memoryCompanion']");
+      if (node) setSwitch(node, !dismissed);
+    }).catch(() => {});
   }
 
   function mount(node) {
@@ -388,6 +465,7 @@ window.CompanionAppearancePage = (() => {
     render();
     root.addEventListener("click", onClick);
     root.addEventListener("keydown", onKeydown);
+    syncHintPreference(ticket);
     /* product.appearance() 在宿主注入完成前读不到值。挂载时如果不是 ready，
        补一次读取——不轮询，只补一拍，避免在预览环境里空转。 */
     if (!state.ready) setTimeout(() => {

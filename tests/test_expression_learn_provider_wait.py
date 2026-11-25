@@ -9,8 +9,11 @@ error. These tests pin the ordering, the recorded cause and the unchanged fast
 path. All providers and conversations are synthetic.
 """
 
+import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from companion_v2.execution.models import TaskError
 from companion_v2.expression.style_management import ExpressionStyleManagement
@@ -57,11 +60,24 @@ class ExpressionLearningBudgetPipelineTests(ExpressionFixture, HostFixture, unit
         return app.expression_style.status(context)["last_result"]
 
     async def test_a_fast_round_keeps_its_owner_result_and_the_declared_budget(self):
+        from astrbot_host.reply_api import ReplyWebAPI
+
         host = await self.start()
         app = host.application
         context = await self.seed_for_learning(host)
         self.configure_expression(app, {"private_learning_enabled": True})
-        last = await self.run_learning(app, context)
+        controller = SimpleNamespace(_terminated=False, _control_lock=asyncio.Lock(),
+            session=SimpleNamespace(application=app, profile=SimpleNamespace(target=context)),
+            runtime=app.runtime, now=app.now)
+        request = SimpleNamespace(username="admin", query={}, body=AsyncMock(return_value=b"{}"))
+        with patch("astrbot_host.reply_api.request", request), patch(
+            "astrbot_host.reply_api.dashboard_operator", return_value=self.core
+        ):
+            result = await ReplyWebAPI(controller).style_learn()
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn(result["data"]["state"], ("queued", "running"))
+        await self.until(lambda: not app.expression_style.status(context)["running"])
+        last = app.expression_style.status(context)["last_result"]
         self.assertEqual(last["state"], "succeeded")
         self.assertEqual(last["code"], "owner_result")
         seconds, _ = self.learning_deadline(app)

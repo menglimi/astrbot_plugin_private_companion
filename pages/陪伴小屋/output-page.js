@@ -701,8 +701,15 @@ window.CompanionOutputPage=(()=>{
   async function hideAlbum(){
     const ids=visibleSelectedIds();
     if(albumBusy||!ids.length)return;
-    if(typeof window.confirm==="function"&&!window.confirm(`确定从图库删除选中的 ${ids.length} 张图片？图片会从当前角色图库中移除，不会删除原始来源记录。`))return;
-    const id=ticket;albumBusy="hide";albumNotice="正在从图库删除…";albumError="";renderAlbum();
+    const id=ticket;
+    const confirmed=await window.CompanionConfirm?.({title:"从图库删除",
+      message:`确定从图库删除选中的 ${ids.length} 张图片？图片会从当前角色图库中移除，不会删除原始来源记录。`,
+      confirmText:"删除",cancelText:"取消",danger:true});
+    if(!live(id)||albumBusy)return;
+    if(confirmed==null){albumError="当前页面无法弹出确认框，未执行删除。";albumNotice=albumError;renderAlbum();return;}
+    const currentIds=visibleSelectedIds();
+    if(confirmed!==true||ids.length!==currentIds.length||ids.some((imageId,index)=>imageId!==currentIds[index]))return;
+    albumBusy="hide";albumNotice="正在从图库删除…";albumError="";renderAlbum();
     try{
       const groups=selectedAlbumGroups();let count=0,errors=[];
       for(const [endpoint,imageIds] of groups){

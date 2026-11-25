@@ -35,12 +35,19 @@ class _Connection:
     waiters: set = field(default_factory=set)
 
 
-def _identity(platform, account, name):
+def _identity(platform, account, name, client):
     """Use public account identifiers, never credentials, to permit rebinding."""
     if name == "aiocqhttp":
         return name, account.self_id
     if name == "wechat_native":
         value = getattr(getattr(platform, "native_config", None), "account_id", None)
+    elif name == "telegram":
+        # The public bot ID is available before AstrBot initializes the client.
+        token = getattr(client, "token", None)
+        if not isinstance(token, str):
+            return None
+        bot_id, separator, _ = token.partition(":")
+        value = bot_id if separator and bot_id.isascii() and bot_id.isdecimal() else None
     else:
         value = getattr(platform, "appid", None) or getattr(platform, "app_id", None)
         if value is None:
@@ -126,7 +133,7 @@ class NativeAccountConnections:
             self._unavailable(record, "identity_changed", "host_platform_changed")
             return
         client = platform.get_client()
-        identity = _identity(platform, account, meta.name)
+        identity = _identity(platform, account, meta.name, client)
         changed = record.platform is not None and (record.platform is not platform or record.client is not client)
         if (record.platform_name and record.platform_name != meta.name
                 or record.identity is not None and identity != record.identity):

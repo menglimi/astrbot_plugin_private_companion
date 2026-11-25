@@ -1,8 +1,4 @@
-"""Bounded automatic opportunities from the latest accepted private conversation.
-
-The original conversation owns identity and persona. Existing task IDs are the
-durable occurrence ledger, so restart never replays a decision or a missed slot.
-"""
+"""Automatic opportunities from verified conversations and completed role events."""
 
 import asyncio
 from collections.abc import Mapping
@@ -16,7 +12,8 @@ from companion_v2.agenda.service import AgendaService
 from companion_v2.conversation.busy_gate import (SettingsReader, busy_context, busy_exempt_source,
                                                 proactive_defer_until, readable_items)
 from companion_v2.conversation.messages import event_from_document
-from companion_v2.execution.models import QUEUED, TaskContext, TaskError, digest, require, stamp
+from companion_v2.execution.models import QUEUED, TaskContext, TaskError, digest, encode, require, stamp
+from companion_v2.foundation.refs import ScopeKind
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.delivery.history import VERSION as HISTORY_VERSION
 from companion_v2.role_work.life import rest_gate
@@ -40,6 +37,7 @@ from .weather_change_events import WeatherChangeContactEvents
 from .official_alert_events import NO_CURRENT_ALERT, OfficialAlertContactEvents
 from .balance_events import BalanceContactEvents
 from .news_events import NewsContactEvents
+from .outfit_events import OutfitContactEvents
 from .screen_events import ScreenContactEvents
 from .relationship_events import RelationshipContactEvents
 from .wake_events import WakeContactEvents
@@ -48,6 +46,14 @@ from .persona_judge import KIND as JUDGE_KIND
 from .preferences import ContactPreferences
 from .service import CONTACT_KIND
 
+
+ROLE_EVENT_PRODUCERS = {
+    "calendar_event": "calendar_events",
+    "outfit_event": "outfit_events",
+    "activity_event": "events",
+    "journal_event": "journal_events",
+    "growth_event": "growth_events",
+}
 
 DIAGNOSTIC_ENVIRONMENT_VARIANTS = {
     "weather": ("weather_events", "weather_event", "天气观测生产器"),
@@ -88,7 +94,7 @@ class ContactSchedule:
     def __init__(self, contacts, messages, *, notify, role_life=None, role_growth=None, role_journal=None,
                  calendar=None, relationships=None, role_state=None, weather_port=None,
                  weather_alert_port=None, balance_port=None, news_port=None, screen_peek=None,
-                 wake_port=None, health_source=None, health_settings=None):
+                 wake_port=None, health_source=None, health_settings=None, role_bindings=None, daily_outfit=None):
         self.contacts, self.messages, self.notify = contacts, messages, notify
         self.tasks, self.runtime = contacts.tasks, contacts.runtime
         self.screen_peek = screen_peek
@@ -96,12 +102,15 @@ class ContactSchedule:
         self.wake_events = (WakeContactEvents(contacts, role_state, wake_port)
                             if wake_port is not None else None)
         self._maintenance_contexts = {}
+        self.role_bindings = role_bindings or dict
+        self._role_cursor = 0
         self._workers, self._cursor, self._native_cursor, self._closed = {}, 0, 0, False
         self._advancing = False
         self._planning = None
         self._judges = {}
         self.rhythm = ContactRhythm(contacts.runtime)
         self.events = ActivityContactEvents(contacts, role_life) if role_life is not None else None
+        self.outfit_events = OutfitContactEvents(contacts, daily_outfit) if daily_outfit is not None else None
         self.growth_events = GrowthContactEvents(contacts, role_growth) if role_growth is not None else None
         self.journal_events = JournalContactEvents(contacts, role_journal) if role_journal is not None else None
         self.calendar_events = CalendarContactEvents(contacts, calendar) if calendar is not None else None
@@ -342,7 +351,8 @@ class ContactSchedule:
             origin = {"batch_id": anchor_turn["turn_id"], "event_key": event.scoped_key,
                       "event_hash": digest([event, context.key, anchor_turn["role_instruction"]]),
                       "role_hash": digest(anchor_turn["role_instruction"])}
-            latest = anchor_turn
+            # A media-only turn can refresh activity while the earlier text still supplies evidence.
+            latest = {**anchor_turn, "created_at": native["observed_at"]} if fallback_input else anchor_turn
         else:
             if (row is None or row["origin_key"] != context.key
                     or row["flow_state"] != "complete" or row["state"] != "ready"
@@ -425,6 +435,21 @@ class ContactSchedule:
         return {**origin, "reality_location_event": marker}, batch, event
 
     def validate_origin(self, context, origin, at):
+        preferences = require(self.contacts.preferences.read(context, observed_at=at))
+        automatic_reason = preferences.automatic_reason()
+        if automatic_reason:
+            raise TaskError(automatic_reason, "automatic opportunities are disabled")
+        if "bound_role" in origin:
+            self.bound_role(context, at, origin=origin)
+            markers = [key for key in ROLE_EVENT_PRODUCERS if key in origin]
+            if len(markers) != 1 or set(origin) != {"bound_role", "role_hash", markers[0]}:
+                raise TaskError("contact_role_event_invalid", "a bound role contact requires its original event")
+            marker = markers[0]
+            producer = getattr(self, ROLE_EVENT_PRODUCERS[marker])
+            if producer is None:
+                raise TaskError("contact_role_event_unavailable", "the original role event producer is unavailable")
+            producer.validate(context, origin[marker], at)
+            return origin
         current, row, event = self._origin(context, origin["batch_id"], at)
         event_markers = {"activity_event", "growth_event", "journal_event", "calendar_event",
                          "reminiscence_event", "date_event",
@@ -441,12 +466,10 @@ class ContactSchedule:
         elif current != {key: value for key, value in origin.items()
                          if key not in event_markers | {"reanchored", "previous_batch_id"}}:
             raise TaskError("contact_conversation_changed", "automatic opportunity lost its original conversation")
-        preferences = require(self.contacts.preferences.read(context, observed_at=at))
-        if not preferences.values["automatic_enabled"]:
-            raise TaskError("contact_automatic_disabled", "automatic opportunities are disabled")
-        idle = self.rhythm.idle_seconds(preferences)
-        if at < max(event.received_at, datetime.fromisoformat(row["created_at"])) + timedelta(seconds=idle):
-            raise TaskError("contact_conversation_active", "original conversation has not reached its configured idle time")
+        first = self.rhythm.first_opening(context, preferences, at,
+            input_at=max(event.received_at, datetime.fromisoformat(row["created_at"])))
+        if first is None or at < first:
+            raise TaskError("contact_conversation_active", "the most recent conversation activity is still within the idle period")
         interaction = None
         if ("greeting_event" in origin or "burst_event" in origin or "followup_event" in origin
                 or "morning_event" in origin or not rhythm_event_markers.intersection(origin)):
@@ -520,6 +543,63 @@ class ContactSchedule:
             self._validate_reality_location(origin["reality_location_event"])
         return current
 
+    def bound_role(self, context, at, *, origin=None):
+        binding = self.role_bindings().get(context.key)
+        if (context.scope.kind is not ScopeKind.PRIVATE or binding is None
+                or binding[0] != context or not binding[1].strip()):
+            raise TaskError("contact_role_unavailable", "the original private role binding is unavailable")
+        self.messages.authorize(context, at)
+        if origin is not None and (origin["bound_role"] != context.key or origin["role_hash"] != digest(binding[1])):
+            raise TaskError("contact_persona_changed", "the bound role's persona changed after selection")
+        return binding[1], binding[2]
+
+    def _plan_role_event(self, context, at):
+        if self.contacts.proactive_denied(context, at=at):
+            return None
+        instruction, _ = self.bound_role(context, at)
+        preferences = require(self.contacts.preferences.read(context, observed_at=at))
+        if preferences.automatic_reason():
+            return None
+        sleep = from_health_source(self.health_source, at)
+        if sleep is not None and sleep.quiet_until > at:
+            return None
+        self.contacts.budget.contacts(context, preferences, at)
+        base = {"bound_role": context.key, "role_hash": digest(instruction)}
+        if self.calendar_events is not None:
+            selection, more = self.calendar_events.select(context, preferences, at)
+            if selection is not None:
+                opportunity, intents, marker = selection
+                return context, opportunity, intents, instruction, {**base, "calendar_event": marker}
+            if more:
+                return None
+        if self._appointment_silence(context, preferences, at):
+            return None
+        if self.contacts.history is not None:
+            interaction = self.contacts.history.interaction(context, at, action=GROUP)
+            if interaction["last_input_at"] is not None:
+                first = self.rhythm.first_opening(context, preferences, at,
+                    input_at=datetime.fromisoformat(interaction["last_input_at"]))
+                if first is None or at < first:
+                    return None
+        if self._recent_attempt_blocking(
+                context, at, timedelta(seconds=self.rhythm.base_interval_seconds(preferences))):
+            return None
+        for marker, attribute in ROLE_EVENT_PRODUCERS.items():
+            producer = getattr(self, attribute)
+            if producer is None:
+                continue
+            select = producer.select_transitions if marker == "calendar_event" else producer.select
+            candidate, more = select(context, preferences, at)
+            if marker != "calendar_event":
+                candidate = self._share_candidate(context, preferences, candidate)
+            if candidate is not None:
+                opportunity, intents, evidence = candidate
+                if self.rhythm.hour_allows(context, preferences, opportunity.opened_at, observed_at=at):
+                    return context, opportunity, intents, instruction, {**base, marker: evidence}
+            elif more:
+                break
+        return None
+
     def _plan(self, row, at):
         context = TaskContext.restore(json.loads(row["context_json"]))
         # 主动权限：操作员收回 proactive.contact 之后，这一轮直接不做。
@@ -530,8 +610,10 @@ class ContactSchedule:
             return None
         preferences = require(self.contacts.preferences.read(context, observed_at=at))
         self.contacts._adopt(context, preferences)
-        if not preferences.values["automatic_enabled"]:
-            self._note_window(context, row, at, "settings", "skipped", "automatic_contact_disabled")
+        automatic_reason = preferences.automatic_reason()
+        if automatic_reason:
+            reason = "automatic_contact_disabled" if automatic_reason == "contact_automatic_disabled" else automatic_reason
+            self._note_window(context, row, at, "settings", "skipped", reason)
             return None
         sleep = from_health_source(self.health_source, at)
         if sleep is not None and sleep.quiet_until > at:
@@ -539,9 +621,9 @@ class ContactSchedule:
                               next_at=sleep.morning_opened_at)
             return None
         origin, batch, event = self._origin(context, row["batch_id"], at)
-        first = max(event.received_at, datetime.fromisoformat(batch["created_at"])) + timedelta(
-            seconds=self.rhythm.idle_seconds(preferences))
-        if at < first:
+        first = self.rhythm.first_opening(context, preferences, at,
+            input_at=max(event.received_at, datetime.fromisoformat(batch["created_at"])))
+        if first is None or at < first:
             self._note_window(context, row, at, "rhythm", "skipped", "idle_period_not_elapsed", next_at=first)
             return None
         if self.contacts.history is None:
@@ -1412,6 +1494,10 @@ class ContactSchedule:
         context, opportunity, intents, instruction, origin = plan
         purpose = intents[0].purpose if intents else None
         try:
+            if "bound_role" in origin:
+                _, guard = self.bound_role(context, self.tasks.now(), origin=origin)
+                if guard is not None and await guard(context.scope, context.role_binding) != instruction:
+                    raise TaskError("contact_persona_changed", "the host persona changed after event selection")
             if "weather_pending" in origin:
                 prepared = await self.weather_events.prepare(context, origin["weather_pending"])
                 if prepared is None:
@@ -1620,13 +1706,20 @@ class ContactSchedule:
                 WHERE newer.context_key = n.context_key
                 AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
             ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
-        rows = (*legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
+        bindings = tuple(binding[0] for binding in self.role_bindings().values()
+                         if binding[0].scope.kind is ScopeKind.PRIVATE)
+        start = self._role_cursor % len(bindings) if bindings else 0
+        role_rows = tuple({"role_event_only": True, "origin_key": context.key, "context_json": encode(context)}
+                          for context in (bindings[start:] + bindings[:start])[:16])
+        rows = (*role_rows, *legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
         return now, rows, available, len(legacy_rows), len(native_rows)
 
     def _plan_one(self, row, now):
         """Evaluate one candidate off the write transaction."""
         if self._closed or row["origin_key"] in self._workers:
             return None
+        if isinstance(row, dict) and row.get("role_event_only"):
+            return self._plan_role_event(TaskContext.restore(json.loads(row["context_json"])), now)
         if self._peek(row, now):
             context = TaskContext.restore(json.loads(row["context_json"]))
             self._note_window(context, row, now, "sources", "pending", "screen_observation_pending")
@@ -1678,7 +1771,9 @@ class ContactSchedule:
         return available - 1
 
     def _row_cursor(self, row):
-        if isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
+        if isinstance(row, dict) and row.get("role_event_only"):
+            self._role_cursor += 1
+        elif isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
             self._native_cursor = row["sequence"]
         else:
             self._cursor = row["sequence"]

@@ -325,13 +325,14 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.clock.advance(timedelta(seconds=1))
         self.assertEqual((await self.candidate(self.event("repeat-trigger", "好", sender="214")))["reason"], "repeat")
 
-    async def test_mentioning_another_member_suppresses_role_name_direct_word(self):
+    async def test_mentioning_another_member_with_role_name_is_a_participation_candidate(self):
         await self.configure(group_wakeup_bot_name="小星")
         event = self.event("other-at-with-role-name", "小星 小天使")
         event.message_obj.message.insert(0, NS(type="At", qq="201"))
         decision = await self.candidate(event)
-        self.assertNotEqual(decision["reason"], "direct_word")
-        self.assertFalse(decision["admitted"])
+        self.assertEqual(decision["reason"], "wake_word_with_other_mention")
+        self.assertTrue(decision["admitted"])
+        self.assertFalse(decision["mentioned"])
 
     async def test_direct_words_question_and_disabled_strategies_use_effective_settings(self):
         await self.configure(group_wakeup_bot_name="小星", group_wakeup_question_enabled=False)

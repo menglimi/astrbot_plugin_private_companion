@@ -17,12 +17,15 @@ from companion_v2.relationships.private_access import (DEFAULT_FOR_CAPABILITY, R
 from companion_v2.storage.codec import scope_values
 from companion_v2.adapters.astrbot.native import native_user_subject_id
 from .group_settings import GroupTarget
+from .identity_derivation import derive_role_id, role_display_name
+from .settings import HostControlError
 
 
 logger = logging.getLogger(__name__)
 
 
 MANIFEST = "astrbot.multi.manifest.v1"
+PHONE_ROLE_ALIASES = "astrbot.multi.phone_role_aliases.v1"
 VERIFIED_RUNTIME = "astrbot.multi.verified_runtime.v1"
 HOST_ID = "astrbot-native"
 DELIVERY = "message.delivery"
@@ -90,6 +93,31 @@ class MultiAuthority:
         with self.runtime.transaction() as connection:
             connection.execute("INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, encode(value)))
+
+    def phone_role_aliases(self):
+        """Resolve legacy phone owners within the configured bot and persona."""
+        roles = {(mapping.bot_id, mapping.persona_id): mapping.role_id for mapping in self.settings.personas}
+        active = {(bot_id, role_id) for (bot_id, _), role_id in roles.items()}
+        candidates = {}
+        def add(bot_id, alias, role_id):
+            if alias and role_id and (bot_id, alias) not in active:
+                candidates.setdefault((bot_id, alias), set()).add(role_id)
+
+        for bot_id, persona_id, alias in self.read(PHONE_ROLE_ALIASES) or ():
+            add(bot_id, alias, roles.get((bot_id, persona_id)))
+        for (bot_id, persona_id), role_id in roles.items():
+            add(bot_id, persona_id, role_id)
+            add(bot_id, role_display_name("", [persona_id]), role_id)
+            for alias in self.settings.role_aliases:
+                if self.settings.canonical_role_id(alias) == role_id:
+                    add(bot_id, alias, role_id)
+            for account in self.settings.accounts:
+                if account.bot_id == bot_id:
+                    try:
+                        add(bot_id, derive_role_id(account.self_id, persona_id), role_id)
+                    except HostControlError:
+                        continue
+        return {key: next(iter(owners)) for key, owners in candidates.items() if len(owners) == 1}
 
     def require_manifest(self, current=None):
         manifest = self.read(MANIFEST)
@@ -227,6 +255,14 @@ class MultiAuthority:
             elif not reviewed:
                 self.require_manifest(manifest)
             identities = dict(old["identities"])
+            if reviewed:
+                aliases = {tuple(row) for row in self.read(PHONE_ROLE_ALIASES) or ()}
+                for persona in self.settings.personas:
+                    previous = identities.get("persona:" + digest([persona.bot_id, persona.persona_id]))
+                    if previous and previous != persona.role_id:
+                        aliases.add((persona.bot_id, persona.persona_id, previous))
+                if aliases:
+                    self.write(PHONE_ROLE_ALIASES, sorted(aliases))
             mappings = {}
             for target in self.settings.all_targets:
                 mappings["target:" + target.target_id] = asdict(target)

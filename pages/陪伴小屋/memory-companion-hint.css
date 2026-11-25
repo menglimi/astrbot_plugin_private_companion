@@ -1,0 +1,264 @@
+/* 长期记忆搭档「我会牢牢记住你」提示卡片与安装指引弹窗。
+ * 全部使用 tokens.css 语义变量，零硬编码色值，兼容六套主题。 */
+
+.mc-hint-card {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--t-line-firm);
+  border-left: 3px solid var(--t-warn);
+  border-radius: var(--r-sm);
+  background: var(--t-warn-quiet);
+  color: var(--t-text);
+  box-shadow: var(--t-shadow);
+  transition: border-color .18s ease, background-color .18s ease, transform .18s ease;
+}
+
+.mc-hint-card.is-ok {
+  border-left-color: var(--t-ok);
+  background: var(--t-ok-quiet);
+}
+
+.mc-hint-card.is-compact {
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.mc-hint-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.mc-hint-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: calc(var(--sp-1) / 2) var(--sp-2);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--t-warn) 16%, transparent);
+  color: var(--t-warn-ink);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.mc-hint-card.is-ok .mc-hint-badge,
+.mc-hint-badge.is-ok {
+  background: color-mix(in srgb, var(--t-ok) 16%, transparent);
+  color: var(--t-ok-ink);
+}
+
+.mc-hint-title {
+  color: var(--t-text-strong);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+}
+
+.mc-hint-body {
+  margin: 0;
+  color: var(--t-text);
+  font-size: var(--fs-tiny);
+  line-height: 1.6;
+}
+
+.mc-hint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.mc-hint-actions .button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--t-text-soft);
+}
+
+.mc-hint-actions .button.ghost:hover {
+  background: color-mix(in srgb, var(--t-text) 8%, transparent);
+  color: var(--t-text-strong);
+}
+
+.mc-hint-dialog {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid var(--t-line-firm);
+  border-radius: var(--r-lg);
+  background: var(--t-surface);
+  color: var(--t-text);
+  box-shadow: var(--t-shadow-lift);
+  overflow: auto;
+}
+
+.mc-hint-dialog::backdrop {
+  background: color-mix(in srgb, var(--t-text-strong) 42%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.mc-dialog-surface {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+}
+
+.mc-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.mc-dialog-head h3 {
+  margin: var(--sp-1) 0 0;
+  color: var(--t-text-strong);
+  font-size: var(--fs-head);
+  line-height: 1.3;
+}
+
+.mc-dialog-lead {
+  margin: 0;
+  color: var(--t-text);
+  font-size: var(--fs-body);
+  line-height: 1.65;
+}
+
+.mc-dialog-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.mc-dialog-compare > div {
+  padding: var(--sp-3);
+  border: 1px solid var(--t-line);
+  border-radius: var(--r-sm);
+  background: var(--t-surface-soft);
+}
+
+.mc-dialog-compare > div.is-recommended {
+  border-color: var(--t-accent);
+  background: var(--t-accent-quiet);
+}
+
+.mc-dialog-compare h4 {
+  margin: 0 0 var(--sp-2);
+  color: var(--t-text-strong);
+  font-size: var(--fs-body);
+}
+
+.mc-dialog-compare ul {
+  margin: 0;
+  padding-left: var(--sp-4);
+  display: grid;
+  gap: var(--sp-1);
+  color: var(--t-text-soft);
+  font-size: var(--fs-tiny);
+  line-height: 1.5;
+}
+
+.mc-dialog-steps {
+  margin: 0;
+  padding-left: var(--sp-5);
+  display: grid;
+  gap: var(--sp-2);
+  color: var(--t-text);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+}
+
+.mc-dialog-steps code,
+.mc-dialog-copy-row code {
+  padding: calc(var(--sp-1) / 2) var(--sp-1);
+  border-radius: var(--r-xs);
+  background: var(--t-surface-sunken);
+  color: var(--t-text-strong);
+  font-size: var(--fs-tiny);
+  overflow-wrap: anywhere;
+}
+
+.mc-dialog-copy-grid {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--t-line);
+  border-radius: var(--r-sm);
+  background: var(--t-surface-soft);
+}
+
+.mc-dialog-copy-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-tiny);
+}
+
+.mc-dialog-copy-row > span {
+  color: var(--t-text-soft);
+  font-weight: 600;
+}
+
+.mc-dialog-status {
+  min-height: 1.4em;
+  margin: 0;
+  color: var(--t-accent-ink);
+  font-size: var(--fs-tiny);
+}
+
+.mc-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--t-line);
+}
+
+@media (max-width: 640px) {
+  .mc-hint-dialog {
+    width: min(640px, calc(100vw - var(--sp-4)));
+    max-height: calc(100dvh - 32px);
+  }
+  .mc-dialog-surface {
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .mc-dialog-head {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  .mc-dialog-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-dialog-copy-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-dialog-copy-row .button {
+    width: 100%;
+    min-height: 38px;
+  }
+  .mc-dialog-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    padding-bottom: calc(var(--sp-1) + env(safe-area-inset-bottom));
+  }
+  .mc-dialog-actions .button {
+    width: 100%;
+    min-height: 40px;
+    justify-content: center;
+  }
+}
+
+:root[data-motion="off"] .mc-hint-card {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-hint-card {
+    transition: none;
+  }
+}

@@ -820,7 +820,17 @@ def _validate_price_sources(raw: object) -> dict[str, dict[str, Any]]:
         return base
     if type(raw) is not dict or len(raw) > 128:
         raise PricingSettingsError("pricing_config_invalid", "价格源配置格式无效")
-    allowed = {"enabled", "kind", "label", "url", "provider_id"}
+    allowed = {
+        "enabled",
+        "kind",
+        "label",
+        "url",
+        "provider_id",
+        "currency_override",
+        "fiat_per_base_unit",
+        "auth_mode",
+        "cluster_id",
+    }
     for sid, cfg in raw.items():
         if not _is_valid_source_id(sid, base):
             raise PricingSettingsError("pricing_config_invalid", "价格源标识无效")
@@ -837,13 +847,42 @@ def _validate_price_sources(raw: object) -> dict[str, dict[str, Any]]:
             url = str(cfg.get("url") or "").strip()
             if url and not (url.startswith("http://") or url.startswith("https://")):
                 raise PricingSettingsError("pricing_config_invalid", "New API 价格源地址必须为 HTTP(S)")
-            base[sid] = {
+            entry: dict[str, Any] = {
                 "enabled": enabled,
                 "kind": "newapi",
                 "label": str(cfg.get("label") or sid).strip()[:80] or sid,
                 "url": url[:512],
                 "provider_id": str(cfg.get("provider_id") or sid.removeprefix("newapi:")).strip()[:MAX_PROVIDER_ID_CHARS],
             }
+            raw_cur_ovr = cfg.get("currency_override")
+            if raw_cur_ovr is not None and raw_cur_ovr != "":
+                if type(raw_cur_ovr) is not str or raw_cur_ovr not in ("auto", "CNY", "USD"):
+                    raise PricingSettingsError("pricing_config_invalid", f"价格源 {sid} 币种覆盖仅支持 auto、CNY 或 USD")
+                if raw_cur_ovr in ("CNY", "USD"):
+                    entry["currency_override"] = raw_cur_ovr
+            raw_fiat_rate = cfg.get("fiat_per_base_unit")
+            if raw_fiat_rate is not None and raw_fiat_rate != "":
+                fiat_rate = _finite_number(
+                    raw_fiat_rate,
+                    minimum=1e-6,
+                    maximum=100_000.0,
+                    code="pricing_config_invalid",
+                    reason=f"价格源 {sid} 的法币折算单价必须在 0 到 100000 之间",
+                )
+                entry["fiat_per_base_unit"] = round(fiat_rate, 6)
+            raw_auth = cfg.get("auth_mode")
+            if raw_auth is not None and raw_auth != "":
+                if type(raw_auth) is not str or raw_auth not in ("anonymous", "bearer"):
+                    raise PricingSettingsError("pricing_config_invalid", f"价格源 {sid} 鉴权模式无效")
+                entry["auth_mode"] = raw_auth
+            raw_cluster = cfg.get("cluster_id")
+            if raw_cluster is not None and raw_cluster != "":
+                if type(raw_cluster) is not str or len(raw_cluster.strip()) > MAX_PROVIDER_ID_CHARS:
+                    raise PricingSettingsError("pricing_config_invalid", f"价格源 {sid} 聚类标识无效")
+                clean_cluster = raw_cluster.strip()
+                if clean_cluster:
+                    entry["cluster_id"] = clean_cluster
+            base[sid] = entry
     return base
 
 
@@ -1965,7 +2004,7 @@ def evaluate_call_cost_microusd(
 
     if mode == "tiered_expr":
         try:
-            microusd_f, _matched_tier = evaluate_tiered_expr_rule(
+            raw_micro, _matched_tier = evaluate_tiered_expr_rule(
                 rule,
                 other_input_tokens=uncached,
                 cached_input_tokens=billable_cached,
@@ -1979,6 +2018,7 @@ def evaluate_call_cost_microusd(
             if strict_expr:
                 raise
             return None
+        microusd_f = raw_micro if currency == "USD" else (raw_micro / usd_cny_rate)
         return max(0, min(int(round(microusd_f)), MAX_MICROUSD_RATE))
 
     return None
@@ -2254,17 +2294,80 @@ class PricingSettingsStore:
         provider_id: str,
         label: str,
         enabled: bool = True,
+        currency_override: str | None = None,
+        auth_mode: str | None = None,
+        cluster_id: str | None = None,
     ) -> dict[str, Any]:
         def _apply(doc: dict[str, Any]) -> None:
-            doc["price_sources"][source_id] = {
+            existing = doc["price_sources"].get(source_id)
+            prev_override = existing.get("currency_override") if isinstance(existing, dict) else None
+            prev_auth = existing.get("auth_mode") if isinstance(existing, dict) else None
+            prev_cluster = existing.get("cluster_id") if isinstance(existing, dict) else None
+            entry: dict[str, Any] = {
                 "enabled": enabled,
                 "kind": "newapi",
                 "label": label[:80] or source_id,
                 "url": url[:512],
                 "provider_id": provider_id[:MAX_PROVIDER_ID_CHARS],
             }
+            eff_override = prev_override if currency_override is None else currency_override
+            if eff_override in ("CNY", "USD"):
+                entry["currency_override"] = eff_override
+            eff_auth = prev_auth if auth_mode is None else auth_mode
+            if eff_auth in ("anonymous", "bearer"):
+                entry["auth_mode"] = eff_auth
+            eff_cluster = prev_cluster if cluster_id is None else cluster_id
+            if type(eff_cluster) is str and eff_cluster.strip():
+                entry["cluster_id"] = eff_cluster.strip()[:MAX_PROVIDER_ID_CHARS]
+            doc["price_sources"][source_id] = entry
 
         return self.mutate_internal(_apply, bump_revision=True)
+
+    def set_source_currency_override(
+        self,
+        source_id: str,
+        currency_override: str,
+        *,
+        fiat_per_base_unit: object = ...,
+        revision: str | None = None,
+    ) -> dict[str, Any]:
+        if type(source_id) is not str or not source_id.strip().startswith("newapi:"):
+            raise PricingSettingsError("pricing_source_invalid", "仅支持为 New API 价格源设置结算币种")
+        if type(currency_override) is not str or currency_override not in ("auto", "CNY", "USD"):
+            raise PricingSettingsError("pricing_source_invalid", "价格源币种覆盖仅支持 auto、CNY 或 USD")
+        update_fiat_rate = fiat_per_base_unit is not ...
+        parsed_fiat_rate: float | None = None
+        if update_fiat_rate and fiat_per_base_unit is not None and fiat_per_base_unit != "":
+            parsed_fiat_rate = round(
+                _finite_number(
+                    fiat_per_base_unit,
+                    minimum=1e-6,
+                    maximum=100_000.0,
+                    code="pricing_source_invalid",
+                    reason="法币折算单价必须是大于 0 且不超过 100000 的有效数字",
+                ),
+                6,
+            )
+
+        def _apply(doc: dict[str, Any]) -> None:
+            sources = doc["price_sources"]
+            if source_id not in sources:
+                raise PricingSettingsError("pricing_source_not_found", f"未找到价格源: {source_id}")
+            prev_override = sources[source_id].get("currency_override") or "auto"
+            if currency_override == "auto":
+                sources[source_id].pop("currency_override", None)
+            else:
+                sources[source_id]["currency_override"] = currency_override
+            if update_fiat_rate:
+                if parsed_fiat_rate is None:
+                    sources[source_id].pop("fiat_per_base_unit", None)
+                else:
+                    sources[source_id]["fiat_per_base_unit"] = parsed_fiat_rate
+            elif currency_override != prev_override:
+                # Clear stale cross-currency conversion override whenever currency_override changes.
+                sources[source_id].pop("fiat_per_base_unit", None)
+
+        return self.mutate_internal(_apply, revision=revision, bump_revision=True)
 
     def set_price_selection(
         self,

@@ -73,6 +73,20 @@ _mobile_request_state: contextvars.ContextVar[_MobileRequestState | None] = cont
 def _clean(value: Any, limit: int=160) -> str:
     return ' '.join(str(value or '').replace('\x00', ' ').split())[:limit]
 
+
+def _mobile_persona_display_name(value: Any, limit: int=12) -> str:
+    """Format a role display name for mobile UI headers without dangling brackets."""
+    cleaned = _clean(value, 120)
+    if len(cleaned) <= limit:
+        return cleaned
+    for delimiter in ('（', '(', '【', '[', '/', '｜', '|', '—', '–'):
+        head, sep, _rest = cleaned.partition(delimiter)
+        primary = head.strip()
+        if sep and primary and len(primary) <= limit:
+            return primary
+    trimmed = cleaned[:limit].rstrip(' \t（([【/|·、-:：—–')
+    return trimmed or cleaned[:limit]
+
 def _number(value: Any, default: float=0.0) -> float:
     try:
         return float(value)
@@ -341,15 +355,19 @@ class MobileGatewayMixin:
         return bool(self._cfg_bool('mobile.screen_upload_enabled', True))
 
     def _mobile_telemetry_enabled(self) -> bool:
-        if hasattr(self, 'health_enabled'):
-            return bool(getattr(self, 'health_enabled'))
-        return bool(self._cfg_bool('mobile.telemetry_enabled', False))
+        return bool(getattr(self, 'health_enabled', False) or self._cfg_bool('mobile.telemetry_enabled', False))
 
     def _mobile_telemetry_ttl(self) -> int:
+        mobile_enabled = bool(self._cfg_bool('mobile.telemetry_enabled', False))
+        health_enabled = bool(getattr(self, 'health_enabled', False))
+        mobile_ttl = max(60, min(7 * 24 * 60 * 60, self._cfg_int('mobile.telemetry_ttl_seconds', 3600, 60, 7 * 24 * 60 * 60)))
         configured = getattr(self, 'health_ttl_seconds', None)
-        if configured is not None:
-            return max(60, min(7 * 24 * 60 * 60, int(configured)))
-        return max(60, min(7 * 24 * 60 * 60, self._cfg_int('mobile.telemetry_ttl_seconds', 3600, 60, 7 * 24 * 60 * 60)))
+        if health_enabled and configured is not None:
+            health_ttl = max(60, min(7 * 24 * 60 * 60, int(configured)))
+            if not mobile_enabled:
+                return health_ttl
+            return max(mobile_ttl, health_ttl)
+        return mobile_ttl
 
     def _mobile_activity_enabled(self) -> bool:
         return bool(self._cfg_bool('mobile.activity_enabled', False))
@@ -1783,7 +1801,7 @@ class MobileGatewayMixin:
                 personas = personas.values() if isinstance(personas, dict) else personas
                 persona = next((item for item in personas if item.role == context.role_binding.role), None)
                 name = getattr(persona, 'persona_id', '')
-            return {'bot_name': _clean(name, 12), 'source': 'v2_persona'}
+            return {'bot_name': _mobile_persona_display_name(name, 12), 'source': 'v2_persona'}
         except Exception:
             return {'bot_name': '', 'source': 'unavailable'}
 
