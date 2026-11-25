@@ -674,6 +674,27 @@ def _build_sources_list(settings: dict[str, Any], catalog: dict[str, Any]) -> li
             entry["currency"] = scat.get("currency") or (site_meta or {}).get("currency") or "USD"
             raw_override = scfg.get("currency_override")
             entry["currency_override"] = raw_override if raw_override in ("CNY", "USD") else "auto"
+            raw_fiat_rate = scfg.get("fiat_per_base_unit")
+            entry["fiat_per_base_unit"] = (
+                float(raw_fiat_rate)
+                if type(raw_fiat_rate) in (int, float) and float(raw_fiat_rate) > 0
+                else None
+            )
+            eff_scale = (site_meta or {}).get("effective_unit_scale")
+            entry["effective_unit_scale"] = (
+                float(eff_scale)
+                if type(eff_scale) in (int, float) and float(eff_scale) > 0
+                else (
+                    entry["fiat_per_base_unit"]
+                    if entry["fiat_per_base_unit"] is not None
+                    else (
+                        float((site_meta or {}).get("unit_scale"))
+                        if type((site_meta or {}).get("unit_scale")) in (int, float)
+                        and float((site_meta or {}).get("unit_scale")) > 0
+                        else 1.0
+                    )
+                )
+            )
             entry["auth_mode"] = scfg.get("auth_mode") or scat.get("auth_mode")
             entry["site_meta"] = site_meta
         result.append(entry)
@@ -1010,7 +1031,10 @@ def build_pricing_payload(
         if sid and isinstance(cat_sources.get(sid), dict):
             smeta = cat_sources[sid].get("site_meta")
             if isinstance(smeta, dict) and isinstance(smeta.get("detected_groups"), dict):
-                hint = smeta["detected_groups"].get(cluster["cluster_id"])
+                hint = (
+                    smeta["detected_groups"].get(cluster["cluster_id"])
+                    or smeta["detected_groups"].get("__station__")
+                )
                 if isinstance(hint, dict):
                     cluster["newapi_group_hint"] = deepcopy(hint)
 

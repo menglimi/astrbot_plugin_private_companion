@@ -33,6 +33,10 @@ PER_CALL_AUTO_MATCH_THRESHOLD = 0.96
 MAX_CANDIDATES_PER_MODEL = 12
 MAX_PRICE_PER_MILLION = 1_000_000.0
 DEFAULT_NEWAPI_QUOTA_PER_UNIT = 500_000.0
+NEWAPI_SITE_META_SCHEMA_VERSION = 2
+_RMB_RECHARGE_PRICE_UPPER_BOUND = 4.5
+_RMB_PAY_METHOD_TYPES = frozenset({"alipay", "wxpay", "wechat", "wechatpay", "epay_alipay", "epay_wxpay"})
+_NON_CUSTOM_CURRENCY_SYMBOLS = frozenset({"$", "US$", "USD", "¤", "€", "£"})
 
 PUBLIC_SOURCE_SPECS: tuple[dict[str, str], ...] = (
     {
@@ -944,14 +948,137 @@ def _pos_float(value: object, *, min_val: float = 0.0, max_val: float = 1e12) ->
     return num
 
 
-def parse_newapi_status(payload: object) -> dict[str, Any]:
+def _has_cjk_text(value: object) -> bool:
+    if type(value) is not str or not value:
+        return False
+    return any("\u4e00" <= ch <= "\u9fff" for ch in value)
+
+
+def _is_non_usd_custom_symbol(symbol: object) -> bool:
+    if type(symbol) is not str:
+        return False
+    clean = symbol.strip()
+    if not clean or clean in _NON_CUSTOM_CURRENCY_SYMBOLS:
+        return False
+    return any(ord(ch) > 127 for ch in clean)
+
+
+def _has_chinese_site_signal(
+    *,
+    system_name: object = None,
+    custom_symbol: object = None,
+    status_data: dict[str, Any] | None = None,
+    pricing_meta: dict[str, Any] | None = None,
+) -> bool:
+    if _has_cjk_text(system_name) or _has_cjk_text(custom_symbol):
+        return True
+    if isinstance(status_data, dict):
+        for key in ("scrolling_announcement", "footer_html", "home_page_title_primary", "home_page_title_secondary"):
+            if _has_cjk_text(status_data.get(key)):
+                return True
+    if isinstance(pricing_meta, dict):
+        for field in ("group_ratio", "usable_group"):
+            mapping = pricing_meta.get(field)
+            if isinstance(mapping, dict):
+                for gk, gv in mapping.items():
+                    if _has_cjk_text(gk) or _has_cjk_text(gv):
+                        return True
+    return False
+
+
+def parse_newapi_topup_info(payload: object) -> dict[str, Any] | None:
+    """Parse sanitized New API ``GET /api/user/topup/info`` into currency confirmation signals.
+
+    Strictly discards any URLs, merchant IDs, keys, or personal metadata.
+    """
+    if type(payload) is not dict:
+        return None
+    if payload.get("success") is False:
+        return None
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if type(data) is not dict:
+        return None
+
+    enable_online = bool(data.get("enable_online_topup"))
+    enable_stripe = bool(data.get("enable_stripe_topup"))
+    enable_creem = bool(data.get("enable_creem_topup"))
+
+    raw_methods = data.get("pay_methods")
+    pay_method_types: list[str] = []
+    has_rmb_pay = False
+    if isinstance(raw_methods, list):
+        for item in raw_methods[:16]:
+            if type(item) is dict:
+                ptype = str(item.get("type") or "").strip().lower()[:32]
+                pname = str(item.get("name") or "").strip()[:32]
+            elif type(item) is str:
+                ptype = item.strip().lower()[:32]
+                pname = ptype
+            else:
+                continue
+            if ptype and ptype not in pay_method_types:
+                pay_method_types.append(ptype)
+            if ptype in _RMB_PAY_METHOD_TYPES or any(w in pname for w in ("支付宝", "微信")):
+                has_rmb_pay = True
+
+    rmb_topup_confirmed = bool(
+        (enable_online or bool(pay_method_types))
+        and has_rmb_pay
+        and not enable_stripe
+        and not enable_creem
+    )
+
+    min_topup = _pos_float(data.get("min_topup"), min_val=0.0, max_val=1_000_000.0)
+    discount_tiers: dict[str, float] = {}
+    raw_discount = data.get("discount")
+    if isinstance(raw_discount, dict):
+        for raw_k, raw_v in list(raw_discount.items())[:16]:
+            kstr = str(raw_k).strip()[:16]
+            val = _pos_float(raw_v, min_val=0.0, max_val=2.0)
+            if kstr and val is not None:
+                discount_tiers[kstr] = round(val, 6)
+
+    return {
+        "enable_online_topup": enable_online,
+        "enable_stripe_topup": enable_stripe,
+        "enable_creem_topup": enable_creem,
+        "pay_method_types": pay_method_types,
+        "rmb_topup_confirmed": rmb_topup_confirmed,
+        "min_topup": round(min_topup, 6) if min_topup is not None else None,
+        "discount_tiers": discount_tiers,
+    }
+
+
+def _normalize_newapi_display_type(raw_display_type: object) -> str:
+    qdt = raw_display_type.strip().upper() if type(raw_display_type) is str else ""
+    if qdt in ("POINTS", "POINT", "CREDIT"):
+        return "CUSTOM"
+    if qdt in ("CNY", "USD", "CUSTOM", "TOKENS"):
+        return qdt
+    return ""
+
+
+def parse_newapi_status(
+    payload: object,
+    *,
+    topup_info: dict[str, Any] | None = None,
+    pricing_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Parse New API / One API ``GET /api/status`` into normalized site & currency metadata.
 
-    Pure stdlib helper; never assumes USD when ``quota_display_type == "CNY"``, and
-    never blindly multiplies ``CUSTOM`` virtual currency exchange rates (e.g. 10 cookies).
+    Implements 4-level anti-false-positive currency detection:
+    - Level 1 (``CNY``): strictly ``CNY`` scaled by ``usd_exchange_rate`` (never multiplies ``price``).
+    - Level 2 (``CUSTOM`` / ``POINTS`` / ``CREDIT``): uses authenticated ``/api/user/topup/info``
+      RMB confirmation when available, else infers ``CNY`` at ``unit_scale = price`` when
+      ``0 < price < 4.5`` together with a non-USD custom symbol or Chinese site signal; never
+      multiplies by ``custom_currency_exchange_rate`` or ``usd_exchange_rate``.
+    - Level 3 (``USD`` or absent): strictly defaults to ``USD`` (``unit_scale = 1.0``) so genuine
+      USD relays are never misclassified; attaches a non-destructive ``cny_recharge_hint`` when
+      ``0 < price < 4.5`` plus Chinese/RMB payment signals are present.
     """
     if type(payload) is not dict:
         return {
+            "schema_version": NEWAPI_SITE_META_SCHEMA_VERSION,
             "system_name": "",
             "quota_display_type": "",
             "display_in_currency": True,
@@ -960,18 +1087,18 @@ def parse_newapi_status(payload: object) -> dict[str, Any]:
             "custom_currency_symbol": "",
             "custom_currency_exchange_rate": None,
             "recharge_price": None,
+            "site_recharge_price": None,
             "currency": "USD",
             "unit_scale": 1.0,
             "currency_source": "default_usd",
+            "topup_rmb_confirmed": False,
+            "cny_recharge_hint": None,
         }
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     raw_name = data.get("system_name")
     system_name = raw_name.strip()[:80] if type(raw_name) is str else ""
 
-    raw_display_type = data.get("quota_display_type")
-    qdt = raw_display_type.strip().upper() if type(raw_display_type) is str else ""
-    if qdt not in ("CNY", "USD", "CUSTOM", "TOKENS"):
-        qdt = ""
+    qdt = _normalize_newapi_display_type(data.get("quota_display_type"))
 
     display_in_currency = bool(data.get("display_in_currency", True))
     quota_per_unit = _pos_float(data.get("quota_per_unit"), min_val=0.0, max_val=1e12) or DEFAULT_NEWAPI_QUOTA_PER_UNIT
@@ -980,25 +1107,68 @@ def parse_newapi_status(payload: object) -> dict[str, Any]:
     custom_symbol = raw_custom_sym.strip()[:12] if type(raw_custom_sym) is str else ""
     custom_rate = _pos_float(data.get("custom_currency_exchange_rate"), min_val=0.0, max_val=100_000.0)
     recharge_price = _pos_float(data.get("price"), min_val=0.0, max_val=100_000.0)
+    rounded_recharge = round(recharge_price, 6) if recharge_price is not None else None
+
+    parsed_topup = topup_info if isinstance(topup_info, dict) else {}
+    topup_rmb_confirmed = bool(parsed_topup.get("rmb_topup_confirmed"))
+    has_cn_signal = _has_chinese_site_signal(
+        system_name=system_name,
+        custom_symbol=custom_symbol,
+        status_data=data,
+        pricing_meta=pricing_meta,
+    )
+    has_non_usd_sym = _is_non_usd_custom_symbol(custom_symbol)
+    low_rmb_price = (
+        recharge_price is not None
+        and 0.0 < recharge_price < _RMB_RECHARGE_PRICE_UPPER_BOUND
+    )
+    cny_recharge_hint: dict[str, Any] | None = None
 
     if qdt == "CNY":
+        # Level 1: explicit CNY display — scale ONLY by usd_exchange_rate (never price!).
         currency = "CNY"
         unit_scale = round(usd_exchange_rate, 6)
         currency_source = "status_cny"
+    elif qdt == "CUSTOM":
+        # Level 2: virtual/custom unit — prefer authenticated topup confirmation, then low RMB price signal.
+        if topup_rmb_confirmed:
+            currency = "CNY"
+            unit_scale = rounded_recharge if rounded_recharge is not None else 1.0
+            currency_source = "topup_custom_cny"
+        elif low_rmb_price and (has_non_usd_sym or has_cn_signal):
+            currency = "CNY"
+            unit_scale = rounded_recharge if rounded_recharge is not None else 1.0
+            currency_source = "status_custom_cny"
+        else:
+            currency = "USD"
+            unit_scale = 1.0
+            currency_source = "status_custom"
     elif qdt == "USD":
+        # Level 3: explicit USD — never silently override genuine USD sites; surface gentle hint if RMB topup detected.
         currency = "USD"
         unit_scale = 1.0
         currency_source = "status_usd"
-    elif qdt in ("CUSTOM", "TOKENS"):
+        if low_rmb_price and (topup_rmb_confirmed or has_cn_signal):
+            cny_recharge_hint = {
+                "recharge_price": rounded_recharge,
+                "suggested_currency": "CNY",
+            }
+    elif qdt == "TOKENS":
         currency = "USD"
         unit_scale = 1.0
-        currency_source = "status_custom"
+        currency_source = "status_tokens"
     else:
         currency = "USD"
         unit_scale = 1.0
         currency_source = "default_usd"
+        if low_rmb_price and (topup_rmb_confirmed or has_cn_signal):
+            cny_recharge_hint = {
+                "recharge_price": rounded_recharge,
+                "suggested_currency": "CNY",
+            }
 
     return {
+        "schema_version": NEWAPI_SITE_META_SCHEMA_VERSION,
         "system_name": system_name,
         "quota_display_type": qdt,
         "display_in_currency": display_in_currency,
@@ -1006,10 +1176,14 @@ def parse_newapi_status(payload: object) -> dict[str, Any]:
         "usd_exchange_rate": round(usd_exchange_rate, 6),
         "custom_currency_symbol": custom_symbol,
         "custom_currency_exchange_rate": round(custom_rate, 6) if custom_rate is not None else None,
-        "recharge_price": round(recharge_price, 6) if recharge_price is not None else None,
+        "recharge_price": rounded_recharge,
+        "site_recharge_price": rounded_recharge,
         "currency": currency,
         "unit_scale": unit_scale,
         "currency_source": currency_source,
+        "topup_rmb_confirmed": topup_rmb_confirmed,
+        "cny_recharge_hint": cny_recharge_hint,
+        "has_chinese_signal": has_cn_signal,
     }
 
 
@@ -1017,22 +1191,87 @@ def resolve_newapi_currency_params(
     site_meta: dict[str, Any] | None,
     *,
     currency_override: str | None = None,
+    fiat_per_base_unit_override: float | None = None,
 ) -> tuple[str, float, float]:
-    """Return ``(currency, unit_scale, quota_per_unit)`` honoring optional source override."""
+    """Return ``(currency, unit_scale, quota_per_unit)`` honoring 4-level rules and user overrides."""
     meta = site_meta if isinstance(site_meta, dict) else {}
     qpu = _pos_float(meta.get("quota_per_unit"), min_val=0.0, max_val=1e12) or DEFAULT_NEWAPI_QUOTA_PER_UNIT
-    qdt = str(meta.get("quota_display_type") or "").strip().upper()
+    qdt = _normalize_newapi_display_type(meta.get("quota_display_type"))
     fx = _pos_float(meta.get("usd_exchange_rate"), min_val=0.0, max_val=1000.0) or 1.0
+    recharge_price = _pos_float(
+        meta.get("site_recharge_price") if meta.get("site_recharge_price") is not None else meta.get("recharge_price"),
+        min_val=0.0,
+        max_val=100_000.0,
+    )
+    low_rmb_price = (
+        recharge_price is not None
+        and 0.0 < recharge_price < _RMB_RECHARGE_PRICE_UPPER_BOUND
+    )
+    explicit_fiat_rate = _pos_float(fiat_per_base_unit_override, min_val=0.0, max_val=100_000.0)
+    quota_fiat_rate = _pos_float(meta.get("quota_fiat_per_base_unit"), min_val=0.0, max_val=100_000.0)
+    effective_custom_rate = explicit_fiat_rate if explicit_fiat_rate is not None else quota_fiat_rate
 
     override = str(currency_override or "").strip().upper()
     if override == "CNY":
-        scale = round(fx, 6) if qdt == "CNY" else 1.0
-        return "CNY", scale, qpu
+        if explicit_fiat_rate is not None:
+            return "CNY", round(explicit_fiat_rate, 6), qpu
+        if qdt == "CNY":
+            return "CNY", round(fx, 6), qpu
+        if qdt == "CUSTOM":
+            if effective_custom_rate is not None:
+                return "CNY", round(effective_custom_rate, 6), qpu
+            if low_rmb_price and recharge_price is not None:
+                return "CNY", round(recharge_price, 6), qpu
+            return "CNY", 1.0, qpu
+        return "CNY", 1.0, qpu
     if override == "USD":
+        if explicit_fiat_rate is not None:
+            return "USD", round(explicit_fiat_rate, 6), qpu
         return "USD", 1.0, qpu
 
+    # Auto mode — Level 1: explicit CNY
     if qdt == "CNY":
+        if explicit_fiat_rate is not None:
+            return "CNY", round(explicit_fiat_rate, 6), qpu
         return "CNY", round(fx, 6), qpu
+
+    # Level 2: CUSTOM / POINTS / CREDIT
+    if qdt == "CUSTOM":
+        quota_fiat_cur = str(meta.get("quota_fiat_currency") or "").strip().upper()
+        if quota_fiat_cur in ("CNY", "USD"):
+            scale = (
+                effective_custom_rate
+                if effective_custom_rate is not None
+                else (recharge_price if (quota_fiat_cur == "CNY" and recharge_price is not None) else 1.0)
+            )
+            return quota_fiat_cur, round(scale, 6), qpu
+
+        cur_src = str(meta.get("currency_source") or "").strip()
+        topup_rmb = bool(meta.get("topup_rmb_confirmed"))
+        has_non_usd_sym = _is_non_usd_custom_symbol(meta.get("custom_currency_symbol"))
+        has_cn_sig = bool(meta.get("has_chinese_signal")) or _has_chinese_site_signal(
+            system_name=meta.get("system_name"),
+            custom_symbol=meta.get("custom_currency_symbol"),
+            pricing_meta=meta,
+        )
+        if topup_rmb or cur_src in ("topup_custom_cny", "status_custom_cny") or (
+            low_rmb_price and (has_non_usd_sym or has_cn_sig)
+        ):
+            scale = (
+                effective_custom_rate
+                if effective_custom_rate is not None
+                else (recharge_price if recharge_price is not None else 1.0)
+            )
+            return "CNY", round(scale, 6), qpu
+
+        if explicit_fiat_rate is not None:
+            fallback_cur = "CNY" if meta.get("currency") == "CNY" else "USD"
+            return fallback_cur, round(explicit_fiat_rate, 6), qpu
+        return "USD", 1.0, qpu
+
+    # Level 3: USD / TOKENS / absent — never silently reclassify genuine USD relays
+    if explicit_fiat_rate is not None:
+        return "USD", round(explicit_fiat_rate, 6), qpu
     return "USD", 1.0, qpu
 
 

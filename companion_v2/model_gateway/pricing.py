@@ -820,7 +820,17 @@ def _validate_price_sources(raw: object) -> dict[str, dict[str, Any]]:
         return base
     if type(raw) is not dict or len(raw) > 128:
         raise PricingSettingsError("pricing_config_invalid", "价格源配置格式无效")
-    allowed = {"enabled", "kind", "label", "url", "provider_id", "currency_override", "auth_mode", "cluster_id"}
+    allowed = {
+        "enabled",
+        "kind",
+        "label",
+        "url",
+        "provider_id",
+        "currency_override",
+        "fiat_per_base_unit",
+        "auth_mode",
+        "cluster_id",
+    }
     for sid, cfg in raw.items():
         if not _is_valid_source_id(sid, base):
             raise PricingSettingsError("pricing_config_invalid", "价格源标识无效")
@@ -850,6 +860,16 @@ def _validate_price_sources(raw: object) -> dict[str, dict[str, Any]]:
                     raise PricingSettingsError("pricing_config_invalid", f"价格源 {sid} 币种覆盖仅支持 auto、CNY 或 USD")
                 if raw_cur_ovr in ("CNY", "USD"):
                     entry["currency_override"] = raw_cur_ovr
+            raw_fiat_rate = cfg.get("fiat_per_base_unit")
+            if raw_fiat_rate is not None and raw_fiat_rate != "":
+                fiat_rate = _finite_number(
+                    raw_fiat_rate,
+                    minimum=1e-6,
+                    maximum=100_000.0,
+                    code="pricing_config_invalid",
+                    reason=f"价格源 {sid} 的法币折算单价必须在 0 到 100000 之间",
+                )
+                entry["fiat_per_base_unit"] = round(fiat_rate, 6)
             raw_auth = cfg.get("auth_mode")
             if raw_auth is not None and raw_auth != "":
                 if type(raw_auth) is not str or raw_auth not in ("anonymous", "bearer"):
@@ -2308,12 +2328,26 @@ class PricingSettingsStore:
         source_id: str,
         currency_override: str,
         *,
+        fiat_per_base_unit: object = ...,
         revision: str | None = None,
     ) -> dict[str, Any]:
         if type(source_id) is not str or not source_id.strip().startswith("newapi:"):
             raise PricingSettingsError("pricing_source_invalid", "仅支持为 New API 价格源设置结算币种")
         if type(currency_override) is not str or currency_override not in ("auto", "CNY", "USD"):
             raise PricingSettingsError("pricing_source_invalid", "价格源币种覆盖仅支持 auto、CNY 或 USD")
+        update_fiat_rate = fiat_per_base_unit is not ...
+        parsed_fiat_rate: float | None = None
+        if update_fiat_rate and fiat_per_base_unit is not None and fiat_per_base_unit != "":
+            parsed_fiat_rate = round(
+                _finite_number(
+                    fiat_per_base_unit,
+                    minimum=1e-6,
+                    maximum=100_000.0,
+                    code="pricing_source_invalid",
+                    reason="法币折算单价必须是大于 0 且不超过 100000 的有效数字",
+                ),
+                6,
+            )
 
         def _apply(doc: dict[str, Any]) -> None:
             sources = doc["price_sources"]
@@ -2323,6 +2357,11 @@ class PricingSettingsStore:
                 sources[source_id].pop("currency_override", None)
             else:
                 sources[source_id]["currency_override"] = currency_override
+            if update_fiat_rate:
+                if parsed_fiat_rate is None:
+                    sources[source_id].pop("fiat_per_base_unit", None)
+                else:
+                    sources[source_id]["fiat_per_base_unit"] = parsed_fiat_rate
 
         return self.mutate_internal(_apply, revision=revision, bump_revision=True)
 

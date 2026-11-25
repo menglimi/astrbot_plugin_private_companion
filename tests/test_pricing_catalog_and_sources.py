@@ -17,6 +17,7 @@ from astrbot_host.pricing_sources import (
     MAX_CATALOG_RESPONSE_BYTES,
     PricingCatalogService,
     derive_newapi_root,
+    find_newapi_sources_needing_backfill,
     newapi_models_url,
     newapi_pricing_url,
     newapi_status_url,
@@ -25,6 +26,7 @@ from astrbot_host.pricing_sources import (
 )
 from companion_v2.model_gateway.pricing import PricingSettingsStore
 from companion_v2.model_gateway.pricing_catalog import (
+    NEWAPI_SITE_META_SCHEMA_VERSION,
     CatalogPrice,
     PriceCatalogStore,
     SourceStatus,
@@ -36,6 +38,7 @@ from companion_v2.model_gateway.pricing_catalog import (
     find_candidates,
     infer_newapi_cluster_group,
     parse_newapi_status,
+    parse_newapi_topup_info,
     resolve_newapi_currency_params,
     score_candidate_match,
     select_auto_candidate,
@@ -261,7 +264,7 @@ class CatalogAdaptersAndScorerTests(unittest.TestCase):
         self.assertEqual(auto.price_key, "newapi:gw1:gpt-4o")
 
     def test_newapi_status_currency_and_unit_scale_resolution(self):
-        # 1) CNY site with 1:1 display ratio
+        # 1) Level 1: CNY site with 1:1 display ratio
         st_cny_1 = parse_newapi_status({
             "success": True,
             "data": {
@@ -273,9 +276,24 @@ class CatalogAdaptersAndScorerTests(unittest.TestCase):
             },
         })
         self.assertEqual(st_cny_1["system_name"], "示例公益站")
+        self.assertEqual(st_cny_1["schema_version"], NEWAPI_SITE_META_SCHEMA_VERSION)
+        self.assertEqual(st_cny_1["currency_source"], "status_cny")
         self.assertEqual(resolve_newapi_currency_params(st_cny_1), ("CNY", 1.0, 500_000.0))
 
-        # 2) CNY site with FX rate (e.g. 7.3)
+        # 1B) Level 1 protection: CNY with usd_exchange_rate=1 and default price=7.3 MUST NOT multiply by price!
+        st_cny_default_price = parse_newapi_status({
+            "success": True,
+            "data": {
+                "system_name": "默认充值价中文站",
+                "quota_display_type": "CNY",
+                "usd_exchange_rate": 1,
+                "quota_per_unit": 500000,
+                "price": 7.3,
+            },
+        })
+        self.assertEqual(resolve_newapi_currency_params(st_cny_default_price), ("CNY", 1.0, 500_000.0))
+
+        # 2) Level 1: CNY site with FX rate (e.g. 7.3)
         st_cny_fx = parse_newapi_status({
             "success": True,
             "data": {"quota_display_type": "CNY", "usd_exchange_rate": 7.3, "quota_per_unit": 500000},
@@ -284,28 +302,123 @@ class CatalogAdaptersAndScorerTests(unittest.TestCase):
         # Explicit USD override ignores CNY FX scale!
         self.assertEqual(resolve_newapi_currency_params(st_cny_fx, currency_override="USD"), ("USD", 1.0, 500_000.0))
 
-        # 3) USD site keeps scale=1.0 even when usd_exchange_rate is populated
+        # 3) Level 3: genuine USD site keeps scale=1.0 even when usd_exchange_rate & default price are populated
         st_usd = parse_newapi_status({
             "success": True,
-            "data": {"quota_display_type": "USD", "usd_exchange_rate": 7.2, "quota_per_unit": 1000000},
+            "data": {"quota_display_type": "USD", "usd_exchange_rate": 7.2, "price": 7.3, "quota_per_unit": 1000000},
         })
         self.assertEqual(resolve_newapi_currency_params(st_usd), ("USD", 1.0, 1_000_000.0))
+        self.assertIsNone(st_usd["cny_recharge_hint"])
 
-        # 4) CUSTOM virtual token site (custom_currency_exchange_rate=10) MUST NOT multiply by 10!
-        st_custom = parse_newapi_status({
+        # 3B) Level 3: Chinese USD-labeled discount relay stays USD (never mutates silently) and exposes gentle hint
+        st_usd_cn_hint = parse_newapi_status({
             "success": True,
             "data": {
-                "system_name": "Custom Token Relay",
+                "system_name": "中文折扣中转",
+                "quota_display_type": "USD",
+                "usd_exchange_rate": 7.2,
+                "price": 2.0,
+            },
+        })
+        self.assertEqual(resolve_newapi_currency_params(st_usd_cn_hint), ("USD", 1.0, 500_000.0))
+        self.assertEqual(
+            st_usd_cn_hint["cny_recharge_hint"],
+            {"recharge_price": 2.0, "suggested_currency": "CNY"},
+        )
+
+        # 4) Level 2: CUSTOM virtual token site with non-USD symbol + low RMB recharge price -> CNY (NEVER * 10!)
+        st_custom_cookie = parse_newapi_status({
+            "success": True,
+            "data": {
+                "system_name": "Cookie Token Relay",
                 "quota_display_type": "CUSTOM",
                 "custom_currency_symbol": "🍪",
                 "custom_currency_exchange_rate": 10,
-                "usd_exchange_rate": 7.2,
+                "usd_exchange_rate": 10,
                 "price": 1.0,
             },
         })
-        self.assertEqual(st_custom["custom_currency_symbol"], "🍪")
-        self.assertEqual(resolve_newapi_currency_params(st_custom), ("USD", 1.0, 500_000.0))
-        self.assertEqual(resolve_newapi_currency_params(st_custom, currency_override="CNY"), ("CNY", 1.0, 500_000.0))
+        self.assertEqual(st_custom_cookie["custom_currency_symbol"], "🍪")
+        self.assertEqual(st_custom_cookie["site_recharge_price"], 1.0)
+        self.assertEqual(st_custom_cookie["currency_source"], "status_custom_cny")
+        self.assertEqual(resolve_newapi_currency_params(st_custom_cookie), ("CNY", 1.0, 500_000.0))
+        # Explicit user override to USD or custom fiat_per_base_unit (e.g. 0.8 = 80% cost)
+        self.assertEqual(resolve_newapi_currency_params(st_custom_cookie, currency_override="USD"), ("USD", 1.0, 500_000.0))
+        self.assertEqual(
+            resolve_newapi_currency_params(st_custom_cookie, fiat_per_base_unit_override=0.8),
+            ("CNY", 0.8, 500_000.0),
+        )
+
+        # 4B) Level 2: Diamond CUSTOM site (custom_rate=1, price=1) -> CNY, scale=1.0
+        st_custom_diamond = parse_newapi_status({
+            "success": True,
+            "data": {
+                "system_name": "Diamond Relay",
+                "quota_display_type": "CUSTOM",
+                "custom_currency_symbol": "◆",
+                "custom_currency_exchange_rate": 1,
+                "usd_exchange_rate": 10,
+                "price": 1.0,
+            },
+        })
+        self.assertEqual(st_custom_diamond["currency_source"], "status_custom_cny")
+        self.assertEqual(resolve_newapi_currency_params(st_custom_diamond), ("CNY", 1.0, 500_000.0))
+
+        # 4C) Level 2: Authenticated topup_info RMB confirmation overrides even ASCII custom symbol
+        topup_rmb = parse_newapi_topup_info({
+            "success": True,
+            "data": {
+                "enable_online_topup": True,
+                "enable_stripe_topup": False,
+                "enable_creem_topup": False,
+                "pay_methods": [{"type": "alipay", "name": "支付宝"}, {"type": "wxpay", "name": "微信支付"}],
+                "discount": {"100": 0.95, "3000": 0.8},
+                "topup_link": "https://secret-merchant.example/pay?key=leak",
+            },
+        })
+        self.assertTrue(topup_rmb["rmb_topup_confirmed"])
+        self.assertNotIn("topup_link", topup_rmb)
+        st_custom_topup = parse_newapi_status(
+            {
+                "success": True,
+                "data": {
+                    "system_name": "Ascii Credits",
+                    "quota_display_type": "CUSTOM",
+                    "custom_currency_symbol": "CR",
+                    "custom_currency_exchange_rate": 10,
+                    "price": 1.0,
+                },
+            },
+            topup_info=topup_rmb,
+        )
+        self.assertEqual(st_custom_topup["currency_source"], "topup_custom_cny")
+        self.assertEqual(resolve_newapi_currency_params(st_custom_topup), ("CNY", 1.0, 500_000.0))
+
+        # 4D) Level 2 protection: Overseas English CUSTOM site with default price=7.3 or Stripe stays USD!
+        topup_stripe = parse_newapi_topup_info({
+            "success": True,
+            "data": {
+                "enable_online_topup": True,
+                "enable_stripe_topup": True,
+                "pay_methods": [{"type": "alipay", "name": "支付宝"}],
+            },
+        })
+        self.assertFalse(topup_stripe["rmb_topup_confirmed"])
+        st_custom_overseas = parse_newapi_status(
+            {
+                "success": True,
+                "data": {
+                    "system_name": "Global AI Credits",
+                    "quota_display_type": "CUSTOM",
+                    "custom_currency_symbol": "CR",
+                    "custom_currency_exchange_rate": 100,
+                    "price": 7.3,
+                },
+            },
+            topup_info=topup_stripe,
+        )
+        self.assertEqual(st_custom_overseas["currency_source"], "status_custom")
+        self.assertEqual(resolve_newapi_currency_params(st_custom_overseas), ("USD", 1.0, 500_000.0))
 
         # 5) Missing / invalid status safely defaults to USD, scale=1.0, quota_per_unit=500k
         self.assertEqual(resolve_newapi_currency_params(None), ("USD", 1.0, 500_000.0))
@@ -1013,6 +1126,323 @@ class PricingCatalogServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(st_missing["needs_key"])
             self.assertEqual(st_missing["model_count"], 1)
             self.assertIn(f"{p_a['source_id']}:model-a", catalog_store.read_safe()["prices"])
+
+    async def test_level4_legacy_newapi_backfill_and_quota_station_resolver(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_store = PricingSettingsStore(root)
+            catalog_store = PriceCatalogStore(root)
+            fixed_now = datetime(2026, 11, 25, 1, 0, 0, tzinfo=timezone.utc)
+
+            # Seed a legacy pre-v2 New API source (no site_meta, stale USD per-turn price) with recent last_auto_sync_at
+            settings_store.upsert_newapi_source(
+                "newapi:legacy-cny",
+                url="https://cn-relay.example.test/api/pricing",
+                provider_id="legacy-cny",
+                label="LegacyCN",
+                enabled=True,
+                cluster_id="cluster-legacy-cn",
+            )
+            settings_store.record_auto_sync_at("2026-11-25T00:30:00+00:00")
+            catalog_store.save_source_result(
+                SourceStatus(
+                    source_id="newapi:legacy-cny",
+                    kind="newapi",
+                    label="LegacyCN",
+                    url="https://cn-relay.example.test/api/pricing",
+                    enabled=True,
+                    status="ok",
+                    model_count=1,
+                    last_sync_at="2026-11-24T09:30:00+00:00",
+                    last_ok_at="2026-11-24T09:30:00+00:00",
+                    etag='"stale-etag"',
+                    currency="USD",
+                    site_meta=None,
+                ),
+                [
+                    CatalogPrice(
+                        price_key="newapi:legacy-cny:demo-per-call",
+                        source_id="newapi:legacy-cny",
+                        source_label="LegacyCN",
+                        model_id="demo-per-call",
+                        vendor="newapi",
+                        display_name="demo-per-call",
+                        rule={"mode": "per_turn", "currency": "USD", "price": 0.115, "multiplier": 1.0},
+                    )
+                ],
+                updated_at="2026-11-24T09:30:00+00:00",
+            )
+
+            self.assertEqual(
+                find_newapi_sources_needing_backfill(settings_store.read_safe(), catalog_store.read_safe()),
+                ["newapi:legacy-cny"],
+            )
+
+            seen_etags: list[str | None] = []
+
+            def backfill_handler(url, kwargs):
+                headers = kwargs.get("headers") or {}
+                if url.endswith("/api/status"):
+                    return _FakeHttpResponse(
+                        200,
+                        json.dumps({
+                            "success": True,
+                            "data": {
+                                "system_name": "CN Primary Relay",
+                                "quota_display_type": "CNY",
+                                "usd_exchange_rate": 1,
+                                "quota_per_unit": 500000,
+                                "price": 1,
+                            },
+                        }).encode("utf-8"),
+                    )
+                if url.endswith("/api/pricing"):
+                    seen_etags.append(headers.get("If-None-Match"))
+                    return _FakeHttpResponse(
+                        200,
+                        json.dumps({
+                            "success": True,
+                            "group_ratio": {"default": 1.0},
+                            "data": [
+                                {"model_name": "demo-per-call", "quota_type": 1, "model_price": 0.115},
+                            ],
+                        }).encode("utf-8"),
+                        headers={"ETag": '"fresh-v2"'},
+                    )
+                return _FakeHttpResponse(404, b"not found")
+
+            svc = PricingCatalogService(
+                settings_store,
+                catalog_store,
+                now=lambda: fixed_now,
+                session_factory=lambda _t: _FakeHttpSession(backfill_handler),
+                debounce_seconds=0.0,
+            )
+
+            # Even though last_auto_sync_at was only 30 min ago, Level 4 schedules a one-shot backfill!
+            self.assertTrue(svc.maybe_schedule_daily_sync())
+            self.assertIsNotNone(svc._bg_task)
+            await svc._bg_task
+
+            # Old ETag was bypassed, price is now CNY ¥0.115, schema_version == 2, last_auto_sync_at untouched
+            self.assertEqual(seen_etags, [None])
+            cat_after = catalog_store.read_safe()
+            src_after = cat_after["sources"]["newapi:legacy-cny"]
+            self.assertEqual(src_after["currency"], "CNY")
+            self.assertEqual(src_after["site_meta"]["schema_version"], NEWAPI_SITE_META_SCHEMA_VERSION)
+            self.assertEqual(cat_after["prices"]["newapi:legacy-cny:demo-per-call"]["rule"]["currency"], "CNY")
+            self.assertEqual(cat_after["prices"]["newapi:legacy-cny:demo-per-call"]["rule"]["price"], 0.115)
+            self.assertEqual(settings_store.read_safe()["price_sync"]["last_auto_sync_at"], "2026-11-25T00:30:00+00:00")
+            # Second call MUST NOT re-schedule (no infinite loop!)
+            self.assertFalse(svc.maybe_schedule_daily_sync())
+
+            # Quota station resolver: VIP unlock via server_address alias, topup RMB, fallback, zero leak
+            secret_station_token = "sys-tok-super-secret-value-999"
+            secret_uid = "884812"
+            auth_calls: list[dict] = []
+
+            def station_auth_handler(url, kwargs):
+                headers = kwargs.get("headers") or {}
+                auth = headers.get("Authorization", "")
+                if url.endswith("/api/status"):
+                    return _FakeHttpResponse(
+                        200,
+                        json.dumps({
+                            "success": True,
+                            "data": {
+                                "system_name": "Cookie VIP Relay",
+                                "quota_display_type": "CUSTOM",
+                                "custom_currency_symbol": "🍪",
+                                "custom_currency_exchange_rate": 10,
+                                "usd_exchange_rate": 10,
+                                "quota_per_unit": 500000,
+                                "price": 1,
+                            },
+                        }).encode("utf-8"),
+                    )
+                if url.endswith("/api/user/topup/info"):
+                    auth_calls.append({"url": url, "auth": auth, "uid": headers.get("New-Api-User"), "redirects": kwargs.get("allow_redirects")})
+                    if secret_station_token in auth:
+                        return _FakeHttpResponse(
+                            200,
+                            json.dumps({
+                                "success": True,
+                                "data": {
+                                    "enable_online_topup": True,
+                                    "enable_stripe_topup": False,
+                                    "enable_creem_topup": False,
+                                    "pay_methods": [{"type": "alipay", "name": "支付宝"}],
+                                    "discount": {"1000": 0.8},
+                                },
+                            }).encode("utf-8"),
+                        )
+                    return _FakeHttpResponse(401, b"unauthorized")
+                if url.endswith("/api/pricing"):
+                    auth_calls.append({"url": url, "auth": auth, "uid": headers.get("New-Api-User"), "redirects": kwargs.get("allow_redirects")})
+                    if secret_station_token in auth:
+                        return _FakeHttpResponse(
+                            200,
+                            json.dumps({
+                                "success": True,
+                                "group_ratio": {"default": 1.0, "vip": 0.8, "Plus": 0.08},
+                                "data": [
+                                    {
+                                        "model_name": "pro-hydrogen",
+                                        "quota_type": 0,
+                                        "model_ratio": 0.375,
+                                        "completion_ratio": 5,
+                                        "cache_ratio": 0.05,
+                                        "enable_groups": ["default", "vip"],
+                                    }
+                                ],
+                            }).encode("utf-8"),
+                        )
+                    return _FakeHttpResponse(
+                        200,
+                        json.dumps({
+                            "success": True,
+                            "group_ratio": {"default": 1.0, "Plus": 0.1},
+                            "data": [
+                                {
+                                    "model_name": "pro-hydrogen",
+                                    "quota_type": 0,
+                                    "model_ratio": 0.375,
+                                    "completion_ratio": 5,
+                                    "cache_ratio": 0.05,
+                                    "enable_groups": ["default"],
+                                }
+                            ],
+                        }).encode("utf-8"),
+                    )
+                return _FakeHttpResponse(404, b"not found")
+
+            svc._session_factory = lambda _t: _FakeHttpSession(station_auth_handler)
+            svc.set_quota_station_resolver(lambda origin: {
+                "station_id": "st-cookie",
+                "station_name": "Cookie 站点",
+                "adapter_id": "newapi",
+                "base_url": "https://console.cookie.example.test",
+                "server_address": "https://cookie.example.test",
+                "auth_token": secret_station_token,
+                "user_id": secret_uid,
+                "user_id_header": "New-Api-User",
+                "proxy_url": "",
+                "allow_http": False,
+                "group_name": "vip",
+                "observed_group_ratios": {"vip": 0.8},
+                "fiat_currency": "",
+                "fiat_per_base_unit": None,
+                "custom_currency_exchange_rate": 10.0,
+                "custom_currency_symbol": "🍪",
+            } if "cookie.example.test" in origin else None)
+
+            det = await svc.detect_newapi_source(
+                provider_id="cookie/pro-hydrogen",
+                cluster_id="cookie",
+                api_base="https://cookie.example.test/v1",
+                supplier_label="Cookie",
+            )
+            self.assertTrue(det["ok"])
+            self.assertTrue(det["quota_station_linked"])
+            self.assertEqual(det["currency"], "CNY")
+            self.assertEqual(det["currency_source"], "topup_custom_cny")
+            self.assertEqual(det["detected_group"], "vip")
+            self.assertEqual(det["detected_group_ratio"], 0.8)
+            self.assertEqual(det["available_groups"]["Plus"], 0.08)
+            self.assertTrue(all(call["redirects"] is False for call in auth_calls))
+            self.assertTrue(any(call["uid"] == secret_uid for call in auth_calls))
+
+            # Price is ¥0.75 / ¥0.0375 / ¥3.75 (NOT $0.75 and NOT ×10!)
+            cat_cookie = catalog_store.read_safe()
+            cookie_rule = cat_cookie["prices"][f"{det['source_id']}:pro-hydrogen"]["rule"]
+            self.assertEqual(cookie_rule["currency"], "CNY")
+            self.assertEqual(cookie_rule["input"], 0.75)
+            self.assertEqual(cookie_rule["input_cached"], 0.0375)
+            self.assertEqual(cookie_rule["output"], 3.75)
+
+            # Security invariant: NEVER persist station auth_token or user_id on disk!
+            settings_raw = (root / "pricing" / "settings.json").read_text(encoding="utf-8")
+            catalog_raw = (root / "pricing" / "catalog.json").read_text(encoding="utf-8")
+            self.assertNotIn(secret_station_token, settings_raw)
+            self.assertNotIn(secret_station_token, catalog_raw)
+            self.assertNotIn(secret_uid, settings_raw)
+            self.assertNotIn(secret_uid, catalog_raw)
+
+            # User custom fiat_per_base_unit=0.8 (12.5 🍪 = ¥1, 80% cost) scales CNY to ¥0.60 / ¥0.03 / ¥3.00!
+            settings_store.set_source_currency_override(
+                det["source_id"], "auto", fiat_per_base_unit=0.8
+            )
+            res_scaled = await svc.sync_sources(source_ids=[det["source_id"]])
+            self.assertEqual(res_scaled["ok_count"], 1)
+            scaled_rule = catalog_store.read_safe()["prices"][f"{det['source_id']}:pro-hydrogen"]["rule"]
+            self.assertEqual(scaled_rule["currency"], "CNY")
+            self.assertEqual(scaled_rule["input"], 0.6)
+            self.assertEqual(scaled_rule["input_cached"], 0.03)
+            self.assertEqual(scaled_rule["output"], 3.0)
+
+            # Reset fiat_per_base_unit=None restores face value ¥0.75
+            settings_store.set_source_currency_override(
+                det["source_id"], "auto", fiat_per_base_unit=None
+            )
+            await svc.sync_sources(source_ids=[det["source_id"]])
+            restored_rule = catalog_store.read_safe()["prices"][f"{det['source_id']}:pro-hydrogen"]["rule"]
+            self.assertEqual(restored_rule["input"], 0.75)
+
+            # Cross-origin station URL refuses to send token and gracefully falls back to anonymous!
+            cross_auth_seen: list[str] = []
+
+            def cross_origin_handler(url, kwargs):
+                auth = (kwargs.get("headers") or {}).get("Authorization", "")
+                if auth:
+                    cross_auth_seen.append(auth)
+                if url.endswith("/api/status"):
+                    return _FakeHttpResponse(200, json.dumps({"success": True, "data": {"quota_display_type": "USD"}}).encode("utf-8"))
+                return _FakeHttpResponse(200, json.dumps({"success": True, "data": [{"model_name": "m1", "quota_type": 0, "model_ratio": 1.0, "completion_ratio": 2.0}]}).encode("utf-8"))
+
+            svc._session_factory = lambda _t: _FakeHttpSession(cross_origin_handler)
+            svc.set_quota_station_resolver(lambda _origin: {
+                "station_id": "evil-cross",
+                "station_name": "Other Domain",
+                "base_url": "https://other-host.example.test",
+                "server_address": "https://other-host.example.test",
+                "auth_token": secret_station_token,
+                "user_id": secret_uid,
+            })
+            det_cross = await svc.detect_newapi_source(
+                provider_id="victim/m1",
+                cluster_id="victim",
+                api_base="https://victim.example.test/v1",
+            )
+            self.assertTrue(det_cross["ok"])
+            self.assertEqual(cross_auth_seen, [])
+
+            # Expired station token (401) gracefully falls back to anonymous pricing without error!
+            def expired_token_handler(url, kwargs):
+                auth = (kwargs.get("headers") or {}).get("Authorization", "")
+                if url.endswith("/api/status"):
+                    return _FakeHttpResponse(200, json.dumps({"success": True, "data": {"quota_display_type": "CNY", "usd_exchange_rate": 1}}).encode("utf-8"))
+                if url.endswith("/api/user/topup/info"):
+                    return _FakeHttpResponse(401, b"expired")
+                if secret_station_token in auth:
+                    return _FakeHttpResponse(401, b"expired")
+                return _FakeHttpResponse(200, json.dumps({"success": True, "data": [{"model_name": "m2", "quota_type": 0, "model_ratio": 0.5, "completion_ratio": 2.0}]}).encode("utf-8"))
+
+            svc._session_factory = lambda _t: _FakeHttpSession(expired_token_handler)
+            svc.set_quota_station_resolver(lambda _origin: {
+                "station_id": "expired-st",
+                "station_name": "Expired",
+                "base_url": "https://fallback.example.test",
+                "server_address": "https://fallback.example.test",
+                "auth_token": secret_station_token,
+            })
+            det_fb = await svc.detect_newapi_source(
+                provider_id="fb/m2",
+                cluster_id="fb",
+                api_base="https://fallback.example.test/v1",
+            )
+            self.assertTrue(det_fb["ok"])
+            self.assertEqual(det_fb["currency"], "CNY")
+            self.assertEqual(det_fb["models"], 1)
 
 
 if __name__ == "__main__":

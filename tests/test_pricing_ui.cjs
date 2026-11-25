@@ -1236,3 +1236,205 @@ test("pricing-workbench.css mobile responsive contracts: smooth horizontal cand-
   );
   assert.match(css, /@media\s*\(\s*pointer:\s*coarse\s*\)\s*\{[^}]*\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s);
 });
+
+test("CUSTOM New API source renders CNY dual-unit badge, toggles ¥ ↔ 🍪 in place with zero innerHTML rebuild, edits conversion rate, and handles Level 3 USD RMB hint", async () => {
+  const h = modelsHarness();
+  const base = sampleV2Payload();
+  const cookieSrc = {
+    source_id: "newapi:cookie-relay",
+    kind: "newapi",
+    label: "Cookie Relay",
+    url: "https://cookie.example.test/api/pricing",
+    enabled: true,
+    status: "ok",
+    model_count: 138,
+    currency: "CNY",
+    currency_override: "auto",
+    fiat_per_base_unit: null,
+    effective_unit_scale: 1.0,
+    auth_mode: "anonymous",
+    site_meta: {
+      schema_version: 2,
+      system_name: "Cookie Relay",
+      quota_display_type: "CUSTOM",
+      custom_currency_symbol: "🍪",
+      custom_currency_exchange_rate: 10,
+      recharge_price: 1.0,
+      site_recharge_price: 1.0,
+      currency_source: "topup_custom_cny",
+      quota_station_id: "st-cookie",
+      quota_station_name: "Cookie 站点",
+      group_ratio: {default: 1},
+    },
+  };
+  const cookieRule = {mode: "per_token", currency: "CNY", input: 0.75, input_cached: 0.0375, output: 3.75, multiplier: 1};
+  const payload = sampleV2Payload({
+    sources: [...base.sources, cookieSrc],
+    clusters: base.clusters.map(c => c.cluster_id === "relay-src" ? {
+      ...c,
+      newapi_source_id: "newapi:cookie-relay",
+      providers: c.providers.map(pr => pr.id === "relay-claude" ? {
+        ...pr,
+        effective_rule: cookieRule,
+        effective_source: "catalog_auto",
+      } : pr),
+    } : c),
+    auto_selected: {
+      ...base.auto_selected,
+      "relay-claude": {
+        "claude-sonnet-4-5": {
+          price_key: "newapi:cookie-relay:claude-sonnet-4-5",
+          source_id: "newapi:cookie-relay",
+          source_label: "Cookie Relay",
+          model_id: "claude-sonnet-4-5",
+          score: 1.0,
+          is_own_gateway: true,
+          rule: cookieRule,
+        },
+      },
+    },
+  });
+
+  h.sessionStore.setItem("companion-models-pending-tab.v1", "pricing");
+  h.page.mount(h.root);
+  h.requests.find(r => r.route === "model/pricing").resolve(payload);
+  await flush();
+
+  // Header badge shows CNY ¥ (10 🍪 = ¥1), Quota Watch linked pill, dual-unit toggle, and editable rate input
+  assert.match(h.root.innerHTML, /已接 Cookie Relay · CNY ¥（10 🍪 = ¥1）/);
+  assert.match(h.root.innerHTML, /已联动额度看板 · Cookie 站点/);
+  assert.match(h.root.innerHTML, /data-pricing-unit-view="newapi:cookie-relay" data-unit-mode="fiat"/);
+  assert.match(h.root.innerHTML, /data-pricing-unit-view="newapi:cookie-relay" data-unit-mode="native"/);
+  assert.match(h.root.innerHTML, /入 ¥0\.75 \/ 读 ¥0\.0375 \/ 出 ¥3\.75 \/M/);
+  assert.match(h.root.innerHTML, /（入 7\.5 🍪 \/ 读 0\.375 🍪 \/ 出 37\.5 🍪 \/M）/);
+  assert.match(h.root.innerHTML, /data-pricing-custom-rate-input="newapi:cookie-relay" value="10"/);
+
+  // Build live in-place DOM stubs on h.root.querySelectorAll to assert ZERO innerHTML rebuilds on unit toggle!
+  let renderWrites = 0;
+  const origDesc = Object.getOwnPropertyDescriptor(h.root, "innerHTML");
+  let backingHtml = h.root.innerHTML;
+  Object.defineProperty(h.root, "innerHTML", {
+    configurable: true,
+    get() { return backingHtml; },
+    set(v) { renderWrites += 1; backingHtml = String(v); },
+  });
+  const fiatBtnStub = {
+    dataset: {pricingUnitView: "newapi:cookie-relay", unitMode: "fiat"},
+    _classes: new Set(["on"]),
+    _attrs: {"aria-pressed": "true"},
+    classList: {toggle(c, on) { if (on) fiatBtnStub._classes.add(c); else fiatBtnStub._classes.delete(c); }},
+    setAttribute(k, v) { fiatBtnStub._attrs[k] = v; },
+  };
+  const nativeBtnStub = {
+    dataset: {pricingUnitView: "newapi:cookie-relay", unitMode: "native"},
+    _classes: new Set(),
+    _attrs: {"aria-pressed": "false"},
+    classList: {toggle(c, on) { if (on) nativeBtnStub._classes.add(c); else nativeBtnStub._classes.delete(c); }},
+    setAttribute(k, v) { nativeBtnStub._attrs[k] = v; },
+  };
+  const mainSpan = {textContent: "入 ¥0.75 / 读 ¥0.0375 / 出 ¥3.75 /M"};
+  const subSpan = {textContent: "（入 7.5 🍪 / 读 0.375 🍪 / 出 37.5 🍪 /M）"};
+  const dualElStub = {
+    dataset: {
+      pwDualSrc: "newapi:cookie-relay",
+      pwFiat: "入 ¥0.75 / 读 ¥0.0375 / 出 ¥3.75 /M",
+      pwNative: "入 7.5 🍪 / 读 0.375 🍪 / 出 37.5 🍪 /M",
+    },
+    querySelector(sel) {
+      if (sel === ".pw-dual-main") return mainSpan;
+      if (sel === ".pw-dual-sub") return subSpan;
+      return null;
+    },
+  };
+  const origQsa = h.root.querySelectorAll;
+  h.root.querySelectorAll = sel => {
+    if (sel === "[data-pricing-unit-view]") return [fiatBtnStub, nativeBtnStub];
+    if (sel === "[data-pw-dual-src]") return [dualElStub];
+    return origQsa ? origQsa.call(h.root, sel) : [];
+  };
+
+  // Toggle to 🍪 native view: 0 innerHTML rebuilds, instant in-place text & pressed state swap!
+  h.root.click("[data-pricing-unit-view]", {pricingUnitView: "newapi:cookie-relay", unitMode: "native"});
+  assert.equal(renderWrites, 0, "Dual-unit toggle must update in place without rebuilding innerHTML");
+  assert.equal(nativeBtnStub._classes.has("on"), true);
+  assert.equal(nativeBtnStub._attrs["aria-pressed"], "true");
+  assert.equal(fiatBtnStub._classes.has("on"), false);
+  assert.equal(mainSpan.textContent, "入 7.5 🍪 / 读 0.375 🍪 / 出 37.5 🍪 /M");
+  assert.equal(subSpan.textContent, "（约 入 ¥0.75 / 读 ¥0.0375 / 出 ¥3.75 /M）");
+
+  // Restore original innerHTML & querySelectorAll for subsequent rate-edit assertions
+  if (origDesc) Object.defineProperty(h.root, "innerHTML", origDesc);
+  h.root.querySelectorAll = origQsa;
+
+  // Edit conversion rate to 12.5 🍪 = ¥1 (80% cost -> fiat_per_base_unit = 10 / 12.5 = 0.8)
+  h.root.input("[data-pricing-custom-rate-input]", "12.5", {
+    dataset: {pricingCustomRateInput: "newapi:cookie-relay"}, type: "input",
+  });
+  h.root.click("[data-pricing-custom-rate-apply]", {pricingCustomRateApply: "newapi:cookie-relay"});
+  const rateReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(rateReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(rateReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "auto",
+    fiat_per_base_unit: 0.8,
+    sync: true,
+    revision: "rev-v2-init",
+  });
+  rateReq.resolve({
+    ...payload,
+    revision: "rev-rate-08",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s, fiat_per_base_unit: 0.8, effective_unit_scale: 0.8,
+    } : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /12\.5 🍪 = ¥1/);
+  assert.match(h.root.innerHTML, /data-pricing-custom-rate-reset="newapi:cookie-relay"/);
+
+  // Reset manual conversion rate posts fiat_per_base_unit: null
+  h.root.click("[data-pricing-custom-rate-reset]", {pricingCustomRateReset: "newapi:cookie-relay"});
+  const resetRateReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(resetRateReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(resetRateReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "auto",
+    fiat_per_base_unit: null,
+    sync: true,
+    revision: "rev-rate-08",
+  });
+  resetRateReq.resolve({
+    ...payload,
+    revision: "rev-rate-auto",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s,
+      currency: "USD",
+      currency_override: "auto",
+      fiat_per_base_unit: null,
+      effective_unit_scale: 1.0,
+      site_meta: {
+        schema_version: 2,
+        system_name: "中文折扣站",
+        quota_display_type: "USD",
+        recharge_price: 2.0,
+        site_recharge_price: 2.0,
+        cny_recharge_hint: {recharge_price: 2.0, suggested_currency: "CNY"},
+      },
+    } : s),
+  });
+  await flush();
+
+  // Level 3 gentle RMB recharge hint renders 1-click button and posts CNY + fiat_per_base_unit=2
+  assert.match(h.root.innerHTML, /检测到该站在线充值价为 ¥2 \/ 基准单位/);
+  assert.match(h.root.innerHTML, /data-pricing-apply-cny-hint="newapi:cookie-relay"/);
+  h.root.click("[data-pricing-apply-cny-hint]", {pricingApplyCnyHint: "newapi:cookie-relay", rechargePrice: "2"});
+  const hintReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(hintReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(hintReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "CNY",
+    fiat_per_base_unit: 2,
+    sync: true,
+    revision: "rev-rate-auto",
+  });
+  h.page.unmount();
+});

@@ -1211,13 +1211,15 @@ class ModelWebAPI:
             data = _document_optional(
                 await request.body(),
                 {"source_id", "currency_override"},
-                optional=("sync", "revision"),
+                optional=("sync", "revision", "fiat_per_base_unit"),
                 limit=4096,
             )
             source_id = data["source_id"]
             currency_override = data["currency_override"]
             do_sync = data.get("sync", True)
             revision = data.get("revision")
+            has_fiat_rate = "fiat_per_base_unit" in data
+            raw_fiat_rate = data.get("fiat_per_base_unit") if has_fiat_rate else ...
             if (
                 type(source_id) is not str or not source_id.strip()
                 or type(currency_override) is not str
@@ -1227,6 +1229,9 @@ class ModelWebAPI:
                 raise ValueError("invalid source currency override")
             if revision is not None and type(revision) is not str:
                 raise ValueError("invalid revision")
+            if has_fiat_rate and raw_fiat_rate is not None:
+                if isinstance(raw_fiat_rate, bool) or type(raw_fiat_rate) not in (int, float):
+                    raise ValueError("invalid fiat_per_base_unit")
             sid = source_id.strip()
             session, operator, manager, _status = await self._authorize_pricing()
             runtime = getattr(getattr(session, "application", None), "runtime", None) or self.controller.runtime
@@ -1234,6 +1239,7 @@ class ModelWebAPI:
                 self._pricing_store(runtime).set_source_currency_override,
                 sid,
                 currency_override,
+                fiat_per_base_unit=raw_fiat_rate,
                 revision=revision,
             )
             sync_result = None

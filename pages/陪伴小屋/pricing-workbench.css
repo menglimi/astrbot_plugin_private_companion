@@ -903,6 +903,38 @@
   color: var(--t-warn-ink);
 }
 
+.pw-newapi-hint-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.pw-dual-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.pw-dual-rate-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.pw-dual-rate-editor .pw-unit-input input {
+  width: 72px;
+}
+
+.pw-dual-sub {
+  margin-left: var(--sp-1);
+  color: var(--t-text-faint);
+  font-size: var(--fs-micro);
+  font-weight: 400;
+}
+
 .pw-cards {
   display: grid;
   gap: var(--sp-2);
@@ -1639,6 +1671,8 @@
   }
   .pw-inline-field,
   .pw-newapi-chip-group,
+  .pw-dual-toggle,
+  .pw-dual-rate-editor,
   .pw-cluster-actions,
   .pw-mult-editor {
     width: 100%;
@@ -1654,11 +1688,13 @@
     max-width: none;
   }
   .pw-mult-editor .pw-unit-input,
+  .pw-dual-rate-editor .pw-unit-input,
   .pw-fixed-price-row .pw-unit-input {
     flex: 1 1 auto;
     width: 100%;
   }
   .pw-mult-editor .pw-unit-input input,
+  .pw-dual-rate-editor .pw-unit-input input,
   .pw-fixed-price-row .pw-unit-input input {
     flex: 1 1 auto;
     width: 100%;
@@ -1739,6 +1775,8 @@
   }
   .pw-inline-field,
   .pw-newapi-chip-group,
+  .pw-dual-toggle,
+  .pw-dual-rate-editor,
   .pw-cluster-actions,
   .pw-mult-editor {
     width: 100%;
@@ -1754,11 +1792,13 @@
     max-width: none;
   }
   .pw-mult-editor .pw-unit-input,
+  .pw-dual-rate-editor .pw-unit-input,
   .pw-fixed-price-row .pw-unit-input {
     flex: 1 1 auto;
     width: 100%;
   }
   .pw-mult-editor .pw-unit-input input,
+  .pw-dual-rate-editor .pw-unit-input input,
   .pw-fixed-price-row .pw-unit-input input {
     flex: 1 1 auto;
     width: 100%;
