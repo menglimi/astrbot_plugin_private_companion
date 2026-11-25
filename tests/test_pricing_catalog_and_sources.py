@@ -420,6 +420,24 @@ class CatalogAdaptersAndScorerTests(unittest.TestCase):
         self.assertEqual(st_custom_overseas["currency_source"], "status_custom")
         self.assertEqual(resolve_newapi_currency_params(st_custom_overseas), ("USD", 1.0, 500_000.0))
 
+        # 4E) Defense-in-depth: quota station with fiat_currency="USD" carrying NewAPI default RMB price=7.3
+        # MUST NOT inflate USD model prices by 7.3x!
+        st_usd_from_quota_default_price = {
+            **st_custom_overseas,
+            "quota_fiat_currency": "USD",
+            "quota_fiat_per_base_unit": 7.3,
+        }
+        self.assertEqual(resolve_newapi_currency_params(st_usd_from_quota_default_price), ("USD", 1.0, 500_000.0))
+        # Distinct explicit USD per-base rate (not equal to RMB recharge_price) is still honored
+        self.assertEqual(
+            resolve_newapi_currency_params({**st_custom_overseas, "quota_fiat_currency": "USD", "quota_fiat_per_base_unit": 0.5}),
+            ("USD", 0.5, 500_000.0),
+        )
+        self.assertEqual(
+            resolve_newapi_currency_params(st_usd_from_quota_default_price, fiat_per_base_unit_override=0.5),
+            ("USD", 0.5, 500_000.0),
+        )
+
         # 5) Missing / invalid status safely defaults to USD, scale=1.0, quota_per_unit=500k
         self.assertEqual(resolve_newapi_currency_params(None), ("USD", 1.0, 500_000.0))
         self.assertEqual(resolve_newapi_currency_params({}), ("USD", 1.0, 500_000.0))
@@ -1387,6 +1405,122 @@ class PricingCatalogServiceTests(unittest.IsolatedAsyncioTestCase):
             await svc.sync_sources(source_ids=[det["source_id"]])
             restored_rule = catalog_store.read_safe()["prices"][f"{det['source_id']}:pro-hydrogen"]["rule"]
             self.assertEqual(restored_rule["input"], 0.75)
+
+            # Switching currency_override without explicit fiat_per_base_unit auto-clears stale cross-currency rate
+            settings_store.set_source_currency_override(
+                det["source_id"], "CNY", fiat_per_base_unit=2.0
+            )
+            self.assertEqual(
+                settings_store.read_safe()["price_sources"][det["source_id"]].get("fiat_per_base_unit"),
+                2.0,
+            )
+            settings_store.set_source_currency_override(det["source_id"], "USD")
+            self.assertNotIn(
+                "fiat_per_base_unit",
+                settings_store.read_safe()["price_sources"][det["source_id"]],
+            )
+            await svc.sync_sources(source_ids=[det["source_id"]])
+            usd_clean_rule = catalog_store.read_safe()["prices"][f"{det['source_id']}:pro-hydrogen"]["rule"]
+            self.assertEqual(usd_clean_rule["currency"], "USD")
+            self.assertEqual(usd_clean_rule["input"], 0.75)
+            # Restore override back to auto before unbinding test
+            settings_store.set_source_currency_override(det["source_id"], "auto")
+
+            # Unbinding / disabling a previously linked Quota Watch station MUST bypass ETag
+            # and clear all stale quota_*, topup_*, observed_group_ratios, and quota_watch detected_groups
+            # while preserving non-quota /v1/models detected_groups!
+            cat_pre_unbind = catalog_store.read_safe()
+            pre_src = cat_pre_unbind["sources"][det["source_id"]]
+            pre_meta = dict(pre_src["site_meta"])
+            pre_meta.setdefault("detected_groups", {})["other-cluster"] = {
+                "group": "gemini",
+                "ratio": 0.245,
+                "confidence": "exact",
+                "model_count": 6,
+            }
+            catalog_store.save_source_result(
+                SourceStatus(
+                    source_id=det["source_id"],
+                    kind="newapi",
+                    label=pre_src["label"],
+                    url=pre_src["url"],
+                    enabled=True,
+                    status="ok",
+                    model_count=1,
+                    last_sync_at=pre_src["last_sync_at"],
+                    last_ok_at=pre_src["last_ok_at"],
+                    etag='"linked-etag"',
+                    currency="CNY",
+                    site_meta=pre_meta,
+                ),
+                None,
+                updated_at=pre_src["last_sync_at"],
+                preserve_existing_prices=True,
+            )
+
+            unbind_etags: list[str | None] = []
+
+            def unbind_handler(url, kwargs):
+                headers = kwargs.get("headers") or {}
+                if url.endswith("/api/status"):
+                    return _FakeHttpResponse(
+                        200,
+                        json.dumps({
+                            "success": True,
+                            "data": {
+                                "system_name": "Cookie VIP Relay",
+                                "quota_display_type": "CUSTOM",
+                                "custom_currency_symbol": "🍪",
+                                "custom_currency_exchange_rate": 10,
+                                "usd_exchange_rate": 10,
+                                "quota_per_unit": 500000,
+                                "price": 1,
+                            },
+                        }).encode("utf-8"),
+                    )
+                if url.endswith("/api/pricing"):
+                    unbind_etags.append(headers.get("If-None-Match"))
+                    return _FakeHttpResponse(
+                        200,
+                        json.dumps({
+                            "success": True,
+                            "group_ratio": {"default": 1.0, "Plus": 0.1},
+                            "data": [
+                                {
+                                    "model_name": "pro-hydrogen",
+                                    "quota_type": 0,
+                                    "model_ratio": 0.375,
+                                    "completion_ratio": 5,
+                                    "cache_ratio": 0.05,
+                                    "enable_groups": ["default"],
+                                }
+                            ],
+                        }).encode("utf-8"),
+                    )
+                return _FakeHttpResponse(404, b"not found")
+
+            svc._session_factory = lambda _t: _FakeHttpSession(unbind_handler)
+            svc.set_quota_station_resolver(lambda _origin: None)
+            res_unbind = await svc.sync_sources(source_ids=[det["source_id"]])
+            self.assertEqual(res_unbind["ok_count"], 1)
+            self.assertEqual(unbind_etags, [None])
+            meta_after_unbind = catalog_store.read_safe()["sources"][det["source_id"]]["site_meta"]
+            for stale_key in (
+                "quota_station_id",
+                "quota_station_name",
+                "quota_user_group",
+                "quota_fiat_currency",
+                "quota_fiat_per_base_unit",
+                "observed_group_ratios",
+                "topup_pay_methods",
+                "topup_discount_tiers",
+            ):
+                self.assertNotIn(stale_key, meta_after_unbind)
+            self.assertFalse(meta_after_unbind.get("topup_rmb_confirmed"))
+            self.assertEqual(meta_after_unbind.get("currency_source"), "status_custom_cny")
+            self.assertNotIn("__station__", meta_after_unbind.get("detected_groups") or {})
+            self.assertNotIn("cookie", meta_after_unbind.get("detected_groups") or {})
+            self.assertIn("other-cluster", meta_after_unbind.get("detected_groups") or {})
 
             # Cross-origin station URL refuses to send token and gracefully falls back to anonymous!
             cross_auth_seen: list[str] = []

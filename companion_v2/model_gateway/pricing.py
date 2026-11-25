@@ -2353,6 +2353,7 @@ class PricingSettingsStore:
             sources = doc["price_sources"]
             if source_id not in sources:
                 raise PricingSettingsError("pricing_source_not_found", f"未找到价格源: {source_id}")
+            prev_override = sources[source_id].get("currency_override") or "auto"
             if currency_override == "auto":
                 sources[source_id].pop("currency_override", None)
             else:
@@ -2362,6 +2363,9 @@ class PricingSettingsStore:
                     sources[source_id].pop("fiat_per_base_unit", None)
                 else:
                     sources[source_id]["fiat_per_base_unit"] = parsed_fiat_rate
+            elif currency_override != prev_override:
+                # Clear stale cross-currency conversion override whenever currency_override changes.
+                sources[source_id].pop("fiat_per_base_unit", None)
 
         return self.mutate_internal(_apply, revision=revision, bump_revision=True)
 

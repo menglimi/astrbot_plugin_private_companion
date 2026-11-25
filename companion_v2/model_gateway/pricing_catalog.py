@@ -1239,11 +1239,22 @@ def resolve_newapi_currency_params(
     if qdt == "CUSTOM":
         quota_fiat_cur = str(meta.get("quota_fiat_currency") or "").strip().upper()
         if quota_fiat_cur in ("CNY", "USD"):
-            scale = (
-                effective_custom_rate
-                if effective_custom_rate is not None
-                else (recharge_price if (quota_fiat_cur == "CNY" and recharge_price is not None) else 1.0)
-            )
+            if quota_fiat_cur == "USD":
+                if explicit_fiat_rate is not None:
+                    scale = explicit_fiat_rate
+                elif quota_fiat_rate is not None and not (
+                    recharge_price is not None
+                    and math.isclose(quota_fiat_rate, recharge_price, rel_tol=1e-6, abs_tol=1e-6)
+                ):
+                    scale = quota_fiat_rate
+                else:
+                    scale = 1.0
+            else:
+                scale = (
+                    effective_custom_rate
+                    if effective_custom_rate is not None
+                    else (recharge_price if recharge_price is not None else 1.0)
+                )
             return quota_fiat_cur, round(scale, 6), qpu
 
         cur_src = str(meta.get("currency_source") or "").strip()

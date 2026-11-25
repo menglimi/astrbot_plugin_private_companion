@@ -1422,6 +1422,7 @@ window.CompanionPricingWorkbench = (() => {
     if (!source) return;
     const nextOverride = currencyOverride === "CNY" || currencyOverride === "USD" ? currencyOverride : "auto";
     const hasFiatRate = Object.hasOwn(opts, "fiatPerBaseUnit");
+    const rateOnly = Boolean(opts.rateOnly);
     const reqBody = {
       source_id: sourceId,
       currency_override: nextOverride,
@@ -1433,7 +1434,7 @@ window.CompanionPricingWorkbench = (() => {
     }
     const t = ticket();
     p.updatingSourceCurrency = sourceId;
-    p.syncNotice = hasFiatRate
+    p.syncNotice = rateOnly
       ? `正在更新 ${source.label} 的折算率并重新同步…`
       : `正在更新 ${source.label} 的结算币种并重新同步…`;
     render();
@@ -1444,7 +1445,7 @@ window.CompanionPricingWorkbench = (() => {
       syncDataPreserveDraft(p, result);
       const labelText = nextOverride === "CNY" ? "人民币 CNY (¥)" : nextOverride === "USD" ? "美元 USD ($)" : "自动识别";
       p.bad = false;
-      if (hasFiatRate) {
+      if (rateOnly) {
         p.syncNotice = result?.sync?.error_count
           ? `${source.label} 折算率已更新，但重新同步出现异常。`
           : opts.fiatPerBaseUnit == null
@@ -1459,7 +1460,7 @@ window.CompanionPricingWorkbench = (() => {
       if (!isCurrent(t)) return;
       if ((err?.code || err?.message) === "pricing_config_conflict") p.stale = true;
       p.bad = true;
-      p.syncNotice = fail(err, hasFiatRate ? "更新价格源折算率失败。" : "更新价格源币种失败。");
+      p.syncNotice = fail(err, rateOnly ? "更新价格源折算率失败。" : "更新价格源币种失败。");
     } finally {
       p.updatingSourceCurrency = "";
       if (isCurrent(t)) render();
@@ -2935,7 +2936,8 @@ window.CompanionPricingWorkbench = (() => {
 
     const srcCurId = t.dataset?.pricingSourceCurrency;
     if (srcCurId) {
-      void updateSourceCurrency(ctx, srcCurId, t.value);
+      if (p.sourceRateDraft) delete p.sourceRateDraft[srcCurId];
+      void updateSourceCurrency(ctx, srcCurId, t.value, {fiatPerBaseUnit: null});
       return;
     }
 
@@ -3332,7 +3334,7 @@ window.CompanionPricingWorkbench = (() => {
         const curOvr = src.currency_override === "CNY" || src.currency_override === "USD"
           ? src.currency_override
           : "auto";
-        void updateSourceCurrency(ctx, sid, curOvr, {fiatPerBaseUnit: fiatPerBase});
+        void updateSourceCurrency(ctx, sid, curOvr, {fiatPerBaseUnit: fiatPerBase, rateOnly: true});
       }
       return;
     }
@@ -3345,7 +3347,7 @@ window.CompanionPricingWorkbench = (() => {
         const curOvr = src.currency_override === "CNY" || src.currency_override === "USD"
           ? src.currency_override
           : "auto";
-        void updateSourceCurrency(ctx, sid, curOvr, {fiatPerBaseUnit: null});
+        void updateSourceCurrency(ctx, sid, curOvr, {fiatPerBaseUnit: null, rateOnly: true});
       }
       return;
     }

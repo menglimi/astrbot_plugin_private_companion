@@ -1172,6 +1172,7 @@ test("New API gateway bar: enriched probe notice, recommended group ratio chip, 
   assert.deepEqual(JSON.parse(JSON.stringify(curReq.values)), {
     source_id: "newapi:relay-main",
     currency_override: "CNY",
+    fiat_per_base_unit: null,
     sync: true,
     revision: "rev-grp",
   });
@@ -1436,5 +1437,61 @@ test("CUSTOM New API source renders CNY dual-unit badge, toggles ¥ ↔ 🍪 in 
     sync: true,
     revision: "rev-rate-auto",
   });
+  hintReq.resolve({
+    ...payload,
+    revision: "rev-hint-cny",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s,
+      currency: "CNY",
+      currency_override: "CNY",
+      fiat_per_base_unit: 2.0,
+      effective_unit_scale: 2.0,
+      site_meta: {
+        schema_version: 2,
+        system_name: "中文折扣站",
+        quota_display_type: "USD",
+        recharge_price: 2.0,
+        site_recharge_price: 2.0,
+        cny_recharge_hint: {recharge_price: 2.0, suggested_currency: "CNY"},
+      },
+    } : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /结算币种已切换为 人民币 CNY \(¥\) 并完成重新同步/);
+
+  // Switching currency dropdown back to auto explicitly clears fiat_per_base_unit=null so Level 3 USD is never stuck at 2x
+  h.root.input("[data-pricing-source-currency]", "auto", {
+    dataset: {pricingSourceCurrency: "newapi:cookie-relay"}, type: "change",
+  });
+  const revertReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(revertReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(revertReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "auto",
+    fiat_per_base_unit: null,
+    sync: true,
+    revision: "rev-hint-cny",
+  });
+  revertReq.resolve({
+    ...payload,
+    revision: "rev-hint-auto",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s,
+      currency: "USD",
+      currency_override: "auto",
+      fiat_per_base_unit: null,
+      effective_unit_scale: 1.0,
+      site_meta: {
+        schema_version: 2,
+        system_name: "中文折扣站",
+        quota_display_type: "USD",
+        recharge_price: 2.0,
+        site_recharge_price: 2.0,
+        cny_recharge_hint: {recharge_price: 2.0, suggested_currency: "CNY"},
+      },
+    } : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /结算币种已切换为 自动识别 并完成重新同步/);
   h.page.unmount();
 });

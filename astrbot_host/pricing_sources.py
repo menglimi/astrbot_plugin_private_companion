@@ -226,6 +226,57 @@ def _positive_finite(value: object, *, max_val: float = 100_000.0) -> float | No
     return num
 
 
+_QUOTA_SITE_META_KEYS: tuple[str, ...] = (
+    "quota_station_id",
+    "quota_station_name",
+    "quota_user_group",
+    "quota_fiat_currency",
+    "quota_fiat_per_base_unit",
+    "observed_group_ratios",
+)
+
+
+def _prune_quota_detected_groups(merged_site_meta: dict[str, Any]) -> None:
+    raw_detected = merged_site_meta.get("detected_groups")
+    if not isinstance(raw_detected, dict):
+        return
+    cleaned = {
+        k: v
+        for k, v in raw_detected.items()
+        if k != "__station__"
+        and not (isinstance(v, dict) and v.get("source") == "quota_watch")
+    }
+    if cleaned:
+        merged_site_meta["detected_groups"] = cleaned
+    else:
+        merged_site_meta.pop("detected_groups", None)
+
+
+def _apply_topup_enrichment(
+    merged_site_meta: dict[str, Any],
+    topup_info: dict[str, Any] | None,
+    *,
+    has_fresh_status: bool = False,
+) -> None:
+    """Apply or cleanly clear authenticated topup metadata so unbound stations leave zero residue."""
+    if topup_info is not None:
+        merged_site_meta["topup_rmb_confirmed"] = bool(topup_info.get("rmb_topup_confirmed"))
+        if topup_info.get("pay_method_types"):
+            merged_site_meta["topup_pay_methods"] = list(topup_info["pay_method_types"])
+        else:
+            merged_site_meta.pop("topup_pay_methods", None)
+        if topup_info.get("discount_tiers"):
+            merged_site_meta["topup_discount_tiers"] = dict(topup_info["discount_tiers"])
+        else:
+            merged_site_meta.pop("topup_discount_tiers", None)
+    else:
+        merged_site_meta["topup_rmb_confirmed"] = False
+        merged_site_meta.pop("topup_pay_methods", None)
+        merged_site_meta.pop("topup_discount_tiers", None)
+        if not has_fresh_status and merged_site_meta.get("currency_source") == "topup_custom_cny":
+            merged_site_meta["currency_source"] = "status_custom"
+
+
 def _apply_station_enrichment(
     merged_site_meta: dict[str, Any],
     pricing_meta: dict[str, Any],
@@ -233,19 +284,28 @@ def _apply_station_enrichment(
     *,
     cluster_id: str | None = None,
 ) -> None:
-    """Absorb strictly non-secret metadata & group hints from a linked Quota Watch station."""
+    """Absorb strictly non-secret metadata & group hints from a linked Quota Watch station, or clear on unbind."""
+    _prune_quota_detected_groups(merged_site_meta)
     if not isinstance(station, dict):
+        for key in _QUOTA_SITE_META_KEYS:
+            merged_site_meta.pop(key, None)
         return
     station_id = str(station.get("station_id") or "").strip()[:64]
     station_name = str(station.get("station_name") or "").strip()[:64]
     if station_id:
         merged_site_meta["quota_station_id"] = station_id
+    else:
+        merged_site_meta.pop("quota_station_id", None)
     if station_name:
         merged_site_meta["quota_station_name"] = station_name
+    else:
+        merged_site_meta.pop("quota_station_name", None)
 
     group_name = str(station.get("group_name") or "").strip()[:64]
     if group_name:
         merged_site_meta["quota_user_group"] = group_name
+    else:
+        merged_site_meta.pop("quota_user_group", None)
 
     fiat_cur = str(station.get("fiat_currency") or "").strip().upper()
     if fiat_cur in ("CNY", "USD"):
@@ -287,6 +347,8 @@ def _apply_station_enrichment(
                     clean_observed[gkey] = round(ratio, 6)
     if clean_observed:
         merged_site_meta["observed_group_ratios"] = clean_observed
+    else:
+        merged_site_meta.pop("observed_group_ratios", None)
 
     detected_map = dict(merged_site_meta.get("detected_groups") or {})
     target_cluster = str(cluster_id or "").strip()
@@ -863,6 +925,7 @@ class PricingCatalogService:
                         or fiat_override != prev_fiat_override
                         or needs_schema_upgrade
                         or quota_station is not None
+                        or bool(prev_site_meta.get("quota_station_id"))
                     )
                 )
                 else prev_etag
@@ -1120,12 +1183,11 @@ class PricingCatalogService:
                     **prev_site_meta,
                     **(status_meta or {}),
                 }
-                if topup_info is not None:
-                    merged_site_meta["topup_rmb_confirmed"] = bool(topup_info.get("rmb_topup_confirmed"))
-                    if topup_info.get("pay_method_types"):
-                        merged_site_meta["topup_pay_methods"] = list(topup_info["pay_method_types"])
-                    if topup_info.get("discount_tiers"):
-                        merged_site_meta["topup_discount_tiers"] = dict(topup_info["discount_tiers"])
+                _apply_topup_enrichment(
+                    merged_site_meta,
+                    topup_info,
+                    has_fresh_status=(raw_status is not None),
+                )
                 if pricing_meta["group_ratio"] or not prev_site_meta.get("group_ratio"):
                     merged_site_meta["group_ratio"] = pricing_meta["group_ratio"]
                 if pricing_meta["usable_group"] or not prev_site_meta.get("usable_group"):
@@ -1489,12 +1551,11 @@ class PricingCatalogService:
                 **prev_site_meta,
                 **(status_meta or {}),
             }
-            if topup_info is not None:
-                merged_site_meta["topup_rmb_confirmed"] = bool(topup_info.get("rmb_topup_confirmed"))
-                if topup_info.get("pay_method_types"):
-                    merged_site_meta["topup_pay_methods"] = list(topup_info["pay_method_types"])
-                if topup_info.get("discount_tiers"):
-                    merged_site_meta["topup_discount_tiers"] = dict(topup_info["discount_tiers"])
+            _apply_topup_enrichment(
+                merged_site_meta,
+                topup_info,
+                has_fresh_status=(raw_status is not None),
+            )
             if pricing_meta["group_ratio"] or not prev_site_meta.get("group_ratio"):
                 merged_site_meta["group_ratio"] = pricing_meta["group_ratio"]
             if pricing_meta["usable_group"] or not prev_site_meta.get("usable_group"):
