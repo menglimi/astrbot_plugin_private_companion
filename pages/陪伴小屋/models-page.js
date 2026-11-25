@@ -2873,6 +2873,10 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     }
     updateFade();
   }
+  function handleModelTabsResize() {
+    if (!root?.isConnected) return;
+    syncModelTabsOverflow();
+  }
   /* ---------- functional subtabs (2-level flattened IA) ---------- */
   function subtabBar(s) { const tabs = [
       ["cfg", "任务路由", "cfg", "统一查看主备链路，点击任意任务在右侧抽屉精调"],
@@ -3989,6 +3993,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     deferChangeRender = false; deferredRenderPending = false;
     if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerdown", handlePointerDown); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") { document.removeEventListener("keydown", handleKeydown); document.removeEventListener("pointerup", handlePointerUp); document.removeEventListener("pointercancel", handlePointerUp); }
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") { window.removeEventListener("resize", handleModelTabsResize); }
     if (state) { quotaWorkbench()?.unmount?.(state.quota); state.loading = false; state.busy = false; state.globalBusy = false; }
     root = null; state = null; path = taskPath = key = null; onTabChange = null; }
   function mount(element, options = {}) { unmount(); root = element; if (!root) return; onTabChange = typeof options.onTabChange === "function" ? options.onTabChange : null; const product = window.CompanionProduct;
@@ -4049,6 +4054,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     state.sub = options.sub === "pol" ? "pol" : "cfg";
     root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerdown", handlePointerDown); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset);
     if (typeof document !== "undefined" && typeof document.addEventListener === "function") { document.addEventListener("keydown", handleKeydown); document.addEventListener("pointerup", handlePointerUp); document.addEventListener("pointercancel", handlePointerUp); }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") { window.addEventListener("resize", handleModelTabsResize, { passive: true }); }
     render();
     loadTabData(state, state.tab); }
   /* Only the mounted scope can block navigation. Retained drafts belonging to

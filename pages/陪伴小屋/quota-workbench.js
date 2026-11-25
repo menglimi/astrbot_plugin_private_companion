@@ -1883,7 +1883,7 @@ window.CompanionQuotaWorkbench = (() => {
     const run = () => {
       const container = getLiveDom(ctx)?.heroSlot || ctx.root();
       const target = container?.querySelector?.('[data-qw-aw-field="primary_station_id"]') || container?.querySelector?.(".qw-awareness-panel");
-      target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      target?.scrollIntoView?.({ behavior: isReducedMotion() ? "auto" : "smooth", block: "center" });
       if (target && typeof target.focus === "function") target.focus();
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
@@ -1934,33 +1934,56 @@ window.CompanionQuotaWorkbench = (() => {
     if (!q.data) return;
     const st = (q.data.stations || []).find(item => item.id === stationId);
     if (!st) return;
+    q.unitSavingIds ||= new Set();
+    q.unitPendingModes ||= new Map();
     const prevMode = st.display_unit_mode === "fiat" ? "fiat" : "native";
     const nextMode = prevMode === "fiat" ? "native" : "fiat";
     st.display_unit_mode = nextMode;
     patchSingleCardDom(ctx, stationId);
+    q.unitPendingModes.set(stationId, nextMode);
+    if (q.unitSavingIds.has(stationId)) return;
+
     const ticket = ctx.ticket();
+    let committedMode = prevMode;
+    q.unitSavingIds.add(stationId);
     try {
-      const payload = {
-        ...st,
-        auth_token: "",
-        proxy_url: "",
-        display_unit_mode: nextMode,
-      };
-      delete payload.has_token;
-      delete payload.has_proxy;
-      const data = await ctx.api("POST", `${ctx.path}/quota/stations`, {
-        edit_token: q.data.edit_token,
-        station: payload,
-        probe_after_save: false,
-      }, 15000);
-      if (!ctx.isCurrent(ticket)) return;
-      if (data?.edit_token) q.data.edit_token = data.edit_token;
-      if (Array.isArray(data?.stations)) q.data.stations = data.stations;
-      if (data?.summary) q.data.summary = data.summary;
+      while (q.unitPendingModes.has(stationId)) {
+        const desiredMode = q.unitPendingModes.get(stationId);
+        q.unitPendingModes.delete(stationId);
+        const curSt = (q.data?.stations || []).find(item => item.id === stationId);
+        if (!curSt) break;
+        const payload = {
+          ...curSt,
+          auth_token: "",
+          proxy_url: "",
+          display_unit_mode: desiredMode,
+        };
+        delete payload.has_token;
+        delete payload.has_proxy;
+        const data = await ctx.api("POST", `${ctx.path}/quota/stations`, {
+          edit_token: q.data.edit_token,
+          station: payload,
+          probe_after_save: false,
+        }, 15000);
+        if (!ctx.isCurrent(ticket)) return;
+        committedMode = desiredMode;
+        if (data?.edit_token) q.data.edit_token = data.edit_token;
+        if (Array.isArray(data?.stations)) q.data.stations = data.stations;
+        if (data?.summary) q.data.summary = data.summary;
+        if (q.unitPendingModes.has(stationId)) {
+          const queuedMode = q.unitPendingModes.get(stationId);
+          const refreshedSt = (q.data?.stations || []).find(item => item.id === stationId);
+          if (refreshedSt) refreshedSt.display_unit_mode = queuedMode;
+        }
+      }
     } catch {
+      q.unitPendingModes.delete(stationId);
       if (!ctx.isCurrent(ticket)) return;
-      st.display_unit_mode = prevMode;
+      const curSt = (q.data?.stations || []).find(item => item.id === stationId);
+      if (curSt) curSt.display_unit_mode = committedMode;
       patchSingleCardDom(ctx, stationId);
+    } finally {
+      q.unitSavingIds.delete(stationId);
     }
   }
 

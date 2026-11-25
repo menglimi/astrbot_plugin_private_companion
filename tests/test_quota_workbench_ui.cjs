@@ -236,7 +236,9 @@ function quotaHarness() {
   const requests = [];
   const timers = [];
   const focused = [];
+  const scrollCalls = [];
   const docHandlers = {};
+  const winHandlers = new Map();
   const localStore = makeStorage();
   const sessionStore = makeStorage();
   const document = {
@@ -249,6 +251,13 @@ function quotaHarness() {
   };
   const window = {
     document,
+    addEventListener(type, fn) {
+      if (!winHandlers.has(type)) winHandlers.set(type, new Set());
+      winHandlers.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      winHandlers.get(type)?.delete(fn);
+    },
     CompanionProduct: {
       hosted: () => true,
       role: () => ({ model_api: "/astrbot_plugin_private_companion/model" }),
@@ -304,7 +313,13 @@ function quotaHarness() {
       if (m && root.innerHTML.includes(`data-qw-field="${m[1]}"`)) {
         return {
           focus() { focused.push(m[1]); },
-          scrollIntoView() {},
+          scrollIntoView(opts) { scrollCalls.push({ selector, opts }); },
+        };
+      }
+      if (selector === '[data-qw-aw-field="primary_station_id"]' && root.innerHTML.includes('data-qw-aw-field="primary_station_id"')) {
+        return {
+          focus() { focused.push("primary_station_id"); },
+          scrollIntoView(opts) { scrollCalls.push({ selector, opts }); },
         };
       }
       return null;
@@ -337,6 +352,7 @@ function quotaHarness() {
   return {
     page: window.CompanionModelsPage,
     wb: window.CompanionQuotaWorkbench,
+    document, winHandlers, scrollCalls,
     root, requests, timers, focused, localStore, sessionStore,
   };
 }
@@ -1429,4 +1445,90 @@ test("Primary station KPI, 1-click set primary, focusQuota(awareness), and 5+2 m
   }
 
   h.page.unmount();
+});
+
+test("Polish: openAwareness honors reduced motion, resize listener cleans up on unmount, and toggleUnitMode serializes rapid clicks", async () => {
+  const h = quotaHarness();
+  h.document.documentElement.dataset.motion = "off";
+  const payload = sampleQuotaPayload({
+    edit_token: "tok-u1",
+    stations: [
+      {
+        id: "st-cookie",
+        name: "饼干站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://cookie.example.com",
+        enabled: true,
+        participate_in_awareness: true,
+        has_token: true,
+        has_proxy: false,
+        fiat_currency: "CNY",
+        fiat_per_base_unit: 0.1,
+        display_unit_mode: "native",
+      },
+    ],
+    snapshots: {
+      "st-cookie": {
+        station_id: "st-cookie",
+        ok: true,
+        remaining: 100,
+        display_type: "CREDIT",
+        symbol: "🍪",
+        fiat_currency: "CNY",
+        fiat_symbol: "¥",
+        fiat_per_base_unit: 0.1,
+        fiat_remaining: 10.0,
+        checked_at: "2026-11-25T08:00:00+08:00",
+      },
+    },
+    awareness: { mode: "primary", primary_station_id: "st-cookie", target_currency: "CNY" },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  assert.equal(h.winHandlers.get("resize")?.size, 1, "mount should register one window resize listener");
+
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  // 1) openAwareness respects reduced motion -> scrollIntoView({ behavior: "auto" })
+  h.page.focusQuota("awareness");
+  await flush();
+  assert.equal(h.scrollCalls.length, 1);
+  assert.equal(h.scrollCalls[0].opts.behavior, "auto");
+
+  // 2) Rapid double-click on toggleUnitMode: native -> fiat -> native -> ONLY 1 in-flight POST at a time,
+  //    then serializes 2nd POST with updated edit_token ("tok-u2") instead of racing with stale "tok-u1"!
+  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  await flush();
+  const posts1 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations");
+  assert.equal(posts1.length, 1, "Rapid clicks must not fire concurrent POSTs");
+  assert.equal(posts1[0].values.edit_token, "tok-u1");
+  assert.equal(posts1[0].values.station.display_unit_mode, "fiat");
+
+  // Resolve 1st POST with refreshed edit_token -> queued 2nd toggle ("native") fires automatically with "tok-u2"
+  posts1[0].resolve({
+    edit_token: "tok-u2",
+    stations: [{ ...payload.stations[0], display_unit_mode: "fiat" }],
+    summary: payload.summary,
+  });
+  await flush();
+  const posts2 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations");
+  assert.equal(posts2.length, 2, "Queued second toggle should flush after first POST finishes");
+  assert.equal(posts2[1].values.edit_token, "tok-u2");
+  assert.equal(posts2[1].values.station.display_unit_mode, "native");
+  posts2[1].resolve({
+    edit_token: "tok-u3",
+    stations: [{ ...payload.stations[0], display_unit_mode: "native" }],
+    summary: payload.summary,
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>100<\/span>/);
+
+  // 3) Unmount removes window resize listener cleanly
+  h.page.unmount();
+  assert.equal(h.winHandlers.get("resize")?.size || 0, 0, "unmount must remove window resize listener");
 });
