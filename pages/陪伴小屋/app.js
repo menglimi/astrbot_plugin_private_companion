@@ -1151,6 +1151,7 @@ function panelScope(){
     ||section==='expression'&&['expression-text','expression-voice','expression-platform'].includes(expressionModule)
     ||window.CompanionShell?.view==='state')return {kind:'window'};
   if(section==='learning'&&learningTab==='chain')return {kind:'window',privateOnly:true,requiresWindow:true};
+  if(section==='learning'&&learningTab==='expression')return {kind:'window'};
   return null;
 }
 function roleContextMarkup(){
