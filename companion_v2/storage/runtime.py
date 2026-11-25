@@ -15,7 +15,8 @@ from threading import Condition, Lock, RLock, get_ident, local
 import time
 from typing import Iterator
 
-from .sqlite_tuning import SqliteTuningProfile, tuning_profile
+from .sqlite_tuning import SqliteTuningProfile, active_sqlite_tuning_profile, tuning_profile
+from .tuning_config import active_write_batch_window_ms
 from .write_batcher import WriteBehindBatcher
 
 from .schema import (
@@ -479,7 +480,7 @@ class StorageRuntime:
         self._database_path = self._data_root / self.DATABASE_FILENAME
         self._connection: sqlite3.Connection | None = None
         self._lock = RLock()
-        self._tuning_profile: SqliteTuningProfile = tuning_profile()
+        self._tuning_profile: SqliteTuningProfile = active_sqlite_tuning_profile()
         self._reader_pool_size: int = self._tuning_profile.reader_pool_size
         self._read_snapshot_diagnostics = local()
         self._read_connections = local()
@@ -487,11 +488,14 @@ class StorageRuntime:
         # Shared pool of read-only WAL connections scaled to host RAM and CPU.
         self._idle_readers: list[sqlite3.Connection] = []
         self._all_readers: list[sqlite3.Connection] = []
+        self._reader_generation = 0
+        self._reader_generations: dict[int, int] = {}
         self._creating_readers = 0
         self._active_readers = 0
         self._reader_closing = False
         self._meta_cache_lock = Lock()
         self._table_exists_cache: dict[str, tuple[bool, int]] = {}
+        self._unhashed_context_cache: dict[tuple[str, str], tuple[int, int, int, bool]] = {}
         self._initialized_schemas: set[str] = set()
         self._write_epoch = 0
         self._table_write_epochs: dict[str, int] = {}
@@ -512,7 +516,10 @@ class StorageRuntime:
         self._transaction_rollback_epoch = 0
         self._configuration_only = False
         self._configuration_store: StorageRuntime | None = None
-        self._write_batcher = WriteBehindBatcher(self)
+        self._write_batcher = WriteBehindBatcher(
+            self,
+            window_seconds=active_write_batch_window_ms() / 1000.0,
+        )
 
     @property
     def tuning_profile(self) -> SqliteTuningProfile:
@@ -521,6 +528,58 @@ class StorageRuntime:
     @property
     def reader_pool_size(self) -> int:
         return self._reader_pool_size
+
+    def apply_tuning_profile(
+        self,
+        profile: SqliteTuningProfile,
+        *,
+        write_batch_window_ms: int | None = None,
+    ) -> dict[str, int | str]:
+        """Hot-apply SQLite PRAGMAs, reader-pool capacity, and batcher window without downtime.
+
+        Idle readers from previous generations are closed immediately; active
+        readers finish their current read uninterrupted and are recycled upon
+        release.
+        """
+        retired_readers: list[sqlite3.Connection] = []
+        new_pool_size = max(1, int(profile.reader_pool_size))
+        with self._lock:
+            self._tuning_profile = profile
+            self._reader_pool_size = new_pool_size
+            connection = self._connection
+            if connection is not None and not connection.in_transaction:
+                connection.execute(f"PRAGMA synchronous = {profile.effective_synchronous()}")
+                connection.execute(f"PRAGMA journal_size_limit = {int(profile.journal_size_limit)}")
+                connection.execute(f"PRAGMA cache_size = -{int(profile.cache_size_kib)}")
+                connection.execute(f"PRAGMA mmap_size = {int(profile.mmap_size)}")
+            with self._reader_condition:
+                self._reader_generation += 1
+                generation = self._reader_generation
+                if self._idle_readers:
+                    idle_set = set(self._idle_readers)
+                    retired_readers.extend(self._idle_readers)
+                    self._idle_readers.clear()
+                    self._all_readers = [conn for conn in self._all_readers if conn not in idle_set]
+                    for conn in retired_readers:
+                        self._reader_generations.pop(id(conn), None)
+                self._reader_condition.notify_all()
+            config_store = self._configuration_store
+        for reader in retired_readers:
+            try:
+                reader.close()
+            except sqlite3.Error:
+                pass
+        if write_batch_window_ms is not None:
+            self._write_batcher.configure(window_ms=write_batch_window_ms)
+        if config_store is not None:
+            config_store.apply_tuning_profile(profile, write_batch_window_ms=write_batch_window_ms)
+        return {
+            "tier": profile.tier,
+            "reader_pool_size": new_pool_size,
+            "reader_generation": generation,
+            "retired_idle_readers": len(retired_readers),
+            "synchronous": profile.effective_synchronous(),
+        }
 
     def _install_write_tracker(self, connection: sqlite3.Connection) -> None:
         """Track per-table in-process writes on the writer connection with ~1-2us overhead."""
@@ -876,6 +935,7 @@ class StorageRuntime:
                 readers = tuple(self._all_readers)
                 self._all_readers.clear()
                 self._idle_readers.clear()
+                self._reader_generations.clear()
             for reader in readers:
                 reader.close()
             if self._connection is not None:
@@ -886,6 +946,7 @@ class StorageRuntime:
                 self._connection = None
             with self._meta_cache_lock:
                 self._table_exists_cache.clear()
+                self._unhashed_context_cache.clear()
                 self._initialized_schemas.clear()
             configuration_store = self._configuration_store
             self._configuration_store = None
@@ -912,7 +973,7 @@ class StorageRuntime:
         mode_used = "PASSIVE"
         try:
             checkpoint = sqlite3.connect(str(self._database_path), timeout=0.2, isolation_level=None)
-            checkpoint.execute("PRAGMA synchronous = NORMAL")
+            checkpoint.execute(f"PRAGMA synchronous = {self._tuning_profile.effective_synchronous()}")
             checkpoint.execute("PRAGMA busy_timeout = 200")
             checkpoint.execute(f"PRAGMA journal_size_limit = {int(self._tuning_profile.journal_size_limit)}")
             row = checkpoint.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
@@ -1071,6 +1132,8 @@ class StorageRuntime:
 
         connection: sqlite3.Connection | None = None
         need_create = False
+        create_generation = 0
+        create_profile: SqliteTuningProfile | None = None
         with self._reader_condition:
             while True:
                 if self._reader_closing or self._connection is None:
@@ -1083,10 +1146,13 @@ class StorageRuntime:
                     self._creating_readers += 1
                     self._active_readers += 1
                     need_create = True
+                    create_generation = self._reader_generation
+                    create_profile = self._tuning_profile
                     break
                 self._reader_condition.wait()
 
         if need_create:
+            assert create_profile is not None
             created: sqlite3.Connection | None = None
             try:
                 created = sqlite3.connect(
@@ -1094,14 +1160,14 @@ class StorageRuntime:
                     check_same_thread=False)
                 created.row_factory = sqlite3.Row
                 created.execute("PRAGMA foreign_keys = ON")
-                created.execute("PRAGMA synchronous = NORMAL")
+                created.execute(f"PRAGMA synchronous = {create_profile.effective_synchronous()}")
                 created.execute("PRAGMA busy_timeout = 5000")
                 created.execute("PRAGMA wal_autocheckpoint = 0")
                 created.execute("PRAGMA query_only = ON")
                 created.execute(
-                    f"PRAGMA cache_size = -{int(self._tuning_profile.effective_reader_cache_size_kib())}"
+                    f"PRAGMA cache_size = -{int(create_profile.effective_reader_cache_size_kib())}"
                 )
-                created.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
+                created.execute(f"PRAGMA mmap_size = {int(create_profile.mmap_size)}")
                 created.execute("PRAGMA temp_store = MEMORY")
             except BaseException as error:
                 if created is not None:
@@ -1119,6 +1185,7 @@ class StorageRuntime:
             connection = created
             with self._reader_condition:
                 self._all_readers.append(connection)
+                self._reader_generations[id(connection)] = create_generation
                 self._creating_readers -= 1
                 self._reader_condition.notify_all()
 
@@ -1135,10 +1202,28 @@ class StorageRuntime:
                     connection.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
+            retire = False
             with self._reader_condition:
-                self._idle_readers.append(connection)
+                conn_gen = self._reader_generations.get(id(connection), -1)
+                if (
+                    conn_gen != self._reader_generation
+                    or len(self._all_readers) > self._reader_pool_size
+                ):
+                    retire = True
+                    try:
+                        self._all_readers.remove(connection)
+                    except ValueError:
+                        pass
+                    self._reader_generations.pop(id(connection), None)
+                else:
+                    self._idle_readers.append(connection)
                 self._active_readers -= 1
                 self._reader_condition.notify_all()
+            if retire:
+                try:
+                    connection.close()
+                except sqlite3.Error:
+                    pass
 
     @contextmanager
     def _snapshot_on(self, connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
@@ -1218,7 +1303,7 @@ class StorageRuntime:
                 connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = NORMAL")
+            connection.execute(f"PRAGMA synchronous = {self._tuning_profile.effective_synchronous()}")
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
             connection.execute(f"PRAGMA journal_size_limit = {int(self._tuning_profile.journal_size_limit)}")

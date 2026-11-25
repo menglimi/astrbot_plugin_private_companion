@@ -50,7 +50,11 @@ from .astrbot_host.core_reply import (
     restore_core_reply_event,
     restore_core_reply_prepared,
 )
-from .astrbot_host.core_reply_tools import inject_core_reply_tools, inject_core_turn_notes
+from .astrbot_host.core_reply_tools import (
+    inject_core_reply_tools,
+    inject_core_reply_tools_async,
+    inject_core_turn_notes,
+)
 from .astrbot_host.core_reply_preparation import measure_core_preparation
 from .astrbot_host.core_reply_presence import agent_presence_begin, agent_presence_done, observe_native_reply_presence
 from .astrbot_host.core_reply_decision import prepare_core_reply_decision
@@ -1937,7 +1941,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         if application is not None:
             try:
                 with measure_core_preparation(event, "tool_injection", now=self.staging.now):
-                    inject_core_reply_tools(event, req, application=application)
+                    await inject_core_reply_tools_async(event, req, application=application)
             except Exception as error:
                 logger.warning("[CompanionV2] V2 工具暂不可用，保留 AstrBot 核心工具 error_type=%s",
                                type(error).__name__)

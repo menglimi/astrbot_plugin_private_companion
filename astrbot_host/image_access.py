@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime
 import logging
+from threading import get_ident
 
 from companion_v2.capabilities.models import CapabilityAuthorizationState, CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
@@ -22,6 +24,55 @@ IMAGE_CAPABILITIES = ("image.generate", "image.edit", "image.mask_edit")
 GROUP_IMAGE_CAPABILITIES = ("image.generate", "image.edit")
 
 
+def _needs_image_access_write(runtime: StorageRuntime, context: TaskContext, observed_at: datetime) -> bool:
+    """Fast read-only pre-check to avoid taking the SQLite writer lock on steady-state turns."""
+    repository = CapabilityRepository(runtime)
+    role, scope, subject = context.role_binding.role, context.scope, context.actor.subject
+    capabilities = IMAGE_CAPABILITIES
+    if scope.kind is ScopeKind.GROUP:
+        from companion_v2.conversation.media.output_settings import effective_settings, image_request_denial
+        denial = image_request_denial(runtime, context, effective_settings(runtime, context))
+        if denial is not None:
+            logger.debug("[CompanionV2] 群聊生图策略未放行 reason=%s subject=%s group=%s conversation=%s",
+                         denial[0], subject.subject_id, scope.native_scope_id, scope.conversation_id)
+            return False
+        capabilities = GROUP_IMAGE_CAPABILITIES
+    projected = repository.projection(extension_id=IMAGE_EXTENSION, role=role, scope=scope)
+    if not projected.is_success:
+        logger.info("[CompanionV2] 生图能力投影不可用 code=%s role=%s kind=%s",
+                    projected.failure.code, role.subject_id, scope.kind.value)
+        return False
+    projection = projected.unwrap()
+    if projection.installation.desired_state is not CapabilityDesiredState.ACTIVE:
+        return False
+    if projection.role_selection is None:
+        return True
+    if not projection.role_selection.enabled:
+        logger.info("[CompanionV2] 生图能力未对角色启用 role=%s bot=%s",
+                    role.subject_id, scope.bot_id)
+        return False
+    for capability in capabilities:
+        consent = repository.consent(extension_id=IMAGE_EXTENSION, capability_id=capability,
+                                     subject=subject, scope=scope)
+        if not consent.is_success and consent.failure.code == "capability_consent_missing":
+            return True
+    if any(repository.authorize(extension_id=IMAGE_EXTENSION, capability_id=capability,
+                                subject=subject, scope=scope).is_success for capability in capabilities):
+        identities = PersistentIdentityDirectory(runtime)
+        grants = tuple(grant for grant in identities.grants_for_subject(subject)
+                       if grant.capability == "extension.tool.invoke"
+                       and replace(grant.scope, conversation_id=scope.conversation_id) == scope)
+        if any(grant.scope == scope for grant in grants):
+            return False
+        latest = max(grants, key=lambda grant: (grant.revoked_at or grant.valid_from,
+                                                grant.revision, grant.grant_id), default=None)
+        if latest is not None and (latest.state is not GrantState.ACTIVE or latest.valid_from > observed_at
+                                   or latest.expires_at is not None and latest.expires_at <= observed_at):
+            return False
+        return True
+    return False
+
+
 def ensure_image_access(runtime: StorageRuntime, context: TaskContext, *, observed_at: datetime) -> None:
     """补齐原生生图能力在当前已验证会话中的独立授权记录。
 
@@ -32,10 +83,25 @@ def ensure_image_access(runtime: StorageRuntime, context: TaskContext, *, observ
     if context.scope.kind not in (ScopeKind.PRIVATE, ScopeKind.GROUP):
         return
     try:
+        # When called outside an active write transaction, probe read-only first
+        # so already-provisioned turns never contend for SQLite's writer lock.
+        if getattr(runtime, "_write_owner_thread_id", None) != get_ident():
+            read_snapshot = getattr(runtime, "read_snapshot", None)
+            if callable(read_snapshot):
+                with read_snapshot():
+                    if not _needs_image_access_write(runtime, context, observed_at):
+                        return
         with runtime.transaction():
             _ensure_image_access(runtime, context, observed_at)
     except Exception as error:
         logger.warning("[CompanionV2] 生图能力授权补齐失败 error_type=%s", type(error).__name__)
+
+
+async def ensure_image_access_async(runtime: StorageRuntime, context: TaskContext, *, observed_at: datetime) -> None:
+    """Non-blocking variant of :func:`ensure_image_access` for async reply hooks."""
+    if context.scope.kind not in (ScopeKind.PRIVATE, ScopeKind.GROUP):
+        return
+    await asyncio.to_thread(ensure_image_access, runtime, context, observed_at=observed_at)
 
 
 def _ensure_image_access(runtime, context, observed_at):

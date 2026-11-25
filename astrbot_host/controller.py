@@ -424,6 +424,11 @@ class AstrBotStagingController:
         runtime = StorageRuntime.open(data_root=root / "runtime", installation_id=configuration.scope.installation_id)
         runtime.backup_directory = backup_directory
         try:
+            from .tuning_api import apply_host_performance_tuning
+            apply_host_performance_tuning(self, runtime=runtime)
+        except Exception as error:
+            logger.warning("[CompanionV2] 性能调优参数应用跳过 error_type=%s", type(error).__name__)
+        try:
             from companion_v2.expression.configuration import migrate_legacy_policy_values
             from companion_v2.expression.reaction_configuration import migrate_window_values
             from companion_v2.role_work.growth.configuration import migrate_legacy_skill_values
@@ -438,6 +443,8 @@ class AstrBotStagingController:
                 now=self.now,
             )
         except BaseException:
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             runtime.close()
             raise
         self.runtime = runtime
@@ -1235,4 +1242,6 @@ class AstrBotStagingController:
                 await self.native_extensions.aclose()
                 self.native_extensions = None
             self._terminated = True
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             self.unregister_routes()

@@ -1,0 +1,696 @@
+/* 性能调优子页（资料与维护 -> 性能调优）
+   全部使用 tokens.css 语义令牌，完整兼容六套主题、密度、圆角、字号与减弱动效。 */
+
+.tuning-dashboard{
+  display:grid;
+  gap:var(--sp-4);
+  min-width:0;
+  color:var(--t-text);
+  container-type:inline-size;
+  container-name:tuning-dashboard;
+}
+
+.tuning-loading{
+  padding:var(--sp-5);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:var(--t-surface);
+  color:var(--t-text-soft);
+  font-size:var(--fs-body);
+}
+
+/* 顶部硬件体检与生效状态条 */
+.tuning-hero{
+  display:grid;
+  gap:var(--sp-3);
+  min-width:0;
+  padding:var(--sp-4);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:linear-gradient(135deg,var(--t-surface) 0%,var(--t-surface-soft) 100%);
+  box-shadow:var(--t-shadow);
+}
+.tuning-hero-top{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:var(--sp-3);
+  flex-wrap:wrap;
+}
+.tuning-hero-title{
+  display:grid;
+  gap:var(--sp-1);
+  min-width:0;
+  flex:1 1 320px;
+}
+.tuning-hero-heading{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:var(--sp-2);
+}
+.tuning-hero-heading h4{
+  margin:0;
+  color:var(--t-text-strong);
+  font-size:var(--fs-title);
+  font-weight:650;
+}
+.tuning-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:var(--sp-1);
+  padding:2px var(--sp-2);
+  border-radius:var(--r-pill);
+  background:var(--t-accent-quiet);
+  color:var(--t-accent-ink);
+  font-size:var(--fs-micro);
+  font-weight:600;
+  white-space:nowrap;
+}
+.tuning-badge.is-ok{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.tuning-badge.is-warn{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.tuning-badge.is-subtle{background:var(--t-surface-sunken);color:var(--t-text-soft);font-weight:500}
+.tuning-hero-reason{
+  margin:0;
+  color:var(--t-text-soft);
+  font-size:var(--fs-tiny);
+  line-height:1.6;
+}
+.tuning-hw-pills{
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--sp-2);
+  align-items:center;
+}
+.tuning-hw-pill{
+  display:inline-flex;
+  align-items:baseline;
+  gap:var(--sp-1);
+  padding:var(--sp-1) var(--sp-3);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-sm);
+  background:var(--t-surface-raised);
+  font-size:var(--fs-micro);
+  color:var(--t-text-soft);
+}
+.tuning-hw-pill strong{
+  color:var(--t-text-strong);
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+  font-weight:650;
+}
+
+/* 防爆内存安全限幅提示条 */
+.tuning-clamp-banner{
+  display:grid;
+  gap:var(--sp-2);
+  padding:var(--sp-3);
+  border:1px solid color-mix(in srgb,var(--t-warn) 36%,var(--t-line));
+  border-radius:var(--r-sm);
+  background:var(--t-warn-quiet);
+  color:var(--t-warn-ink);
+  font-size:var(--fs-tiny);
+}
+.tuning-clamp-banner strong{font-weight:650}
+.tuning-clamp-list{
+  margin:0;
+  padding-left:var(--sp-4);
+  display:grid;
+  gap:var(--sp-1);
+  line-height:1.55;
+}
+
+/* 五档性能预设卡片墙 */
+.tuning-section{
+  display:grid;
+  gap:var(--sp-3);
+  min-width:0;
+}
+.tuning-section-head{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:var(--sp-3);
+  flex-wrap:wrap;
+}
+.tuning-section-head h4{
+  margin:0;
+  color:var(--t-text-strong);
+  font-size:var(--fs-lead);
+  font-weight:650;
+}
+.tuning-section-head p{
+  margin:0;
+  color:var(--t-text-soft);
+  font-size:var(--fs-micro);
+}
+
+.tuning-profile-grid{
+  display:grid;
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:var(--sp-3);
+  min-width:0;
+}
+@container tuning-dashboard (max-width:1060px){
+  .tuning-profile-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@container tuning-dashboard (max-width:700px){
+  .tuning-profile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container tuning-dashboard (max-width:460px){
+  .tuning-profile-grid{grid-template-columns:minmax(0,1fr)}
+}
+
+.tuning-profile-card{
+  appearance:none;
+  position:relative;
+  display:grid;
+  grid-template-rows:auto auto 1fr auto;
+  align-content:start;
+  gap:var(--sp-2);
+  min-width:0;
+  padding:var(--sp-3);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:var(--t-surface);
+  color:var(--t-text);
+  text-align:left;
+  font:inherit;
+  cursor:pointer;
+  transition:border-color var(--dur-fast),background-color var(--dur-fast),box-shadow var(--dur-fast),transform var(--dur-fast);
+}
+.tuning-profile-card:hover{
+  border-color:var(--t-line-firm);
+  background:var(--t-surface-raised);
+  box-shadow:var(--t-shadow);
+  transform:translateY(-1px);
+}
+.tuning-profile-card:focus-visible{
+  outline:2px solid var(--t-focus);
+  outline-offset:2px;
+}
+.tuning-profile-card.is-selected{
+  border-color:var(--t-accent);
+  background:color-mix(in srgb,var(--t-accent-quiet) 58%,var(--t-surface));
+  box-shadow:0 0 0 1px var(--t-accent),var(--t-shadow);
+}
+.tuning-profile-card:disabled{
+  opacity:.6;
+  cursor:not-allowed;
+  transform:none;
+}
+.tuning-profile-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-2);
+  flex-wrap:wrap;
+}
+.tuning-profile-name{
+  color:var(--t-text-strong);
+  font-size:var(--fs-body);
+  font-weight:650;
+}
+.tuning-profile-summary{
+  margin:0;
+  color:var(--t-text-soft);
+  font-size:var(--fs-micro);
+  line-height:1.55;
+}
+.tuning-profile-fit{
+  margin:0;
+  color:var(--t-text-faint);
+  font-size:var(--fs-micro);
+  line-height:1.45;
+}
+.tuning-profile-metrics{
+  display:grid;
+  gap:var(--sp-1);
+  padding-top:var(--sp-2);
+  border-top:1px solid var(--t-line);
+  font-size:var(--fs-micro);
+  color:var(--t-text-soft);
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+}
+.tuning-profile-metrics span{
+  display:block;
+  overflow-wrap:anywhere;
+}
+
+/* 切换档位时存在微调的选择条 */
+.tuning-switch-prompt{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-3);
+  flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);
+  border:1px solid color-mix(in srgb,var(--t-accent) 45%,var(--t-line));
+  border-radius:var(--r-sm);
+  background:var(--t-accent-quiet);
+  color:var(--t-accent-ink);
+  font-size:var(--fs-tiny);
+}
+.tuning-switch-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--sp-2);
+}
+
+/* 高级微调平滑折叠区 */
+.tuning-advanced-panel{
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:var(--t-surface);
+  overflow:hidden;
+}
+.tuning-advanced-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-4);
+  background:var(--t-surface-soft);
+  flex-wrap:wrap;
+}
+.tuning-advanced-toggle{
+  appearance:none;
+  display:inline-flex;
+  align-items:center;
+  gap:var(--sp-2);
+  padding:var(--sp-1) 0;
+  border:0;
+  background:transparent;
+  color:var(--t-text-strong);
+  font:inherit;
+  font-size:var(--fs-body);
+  font-weight:650;
+  cursor:pointer;
+}
+.tuning-advanced-toggle:focus-visible{
+  outline:2px solid var(--t-focus);
+  outline-offset:3px;
+  border-radius:var(--r-xs);
+}
+.tuning-chevron{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:22px;
+  height:22px;
+  border-radius:var(--r-xs);
+  background:var(--t-accent-quiet);
+  color:var(--t-accent-ink);
+  font-size:var(--fs-micro);
+  transition:transform var(--dur-fast);
+}
+.tuning-advanced-panel.is-open .tuning-chevron{
+  transform:rotate(90deg);
+}
+.tuning-advanced-meta{
+  display:flex;
+  align-items:center;
+  gap:var(--sp-2);
+  flex-wrap:wrap;
+  color:var(--t-text-soft);
+  font-size:var(--fs-micro);
+}
+
+/* 无卡顿 0fr -> 1fr 平滑折叠 */
+.tuning-advanced-collapse{
+  display:grid;
+  grid-template-rows:0fr;
+  opacity:0;
+  transition:grid-template-rows var(--dur) ease,opacity var(--dur-fast) ease;
+}
+.tuning-advanced-panel.is-open .tuning-advanced-collapse{
+  grid-template-rows:1fr;
+  opacity:1;
+}
+.tuning-advanced-inner{
+  overflow:hidden;
+  min-height:0;
+}
+.tuning-advanced-body{
+  display:grid;
+  gap:var(--sp-4);
+  padding:var(--sp-4);
+  border-top:1px solid var(--t-line);
+}
+.tuning-inline-slot{
+  display:contents;
+}
+
+.tuning-group{
+  display:grid;
+  gap:var(--sp-3);
+  min-width:0;
+}
+.tuning-group-head{
+  display:grid;
+  gap:var(--sp-1);
+}
+.tuning-group-head h5{
+  margin:0;
+  color:var(--t-text-strong);
+  font-size:var(--fs-body);
+  font-weight:650;
+}
+.tuning-group-head p{
+  margin:0;
+  color:var(--t-text-faint);
+  font-size:var(--fs-micro);
+}
+
+.tuning-field-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:var(--sp-3);
+}
+@container tuning-dashboard (max-width:780px){
+  .tuning-field-grid{grid-template-columns:minmax(0,1fr)}
+}
+
+.tuning-field{
+  display:grid;
+  gap:var(--sp-2);
+  align-content:start;
+  min-width:0;
+  padding:var(--sp-3);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-sm);
+  background:var(--t-surface-soft);
+  transition:border-color var(--dur-fast),background-color var(--dur-fast);
+}
+.tuning-field.is-overridden{
+  border-color:color-mix(in srgb,var(--t-accent) 55%,var(--t-line));
+  border-left:3px solid var(--t-accent);
+  background:var(--t-surface);
+}
+.tuning-field.is-clamped{
+  border-color:color-mix(in srgb,var(--t-warn) 55%,var(--t-line));
+}
+.tuning-field-top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-2);
+  flex-wrap:wrap;
+}
+.tuning-field-label-wrap{
+  display:flex;
+  align-items:center;
+  gap:var(--sp-2);
+  flex-wrap:wrap;
+  min-width:0;
+}
+.tuning-override-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:var(--t-accent);
+  flex:none;
+}
+.tuning-field-label{
+  color:var(--t-text-strong);
+  font-size:var(--fs-tiny);
+  font-weight:650;
+}
+.tuning-field-tags{
+  display:flex;
+  align-items:center;
+  gap:var(--sp-1);
+  flex-wrap:wrap;
+}
+.tuning-apply-tag{
+  padding:1px var(--sp-2);
+  border-radius:var(--r-pill);
+  background:var(--t-surface-sunken);
+  color:var(--t-text-faint);
+  font-size:var(--fs-micro);
+}
+.tuning-reset-link{
+  appearance:none;
+  padding:1px var(--sp-2);
+  border:1px solid var(--t-line-firm);
+  border-radius:var(--r-pill);
+  background:var(--t-surface);
+  color:var(--t-accent-ink);
+  font:inherit;
+  font-size:var(--fs-micro);
+  cursor:pointer;
+  transition:background-color var(--dur-fast),border-color var(--dur-fast);
+}
+.tuning-reset-link:hover{
+  background:var(--t-accent-quiet);
+  border-color:var(--t-accent);
+}
+.tuning-field-hint{
+  margin:0;
+  color:var(--t-text-soft);
+  font-size:var(--fs-micro);
+  line-height:1.55;
+}
+.tuning-field-control{
+  display:flex;
+  align-items:center;
+  gap:var(--sp-3);
+  flex-wrap:wrap;
+}
+.tuning-range{
+  flex:1 1 130px;
+  min-width:110px;
+  accent-color:var(--t-accent-solid);
+  cursor:pointer;
+}
+.tuning-number-wrap{
+  display:inline-flex;
+  align-items:center;
+  gap:var(--sp-1);
+  white-space:nowrap;
+}
+.tuning-number-wrap input[type="number"]{
+  width:84px;
+  padding:var(--sp-1) var(--sp-2);
+  border:1px solid var(--t-line-firm);
+  border-radius:var(--r-xs);
+  background:var(--t-surface-raised);
+  color:var(--t-text-strong);
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+  font-size:var(--fs-tiny);
+  text-align:right;
+}
+.tuning-number-wrap input[type="number"]:focus-visible{
+  outline:2px solid var(--t-focus);
+  outline-offset:1px;
+}
+.tuning-unit{
+  color:var(--t-text-soft);
+  font-size:var(--fs-micro);
+}
+.tuning-field-baseline{
+  color:var(--t-text-faint);
+  font-size:var(--fs-micro);
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+}
+.tuning-enum-group{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:var(--sp-2);
+  width:100%;
+}
+.tuning-enum-btn{
+  appearance:none;
+  padding:var(--sp-2) var(--sp-3);
+  border:1px solid var(--t-line-firm);
+  border-radius:var(--r-sm);
+  background:var(--t-surface-raised);
+  color:var(--t-text);
+  font:inherit;
+  font-size:var(--fs-micro);
+  text-align:left;
+  cursor:pointer;
+  transition:border-color var(--dur-fast),background-color var(--dur-fast),color var(--dur-fast);
+}
+.tuning-enum-btn.is-active{
+  border-color:var(--t-accent);
+  background:var(--t-accent-quiet);
+  color:var(--t-accent-ink);
+  font-weight:600;
+}
+.tuning-field-clamp-note{
+  margin:0;
+  padding:var(--sp-1) var(--sp-2);
+  border-radius:var(--r-xs);
+  background:var(--t-warn-quiet);
+  color:var(--t-warn-ink);
+  font-size:var(--fs-micro);
+  line-height:1.5;
+}
+
+/* 保存操作栏 */
+.tuning-actions-bar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-3);
+  flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:var(--t-surface);
+}
+.tuning-actions-bar.is-dirty{
+  border-color:var(--t-accent);
+  background:color-mix(in srgb,var(--t-accent-quiet) 32%,var(--t-surface));
+  box-shadow:var(--t-shadow);
+}
+.tuning-actions-status{
+  color:var(--t-text-soft);
+  font-size:var(--fs-tiny);
+}
+.tuning-actions-bar.is-dirty .tuning-actions-status{
+  color:var(--t-accent-ink);
+  font-weight:600;
+}
+.tuning-actions-buttons{
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--sp-2);
+}
+
+/* 底部双快捷卡片：极简网页模式 + 数据库瘦身直达 */
+.tuning-shortcuts-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:var(--sp-3);
+}
+@container tuning-dashboard (max-width:740px){
+  .tuning-shortcuts-grid{grid-template-columns:minmax(0,1fr)}
+}
+.tuning-shortcut-card{
+  display:grid;
+  gap:var(--sp-2);
+  align-content:space-between;
+  padding:var(--sp-4);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:var(--t-surface);
+}
+.tuning-shortcut-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:var(--sp-3);
+  flex-wrap:wrap;
+}
+.tuning-shortcut-head > div{
+  min-width:0;
+  flex:1 1 min(200px,100%);
+}
+.tuning-shortcut-head h4{
+  margin:0 0 var(--sp-1);
+  color:var(--t-text-strong);
+  font-size:var(--fs-body);
+  font-weight:650;
+}
+.tuning-shortcut-head p{
+  margin:0;
+  color:var(--t-text-soft);
+  font-size:var(--fs-micro);
+  line-height:1.55;
+}
+.tuning-shortcut-foot{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:var(--sp-2);
+  flex-wrap:wrap;
+  padding-top:var(--sp-2);
+  border-top:1px solid var(--t-line);
+  font-size:var(--fs-micro);
+  color:var(--t-text-faint);
+}
+.tuning-shortcut-foot.is-warn{
+  color:var(--t-warn-ink);
+}
+
+.tuning-message{
+  margin:0;
+  padding:var(--sp-2) var(--sp-3);
+  border-radius:var(--r-sm);
+  background:var(--t-ok-quiet);
+  color:var(--t-ok-ink);
+  font-size:var(--fs-tiny);
+  overflow-wrap:anywhere;
+}
+.tuning-message.is-error{
+  background:var(--t-risk-quiet);
+  color:var(--t-risk-ink);
+}
+
+/* 窄容器与手机端自适应：滑块独占满宽行、触控热区加大、卡片边距紧凑 */
+@container tuning-dashboard (max-width:520px){
+  .tuning-hero,
+  .tuning-advanced-header,
+  .tuning-advanced-body,
+  .tuning-switch-prompt,
+  .tuning-actions-bar,
+  .tuning-shortcut-card{
+    padding:var(--sp-3);
+  }
+  .tuning-hero-title{
+    flex:1 1 100%;
+  }
+  .tuning-field-control{
+    gap:var(--sp-2);
+  }
+  .tuning-range{
+    flex:1 0 100%;
+    width:100%;
+    min-width:0;
+    min-height:32px;
+  }
+  .tuning-enum-group{
+    grid-template-columns:minmax(0,1fr);
+  }
+}
+
+@media (max-width:560px){
+  .tuning-hero,
+  .tuning-advanced-header,
+  .tuning-advanced-body,
+  .tuning-switch-prompt,
+  .tuning-actions-bar,
+  .tuning-shortcut-card{
+    padding:var(--sp-3);
+  }
+  .tuning-hero-title{
+    flex:1 1 100%;
+  }
+  .tuning-field-control{
+    gap:var(--sp-2);
+  }
+  .tuning-range{
+    flex:1 0 100%;
+    width:100%;
+    min-width:0;
+    min-height:32px;
+  }
+  .tuning-enum-group{
+    grid-template-columns:minmax(0,1fr);
+  }
+  .tuning-actions-buttons .button,
+  .tuning-switch-actions .button{
+    min-height:36px;
+  }
+}
+
+@media (pointer:coarse){
+  .tuning-range{
+    min-height:36px;
+  }
+}

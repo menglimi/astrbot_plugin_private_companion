@@ -44,9 +44,16 @@ _HEX_CHARS = frozenset("0123456789abcdef")
 
 _ROLE_CACHE_MAX = 512
 _CONTEXT_CACHE_MAX = 2048
+_UNHASHED_PER_RUNTIME_MAX = 32
 _CACHE_LOCK = threading.Lock()
 _ROLE_BLOB_CACHE: OrderedDict[str, str] = OrderedDict()
 _CONTEXT_CACHE: OrderedDict[str, str] = OrderedDict()
+_UNHASHED_CACHE_GENERATION = 0
+_UNHASHED_ALLOWED_TABLES = frozenset((
+    "conversation_native_turns",
+    "conversation_native_observations",
+    "astrbot_core_reply_observations",
+))
 
 DEDUP_TABLE_STATEMENTS = (
     """CREATE TABLE IF NOT EXISTS role_instruction_blobs (
@@ -76,9 +83,11 @@ DEDUP_INDEX_STATEMENTS = (
 
 def clear_dedup_caches() -> None:
     """Clear process-wide immutable blob caches (primarily for testing)."""
+    global _UNHASHED_CACHE_GENERATION
     with _CACHE_LOCK:
         _ROLE_BLOB_CACHE.clear()
         _CONTEXT_CACHE.clear()
+        _UNHASHED_CACHE_GENERATION += 1
 
 
 def _cache_get(cache: OrderedDict[str, str], key: str) -> str | None:
@@ -425,6 +434,105 @@ def matching_context_hashes(
         for row in rows
         if (row["context_hash"] if hasattr(row, "keys") else row[0])
     )
+
+
+def has_unhashed_context_rows(
+    runtime_or_conn: Any,
+    table: str,
+    *,
+    kind: str | None = None,
+) -> bool:
+    """Return whether *table* still contains legacy rows without ``context_hash``.
+
+    Uses O(log N) covering-index probes (``idx_native_turns_context_hash`` /
+    ``idx_native_obs_context_hash``) cached per table write epoch so callers can
+    skip full-table ``json_extract(context_json, ...)`` fallback scans once all
+    historical rows have been deduplicated. Fails open (returns ``True``) when
+    the dedup schema or ``context_hash`` column is absent.
+    """
+    if table not in _UNHASHED_ALLOWED_TABLES:
+        raise ValueError(f"unsupported table for context_hash probe: {table}")
+    if runtime_or_conn is None or not _has_table(runtime_or_conn, "conversation_contexts"):
+        return True
+    if not _has_table(runtime_or_conn, table):
+        return False
+
+    epoch_fn = getattr(runtime_or_conn, "table_write_epoch_snapshot", None)
+    epoch_pair: tuple[int, int] | None = None
+    instance_cache: dict[tuple[str, str], tuple[int, int, int, bool]] | None = None
+    cache_key = (table, kind or "")
+    cache_gen = 0
+    if callable(epoch_fn):
+        try:
+            snap = epoch_fn((frozenset({table}),))
+            if isinstance(snap, tuple) and len(snap) >= 2:
+                epoch_pair = (int(snap[0]), int(snap[1]))
+                existing_cache = getattr(runtime_or_conn, "_unhashed_context_cache", None)
+                if isinstance(existing_cache, dict):
+                    instance_cache = existing_cache
+                else:
+                    created_cache: dict[tuple[str, str], tuple[int, int, int, bool]] = {}
+                    try:
+                        setattr(runtime_or_conn, "_unhashed_context_cache", created_cache)
+                        instance_cache = created_cache
+                    except (AttributeError, TypeError):
+                        instance_cache = None
+                if instance_cache is not None:
+                    with _CACHE_LOCK:
+                        cache_gen = _UNHASHED_CACHE_GENERATION
+                        cached = instance_cache.get(cache_key)
+                        if (
+                            cached is not None
+                            and cached[0] == cache_gen
+                            and cached[1] == epoch_pair[0]
+                            and cached[2] == epoch_pair[1]
+                        ):
+                            return cached[3]
+        except Exception:
+            epoch_pair = None
+            instance_cache = None
+
+    try:
+        if table == "conversation_native_observations" and kind is not None:
+            found = (
+                _read_one(
+                    runtime_or_conn,
+                    "SELECT 1 FROM conversation_native_observations WHERE kind = ? AND context_hash = '' LIMIT 1",
+                    (kind,),
+                )
+                is not None
+                or _read_one(
+                    runtime_or_conn,
+                    "SELECT 1 FROM conversation_native_observations WHERE kind = ? AND context_hash IS NULL LIMIT 1",
+                    (kind,),
+                )
+                is not None
+            )
+        else:
+            found = (
+                _read_one(
+                    runtime_or_conn,
+                    f"SELECT 1 FROM {table} WHERE context_hash = '' LIMIT 1",
+                    (),
+                )
+                is not None
+                or _read_one(
+                    runtime_or_conn,
+                    f"SELECT 1 FROM {table} WHERE context_hash IS NULL LIMIT 1",
+                    (),
+                )
+                is not None
+            )
+    except sqlite3.OperationalError:
+        return True
+
+    if instance_cache is not None and epoch_pair is not None:
+        with _CACHE_LOCK:
+            if _UNHASHED_CACHE_GENERATION == cache_gen:
+                if len(instance_cache) >= _UNHASHED_PER_RUNTIME_MAX and cache_key not in instance_cache:
+                    instance_cache.clear()
+                instance_cache[cache_key] = (cache_gen, epoch_pair[0], epoch_pair[1], found)
+    return found
 
 
 def dedup_native_storage(

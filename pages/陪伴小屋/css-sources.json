@@ -37,6 +37,7 @@
   "migration-config-table.css",
   "backup-page.css",
   "storage-page.css",
+  "tuning-page.css",
   "maintenance-page.css",
   "navigation.css",
   "appearance-page.css",

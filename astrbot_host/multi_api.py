@@ -44,6 +44,7 @@ from .image_material_api import ImageMaterialsWebAPI, PREFIX as IMAGE_MATERIAL_P
 from .qzone_api import QzoneWebAPI, PREFIX as QZONE_PREFIX
 from .host_options_api import HostOptionsWebAPI
 from .storage_api import StorageWebAPI
+from .tuning_api import TuningWebAPI
 from .works_api import WorksWebAPI
 from .display_names import display_names
 from .identity_derivation import role_display_name
@@ -367,6 +368,7 @@ class MultiHostWebAPI:
         routes += BackupWebAPI(self.controller).routes()
         routes += HostOptionsWebAPI(self.controller).routes()
         routes += StorageWebAPI(self.controller).routes()
+        routes += TuningWebAPI(self.controller).routes()
         routes += ConfigPortWebAPI(self.controller).routes()
         routes += WorksWebAPI(self.controller).routes()
         # Installation-owned groups stay on one route, away from selected chats.

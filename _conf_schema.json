@@ -9,6 +9,27 @@
         "hint": "适合低配置设备或远程访问卡顿的环境。保存后请重载插件；性能模式下如需修改高级设置，请先关闭本项并重载。",
         "type": "bool",
         "default": false
+      },
+      "profile": {
+        "description": "性能调优档位",
+        "hint": "自动推荐（auto）会根据本机可用内存与 CPU 核心数自动匹配；也可手动选省内存轻量化（eco）、平衡推荐（balanced）、高性能流畅（turbo）或兼容稳妥（compat）。请在「陪伴小屋 → 资料与维护 → 性能调优」中管理。",
+        "type": "string",
+        "options": [
+          "auto",
+          "eco",
+          "balanced",
+          "turbo",
+          "compat"
+        ],
+        "default": "auto",
+        "invisible": true
+      },
+      "overrides": {
+        "description": "性能高级微调覆盖项",
+        "hint": "仅保存手动微调过的参数覆盖值，由陪伴小屋「资料与维护 → 性能调优」管理。",
+        "type": "dict",
+        "default": {},
+        "invisible": true
       }
     }
   },
