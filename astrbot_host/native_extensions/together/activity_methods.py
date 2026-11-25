@@ -693,6 +693,7 @@ class TogetherActivityMethods:
         epoch: int = 0,
     ) -> str | None:
         """Push one private-owner-only shared experience to MemoryCompanion via the one-way push port."""
+        from .native_context import canonical_private_session_id
         from companion_v2.adapters.astrbot.memory_push import memory_push_provider
         from companion_v2.capabilities.memory_push import (
             DEFAULT_MEMORY_PUSH,
@@ -708,22 +709,25 @@ class TogetherActivityMethods:
         if port is None or port is DEFAULT_MEMORY_PUSH:
             port = memory_push_provider(getattr(self, 'context', None))
         platform = ''
-        session_id = room.user_id
+        raw_session_id = room.user_id
+        native_scope_id = room.user_id
         bot_id = ''
         bot_account_id = ''
         if context is not None:
             platform = str(getattr(context.scope, 'platform', '') or '')
-            session_id = str(getattr(context.scope, 'session_id', '') or room.user_id)
+            raw_session_id = str(getattr(context.scope, 'session_id', '') or room.user_id)
+            native_scope_id = str(getattr(context.scope, 'native_scope_id', '') or room.user_id)
             bot_id = str(getattr(context.scope, 'bot_id', '') or '')
             bot_account_id = str(getattr(context.scope, 'account_id', '') or '')
         elif room.native_v2 is not None:
             platform = str(room.native_v2.platform or '')
-            session_id = str(room.native_v2.session_id or room.user_id)
+            raw_session_id = str(room.native_v2.session_id or room.user_id)
             bot_id = str(room.native_v2.bot_id or '')
             bot_account_id = str(room.native_v2.account_id or '')
         else:
             platform_ids = self._astrbot_conversation_platform_ids()
             platform = platform_ids[0] if platform_ids else ''
+        session_id = canonical_private_session_id(platform, raw_session_id, native_scope_id) or raw_session_id
         bot_name = ''
         room_bot_name = getattr(self, '_room_bot_name', None)
         if callable(room_bot_name):

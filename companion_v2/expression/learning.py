@@ -5,10 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import re
 import unicodedata
 from typing import Mapping
 
 from .rule_details import FORM_SCHEMA, normalize as normalize_form
+
+_PLACEHOLDER_TOKEN_RE = re.compile(
+    r"\[[^\[\]\n]{1,32}\]"
+    r"|\{[^{}\n]{1,32}\}"
+    r"|<[^<>\n]{1,32}>"
+    r"|【[^【】\n]{1,24}】"
+    r"|_+|\.{2,}|…+|—+"
+)
+_DUPLICATE_SLOT = "\u25a1"
+_SLOT_RUN_RE = re.compile(r"\u25a1+")
+_NON_WORD_CHARS_RE = re.compile(r"[^\w\u25a1]+", re.UNICODE)
+_NON_LITERAL_CHARS_RE = re.compile(r"[^\w]+", re.UNICODE)
+_UNDERSCORE_RE = re.compile(r"_+")
+PATTERN_SIMILARITY_CROSS_BATCH = 0.82
+PATTERN_SIMILARITY_SHARED_EVIDENCE = 0.55
+EVIDENCE_OVERLAP_THRESHOLD = 0.50
 
 
 DIMENSIONS = frozenset({
@@ -108,6 +125,112 @@ def form_identity(expression):
     return form["kind"], compact(form["situation"]), compact(form["pattern"])
 
 
+def pattern_core(pattern):
+    """Return ``(normalized_literal_text, stripped_placeholder)`` for deduplication."""
+    if not isinstance(pattern, str):
+        return "", False
+    normalized = unicodedata.normalize("NFKC", pattern).casefold()
+    without_placeholders, replaced = _PLACEHOLDER_TOKEN_RE.subn(" ", normalized)
+    cleaned = _NON_LITERAL_CHARS_RE.sub("", _UNDERSCORE_RE.sub("", without_placeholders))
+    return cleaned, replaced > 0
+
+
+def normalized_pattern_key(pattern):
+    """Placeholder-stripped, punctuation-free normalized pattern text."""
+    return pattern_core(pattern)[0]
+
+
+def template_pattern_key(pattern):
+    """Canonical slot-preserving template key for placeholder-heavy patterns."""
+    if not isinstance(pattern, str):
+        return ""
+    normalized = unicodedata.normalize("NFKC", pattern).casefold()
+    slotted, replaced = _PLACEHOLDER_TOKEN_RE.subn(_DUPLICATE_SLOT, normalized)
+    if replaced == 0:
+        return ""
+    cleaned = _NON_WORD_CHARS_RE.sub("", _UNDERSCORE_RE.sub("", slotted))
+    cleaned = _SLOT_RUN_RE.sub(_DUPLICATE_SLOT, cleaned)
+    literal_chars = cleaned.replace(_DUPLICATE_SLOT, "")
+    return cleaned if len(literal_chars) >= 2 and _DUPLICATE_SLOT in cleaned else ""
+
+
+def pattern_bigrams(pattern):
+    """Character bigrams over the normalized pattern core."""
+    core = normalized_pattern_key(pattern)
+    if len(core) < 2:
+        return frozenset()
+    return frozenset(core[index:index + 2] for index in range(len(core) - 1))
+
+
+def pattern_similarity(left, right):
+    """Jaccard similarity over character bigrams of two normalized patterns."""
+    left_core = normalized_pattern_key(left)
+    right_core = normalized_pattern_key(right)
+    if not left_core or not right_core:
+        return 0.0
+    if left_core == right_core:
+        return 1.0
+    left_grams = pattern_bigrams(left_core)
+    right_grams = pattern_bigrams(right_core)
+    if not left_grams or not right_grams:
+        return 0.0
+    union = len(left_grams | right_grams)
+    return (len(left_grams & right_grams) / union) if union else 0.0
+
+
+def evidence_overlap_ratio(left_handles, right_handles):
+    """Overlap ratio ``|A ∩ B| / min(|A|, |B|)`` between two evidence handle sets."""
+    left = {value for value in (left_handles or ()) if isinstance(value, str) and value}
+    right = {value for value in (right_handles or ()) if isinstance(value, str) and value}
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def _dedupe_form_fields(expression):
+    if not isinstance(expression, Mapping):
+        return None
+    kind = expression.get("kind")
+    pattern = expression.get("pattern")
+    situation = expression.get("situation")
+    if kind not in ("style", "grammar") or not isinstance(pattern, str) or not pattern.strip():
+        return None
+    return kind, (situation if isinstance(situation, str) else ""), pattern
+
+
+def forms_match_duplicate(left_form, right_form, *, left_handles=(), right_handles=(), same_scope=True):
+    """Decide whether two concrete expression forms represent the same rule."""
+    left = _dedupe_form_fields(left_form)
+    right = _dedupe_form_fields(right_form)
+    if left is None or right is None:
+        return False
+    left_kind, left_situation, left_pattern = left
+    right_kind, right_situation, right_pattern = right
+    if left_kind != right_kind:
+        return False
+    compact = lambda value: " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    if compact(left_situation) == compact(right_situation) and compact(left_pattern) == compact(right_pattern):
+        return True
+    left_core, left_stripped = pattern_core(left_pattern)
+    right_core, right_stripped = pattern_core(right_pattern)
+    if left_core and left_core == right_core:
+        if len(left_core) >= 3:
+            return True
+        if len(left_core) >= 2 and not left_stripped and not right_stripped:
+            return True
+    left_template = template_pattern_key(left_pattern)
+    if left_template and left_template == template_pattern_key(right_pattern):
+        return True
+    similarity = pattern_similarity(left_pattern, right_pattern)
+    if len(left_core) >= 6 and len(right_core) >= 6 and similarity >= PATTERN_SIMILARITY_CROSS_BATCH:
+        return True
+    if (same_scope
+            and evidence_overlap_ratio(left_handles, right_handles) >= EVIDENCE_OVERLAP_THRESHOLD
+            and similarity >= PATTERN_SIMILARITY_SHARED_EVIDENCE):
+        return True
+    return False
+
+
 def normalize_applicability(raw=None, *, default_channels=None):
     """Return the bounded V1-compatible applicability contract for one rule."""
     if raw is None:
@@ -202,7 +325,7 @@ INSTRUCTION = """只观察可借鉴的表达形式：句长、节奏、标点、
 仅输出符合给定 JSON Schema 的 JSON，不附推理过程。"""
 
 FORM_INSTRUCTION = """每条候选填写 expression：kind=style 是具体情境表达，pattern 保留有辨识度的短说法或带占位的说法，例如在彼此已有共识、不需解释时用“懂的都懂”；kind=grammar 是可复用句法，pattern 写出结构，例如“先用两三个字确认，再省略主语接一句补充”。situation 说明何时合适，avoid 说明何时别用，proposal 说明角色怎样自然化用。
-不要把“更自然、简短口语化、温柔一些”这样的泛泛评价当作学到的表达。短而有辨识度的原话可以保留，长句、私人经历和身份信息不照搬；一次出现可成为局部情境候选，但不要宣称是长期习惯。样本、情境、说法、用法须对应，不能编造证据。对照 existing_rules 的情境与模板：同一说法、同一用法即使 observation 或 proposal 有新措辞也不要另提候选；已拒绝或已停用的规则也不要擅自复活。同一情境下不同的说法，以及相同说法在真正不同情境中的用法可以共存。"""
+不要把“更自然、简短口语化、温柔一些”这样的泛泛评价当作学到的表达。短而有辨识度的原话可以保留，长句、私人经历和身份信息不照搬；一次出现可成为局部情境候选，但不要宣称是长期习惯。样本、情境、说法、用法须对应，不能编造证据。对照 existing_rules 与 existing_pattern_index 的情境与模板：同一说法、同一用法即使 observation 或 proposal 有新措辞也不要另提候选；已拒绝或已停用的规则也不要擅自复活。同一情境下不同的说法，以及相同说法在真正不同情境中的用法可以共存。"""
 
 MODE_GUIDANCE = {
     "light": "轻量学习：只提炼跨情境通用的句长、停顿呼吸感、标点和排版习惯，最多提出{limit}条。不要提取场景短语或口头禅。",

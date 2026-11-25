@@ -6,7 +6,10 @@ from companion_v2.execution.models import digest, encode, stamp
 
 
 PREFIX = "expression.rule-form:"
+MERGE_PREFIX = "expression.rule-merge:"
+DEDUPE_OP_PREFIX = "expression.rule-dedupe-op:"
 LIMITS = {"situation": 240, "pattern": 500, "avoid": 400}
+_READ_BATCH_SIZE = 400
 
 
 def normalize(raw):
@@ -27,21 +30,79 @@ def read(runtime, signal_id):
 
 
 def read_many(runtime, signal_ids):
-    """Read a whole page of stored forms in one statement.
-
-    A review page holds up to fifty rules and each row needs its own form. Asking
-    for them one at a time costs one statement per row, and every statement waits
-    on the storage runtime's single write lock, so the page cost grew with the
-    number of rules rather than with the page. The missing-key result stays
-    ``None`` in the caller, exactly as :func:`read` reports it.
-    """
+    """Read stored forms in bounded batches to avoid SQLite parameter limits."""
     keys = {PREFIX + digest(signal_id): signal_id for signal_id in signal_ids}
     if not keys:
         return {}
-    rows = runtime.read_all(
-        "SELECT key, value FROM runtime_metadata WHERE key IN (" + ",".join("?" * len(keys)) + ")",
-        tuple(keys))
-    return {keys[row["key"]]: json.loads(row["value"]) for row in rows}
+    key_list = list(keys)
+    result = {}
+    for start in range(0, len(key_list), _READ_BATCH_SIZE):
+        batch = key_list[start:start + _READ_BATCH_SIZE]
+        rows = runtime.read_all(
+            "SELECT key, value FROM runtime_metadata WHERE key IN (" + ",".join("?" * len(batch)) + ")",
+            tuple(batch))
+        for row in rows:
+            result[keys[row["key"]]] = json.loads(row["value"])
+    return result
+
+
+def read_merge(runtime, signal_id):
+    row = runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (MERGE_PREFIX + digest(signal_id),))
+    if not row:
+        return None
+    try:
+        value = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) and isinstance(value.get("merged_into"), str) else None
+
+
+def read_merges_many(runtime, signal_ids):
+    """Batch-read reversible merge-audit markers keyed by signal_id."""
+    keys = {MERGE_PREFIX + digest(signal_id): signal_id for signal_id in signal_ids}
+    if not keys:
+        return {}
+    key_list = list(keys)
+    result = {}
+    for start in range(0, len(key_list), _READ_BATCH_SIZE):
+        batch = key_list[start:start + _READ_BATCH_SIZE]
+        rows = runtime.read_all(
+            "SELECT key, value FROM runtime_metadata WHERE key IN (" + ",".join("?" * len(batch)) + ")",
+            tuple(batch))
+        for row in rows:
+            try:
+                value = json.loads(row["value"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict) and isinstance(value.get("merged_into"), str):
+                result[keys[row["key"]]] = value
+    return result
+
+
+def write_merge(runtime, signal_id, *, merged_into, previous_state, at, actor, operation_key, connection=None):
+    """Record a reversible merge marker without mutating the rule form itself."""
+    value = {
+        "signal_id": signal_id,
+        "merged_into": merged_into,
+        "previous_state": previous_state,
+        "merged_at": stamp(at),
+        "merged_by": actor,
+        "operation_key": operation_key,
+    }
+    key = MERGE_PREFIX + digest(signal_id)
+    payload = encode(value)
+    if connection is not None:
+        connection.execute(
+            "INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, payload))
+    else:
+        with runtime.transaction() as active:
+            active.execute(
+                "INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, payload))
+    return value
 
 
 def write(runtime, signal_id, form, *, at, actor, operation_key, legacy=None):
