@@ -10,7 +10,7 @@ from astrbot.core.utils.quoted_message.image_resolver import ImageResolver
 from astrbot.core.utils.quoted_message.onebot_client import OneBotClient
 
 from companion_v2.adapters.astrbot.history import extract_history_messages
-from companion_v2.adapters.astrbot.native import NativeImageLocator
+from companion_v2.adapters.astrbot.native import NativeImageLocator, event_account_id, event_platform_name
 from companion_v2.adapters.astrbot.quotes import image_locator
 from companion_v2.conversation.media.models import ImageConversationEvent, MAX_INPUT_IMAGES
 from companion_v2.conversation.native_tool_sources import native_input_images
@@ -44,7 +44,9 @@ class _QuotedImages:
 
     @property
     def needs_lookup(self):
-        return not self.images or self.sender_id is None or self.needs_resolved_images
+        # Telegram delivers the quoted message itself; there is no lookup to make.
+        return self.client is not None and (
+            not self.images or self.sender_id is None or self.needs_resolved_images)
 
     @property
     def needs_resolved_images(self):
@@ -82,9 +84,18 @@ def frozen_image_locators(event):
                 continue
             embedded = tuple(image_locator(index, item.file, item.url)
                              for index, item in enumerate(part.chain or ()) if type(item) is Image)
-            quotes.append(_QuotedImages(position, identifier, _identifier(part.sender_id),
-                part.time if type(part.time) is int and part.time > 0 else None,
-                embedded, event, OneBotClient(event)))
+            sender, client = _identifier(part.sender_id), None
+            if event_platform_name(event) != "telegram":
+                client = OneBotClient(event)
+            elif not embedded:
+                continue
+            elif sender == event.client.token.partition(":")[0]:
+                # The route names this bot by its platform instance, not by its public Telegram ID.
+                sender = event_account_id(event)
+            # AstrBot's Telegram quote carries the receive time, not when the original was sent.
+            quotes.append(_QuotedImages(position, identifier, sender,
+                part.time if client is not None and type(part.time) is int and part.time > 0 else None,
+                embedded, event, client))
     return (*images, *quotes)
 
 

@@ -1,20 +1,26 @@
 """Telegram private text routing through the official AstrBot adapter."""
 
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Image, Plain, Reply
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAdapter
 from astrbot.core.platform.sources.telegram.tg_event import TelegramPlatformEvent
 from companion_v2.adapters.astrbot.group import group_event_route
 from companion_v2.execution.models import TaskError
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot_host.core_reply_media import _quoted_images, frozen_image_locators
+from astrbot_host.media import load_native_image
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.staging_bootstrap_support import wait_for_batch
+from tests.test_conversation_images import image_bytes
 
 
 PLATFORM_ID = "tg-main"
@@ -25,7 +31,7 @@ def telegram_client(token="424242:synthetic"):
     return NS(token=token, send_chat_action=AsyncMock(), send_message=AsyncMock())
 
 
-class TelegramPrivateTextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
+class TelegramFixture(MultiFixture):
     def setUp(self):
         super().setUp()
         self.platform = TelegramPlatformAdapter.__new__(TelegramPlatformAdapter)
@@ -61,6 +67,8 @@ class TelegramPrivateTextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         event.created_at = self.clock.now().timestamp()
         return event
 
+
+class TelegramPrivateTextTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
     async def test_late_loading_keeps_identity_and_delivers_private_text(self):
         del self.native.platforms[PLATFORM_ID]
         await self.start_host()
@@ -113,3 +121,43 @@ class TelegramPrivateTextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskError) as refused:
             group_event_route(event)
         self.assertEqual(refused.exception.code, "host_route_mismatch")
+
+
+class TelegramQuotedImageTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
+    def quoting(self, sender, chain):
+        event = self.telegram_event()
+        event.message_obj.message.insert(0, Reply(id="7", sender_id=sender, chain=chain, time=1700000000))
+        return event
+
+    async def resolve(self, event):
+        await self.start_host()
+        plan = await self.controller.prepare_core_reply_context(event)
+        (quote,) = frozen_image_locators(event)
+        return await _quoted_images(quote, plan.unwrap().context, AsyncMock())
+
+    async def test_quoted_photo_is_read_from_the_update_itself(self):
+        source = image_bytes()
+        for sender, recorded in ((USER_ID, USER_ID), ("424242", PLATFORM_ID)):
+            with self.subTest(sender=sender), TemporaryDirectory(dir=get_astrbot_temp_path()) as temp:
+                path = Path(temp, "photo.png")
+                path.write_bytes(source)
+                images, attribution = await self.resolve(self.quoting(sender, [Image(file=str(path))]))
+                self.assertEqual((await load_native_image(images[0])).content, source)
+                self.assertEqual(attribution["original_sender"], recorded)
+                self.assertIsNone(attribution["sent_at_unix"])
+
+    async def test_quoted_file_outside_the_host_cache_is_not_read(self):
+        with TemporaryDirectory() as temp:
+            path = Path(temp, "photo.png")
+            path.write_bytes(image_bytes())
+            images, _ = await self.resolve(self.quoting(USER_ID, [Image(file=str(path))]))
+            with self.assertRaises(TaskError):
+                await load_native_image(images[0])
+
+    async def test_quote_from_someone_else_is_refused(self):
+        with self.assertRaises(TaskError) as refused:
+            await self.resolve(self.quoting("987654321", [Image(file="base64://AAAA")]))
+        self.assertEqual(refused.exception.code, "host_quote_scope_mismatch")
+
+    def test_quoted_text_has_no_image_to_look_up(self):
+        self.assertEqual(frozen_image_locators(self.quoting(USER_ID, [Plain(text="早安")])), ())
