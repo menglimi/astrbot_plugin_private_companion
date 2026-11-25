@@ -125,7 +125,7 @@ from companion_v2.references.wardrobe import (WardrobeConfigurationOwner, Wardro
     configuration_fields as wardrobe_configuration_fields)
 from companion_v2.qzone.configuration import (QzoneConfigurationOwner, QzoneSettings,
     configuration_fields as qzone_configuration_fields)
-from companion_v2.device.configuration import (PhoneConfigurationOwner,
+from companion_v2.device.configuration import (PhoneConfigurationOwner, PhoneSettingsReader,
     configuration_fields as phone_configuration_fields)
 from companion_v2.qzone.service import QzoneService
 from companion_v2.system_prompts.configuration import (
@@ -368,7 +368,8 @@ class CompanionApplication:
         self.expression_style = ExpressionStyleService(runtime)
         self.expression_draft_review = ExpressionDraftReview(runtime)
         self.agenda = AgendaService(runtime)
-        self.phone_actions = PhoneActionService(runtime, notify=self.notify)
+        self.phone_settings = PhoneSettingsReader(self.configuration, fallback_root=runtime.data_root)
+        self.phone_actions = PhoneActionService(runtime, notify=self.notify, settings_reader=self.phone_settings)
         self.outbound = OutboundDelivery(runtime, sender, (
             DeliveryOwner(AGENDA_OWNER, "reminder.deliver", lambda request, at: self.agenda_background.delivery_text(request, at),
                 lambda request, at: self.agenda_background.history_text(request, at)),
@@ -497,8 +498,8 @@ class CompanionApplication:
                                   default_provider_resolver=default_provider_resolver,
                                   provider_lookup=provider_lookup)
         self.gateway = LocalModelGateway(self.router, BudgetLedger(runtime, budget, budget_soft), self.tasks)
-        self.authoring.attach(self.gateway, require_running=self.require_running)
         self.background_waiting = BackgroundTaskQueue(self.tasks)
+        self.authoring.attach(self.gateway, require_running=self.require_running, waiting=self.background_waiting)
         self.poke_reply_model.attach(self)
         self.image_review = GroupImageReview(self.messages)
         self.image_review_service.attach_review(self.image_review)
@@ -530,6 +531,7 @@ class CompanionApplication:
         self.journal_writer.attach(self.gateway, require_running=self.require_running, waiting=self.background_waiting)
         self.memory_reflection.attach(self.memory, self.gateway, require_running=self.require_running)
         self.proactive.attach(self.gateway, self.outbound, require_running=self.require_running, notify=self.notify)
+        self.proactive.images.quota = self.messages.image_quota
         self.proactive.history = self.background_history
         self.messages.proactive_inspirations = self.proactive.inspirations
         # The contact worker reads the same memory the reply path reads, so a
@@ -543,6 +545,8 @@ class CompanionApplication:
         self.contact_schedule = ContactSchedule(self.proactive, self.messages, role_life=self.role_life,
                                                 role_growth=self.role_growth,
                                                 role_journal=self.role_journal, calendar=self.calendar,
+                                                role_bindings=lambda: self.state_maintenance.bindings,
+                                                daily_outfit=self.daily_outfit,
                                                 relationships=self.relationship_memories,
                                                 role_state=self.role_state, weather_port=weather_port,
                                                 weather_alert_port=weather_alert_port, balance_port=balance_port,
@@ -610,6 +614,8 @@ class CompanionApplication:
         self._closing = asyncio.Lock()
         from companion_v2.delivery.presence import PresenceCoordinator
         self.presence = PresenceCoordinator(self, presence_port) if presence_port is not None else None
+        if self.presence is not None:
+            self.contact_schedule.rhythm.native_reply_activity = self.presence.native_reply_activity
 
     def require_running(self):
         if self.state != "running":
@@ -1333,7 +1339,7 @@ class CompanionApplication:
                 + self.screen_interpretation.active_handles
                 + self.screen_peek.active_handles
                 + self.phone_actions.active_handles
-                + (self.authoring.runner.active_handles if self.authoring.runner else ())
+                + self.authoring.active_handles
                 + (self.external.runner.active_handles if self.external else ()))
 
     async def close(self, *, grace_seconds=0.1):

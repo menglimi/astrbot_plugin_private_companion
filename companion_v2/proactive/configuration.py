@@ -43,12 +43,13 @@ CURVE_FLOOR, CURVE_CEILING = 0.05, 2.0
 # body-length hint; it never widens an allowance, a right or a delivery rule.
 INTENSITY_PRESETS = MappingProxyType({
     "off": {"interval_factor": 1.0, "idle_factor": 1.0, "burst_messages": 0, "body_chars": 0},
+    "custom": {"interval_factor": 1.0, "idle_factor": 1.0, "burst_messages": 0, "body_chars": 0},
     "balanced": {"interval_factor": 0.8, "idle_factor": 0.7, "burst_messages": 2, "body_chars": 300},
     "high_private": {"interval_factor": 0.5, "idle_factor": 0.35, "burst_messages": 3, "body_chars": 300},
     "high_group": {"interval_factor": 0.9, "idle_factor": 0.8, "burst_messages": 2, "body_chars": 240},
     "live": {"interval_factor": 0.2, "idle_factor": 0.1, "burst_messages": 3, "body_chars": 400}})
 INTENSITY_ALIASES = MappingProxyType({
-    "": "off", "manual": "off", "none": "off", "default": "off", "standard": "balanced",
+    "": "custom", "manual": "custom", "none": "custom", "default": "custom", "standard": "balanced",
     "active": "high_private", "private": "high_private", "group": "high_group",
     "online": "live", "直播": "live", "高频": "live"})
 ANCHOR_PURPOSES = ("morning_greeting", "noon_greeting", "evening_greeting", "insomnia_night")
@@ -260,7 +261,7 @@ def configuration_fields():
                 "dedup_policies": "semantic,content_fingerprint,life_event,event_revision",
                 "balance_currency_label": "元",
                 # Rhythm (T38): the V1 burst, hourly curve, intensity tier and closing grace.
-                "enable_proactive_burst": False, "proactive_intensity_preset": "off",
+                "enable_proactive_burst": False, "proactive_intensity_preset": "custom",
                 "proactive_hour_activity_enabled": False,
                 "proactive_hour_activity_curve": DEFAULT_HOUR_CURVE,
                 # Day anchors and the bounded insomnia window (T40).

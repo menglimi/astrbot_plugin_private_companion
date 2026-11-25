@@ -6,7 +6,7 @@ model tools. A fence prevents new writes; it does not stop an old network reques
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from contextlib import contextmanager
 import contextvars
 from datetime import datetime, timedelta, timezone
@@ -41,7 +41,7 @@ def outcome(method):
         try:
             return Outcome.success(method(*args, **kwargs))
         except TaskError as error:
-            return Outcome.failed(error.code, str(error))
+            return Outcome.failed(error.code, str(error), details=error.details or None)
     return call
 
 
@@ -145,13 +145,19 @@ class TaskSupervisor:
             if row and row["limits_json"] != encode(self.limits):
                 previous = json.loads(row["limits_json"])
                 current = asdict(self.limits)
-                capacity_only_increase = (
+                # background_slots is a pure dynamic concurrency cap and can be
+                # adjusted safely in either direction without invalidating queued
+                # or retained tasks; other capacities stay increase-only.
+                capacity_compatible = (
                     set(previous) == set(current)
-                    and all(type(previous[key]) is int and previous[key] <= value
-                            for key, value in current.items())
+                    and all(
+                        type(previous[key]) is int
+                        and (key == "background_slots" and value >= 1 or previous[key] <= value)
+                        for key, value in current.items()
+                    )
                 )
                 retained = connection.execute("SELECT COUNT(*) FROM execution_tasks").fetchone()[0]
-                if not capacity_only_increase or retained > current["retained_tasks"]:
+                if not capacity_compatible or retained > current["retained_tasks"]:
                     raise TaskError("supervisor_limits_changed", "only safe task capacity increases can be adopted at startup")
                 # A larger lane or queue budget does not invalidate retained
                 # work. The new generation still fences previous supervisors;
@@ -163,6 +169,25 @@ class TaskSupervisor:
                 started_at = excluded.started_at""", (generation, encode(self.limits), stamp(self._now())))
         self.generation = generation
         return generation
+
+    def update_background_slots(self, background_slots: int) -> SupervisorLimits:
+        """Atomically hot-update background concurrency limit in SQLite and memory."""
+        if type(background_slots) is not int or not 1 <= background_slots <= 32:
+            raise ValueError("background_slots must be an integer between 1 and 32")
+        updated = replace(self.limits, background_slots=background_slots)
+        if updated == self.limits:
+            return self.limits
+        if self.generation is None:
+            self.limits = updated
+            return updated
+        with self.runtime.transaction() as connection:
+            self._active()
+            connection.execute(
+                "UPDATE task_supervisor SET limits_json = ? WHERE singleton = 1 AND generation = ?",
+                (encode(updated), self.generation),
+            )
+            self.limits = updated
+        return updated
 
     @outcome
     def check_generation(self) -> int:

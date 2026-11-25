@@ -1,11 +1,12 @@
 """Daily per-scope image generation limits, counted from confirmed results.
 
 Image operations are counted per requester for the local day of the
-conversation timezone. Failed and unknown results do not consume an allowance;
-only a confirmed successful image operation does.
+conversation timezone. Proactive message images reserve a slot before dispatch
+and release it when the provider confirms there was no effect.
 """
 
 from datetime import timezone
+import json
 import logging
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,7 +16,7 @@ from companion_v2.configuration.registry import FieldDefinition, ValueKind
 from companion_v2.conversation.perception_settings import (GROUP as PERCEPTION_GROUP,
     PerceptionConfigurationOwner, configuration_fields as perception_fields,
     target_for as perception_target_for)
-from companion_v2.execution.models import TaskError, stamp
+from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.foundation.refs import ScopeKind
 
 # Kept as the stable persisted parent-task kind; importing it from proactive
@@ -68,6 +69,41 @@ class ImageQuotaGate:
 
     def admit_proactive(self, context, at):
         self._admit(context, "proactive", at)
+
+    def _proactive_message_budget(self, context, at):
+        key = "proactive-message-images:" + digest([
+            context.scope.installation_id, context.scope.bot_id,
+            context.role_binding.role.subject_id, context.actor.subject.subject_id,
+        ])
+        day = stamp(self._day_start(at, context))
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?", (key,))
+        budget = json.loads(row["value"]) if row is not None else {}
+        count = budget["count"] if budget.get("day") == day else 0
+        return key, day, count
+
+    def admit_proactive_message(self, context, at, limit):
+        if limit == 0:
+            raise TaskError("image_quota_closed", "proactive message generation is disabled")
+        if limit > 0 and self._proactive_message_budget(context, at)[2] >= limit:
+            raise TaskError("image_quota_exhausted", "the role's proactive message image allowance is exhausted")
+        self.admit_proactive(context, at)
+
+    def reserve_proactive_message(self, context, at, limit):
+        with self.runtime.transaction() as connection:
+            self.admit_proactive_message(context, at, limit)
+            key, day, count = self._proactive_message_budget(context, at)
+            connection.execute("INSERT OR REPLACE INTO runtime_metadata(key, value) VALUES (?, ?)",
+                               (key, json.dumps({"day": day, "count": count + 1})))
+        return key, day
+
+    def release_proactive_message(self, reservation):
+        key, day = reservation
+        with self.runtime.transaction() as connection:
+            row = connection.execute("SELECT value FROM runtime_metadata WHERE key=?", (key,)).fetchone()
+            budget = json.loads(row["value"]) if row is not None else {}
+            if budget.get("day") == day and budget["count"] > 0:
+                budget["count"] -= 1
+                connection.execute("UPDATE runtime_metadata SET value=? WHERE key=?", (json.dumps(budget), key))
 
     def _admit(self, context, scope, at):
         from .output_settings import effective_settings, image_request_denial
@@ -148,7 +184,7 @@ class ImageQuotaGate:
                 AND json_extract(record_json, '$.spec.context.role_binding.scope.bot_id')=?
                 AND json_extract(record_json, '$.spec.context.role_binding.role.subject_id')=?""",
                 (OUTFIT_KIND, cutoff, context.scope.bot_id, context.role_binding.role.subject_id))
-            return row[0] + outfits[0]
+            return row[0] + outfits[0] + self._proactive_message_budget(context, at)[2]
         # Native operations have their own real child task. They share the role,
         # requester and local-day limits with legacy user image requests, but are
         # never counted as proactive composition or as a fabricated reply batch.

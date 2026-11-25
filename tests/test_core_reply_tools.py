@@ -178,6 +178,18 @@ class CoreReplyToolsTests(CoreReplyToolFixture, unittest.IsolatedAsyncioTestCase
         create.assert_called_once_with(self.context, goal, delay_minutes=0, max_steps=None,
                                        shopping=True, resume_checkout=True)
 
+    async def test_phone_question_uses_the_screen_read_tool(self):
+        create = Mock(return_value={"state": "active", "task_id": "phone-read"})
+        self.app.phone_actions = NS(available=lambda _context: True, create_screen_read=create)
+        event, request = self.prepare("phone-screen-event")
+        question = "手机上现在打开的是哪个应用？"
+        result = await self.call_native("phone.screen.read", {"question": question}, event=event, request=request)
+        self.assertIn("调用 phone.screen.read", request.system_prompt)
+        self.assertEqual(result["state"], "queued")
+        self.assertEqual(result["payload"]["task_id"], "phone-read")
+        create.assert_called_once_with(self.context, question, request_id=event.get_extra(
+            CORE_REPLY_CONTEXT_EXTRA)["_tool_session"].turn_id)
+
     async def test_external_operation_uses_real_task_and_original_receipt(self):
         generation = self.tasks.generation
         result = await self.call_native("device.play", {"query": "music"})

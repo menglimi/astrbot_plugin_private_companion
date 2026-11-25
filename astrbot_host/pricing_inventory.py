@@ -186,6 +186,7 @@ def collect_provider_inventory(
             "api_key": api_key,
             "proxy": proxy,
             "supplier_name": supplier_name,
+            "cluster_id": cluster_id,
         }
         providers_by_id[pid] = {
             "id": pid,
@@ -270,6 +271,7 @@ def collect_provider_inventory(
                         "api_key": api_key,
                         "proxy": proxy,
                         "supplier_name": supplier_name,
+                        "cluster_id": cluster_id,
                     }
                     providers_by_id[pid] = {
                         "id": pid,
@@ -299,6 +301,7 @@ def collect_provider_inventory(
                                 "api_key": _resolve_secret_key(native_cfg.get("key", native_cfg.get("api_key"))),
                                 "proxy": str(native_cfg.get("proxy") or "").strip(),
                                 "supplier_name": providers_by_id[pid]["supplier_name"],
+                                "cluster_id": providers_by_id[pid]["cluster_id"],
                             }
                             if pricing_url:
                                 providers_by_id[pid]["has_api_base"] = True
@@ -615,13 +618,21 @@ def _own_source_ids_for_provider(
 ) -> frozenset[str]:
     ids: set[str] = {f"newapi:{provider_id}"}
     api_base = str((conn or {}).get("api_base") or "").strip()
+    cluster_id = str((conn or {}).get("cluster_id") or "").strip()
     target_url = newapi_pricing_url(api_base)
     if target_url:
         norm = target_url.rstrip("/").lower()
         for sid, cfg in (settings.get("price_sources") or {}).items():
             if type(sid) is str and sid.startswith("newapi:") and isinstance(cfg, dict):
-                if str(cfg.get("url") or "").strip().rstrip("/").lower() == norm:
-                    ids.add(sid)
+                if str(cfg.get("url") or "").strip().rstrip("/").lower() != norm:
+                    continue
+                # Isolate auth-gated Bearer sources owned by a different cluster.
+                if cfg.get("auth_mode") == "bearer":
+                    src_cluster = str(cfg.get("cluster_id") or "").strip()
+                    src_pid = str(cfg.get("provider_id") or "").strip()
+                    if src_cluster and cluster_id and src_cluster != cluster_id and src_pid != provider_id:
+                        continue
+                ids.add(sid)
     return frozenset(ids)
 
 
@@ -640,10 +651,14 @@ def _build_sources_list(settings: dict[str, Any], catalog: dict[str, Any]) -> li
         enabled = bool(scfg.get("enabled", scat.get("enabled", True)))
         raw_status = str(scat.get("status") or "pending")
         status = "disabled" if not enabled else raw_status
-        result.append({
+        kind = str(scfg.get("kind") or scat.get("kind") or ("newapi" if sid.startswith("newapi:") else "public"))
+        site_meta = deepcopy(scat.get("site_meta")) if isinstance(scat.get("site_meta"), dict) else None
+        site_name = str((site_meta or {}).get("system_name") or "").strip() if kind == "newapi" else ""
+        label = site_name or str(scfg.get("label") or scat.get("label") or sid)
+        entry: dict[str, Any] = {
             "source_id": sid,
-            "kind": str(scfg.get("kind") or scat.get("kind") or ("newapi" if sid.startswith("newapi:") else "public")),
-            "label": str(scfg.get("label") or scat.get("label") or sid),
+            "kind": kind,
+            "label": label,
             "url": str(scfg.get("url") or scat.get("url") or ""),
             "enabled": enabled,
             "status": status,
@@ -654,7 +669,35 @@ def _build_sources_list(settings: dict[str, Any], catalog: dict[str, Any]) -> li
             "error": scat.get("error") if enabled else None,
             "provider_id": scfg.get("provider_id") or scat.get("provider_id"),
             "needs_key": bool(scat.get("needs_key", False)),
-        })
+        }
+        if kind == "newapi":
+            entry["currency"] = scat.get("currency") or (site_meta or {}).get("currency") or "USD"
+            raw_override = scfg.get("currency_override")
+            entry["currency_override"] = raw_override if raw_override in ("CNY", "USD") else "auto"
+            raw_fiat_rate = scfg.get("fiat_per_base_unit")
+            entry["fiat_per_base_unit"] = (
+                float(raw_fiat_rate)
+                if type(raw_fiat_rate) in (int, float) and float(raw_fiat_rate) > 0
+                else None
+            )
+            eff_scale = (site_meta or {}).get("effective_unit_scale")
+            entry["effective_unit_scale"] = (
+                float(eff_scale)
+                if type(eff_scale) in (int, float) and float(eff_scale) > 0
+                else (
+                    entry["fiat_per_base_unit"]
+                    if entry["fiat_per_base_unit"] is not None
+                    else (
+                        float((site_meta or {}).get("unit_scale"))
+                        if type((site_meta or {}).get("unit_scale")) in (int, float)
+                        and float((site_meta or {}).get("unit_scale")) > 0
+                        else 1.0
+                    )
+                )
+            )
+            entry["auth_mode"] = scfg.get("auth_mode") or scat.get("auth_mode")
+            entry["site_meta"] = site_meta
+        result.append(entry)
     return result
 
 
@@ -946,6 +989,7 @@ def build_pricing_payload(
     unpriced_alerts.sort(key=lambda item: (-item["total_tokens"], item["provider_id"].lower()))
 
     # 4. Left-rail clusters grouped by cluster_id (provider_source_id or standalone id)
+    cat_sources = catalog.get("sources") if isinstance(catalog.get("sources"), dict) else {}
     clusters_by_id: dict[str, dict[str, Any]] = {}
     for item in configured_items:
         cid = item["cluster_id"]
@@ -958,10 +1002,13 @@ def build_pricing_payload(
                 "provider_source_id": item["provider_source_id"],
                 "multiplier": mult,
                 "has_custom_multiplier": (cid in pricing_multipliers and mult != 1.0),
+                "has_custom_rules": False,
                 "has_bound": False,
                 "active_count": 0,
                 "provider_count": 0,
                 "cluster_total_tokens": 0,
+                "newapi_source_id": None,
+                "newapi_group_hint": None,
                 "providers": [],
             }
             clusters_by_id[cid] = cluster
@@ -970,12 +1017,26 @@ def build_pricing_payload(
         cluster["cluster_total_tokens"] += item["total_tokens"]
         if item["bound"]:
             cluster["has_bound"] = True
+        if item["has_override"]:
+            cluster["has_custom_rules"] = True
+        if not cluster["newapi_source_id"] and item["newapi_source_id"]:
+            cluster["newapi_source_id"] = item["newapi_source_id"]
         if item["bound"] or item["total_tokens"] > 0:
             cluster["active_count"] += 1
 
     clusters = list(clusters_by_id.values())
     for cluster in clusters:
         cluster["providers"].sort(key=_configured_sort_key)
+        sid = cluster.get("newapi_source_id")
+        if sid and isinstance(cat_sources.get(sid), dict):
+            smeta = cat_sources[sid].get("site_meta")
+            if isinstance(smeta, dict) and isinstance(smeta.get("detected_groups"), dict):
+                hint = (
+                    smeta["detected_groups"].get(cluster["cluster_id"])
+                    or smeta["detected_groups"].get("__station__")
+                )
+                if isinstance(hint, dict):
+                    cluster["newapi_group_hint"] = deepcopy(hint)
 
     # Strict cluster sort: active-first (cluster_total_tokens > 0 || has_bound),
     # then cluster_total_tokens DESC, active_count DESC, name ASC.

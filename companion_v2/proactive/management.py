@@ -51,7 +51,7 @@ class ContactManagement:
             purposes[purpose] = {"label": label, "allowed": reason is None, "reason": reason}
         allowed = any(item["allowed"] for item in purposes.values())
         reason = None if allowed else authority_reason or next(iter(purposes.values()))["reason"]
-        automatic_reason = reason or (None if settings["automatic_enabled"] else "contact_automatic_disabled")
+        automatic_reason = reason or access.unwrap().automatic_reason()
         return {"settings": settings, "edit_token": snapshot.edit_token,
             "effective": {"allowed": allowed, "reason": reason,
                 "automatic_allowed": automatic_reason is None, "automatic_reason": automatic_reason,

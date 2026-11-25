@@ -1,6 +1,7 @@
 """Private, durable phone procedures learned from observed screen transitions."""
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import json
 import re
 import unicodedata
@@ -15,6 +16,8 @@ from .session import PhoneAction
 PREFIX = "phone.skill.v1:"
 MAX_SKILLS = 64
 MAX_TAPS = 40
+FAILURE_PREFIX = "phone.skill.noop.v1:"
+FAILURE_MAX_AGE = timedelta(days=7)
 FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 TAKEOUT_TERMS = ("美团", "外卖", "点餐", "点单", "奶茶", "饮品", "杨枝甘露", "沪上阿姨", "送餐", "夜宵", "点菜")
 TAKEOUT_GUIDE = """手机技能「美团外卖点单」：美团已安装时可用 com.sankuai.meituan 启动。用户指定别的入口时沿用指定入口。
@@ -98,7 +101,7 @@ class PhoneSkillMemory:
         except (ValueError, TypeError, KeyError):
             return []
 
-    def recall(self, context, goal, shopping, screen, observation, history):
+    def recall(self, context, goal, shopping, screen, observation, history, *, avoided=()):
         if screen is None or screen.checkout:
             return None
         # Once the phone reports a tap at this screen, defer to the model if the
@@ -107,13 +110,46 @@ class PhoneSkillMemory:
             return None
         saved = self._taps(self._key(context, goal, shopping))
         for tap in reversed(saved):
-            if tap["screen"] != screen.key or tap["target"] not in screen.targets:
+            if tap["screen"] != screen.key or tap["target"] not in screen.targets or tap["target"] in avoided:
                 continue
             x, y = screen.targets[tap["target"]]
             action = PhoneAction("tap", x=x, y=y, reason="复用已验证的手机操作")
             if not checkout_boundary(observation, action):
                 return action
         return None
+
+    def _recent_failures(self, context, at):
+        key = FAILURE_PREFIX + context.key
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?", (key,))
+        if row is None:
+            return key, []
+        try:
+            items = json.loads(row["value"])
+            return key, [item for item in items if _valid_tap(item["tap"]) and
+                         at - FAILURE_MAX_AGE <= datetime.fromisoformat(item["at"]) <= at][-MAX_TAPS:]
+        except (ValueError, TypeError, KeyError):
+            return key, []
+
+    def ineffective_targets(self, context, screen, at):
+        if screen is None or screen.checkout:
+            return ()
+        _, failures = self._recent_failures(context, at)
+        return tuple(item["tap"]["target"] for item in failures
+                     if item["tap"]["screen"] == screen.key and item["tap"]["target"] in screen.targets)
+
+    def observe_tap(self, context, step, at):
+        tap = step.get("skill_tap")
+        if not _valid_tap(tap):
+            return
+        with self.runtime.transaction() as connection:
+            key, failures = self._recent_failures(context, at)
+            remaining = [item for item in failures if item["tap"] != tap]
+            if step.get("code") == "phone_action_ineffective":
+                remaining.append({"tap": tap, "at": at.isoformat()})
+            elif remaining == failures:
+                return
+            connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (key, encode(remaining[-MAX_TAPS:])))
 
     def remember(self, context, goal, shopping, history, at):
         verified = [item["skill_tap"] for item in history

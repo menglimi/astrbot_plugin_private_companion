@@ -605,6 +605,48 @@ class AstrBotMultiController:
         session.sync_settings(settings)
         logger.info("[CompanionV2] 已把确认的核心管理员窗口同步到运行中的会话")
 
+    def select_core_binding(self, *, platform_id: str, account_id: str,
+                            participant_id: str, persona_id: str = "") -> dict:
+        """Directly confirm a discovered private window as the core admin window."""
+        for label, value in (("platform_id", platform_id), ("account_id", account_id),
+                             ("participant_id", participant_id)):
+            if (type(value) is not str or not value.strip() or len(value.strip()) > 128
+                    or "\n" in value or "\r" in value):
+                raise TaskError("host_identity_invalid", f"{label} is invalid")
+        platform_id = platform_id.strip()
+        account_id = account_id.strip()
+        participant_id = participant_id.strip()
+        if participant_id == "*":
+            raise TaskError("setup_private_window_required",
+                            "select a specific private chat window rather than a wildcard")
+        if persona_id is None:
+            persona_id = ""
+        if type(persona_id) is not str or len(persona_id) > 128 or "\n" in persona_id or "\r" in persona_id:
+            raise TaskError("host_identity_invalid", "persona_id is invalid")
+        persona_id = persona_id.strip()
+        if persona_id == "[%None]":
+            persona_id = ""
+        if not persona_id and self.settings is not None:
+            from .identity_derivation import derive_bot_id
+            candidates = [
+                item.persona_id for item in getattr(self.settings, "personas", ())
+                if item.bot_id == derive_bot_id(platform_id, account_id)
+                or any(acc.platform_id == platform_id and acc.self_id == account_id and acc.bot_id == item.bot_id
+                       for acc in getattr(self.settings, "accounts", ()))
+            ]
+            unique = list(dict.fromkeys(candidates))
+            if len(unique) == 1 and unique[0] != "[%None]":
+                persona_id = unique[0]
+        binding = PendingBinding(platform_id, account_id, participant_id, persona_id, confirmed=True)
+        self._register_core_binding(binding)
+        write_binding(self.binding_root, binding)
+        if self.runtime is not None and self.authority is not None:
+            core_target = self._core_target(binding)
+            if core_target is not None and core_target.participant_id != "*":
+                with self.runtime.transaction():
+                    self.authority.ensure_core_admin_tier(core_target)
+        return {"confirmed": True, "binding": self.binding_state()}
+
     def handles_binding(self, event):
         from .recalls import is_notice_event
         return (not is_notice_event(event) and is_private_message(event)
@@ -728,15 +770,57 @@ class AstrBotMultiController:
         logger.info("[CompanionV2] 核心管理员窗口已重置为待确认 target=%s", parked.participant_id)
         return {"reset": True, "binding": self.binding_state()}
 
+    @staticmethod
+    def _exception_chain(error, *, max_depth=4):
+        """Walk ``__cause__`` / ``__context__`` links without cycles or value reads."""
+        chain = []
+        seen = set()
+        current = error
+        relation = "error"
+        while current is not None and id(current) not in seen and len(chain) <= max_depth:
+            seen.add(id(current))
+            chain.append((relation, current))
+            if current.__cause__ is not None:
+                relation = "cause"
+                current = current.__cause__
+            elif current.__context__ is not None and not current.__suppress_context__:
+                relation = "context"
+                current = current.__context__
+            else:
+                break
+        return chain
+
+    @classmethod
+    def _format_failure_trace(cls, error, *, max_depth=4, max_cause_frames=6):
+        """Format source locations across the exception chain without exception values."""
+        chain = cls._exception_chain(error, max_depth=max_depth)
+        sections = []
+        for index, (relation, exc) in enumerate(chain):
+            formatted = traceback.format_tb(exc.__traceback__) if exc.__traceback__ else []
+            if index == 0:
+                if formatted:
+                    sections.append("".join(formatted).rstrip("\n"))
+            else:
+                trimmed = formatted[-max_cause_frames:] if formatted else []
+                header = "[{} #{}] {}".format(relation, index, type(exc).__name__)
+                body = "".join(trimmed).rstrip("\n")
+                sections.append(header + ("\n" + body if body else ""))
+        return "\n".join(part for part in sections if part), chain
+
     def _failure(self, error, *, operation=""):
         code = (error.code if isinstance(error, (TaskError, HostControlError)) else
                 "host_module_unavailable" if isinstance(error, ImportError) else "host_control_failed")
+        trace_text, chain = ("", [("error", error)])
         if code in ("host_control_failed", "host_module_unavailable"):
-            # Keep the failing source locations, without logging exception values
-            # or locals that may contain native credentials or conversation text.
-            logger.error("[CompanionV2] 宿主操作异常 operation=%s code=%s error_type=%s\n%s",
-                         operation or "control", code, type(error).__name__,
-                         "".join(traceback.format_tb(error.__traceback__)))
+            # Keep the failing source locations across __cause__/__context__
+            # (such as PEP 479 RuntimeError <- StopIteration), without logging
+            # exception values or locals that may contain credentials or text.
+            trace_text, chain = self._format_failure_trace(error)
+            cause_suffix = ""
+            if len(chain) > 1:
+                cause_suffix = " cause_chain=" + "->".join(type(exc).__name__ for _, exc in chain[1:])
+            logger.error("[CompanionV2] 宿主操作异常 operation=%s code=%s error_type=%s%s\n%s",
+                         operation or "control", code, type(error).__name__, cause_suffix, trace_text)
         reason = ("插件模块未能导入，请重新加载 V2 插件；若仍失败，请检查安装包是否完整并查看 AstrBot 日志。"
                   if code == "host_module_unavailable" else
                   str(error) if code.split("__", 1)[0] == "host_native_lookup_timeout"
@@ -746,14 +830,26 @@ class AstrBotMultiController:
                               "host_account_unavailable", "host_platform_unavailable") else
                   "shared host configuration, native route or authority could not be verified")
         if code == "host_control_failed":
-            # 把“在哪一层炸的”带回来：只有位置，不含任何配置值或会话内容。
+            # 把“在哪一层炸的”带回来：优先定位异常链最深根因的最后 1 帧，不含任何配置值或会话内容。
+            root_exc = error
             frames = traceback.extract_tb(error.__traceback__) if error.__traceback__ else []
+            for _, candidate in reversed(chain):
+                candidate_frames = traceback.extract_tb(candidate.__traceback__) if candidate.__traceback__ else []
+                if candidate_frames:
+                    root_exc = candidate
+                    frames = candidate_frames
+                    break
+            else:
+                if len(chain) > 1:
+                    root_exc = chain[-1][1]
             origin = ""
             if frames:
                 last = frames[-1]
                 origin = " @ {} ({}:{})".format(last.name, last.filename.replace("\\", "/").rsplit("/", 1)[-1], last.lineno)
+            type_label = (f"{type(error).__name__} (cause={type(root_exc).__name__})"
+                          if root_exc is not error else type(error).__name__)
             reason = "宿主操作异常中断：{} | operation={}{}；请把日志里「宿主操作异常」这一整段发出来。".format(
-                type(error).__name__, operation or "control", origin)
+                type_label, operation or "control", origin)
         self.last_failure = {"code": code, "reason": reason}
         if operation:
             self.last_failure["operation"] = operation
@@ -926,11 +1022,19 @@ class AstrBotMultiController:
         runtime = StorageRuntime.open(data_root=root / "runtime", installation_id=settings.installation_id)
         runtime.backup_directory = backup_directory
         try:
+            from .tuning_api import apply_host_performance_tuning
+            apply_host_performance_tuning(self, runtime=runtime)
+        except Exception as error:
+            logger.warning("[CompanionV2] 性能调优参数应用跳过 error_type=%s", type(error).__name__)
+        try:
             from companion_v2.expression.configuration import migrate_legacy_policy_values
             from companion_v2.expression.reaction_configuration import migrate_window_values
             migrate_legacy_policy_values(runtime)
             migrate_window_values(runtime)
+            self._migrate_role_configuration_layers(runtime, settings)
         except BaseException:
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             runtime.close()
             raise
         authority = MultiAuthority(runtime, settings, now=self.now,
@@ -940,6 +1044,39 @@ class AstrBotMultiController:
         core_target = self._core_target(parked) if parked is not None else None
         authority.core_target_id = core_target.target_id if core_target is not None else None
         return runtime, authority, last_restore
+
+    def _migrate_role_configuration_layers(self, runtime, settings, *, previous_settings=None):
+        """Backfill split role-layer configuration rows onto canonical role targets."""
+        if runtime is None or settings is None:
+            return
+        from companion_v2.configuration.role_migration import migrate_role_configuration_aliases
+
+        aliases = list(settings.role_aliases.items())
+        if previous_settings is not None:
+            old_by_persona = {
+                (item.bot_id, item.persona_id): item.role_id
+                for item in getattr(previous_settings, "personas", ())
+            }
+            for item in getattr(settings, "personas", ()):
+                old_role_id = old_by_persona.get((item.bot_id, item.persona_id))
+                if old_role_id and old_role_id != item.role_id:
+                    aliases.append((old_role_id, item.role_id, item.bot_id))
+        persona_bindings = [
+            (item.bot_id, item.persona_id, item.role_id)
+            for item in getattr(settings, "personas", ())
+        ]
+        result = migrate_role_configuration_aliases(
+            runtime,
+            role_aliases=aliases,
+            persona_bindings=persona_bindings,
+            observed_at=self.now(),
+        )
+        if result["fields_copied"]:
+            logger.info(
+                "[CompanionV2] 已合并重复角色层配置 targets=%s fields=%s",
+                result["targets_migrated"],
+                result["fields_copied"],
+            )
 
     def _configured_private_session(self, platform_id, account_id, participant_id):
         session = self.session
@@ -951,7 +1088,20 @@ class AstrBotMultiController:
 
     def _configured_platform_name(self, platform_id):
         platform = self.context.get_platform_inst(platform_id)
-        return str(platform.meta().name) if platform is not None else ""
+        if platform is not None:
+            return str(platform.meta().name)
+        # The host can load plugins before adapters. Preserve Telegram's user
+        # namespace even while its platform instance is unavailable.
+        try:
+            rows = self.context.get_config().get("platform", ())
+        except (AttributeError, TypeError):
+            return ""
+        if not isinstance(rows, (list, tuple)):
+            return ""
+        matches = [row for row in rows if isinstance(row, Mapping) and row.get("id") == platform_id]
+        active = [row for row in matches if row.get("enable")]
+        candidates = active or matches
+        return "telegram" if len(candidates) == 1 and candidates[0].get("type") == "telegram" else ""
 
     async def _open_async(self):
         if self.runtime is None:
@@ -993,11 +1143,18 @@ class AstrBotMultiController:
                 deepseek_provider_resolver=search_provider_resolver,
                 search_priority_resolver=search_settings.source_priority),
             search_port_factory=search_port_factory,
-            balance_port=configured_balance_port(self.config, context=self.context),
+            balance_port=configured_balance_port(
+                self.config,
+                context=self.context,
+                runtime_root=self.data_root,
+                controller=self,
+            ),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
             solar_term_port=configured_solar_term_port(
                 self.config.get("solar_terms") if isinstance(self.config, dict) else None))
+        phone_roles = await asyncio.to_thread(self.authority.phone_role_aliases)
+        await asyncio.to_thread(self.session.application.phone_settings.adopt_role_aliases, phone_roles, self.now())
         from .worker_lifecycle import AstrBotWorkerLifecycle
         self.session.application.tasks.bind_worker_lifecycle(AstrBotWorkerLifecycle())
         # 关键词材料：服务余额、当前模型、链接正文。各自判断可用性，
@@ -1075,7 +1232,7 @@ class AstrBotMultiController:
                     and previous_session.application.state == "running")
                 if previous_session is not None and previous_session.application.state not in ("new", "stopped"):
                     self._accepting = False
-                    report = await previous_session.close(grace_seconds=0.5)
+                    report = await previous_session.close(grace_seconds=2.0)
                     if getattr(report, "state", None) != "stopped":
                         raise TaskError("host_must_stop", "the shared host did not finish stopping before initialization")
                     async with self._control_lock:
@@ -1167,6 +1324,12 @@ class AstrBotMultiController:
                     raise TaskError("host_terminated", "the shared host is stopping or terminated")
                 if expected_config is not None and self.config != expected_config:
                     raise TaskError("legacy_plan_stale", "插件配置在等待保存期间已变化，请重新试算。")
+                previous_settings = self.settings
+                if previous_settings is None:
+                    try:
+                        previous_settings = MultiHostSettings.parse(self.config)
+                    except Exception:
+                        previous_settings = None
                 settings, profile_root, adopting_legacy_profile = self._resolve_settings(candidate)
                 save = getattr(self, "save_plugin_config", None)
                 if not callable(save):
@@ -1236,6 +1399,8 @@ class AstrBotMultiController:
                         with self.runtime.transaction():
                             authority.initialize(manifest, reviewed=True,
                                                  allow_legacy_staging=adopting_legacy_profile)
+                            self._migrate_role_configuration_layers(
+                                self.runtime, settings, previous_settings=previous_settings)
                             save(candidate)
                         self.runtime.close()
                         self.runtime = self.authority = None
@@ -1514,10 +1679,15 @@ class AstrBotMultiController:
             platform = self.context.get_platform_inst(meta.id)
             if target is None or platform is None:
                 return None
-            if not platform_client_matches(platform, event_native_client(platform, event)):
+            client = event_native_client(platform, event)
+            if not platform_client_matches(platform, client):
                 return None
+            if meta.name == "telegram":
+                lease = self._connections_for().acquire((meta.id, login), connected=connected)
+                if lease.platform is not platform or lease.client is not client:
+                    return None
             return self.settings.effective_private_target(target)
-        except (ValueError, AttributeError, TypeError):
+        except (TaskError, ValueError, AttributeError, TypeError):
             return None
 
     async def persona_mapping_for_event(self, event):
@@ -1964,6 +2134,7 @@ class AstrBotMultiController:
                     logger.warning("[CompanionV2] 停机取消设置测试任务失败 error_type=%s", type(error).__name__)
             from .exchange_rate import close_exchange_rate_services
             from .pricing_sources import close_pricing_catalog_services
+            from .quota_service import close_quota_watch_services
             try:
                 await close_exchange_rate_services(self)
             except Exception as error:
@@ -1972,6 +2143,12 @@ class AstrBotMultiController:
                 await close_pricing_catalog_services(self)
             except Exception as error:
                 logger.warning("[CompanionV2] 计价服务停机清理失败 error_type=%s", type(error).__name__)
+            try:
+                await close_quota_watch_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 多站点额度服务停机清理失败 error_type=%s", type(error).__name__)
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             self.unregister_routes()
 
     async def _release_runtime(self):

@@ -104,20 +104,24 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         from companion_v2.agenda.planning import planning_profile
         from companion_v2.configuration.registry import FieldRegistry
         from companion_v2.model_gateway.routing import configuration_fields
+        from companion_v2.proactive.configuration import target_for as contact_target
         from companion_v2.proactive.external_materials import WeatherSnapshot
+        from companion_v2.proactive.service import contact_profile
         from companion_v2.references.configuration import configuration_fields as reference_fields
         from companion_v2.references.management import ReferenceMaterialManagement
         from companion_v2.role_profile.configuration import target_for as profile_target
         from companion_v2.role_work.state.management import StateManagement
         from tests.test_calendar_planning import output as planned_event
         from tests.test_role_state import calendar_data
+        from tests.proactive_support import ContactFixture
 
         class Weather:
             async def fetch(self, location):
                 return WeatherSnapshot("open-meteo", location.name, NOW, 14, "小雨", None, 12, ())
 
         self.grant(self.important, SCOPE, "extension.tool.invoke")
-        self.profiles += (planning_profile("primary", max_output_tokens=100),)
+        self.grant(self.important, SCOPE, "proactive.contact")
+        self.profiles += (planning_profile("primary", max_output_tokens=100), contact_profile("primary"))
         self.registry = FieldRegistry(version="outfit-flow", fields=configuration_fields(self.profiles))
         host = await self.image_host(weather_port=Weather())
         app = host.application
@@ -198,6 +202,20 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assertEqual(request(self.core, context, at=NOW, operation_key=operation)["state"], "created")
         await self.until(lambda: not app.daily_outfit.workers)
         self.assertEqual(request(self.core, context, at=NOW, operation_key=operation)["state"], "succeeded")
+        self.assertEqual(len(self.image_backend.calls), 2)
+
+        async def share(envelope):
+            self.assertIn("角色当天已经生成的穿搭图", envelope.original.user_instruction)
+            return answered('{"decision":"send","text":"今天的搭配想试试轻便一点的外套。"}')
+
+        self.model_behavior = share
+        ContactFixture.settings(self, app, {"enabled": True, "automatic_enabled": True,
+            "life.enabled": True, "proactive_share_probability": 100,
+            "proactive_hour_activity_curve": ",".join(["1.00"] * 24)},
+            target=contact_target(context), actor=self.important).unwrap()
+        app.notify()
+        await self.until(lambda: len(self.sent) == 2)
+        self.assertEqual(base64.b64decode(self.sent[1].images[0].data_base64), image_bytes("red"))
         self.assertEqual(len(self.image_backend.calls), 2)
 
     def use_nai(self):

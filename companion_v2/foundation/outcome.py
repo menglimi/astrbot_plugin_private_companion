@@ -15,6 +15,7 @@ class Failure:
 
     code: str
     reason: str
+    details: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -33,8 +34,8 @@ class Outcome(Generic[T]):
         return cls(value=value)
 
     @classmethod
-    def failed(cls, code: str, reason: str) -> "Outcome[T]":
-        return cls(failure=Failure(code=code, reason=reason))
+    def failed(cls, code: str, reason: str, *, details: dict | None = None) -> "Outcome[T]":
+        return cls(failure=Failure(code=code, reason=reason, details=dict(details) if details else None))
 
     @property
     def is_success(self) -> bool:

@@ -206,7 +206,7 @@ window.CompanionNativeExtensionPanel = (() => {
       else if (["int", "float"].includes(kind)) {
         const bounds = field.slider || field;
         control = `<input type="number" ${attrs} value="${escape(resolved ?? "")}" step="${escape(bounds.step ?? (kind === "int" ? 1 : "any"))}"${Number.isFinite(bounds.min) ? ` min="${bounds.min}"` : ""}${Number.isFinite(bounds.max) ? ` max="${bounds.max}"` : ""}>`;
-      } else control = `<input type="${isSecret ? "password" : "text"}" ${attrs} value="${isSecret ? "" : escape(resolved || "")}" ${isSecret ? `autocomplete="new-password" placeholder="${this.isConfigured(path, resolved) ? "已配置，留空保持不变" : "尚未配置"}"` : ""} spellcheck="false">`;
+      } else control = `<input type="${isSecret ? "password" : "text"}" ${attrs} value="${isSecret ? "" : escape(resolved || "")}" ${isSecret ? `autocomplete="new-password" placeholder="${this.isConfigured(path, resolved) ? "已配置，留空保持不变" : "尚未配置"}"` : (field.placeholder ? `placeholder="${escape(field.placeholder)}"` : "")} spellcheck="false">`;
       const notes = [hint, kind === "list" ? "每行一项；清空可移除所有条目。" : "", isSecret ? "留空保留已有密钥，填写新值才会替换。" : ""].filter(Boolean).join(" ");
       return `<div class="native-extension-field ${kind === "bool" ? "is-switch" : ""}" data-native-field-label="${escape(title)}" data-field="${escape(path.join("."))}"><label for="${id}">${escape(title)}</label>${kind === "bool" ? `<label class="native-extension-switch" for="${id}" aria-label="${escape(title)}">${control}</label>` : control}<small id="${id}-hint">${escape(notes)}</small></div>`;
     }

@@ -291,9 +291,7 @@ class ExplorationEvents:
                     worker.exception()
 
     def _due(self, context, values, at):
-        if not values.get("web_exploration_enabled") is True:
-            return False
-        if values.get("news_source_kind") != "search":
+        if values.get("web_exploration_enabled") is not True:
             return False
         if context.scope.kind is not ScopeKind.PRIVATE:
             return False
@@ -423,6 +421,7 @@ class ExplorationEvents:
             if self._closed:
                 break
             current = dict(values)
+            current["news_source_kind"] = "search"
             current["web_exploration_interests"] = query
             current["web_exploration_result_count"] = RESULTS_PER_QUERY
             try:

@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - optional acceleration
 
 from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.storage.image_payloads import image_extension
-from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+from companion_v2.storage.sqlite_tuning import active_sqlite_tuning_profile, apply_sidecar_pragmas
 
 
 VECTOR_BLOB_MAGIC = b"F16\x00"
@@ -186,10 +186,10 @@ SETTING_OPTIONS = {
 class SemanticStore:
     BUSY_TIMEOUT_MS = 5000
 
-    def __init__(self, root):
+    def __init__(self, root, *, profile=None):
         self.root = Path(root)
         self.path = self.root / "semantic-catalog.sqlite3"
-        self._profile = tuning_profile()
+        self._explicit_profile = profile
         is_new = not self.path.exists()
         with self.db(enable_wal=True, set_incremental_vacuum=is_new) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -276,6 +276,10 @@ class SemanticStore:
                 configured["learning_interval_seconds"] = DEFAULTS["learning_interval_seconds"]
                 db.execute("UPDATE settings SET revision=revision+1,payload=? WHERE id=1 AND revision=?",
                            (encode(configured), row["revision"]))
+
+    @property
+    def _profile(self):
+        return self._explicit_profile or active_sqlite_tuning_profile()
 
     @property
     def reaction_media_root(self) -> Path:

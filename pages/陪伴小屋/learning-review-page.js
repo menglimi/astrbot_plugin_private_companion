@@ -30,7 +30,7 @@ window.CompanionLearningReviewPage = (() => {
   const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const relative = value => typeof value === "string" && value.startsWith(PREFIX) ? value.slice(PREFIX.length) : "";
   const MAX_REFRESH_PAGES = 10;
-  let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, pages = [], data = null;
+  let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, pages = [], data = null, lastRenderedSelected = "";
   const live = current => root?.isConnected && current === ticket;
   function routeFor(source, base, suffix) {
     return base + suffix;
@@ -318,11 +318,20 @@ window.CompanionLearningReviewPage = (() => {
     if (item._type === "self" && action === "accept") return "采纳指导";
     return ACTION[action] || "处理";
   }
+  function detailBodyNode() {
+    return root?.querySelector?.(".lh-review-detail-body") || null;
+  }
   function render(options = {}) {
     if (!root || !data) return;
     const savedScroll = options.resetScroll ? undefined : queueNode()?.scrollTop;
+    const prevDetailScroll = options.resetScroll ? undefined : detailBodyNode()?.scrollTop;
+    const prevSelected = lastRenderedSelected;
     const visible = data.items.filter(item => data.filter === "all" || item._type === data.filter);
     if(!visible.some(item=>keyFor(item)===data.selected))data.selected=visible[0]?._key||"";
+    const savedDetailScroll = (!options.resetScroll && prevSelected && prevSelected === data.selected)
+      ? prevDetailScroll
+      : undefined;
+    lastRenderedSelected = data.selected;
     const current = selectedItem();
     const currentIndex = current ? visible.findIndex(item => keyFor(item) === keyFor(current)) : -1;
     const position = currentIndex + 1;
@@ -384,7 +393,10 @@ window.CompanionLearningReviewPage = (() => {
               <span class="lh-review-chip is-type is-${current._type}">${typeFor(current)}</span>
               ${metric?`<span class="lh-review-chip is-metric">${e(metric)}</span>`:""}
             </div>
-            <span class="lh-review-position">第 ${String(position).padStart(2,"0")} / ${String(visible.length).padStart(2,"0")} 条</span>
+            <div class="lh-review-detail-head-meta">
+              <span class="lh-review-position">第 ${String(position).padStart(2,"0")} / ${String(visible.length).padStart(2,"0")} 条</span>
+              <button type="button" class="lh-review-back-queue" data-review-back-queue aria-label="返回待批阅队列">↑ 返回队列</button>
+            </div>
           </header>
           <dl class="lh-review-meta-grid">
             <div><dt>归属</dt><dd>${e(source)}</dd></div>
@@ -422,6 +434,24 @@ window.CompanionLearningReviewPage = (() => {
     const partialMessage = data.failedLabels?.length
       ? `部分记录归属暂时无法读取（${data.failedLabels.join("、")}），已保留之前显示的记录`
       : "部分记录归属暂时无法读取，已保留之前显示的记录";
+    const emptyBody = !data.loading && !visible.length
+      ? `<section class="lh-review-empty-state" role="status">
+          <span class="lh-review-empty-icon" aria-hidden="true"><i data-lucide="${data.items.length ? "filter" : "check-circle-2"}"></i></span>
+          <h3>${data.items.length ? "该分类下暂无待批阅记录" : "当前没有待批阅记录"}</h3>
+          <p>${data.items.length ? "其他分类中仍有待处理条目，可切回「全部」查看。" : "陪伴中整理出的成长进展、表达候选与每日复盘会出现在这里，随时回来核实与裁决。"}</p>
+          <div class="lh-review-empty-actions">
+            ${data.filter !== "all" && data.items.length ? `<button type="button" class="lh-review-empty-btn is-primary" data-review-filter="all">查看全部（${data.items.length}）</button>` : ""}
+            <a class="lh-review-empty-btn" href="#manage/learning/chain">成长链路</a>
+            <a class="lh-review-empty-btn" href="#manage/learning/expression">表达学习</a>
+            <a class="lh-review-empty-btn" href="#manage/learning/reflection">每日复盘</a>
+          </div>
+        </section>`
+      : `<div class="lh-review-layout"><section class="lh-review-queue">
+        <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
+        <div class="lh-review-queue-list">${list}</div>
+        <footer class="lh-review-queue-foot"><span>显示 ${visible.length} / ${data.items.length} 条</span>
+          ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</footer></section>
+        ${detail}</div>`;
     root.innerHTML = `<header class="lh-review-head"><div class="lh-review-head-copy">
         <h2>审阅中心</h2>
         <p>把陪伴里学到的分寸与进展整理成手稿，逐条核实与裁决。</p></div>
@@ -435,15 +465,14 @@ window.CompanionLearningReviewPage = (() => {
           <button type="button" class="lh-review-bulk-reject" data-review-bulk="reject"${!bulkReject||data.writing?" disabled":""}>批量驳回${bulkReject?` · ${bulkReject}`:""}</button></div></div>
       ${data.notice?`<p class="lh-inline-status ${data.error?"is-error":""}" role="status">${e(data.notice)}</p>`:""}
       ${data.errors?`<p class="lh-inline-status" role="status">${e(partialMessage)}</p>`:""}
-      ${bulkConfirm}<div class="lh-review-layout"><section class="lh-review-queue">
-        <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
-        <div class="lh-review-queue-list">${list}</div>
-        <footer class="lh-review-queue-foot"><span>显示 ${visible.length} / ${data.items.length} 条</span>
-          ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</footer></section>
-        ${detail}</div>`;
+      ${bulkConfirm}${emptyBody}`;
     if (Number.isFinite(savedScroll)) {
       const node = queueNode();
       if (node) node.scrollTop = savedScroll;
+    }
+    if (Number.isFinite(savedDetailScroll)) {
+      const detailNode = detailBodyNode();
+      if (detailNode) detailNode.scrollTop = savedDetailScroll;
     }
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
@@ -529,6 +558,28 @@ window.CompanionLearningReviewPage = (() => {
     data.error=!!failed;render();
   }
 
+  function isStackedLayout() {
+    try {
+      if (typeof window?.matchMedia === "function" && window.matchMedia("(max-width: 820px)").matches) return true;
+      const width = Number(root?.getBoundingClientRect?.().width || root?.clientWidth || 0);
+      if (width > 0 && width <= 820) return true;
+    } catch (_) {}
+    return false;
+  }
+  function prefersReducedMotion() {
+    try {
+      if (root?.ownerDocument?.documentElement?.dataset?.motion === "off") return true;
+      if (typeof window?.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return true;
+    } catch (_) {}
+    return false;
+  }
+  function scrollTargetIntoView(selector) {
+    if (!root?.querySelector) return;
+    try {
+      const node = root.querySelector(selector);
+      node?.scrollIntoView?.({behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start"});
+    } catch (_) { /* 精简测试 DOM 无需滚动 */ }
+  }
   function scrollSelectedIntoView() {
     if (!root?.querySelectorAll || !data?.selected) return;
     try {
@@ -589,6 +640,7 @@ window.CompanionLearningReviewPage = (() => {
     if (event.target.closest("[data-review-more]")) { void read(ticket, "append"); return; }
     if (event.target.closest("[data-review-prev]")) { selectStep(-1); return; }
     if (event.target.closest("[data-review-next]")) { selectStep(1); return; }
+    if (event.target.closest("[data-review-back-queue]")) { scrollTargetIntoView(".lh-review-queue"); return; }
     const bulk=event.target.closest("[data-review-bulk]");
     if(bulk){
       const action=bulk.dataset.reviewBulk;
@@ -599,7 +651,13 @@ window.CompanionLearningReviewPage = (() => {
       data.confirming={bulk:true,action};render();return;
     }
     const select = event.target.closest("[data-review-select]");
-    if (select) { data.selected=select.dataset.reviewSelect; data.confirming=null; render(); return; }
+    if (select) {
+      data.selected=select.dataset.reviewSelect;
+      data.confirming=null;
+      render();
+      if (isStackedLayout()) scrollTargetIntoView(".lh-review-detail");
+      return;
+    }
     const staged = event.target.closest("[data-review-stage]");
     if (staged) { data.confirming={key:staged.dataset.reviewKey,action:staged.dataset.reviewStage}; render(); return; }
     const confirm = event.target.closest("[data-review-confirm]");
@@ -627,6 +685,6 @@ window.CompanionLearningReviewPage = (() => {
     const current=++ticket;
     if (sources.length) void read(current); else render();
   }
-  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null; }
+  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null;lastRenderedSelected=""; }
   return {mount,unmount,get state(){return data;}};
 })();

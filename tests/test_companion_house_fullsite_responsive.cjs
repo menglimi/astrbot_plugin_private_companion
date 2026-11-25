@@ -175,12 +175,12 @@ test("contact-page.css：修复拨盘区 170px 挤压、素材工具栏溢出与
   assert.match(css, /@container\s+ct-main\s*\(\s*max-width:\s*780px\s*\)[\s\S]*?\.ct-controls\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
   assert.match(css, /\.ct-material-tools\s*\{[^}]*repeat\(\s*auto-fit\s*,\s*minmax\(\s*min\(\s*160px\s*,\s*100%\s*\)\s*,\s*1fr\s*\)\)/);
   assert.match(css, /\.ct-field-pair\s*\{[^}]*repeat\(\s*2\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
-  assert.match(css, /calc\(\s*var\(--sp-1\)\s*\*\s*-1\s*\)/);
+  assert.match(css, /calc\(\s*\(\s*var\(--ct-track\)\s*-\s*var\(--ct-thumb\)\s*\)\s*\/\s*2\s*\)/);
 });
 
-test("maintenance-page.css：4 列页签导航、缓存/联动容器折行与高对比语义色", () => {
+test("maintenance-page.css：5 列页签导航、缓存/联动容器折行与高对比语义色", () => {
   const css = stripComments(read("pages/陪伴小屋/maintenance-page.css"));
-  assert.match(css, /\.data-page-nav\s*\{[^}]*repeat\(\s*4\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
+  assert.match(css, /\.data-page-nav\s*\{[^}]*repeat\(\s*5\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
   assert.match(css, /@container\s+maint-cache\s*\(\s*max-width:\s*960px\s*\)[\s\S]*?\.maint-cache-split/);
   assert.match(css, /\.maint-memory-linkage\s+dl\s*\{[^}]*repeat\(\s*auto-fit\s*,\s*minmax\(\s*min\(\s*130px\s*,\s*100%\s*\)\s*,\s*1fr\s*\)\)/);
   assert.match(css, /\.maint-cache-donut\s+strong\s*\{[^}]*color:\s*var\(--t-ok-ink\)/);
@@ -349,8 +349,13 @@ test("视觉打磨 P1 回归：模型页签不拆字、感知时钟单行不折�
   const modelsCss = stripComments(read("pages/陪伴小屋/models-page.css"));
   assert.match(
     modelsCss,
-    /\.model-tabs\s*\{[^}]*flex-wrap:\s*wrap/,
-    "models-page.css 的 .model-tabs 应允许窄宽折行且不撑破容器",
+    /\.model-tabs\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/,
+    "models-page.css 的 .model-tabs 应采用单行自然内容宽与平滑横滑，避免孤儿折行条",
+  );
+  assert.match(
+    modelsCss,
+    /\.model-tabs-sep\s*\{[^}]*width:\s*1px/,
+    "models-page.css 应提供模型能力与计价/额度分组微分隔线 .model-tabs-sep",
   );
   assert.match(
     modelsCss,

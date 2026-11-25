@@ -17,6 +17,7 @@ REASON_LABELS = {
     "mention_all": "@全体",
     "native_wakeup": "宿主唤醒词",
     "direct_word": "唤醒词/名称",
+    "wake_word_with_other_mention": "@ 他人时命中唤醒词",
     "quoted_reply": "引用回复",
     "native_quote": "引用机器人",
     "active_follow_up": "补充正在处理的任务",

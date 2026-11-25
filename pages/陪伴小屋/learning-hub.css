@@ -209,9 +209,9 @@
 :root:is([data-motion="off"],[data-motion="low"]) .lh-refresh.is-loading svg{animation:none!important}
 
 .lh-signal-list{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
-.lh-signal-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0}
-.lh-signal-head>div{display:flex;align-items:baseline;gap:var(--sp-2);min-width:0}
-.lh-signal-head-tools{display:flex!important;align-items:center!important;gap:var(--sp-2)!important}
+.lh-signal-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-2);min-width:0}
+.lh-signal-head>div{display:flex;align-items:baseline;flex-wrap:wrap;gap:var(--sp-2);min-width:0}
+.lh-signal-head-tools{display:flex!important;align-items:center!important;flex-wrap:wrap;gap:var(--sp-2)!important}
 .lh-signal-head-tools .lh-command{min-height:34px}
 .lh-signal-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650}
 .lh-signal-head>div>span{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
@@ -239,7 +239,7 @@
 .lh-signal-card-meta{flex-wrap:wrap}
 .lh-signal-dimension{color:var(--t-accent-ink);font-weight:650}
 .lh-signal-source{color:var(--t-text-soft)}
-.lh-signal-capacity{font-variant-numeric:tabular-nums;white-space:nowrap}
+.lh-signal-capacity{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .lh-signal-state{padding:2px var(--sp-1);border-radius:var(--r-xs);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro)}
 .is-retired .lh-signal-state{background:var(--t-surface-soft);color:var(--t-text-faint)}
 .lh-signal-uses{font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -265,6 +265,24 @@
 .lh-signal-confirm button{min-height:30px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
 .lh-signal-empty{padding:var(--sp-5) var(--sp-3);border:1px dashed var(--t-line);border-radius:var(--r-sm);color:var(--t-text-faint);text-align:center}
 .lh-signal-more{align-self:center;min-width:120px}
+.lh-signal-loaded-hint{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;white-space:nowrap}
+.lh-expression-dedupe{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.lh-expression-dedupe-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-2);padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line)}
+.lh-expression-dedupe-head strong{color:var(--t-text-strong);font-size:var(--fs-body)}
+.lh-expression-dedupe-desc{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
+.lh-expression-dedupe-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-2)}
+.lh-expression-dedupe-empty{margin:0;color:var(--t-text-faint);font-size:var(--fs-tiny)}
+.lh-expression-dedupe-summary{display:flex;flex-direction:column;gap:var(--sp-2);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.lh-expression-dedupe-metrics{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-2)}
+.lh-expression-dedupe-metrics strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums}
+.lh-expression-dedupe-chips{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1)}
+.lh-expression-dedupe-chip{display:inline-flex;align-items:center;gap:var(--sp-1);padding:2px var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
+.lh-expression-dedupe-chip b{color:var(--t-text-strong);font-weight:650}
+.lh-expression-dedupe-groups{display:flex;flex-direction:column;gap:var(--sp-2);max-height:280px;overflow:auto;margin:0;padding:0;list-style:none}
+.lh-expression-dedupe-groups li{display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft)}
+.lh-expression-dedupe-group-head{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);font-size:var(--fs-micro)}
+.lh-expression-dedupe-groups p{margin:0;color:var(--t-text-strong);font-size:var(--fs-tiny);line-height:1.45;overflow-wrap:anywhere}
+.lh-expression-dedupe-groups small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.45;overflow-wrap:anywhere}
 .lh-expression-transfer{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
 .lh-expression-transfer-head{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line)}
 .lh-expression-transfer-head strong{color:var(--t-text-strong);font-size:var(--fs-body)}
@@ -385,13 +403,17 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-bulk-reject{min-height:32px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
 .learning-review-workspace .lh-review-bulk-reject:hover:not(:disabled){border-color:var(--t-risk);background:var(--t-risk-quiet);color:var(--t-risk-ink)}
 .learning-review-workspace .lh-review-bulk-reject:disabled{opacity:.48;cursor:default}
-.learning-review-workspace .lh-review-layout{display:grid;grid-template-columns:minmax(270px,340px) minmax(0,1fr);gap:var(--sp-3);align-items:stretch;min-width:0;height:clamp(420px,calc(100dvh - 320px),760px);max-height:clamp(420px,calc(100dvh - 320px),760px)}
-.learning-review-workspace .lh-review-queue,.learning-review-workspace .lh-review-detail{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
-.learning-review-workspace .lh-review-queue-head{flex:0 0 auto;display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--t-line);background:var(--t-surface)}
+/* 自然流式展开 + 右侧详情台 sticky 全视口吸顶跟随。
+   左侧队列完全跟随主页面滚轮自然下滑，不再锁死 420–760px 窄盒或拦截滚轮；
+   右侧详情台贴顶随视口舒展至 calc(100dvh - 32px)，超长单条才触发内部滚动且自然向主页面透传。 */
+.learning-review-workspace .lh-review-layout{display:grid;grid-template-columns:minmax(270px,340px) minmax(0,1fr);gap:var(--sp-3);align-items:start;min-width:0;height:auto;max-height:none}
+.learning-review-workspace .lh-review-queue{display:flex;flex-direction:column;min-width:0;height:auto;overflow:visible;scroll-margin-top:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
+.learning-review-workspace .lh-review-detail{position:sticky;top:var(--sp-3);align-self:start;display:flex;flex-direction:column;min-width:0;min-height:min(520px,calc(100dvh - 120px));max-height:calc(100dvh - 32px);overflow:hidden;scroll-margin-top:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
+.learning-review-workspace .lh-review-queue-head{flex:0 0 auto;display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--t-line);border-radius:var(--r-md) var(--r-md) 0 0;background:var(--t-surface)}
 .learning-review-workspace .lh-review-queue-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}
 .learning-review-workspace .lh-review-queue-head p{margin:var(--sp-1) 0 0;color:var(--t-text-faint);font-size:var(--fs-micro)}
 .learning-review-workspace .lh-review-queue-head>span{color:var(--t-text-faint);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums;white-space:nowrap}
-.learning-review-workspace .lh-review-queue-list{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3)}
+.learning-review-workspace .lh-review-queue-list{flex:0 0 auto;min-height:0;overflow-y:visible;overscroll-behavior:auto;display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3)}
 .learning-review-workspace .lh-review-row-wrap{display:grid;grid-template-columns:16px 22px minmax(0,1fr);align-items:start;gap:var(--sp-2);padding:var(--sp-2);border:1px solid transparent;border-radius:var(--r-sm);background:var(--t-surface-soft);transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease}
 .learning-review-workspace .lh-review-row-wrap:hover{border-color:var(--t-line-firm)}
 .learning-review-workspace .lh-review-row-wrap.is-selected{border-color:var(--t-accent);background:var(--t-surface-raised);box-shadow:inset 3px 0 0 var(--t-accent-solid)}
@@ -406,7 +428,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-type.is-self{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
 .learning-review-workspace .lh-review-row-title{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;line-height:1.45;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-row-source{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.learning-review-workspace .lh-review-queue-foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-2) var(--sp-4);border-top:1px solid var(--t-line);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
+.learning-review-workspace .lh-review-queue-foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-2) var(--sp-4);border-top:1px solid var(--t-line);border-radius:0 0 var(--r-md) var(--r-md);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
 .learning-review-workspace .lh-review-queue-foot .lh-command{min-height:29px;padding:2px var(--sp-2);font-size:var(--fs-micro)}
 .learning-review-workspace .lh-review-detail-top{flex:0 0 auto;display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) var(--sp-5);border-bottom:1px solid var(--t-line);background:var(--t-surface)}
 .learning-review-workspace .lh-review-detail-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap}
@@ -418,12 +440,16 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-chip.is-type.is-style{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
 .learning-review-workspace .lh-review-chip.is-type.is-self{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
 .learning-review-workspace .lh-review-chip.is-metric{background:var(--t-surface-soft);color:var(--t-text-soft);font-variant-numeric:tabular-nums}
+.learning-review-workspace .lh-review-detail-head-meta{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
 .learning-review-workspace .lh-review-position{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;white-space:nowrap}
+.learning-review-workspace .lh-review-back-queue{display:none;align-items:center;gap:var(--sp-1);min-height:32px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface-soft);color:var(--t-accent-ink);font:inherit;font-size:var(--fs-micro);font-weight:600;white-space:nowrap;cursor:pointer;transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease}
+.learning-review-workspace .lh-review-back-queue:hover{border-color:var(--t-accent);background:var(--t-accent-quiet)}
 .learning-review-workspace .lh-review-meta-grid{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(0,0.9fr) minmax(0,0.9fr);gap:var(--sp-3);margin:0}
 .learning-review-workspace .lh-review-meta-grid div{display:grid;gap:2px;min-width:0}
 .learning-review-workspace .lh-review-meta-grid dt{color:var(--t-text-faint);font-size:var(--fs-micro)}
 .learning-review-workspace .lh-review-meta-grid dd{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.45;overflow-wrap:anywhere}
-.learning-review-workspace .lh-review-detail-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5)}
+.learning-review-workspace .lh-review-detail-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:auto;display:flex;flex-direction:column;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5)}
+.learning-review-workspace .lh-review-detail-body>*{flex:0 0 auto}
 .learning-review-workspace .lh-review-detail-title h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-head);font-weight:650;line-height:1.4;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-detail-title p{margin:var(--sp-1) 0 0;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.6;overflow-wrap:anywhere}
 .learning-review-workspace .lh-review-quote{margin:0;padding:var(--sp-3) var(--sp-4);border-inline-start:3px solid var(--t-accent);border-radius:0 var(--r-xs) var(--r-xs) 0;background:var(--t-surface-soft)}
@@ -461,17 +487,52 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-detail-actions .lh-command.is-primary{border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid)}
 .learning-review-workspace .lh-review-detail-actions .lh-command.is-primary:hover:not(:disabled){border-color:var(--t-accent-solid-hover);background:var(--t-accent-solid-hover)}
 .learning-review-workspace .lh-review-detail-empty{display:grid;place-items:center;min-height:300px;border:1px dashed var(--t-line);border-radius:var(--r-md);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-tiny)}
+/* 0 条待批阅统一温暖空态卡：替代左右两个空盒子 */
+.learning-review-workspace .lh-review-empty-state{
+  display:grid;justify-items:center;text-align:center;gap:var(--sp-2);
+  padding:var(--sp-7) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-lg);
+  background:radial-gradient(120% 140% at 50% 0%,color-mix(in srgb,var(--t-ok-quiet) 58%,transparent),transparent 60%),var(--t-surface-raised);
+  box-shadow:var(--t-shadow);
+}
+.learning-review-workspace .lh-review-empty-icon{
+  display:grid;place-items:center;width:44px;height:44px;margin-bottom:var(--sp-1);
+  border-radius:50%;background:var(--t-ok-quiet);color:var(--t-ok-ink);
+  border:1px solid color-mix(in srgb,var(--t-ok) 26%,transparent);
+}
+.learning-review-workspace .lh-review-empty-icon svg{width:22px;height:22px}
+.learning-review-workspace .lh-review-empty-state h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650}
+.learning-review-workspace .lh-review-empty-state p{margin:0;max-width:46ch;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.7}
+.learning-review-workspace .lh-review-empty-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--sp-2);margin-top:var(--sp-2)}
+.learning-review-workspace .lh-review-empty-btn{
+  display:inline-flex;align-items:center;justify-content:center;min-height:34px;
+  padding:var(--sp-1) var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-pill);
+  background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:500;
+  text-decoration:none;cursor:pointer;transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease,color var(--dur-fast) ease;
+}
+.learning-review-workspace .lh-review-empty-btn:hover{border-color:var(--t-accent);background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.learning-review-workspace .lh-review-empty-btn.is-primary{border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid)}
+.learning-review-workspace .lh-review-empty-btn.is-primary:hover{border-color:var(--t-accent-solid-hover);background:var(--t-accent-solid-hover);color:var(--t-on-solid)}
 @media(max-width:820px){
   .learning-review-workspace .lh-review-layout{grid-template-columns:minmax(0,1fr);height:auto;max-height:none;align-items:start}
-  .learning-review-workspace .lh-review-queue{height:auto;max-height:380px}
-  .learning-review-workspace .lh-review-detail{height:auto;overflow:visible}
+  .learning-review-workspace .lh-review-queue{height:auto;max-height:none;overflow:visible}
+  .learning-review-workspace .lh-review-detail{position:static;top:auto;min-height:0;max-height:none;height:auto;overflow:visible}
   .learning-review-workspace .lh-review-detail-body{overflow:visible}
+  .learning-review-workspace .lh-review-back-queue{display:inline-flex}
+  .learning-review-workspace .lh-review-nav-btn kbd{display:none}
 }
 @container learning-hub (max-width:820px){
   .learning-review-workspace .lh-review-layout{grid-template-columns:minmax(0,1fr);height:auto;max-height:none;align-items:start}
-  .learning-review-workspace .lh-review-queue{height:auto;max-height:380px}
-  .learning-review-workspace .lh-review-detail{height:auto;overflow:visible}
+  .learning-review-workspace .lh-review-queue{height:auto;max-height:none;overflow:visible}
+  .learning-review-workspace .lh-review-detail{position:static;top:auto;min-height:0;max-height:none;height:auto;overflow:visible}
   .learning-review-workspace .lh-review-detail-body{overflow:visible}
+  .learning-review-workspace .lh-review-back-queue{display:inline-flex}
+  .learning-review-workspace .lh-review-nav-btn kbd{display:none}
+}
+@media(pointer:coarse){
+  .learning-review-workspace .lh-review-nav-btn kbd{display:none}
+  .learning-review-workspace .lh-review-nav-btn,
+  .learning-review-workspace .lh-review-reject,
+  .learning-review-workspace .lh-review-detail-actions .lh-command{min-height:40px}
 }
 @media(max-width:560px){
   .learning-review-workspace .lh-review-toolbar{align-items:stretch;flex-direction:column}
@@ -481,7 +542,11 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
   .learning-review-workspace .lh-review-quote p{font-size:var(--fs-body)}
   .learning-review-workspace .lh-review-meta-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
   .learning-review-workspace .lh-review-avoid,.learning-review-workspace .lh-review-conditions{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
-  .learning-review-workspace .lh-review-detail-actions{width:100%;justify-content:flex-end}
+  .learning-review-workspace .lh-review-detail-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin-inline-start:0}
+  .learning-review-workspace .lh-review-nav-btn{justify-content:center;min-height:40px;border-color:var(--t-line);background:var(--t-surface-soft)}
+  .learning-review-workspace .lh-review-reject,
+  .learning-review-workspace .lh-review-detail-actions .lh-command{min-height:42px;justify-content:center}
+  .learning-review-workspace .lh-review-detail-actions>*:last-child:nth-child(odd){grid-column:1/-1}
   .learning-review-workspace .lh-review-detail-meta{width:100%}
 }
 @container learning-hub (max-width:560px){
@@ -492,6 +557,13 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
   .learning-review-workspace .lh-review-quote p{font-size:var(--fs-body)}
   .learning-review-workspace .lh-review-meta-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
   .learning-review-workspace .lh-review-avoid,.learning-review-workspace .lh-review-conditions{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
-  .learning-review-workspace .lh-review-detail-actions{width:100%;justify-content:flex-end}
+  .learning-review-workspace .lh-review-detail-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;margin-inline-start:0}
+  .learning-review-workspace .lh-review-nav-btn{justify-content:center;min-height:40px;border-color:var(--t-line);background:var(--t-surface-soft)}
+  .learning-review-workspace .lh-review-reject,
+  .learning-review-workspace .lh-review-detail-actions .lh-command{min-height:42px;justify-content:center}
+  .learning-review-workspace .lh-review-detail-actions>*:last-child:nth-child(odd){grid-column:1/-1}
   .learning-review-workspace .lh-review-detail-meta{width:100%}
+}
+@media(prefers-reduced-motion:reduce){
+  .learning-review-workspace .lh-review-back-queue{transition:none}
 }

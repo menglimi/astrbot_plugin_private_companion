@@ -160,6 +160,8 @@ adb shell ime set com.android.adbkeyboard/.AdbIME
 
 ## 一次任务的完整路径
 
+私聊发送「查看手机屏幕」或询问当前 Android 页面，可读取一次当前画面。Bot 通过 `phone.screen.read` / 明确的私聊指令使用 ADB 抓取画面，并用 `phone.act` 配置的视觉模型回答。读屏只返回文字结果，不操作手机，也不保存这次截图。息屏、锁屏或模型不可用时，原私聊会收到具体原因。
+
 1. 用户在私聊里说"明天上午帮我把那个 app 签个到"。
 2. 模型调用 `phone.task.start`（`goal`、可选 `delay_minutes`/`max_steps`），返回任务 id；此刻不碰手机。
 3. 到点后 TickUnit 提交第一步任务；任务观察屏幕（截图 + UI 树），模型只输出一个 JSON 动作。

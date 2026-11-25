@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.storage.sqlite_path import file_uri
-from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+from companion_v2.storage.sqlite_tuning import active_sqlite_tuning_profile, apply_sidecar_pragmas
 
 
 def sqlite_code(error):
@@ -44,9 +44,9 @@ class SearchIndex:
 
     FORMAT = 3  # Disposable cache layout; unrelated to the authoritative schema.
 
-    def __init__(self, data_root):
+    def __init__(self, data_root, *, profile=None):
         self.path = data_root / "memory-search.sqlite3"
-        self._profile = tuning_profile()
+        self._explicit_profile = profile
         self._ready = False
         try:
             self._ensure_ready()
@@ -55,6 +55,10 @@ class SearchIndex:
                 raise
             # A busy cache cannot prevent its owning host from starting. The
             # next actual query retries initialization without a blocking wait.
+
+    @property
+    def _profile(self):
+        return self._explicit_profile or active_sqlite_tuning_profile()
 
     def _ensure_ready(self):
         if self._ready:

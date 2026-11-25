@@ -539,6 +539,13 @@ window.CompanionPerceptionOverviewPage = (() => {
       : balanceConfig.source === "environment" ? "正在使用插件环境配置"
         : "尚未配置数据源";
     return `<form id="perception-balance-source" class="perception-balance-config" data-balance-form novalidate aria-label="余额感知数据源配置">
+      <div class="perception-quota-bridge">
+        <div class="perception-quota-bridge-copy">
+          <strong>推荐：前往「模型与连接 → 额度看板」统一管理多站点余额</strong>
+          <small>支持自动识别 NewAPI / 衍生站 / DeepSeek / OpenRouter / 硅基流动 / 月之暗面 / Sub2API 等多站并行监测、汇率折算汇总，以及按主站/聚合/任一偏低反哺余额感知。</small>
+        </div>
+        <button type="button" class="qw-btn small soft" data-open-quota-dashboard data-go="manage" data-manage="models" data-manage-subtab="quota">打开多站点额度看板 →</button>
+      </div>
       <div class="perception-balance-config-head"><span>${icon("wallet-cards")}</span><div><strong>余额数据源</strong><small>${esc(sourceState)} · ${esc(sourceMessage)}</small></div></div>
       <fieldset class="perception-balance-legacy" aria-label="原有 NewAPI 配置" ${busy || draft.clear_configuration || draft.advanced_enabled ? "disabled" : ""}>
       <label class="perception-balance-field"><span>NewAPI 地址</span><input name="url" data-balance-field="url" type="url" inputmode="url" autocomplete="url" maxlength="2048"
@@ -659,6 +666,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     const modelInfo = modelRoute();
     const modelStateLabel = modelInfo ? "路由已读取" : modelState === "loading" ? "正在读取模型路由" : "模型路由暂不可读";
     const news = snapshot?.news || {};
+    const windowRequired = !selectedWindowRole() || snapshot?.windowRequired === true;
+    const poolItemList = Array.isArray(materialPool?.items) ? materialPool.items.filter(item => item && typeof item.title === "string") : [];
+    const poolCount = poolItemList.length || (Number.isInteger(materialPool?.count) ? materialPool.count : 0);
     const locationName = environment.locationName || "";
     const balanceEnabled = snapshot?.contact?.balanceAwarenessEnabled;
     const balanceAllowed = snapshot?.contact?.automaticAllowed;
@@ -669,15 +679,25 @@ window.CompanionPerceptionOverviewPage = (() => {
       ? balanceStatus.available ? balanceStatus : null
       : balanceTestResult?.available === true ? balanceTestResult : null);
     const balanceObservationIsDraft = balanceObservation === balanceDraftObservation && !!balanceDraftObservation;
-    const balanceValue = !ready ? `${balanceSourceConfigured ? "数据源已配置；" : ""}余额联系设置${configurationState === "读取失败" ? "读取失败" : "正在读取"}` : balanceEnabled === true
+    const balanceWindowPending = ready && windowRequired && balanceEnabled === undefined;
+    const balanceValue = !ready ? `${balanceSourceConfigured ? "数据源已配置；" : ""}余额联系设置${configurationState === "读取失败" ? "读取失败" : "正在读取"}`
+      : balanceWindowPending
+        ? balanceSourceConfigured ? "数据源已配置；选择私聊窗口查看联系开关"
+          : balanceSourceInvalid ? "余额数据源配置无效"
+            : "请选择私聊窗口"
+      : balanceEnabled === true
       ? balanceAllowed === true ? "服务余额联系已启用" : "余额契机已开，但后台自动联系未开启"
       : balanceSourceConfigured ? "数据源已配置，余额联系未开启"
         : balanceSourceInvalid ? "余额数据源配置无效，联系未开启"
           : "服务余额联系契机未启用";
-    const balanceTag = !ready ? configurationFailed ? "读取失败" : "读取中" : balanceEnabled === true
+    const balanceTag = !ready ? configurationFailed ? "读取失败" : "读取中"
+      : balanceWindowPending
+        ? balanceSourceConfigured ? "数据源已配置" : balanceSourceInvalid ? "待修复" : "未选择窗口"
+      : balanceEnabled === true
       ? balanceAllowed === true ? "主动联系" : "总开关受限"
       : balanceSourceConfigured ? "数据源已配置" : balanceSourceInvalid ? "待修复" : ready ? "未启用" : "待读取";
     const balanceDetail = !ready ? "余额联系条件尚未核对；可展开配置数据源，或重新读取状态。"
+      : balanceWindowPending ? "数据源可在此直接配置；选择私聊窗口后可查看当前会话的余额联系开关。"
       : balanceSourceConfigured && balanceEnabled !== true
       ? "数据源已配置；还需在主动联系的外部触发源中开启余额感知。"
       : "仅在服务余额达到阈值时作为主动联系素材，不会持续注入日常对话；不表示用户欠款。";
@@ -689,16 +709,29 @@ window.CompanionPerceptionOverviewPage = (() => {
     const networkLabel = news.networkStatus === "failed" ? "上次网络检查失败"
       : news.networkStatus === "succeeded" ? "网络检查通过"
         : sourceAssembled ? "网络尚未检查" : "来源未装配";
-    const externalValue = !ready ? configurationFailed ? "外部来源设置读取失败" : "正在读取外部来源" : searchSource
+    const explorationSearchReady = news.explorationSearchReady;
+    const parallelExplore = !searchSource && explorationEnabled;
+    const externalWindowPending = ready && windowRequired && !sourceAssembled && !news.sourceKind && !news.label;
+    const externalValue = !ready ? configurationFailed ? "外部来源设置读取失败" : "正在读取外部来源"
+      : externalWindowPending
+        ? poolCount > 0 ? `角色资讯池已有 ${poolCount} 条 · 请选择私聊窗口` : "请选择私聊窗口"
+      : searchSource
       ? explorationEnabled ? networkSucceeded ? news.label || "网络搜索检查通过" : sourceAssembled ? `网络搜索已配置 · ${networkLabel}` : "网络探索已启用，搜索源未装配" : "网络探索未启用"
       : dailySource ? `AI 日报已装配 · ${networkSucceeded ? "后台持续维护" : networkLabel}`
         : sourceAssembled ? `${news.label || "资讯来源"} · ${networkSucceeded ? "后台持续维护" : networkLabel}`
-          : ready ? "尚未配置外部来源" : "正在读取外部来源";
-    const externalState = !ready ? "pending" : searchSource && explorationEnabled
+          : explorationEnabled ? (explorationSearchReady === false ? "网络探索已启用，搜索源未装配" : "网络探索已启用")
+            : "尚未配置外部来源";
+    const externalState = !ready || externalWindowPending ? "pending" : searchSource && explorationEnabled
       ? networkSucceeded ? "ready" : "pending"
-      : networkSucceeded ? "ready" : sourceAssembled ? "pending" : "off";
-    const externalDetail = [
+      : networkSucceeded ? "ready" : sourceAssembled ? "pending"
+        : explorationEnabled ? (explorationSearchReady === false ? "pending" : "ready") : "off";
+    const externalDetail = externalWindowPending
+      ? (poolCount > 0
+          ? `当前角色资讯池已有 ${poolCount} 条素材；选择私聊窗口后查看外部资讯来源与搜索探索配置。`
+          : "外部资讯来源与搜索探索配置按私聊窗口读取；请先选择当前角色的私聊窗口。")
+      : [
       searchSource ? "AstrBot 网页搜索或自定义搜索源" : dailySource ? "内置 AI 日报来源" : `来源类型 ${news.sourceKind || "未选择"}`,
+      parallelExplore ? (explorationSearchReady === false ? "网络探索已开启（搜索源未装配）" : "已并行开启网络探索") : "",
       news.explorationInterests ? `兴趣：${news.explorationInterests}` : "未指定搜索兴趣",
       Number.isInteger(news.explorationIntervalHours) ? `最短间隔 ${news.explorationIntervalHours} 小时` : "",
       Number.isInteger(news.explorationResultCount) ? `每次最多 ${news.explorationResultCount} 条` : "",
@@ -752,7 +785,6 @@ window.CompanionPerceptionOverviewPage = (() => {
     const analysisProvider = semanticStatus?.settings?.analysis_provider;
     const events = upcomingDates(snapshot);
     const alertList = weather.state === "available" && Array.isArray(weather.alerts) ? weather.alerts.slice(0, 4) : [];
-    const windowRequired = !selectedWindowRole();
     const screenValue = windowRequired ? "请选择私聊窗口" : screenResult.state === "available" ? screenResult.interpretation || "已有屏幕解读"
       : screenResult.state === "blocked" ? reasonLabel(screenResult.reason)
         : screenResult.state === "empty" ? "暂无已保存解读"
@@ -926,10 +958,10 @@ window.CompanionPerceptionOverviewPage = (() => {
     channel("ext-external", "external", {tab:"config-news:perception-detail-external", icon:"globe-2", title:"外部资讯",
       value:externalValue, detail:externalDetail + (news.failureCode ? ` · ${news.failureCode}` : ""),
       state:externalState,
-      tag:!ready ? configurationFailed ? "读取失败" : "读取中" : externalState === "ready" ? "检查通过" : externalState === "off" ? "未启用" : news.networkStatus === "failed" ? "检查失败" : "待检查"});
+      tag:!ready ? configurationFailed ? "读取失败" : "读取中" : externalWindowPending ? "未选择窗口" : externalState === "ready" ? "检查通过" : externalState === "off" ? "未启用" : news.networkStatus === "failed" ? "检查失败" : "待检查"});
     channel("ext-balance", "external", {tab:"config-balance:perception-detail-balance-source", icon:"wallet-cards", title:"余额感知",
       value:balanceValue, detail:[balanceDetail, balanceObservation ? `${balanceResultIsDraft ? "草稿测试" : "最近查询"} ${formatBalanceAmount(balanceObservation.amount)} ${balanceObservation.currency_label || "额度"}` : "尚无余额查询结果"].join(" · "),
-      state:balanceObservation ? "ready" : balanceSourceConfigured || balanceSourceInvalid || balanceEnabled === true || !ready || balanceError || balanceTestError || balanceStatusError ? "pending" : "off",
+      state:balanceObservation ? "ready" : balanceWindowPending || balanceSourceConfigured || balanceSourceInvalid || balanceEnabled === true || !ready || balanceError || balanceTestError || balanceStatusError ? "pending" : "off",
       tag:balanceTag});
 
     const realityNeedsConsent = /capability_role_disabled|capability_consent_missing|consent/.test(realityResult.reason || "");
@@ -1110,7 +1142,7 @@ window.CompanionPerceptionOverviewPage = (() => {
           </span>
         </button>
         ${calendarView?.detail ? `<button type="button" class="perception-wx-calendar" ${destinationAttrs(tabCalendar)}>${esc(calendarView.detail)}</button>` : ""}
-        <button type="button" class="perception-wx-events" ${destinationAttrs("config-environment:perception-detail-important-days")}>${icon("calendar-heart")}<span>${events.length ? events.map(event => `${esc(event.label)} · ${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}`).join("；") : "暂无近期生日与纪念日"}</span></button>
+        <button type="button" class="perception-wx-events" ${destinationAttrs("config-environment:perception-detail-important-days")}>${icon("calendar-heart")}<span>${windowRequired ? "请选择私聊窗口查看近期生日与纪念日" : events.length ? events.map(event => `${esc(event.label)} · ${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}`).join("；") : "暂无近期生日与纪念日"}</span></button>
       </div>`;
     })();
     const boardBadgeMarkup = (state, label) => `<span class="perception-reading-badge is-${esc(state)}"><i class="perception-dot" aria-hidden="true"></i>${esc(label)}</span>`;
@@ -1147,12 +1179,15 @@ window.CompanionPerceptionOverviewPage = (() => {
         tag: alertFailed ? "读取失败" : environment.alertsReady ? "无预警" : "未配置",
         attrs:customAttrs(tabPlace, "天气预警", "env-alert"),
       });
-      const eventSummary = events.length
-        ? events.map(event => `${event.label} · ${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}`).join("；")
-        : "暂无近期生日与纪念日";
+      const eventSummary = windowRequired
+        ? "请选择私聊窗口"
+        : events.length
+          ? events.map(event => `${event.label} · ${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}`).join("；")
+          : "暂无近期生日与纪念日";
       const datesMini = miniMarkup({
-        state: events.length ? "ready" : "off", iconName:"calendar-heart", title:"重要日期",
-        value:eventSummary, detail:"角色档案与私聊资料", tag:events.length ? `${events.length} 项` : "暂无",
+        state: windowRequired ? "pending" : events.length ? "ready" : "off", iconName:"calendar-heart", title:"重要日期",
+        value:eventSummary, detail:windowRequired ? "选择私聊窗口后查看当前对象的生日与纪念日" : "角色档案与私聊资料",
+        tag:windowRequired ? "未选择窗口" : events.length ? `${events.length} 项` : "暂无",
         attrs:customAttrs("config-environment:perception-detail-important-days", "重要日期", "env-dates"),
       });
       const available = weather.state === "available";
@@ -1284,9 +1319,12 @@ window.CompanionPerceptionOverviewPage = (() => {
       itemPreviewMarkup.set("env-alert", previewCard({title:"天气预警", state:alertList.length ? "pending" : "ready",
         tag:alertList.length ? `${alertList.length} 条` : "无预警",
         body:alertList.length ? `<ul class="perception-preview-material-list">${alertList.map(alert => `<li><strong>${esc(alert.title || alert.event_name || "天气预警")}</strong><span>${esc(alert.severity || "级别待核对")}${alert.ends_at ? ` · 至 ${esc(new Date(alert.ends_at).toLocaleString("zh-CN"))}` : ""}</span></li>`).join("")}</ul>` : `<p class="perception-preview-empty">当前无预警。</p>`}));
-      itemPreviewMarkup.set("env-dates", previewCard({title:"重要日期", state:events.length ? "ready" : "off",
-        tag:events.length ? `${events.length} 项` : "暂无",
-        body:events.length ? `<ul class="perception-preview-material-list">${events.map(event => `<li><strong>${esc(event.label)}</strong><span>${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}</span></li>`).join("")}</ul>` : `<p class="perception-preview-empty">近期没有生日或纪念日。</p>`}));
+      itemPreviewMarkup.set("env-dates", previewCard({title:"重要日期",
+        state:windowRequired ? "pending" : events.length ? "ready" : "off",
+        tag:windowRequired ? "未选择窗口" : events.length ? `${events.length} 项` : "暂无",
+        body:windowRequired
+          ? `<p class="perception-preview-empty">请先选择当前角色的私聊窗口，再查看该对象的近期生日与纪念日。</p>`
+          : events.length ? `<ul class="perception-preview-material-list">${events.map(event => `<li><strong>${esc(event.label)}</strong><span>${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}</span></li>`).join("")}</ul>` : `<p class="perception-preview-empty">近期没有生日或纪念日。</p>`}));
       if (calendarView) itemPreviewMarkup.set("env-calendar", previewCard({title:"日期与历法", state:"ready", tag:"服务端日历",
         body:previewFields([["今天", calendarView.labels], ["农历/节气/黄历", calendarView.detail],
           ["时区", clockZone()]])}));
@@ -1327,10 +1365,17 @@ window.CompanionPerceptionOverviewPage = (() => {
           : materialPoolState === "error" ? `<p class="perception-preview-empty">资讯池读取失败：${esc(materialPoolError)}</p>`
             : poolItems.length ? `<ul class="perception-preview-material-list is-scroll">${poolItems.map(item => `<li><strong>${esc(item.title)}</strong>${item.detail ? `<span>${esc(String(item.detail).slice(0, 280))}</span>` : ""}<small>${esc(item.note || item.source || "资讯")}${item.captured_at ? ` · ${esc(ageLabel(item.captured_at))}` : ""}</small></li>`).join("")}</ul>`
               : `<p class="perception-preview-empty">资讯池暂无可展示条目。</p>`;
+        const explorationRow = !searchSource && explorationEnabled
+          ? [["网络探索", news.explorationSearchReady === false ? "已启用（搜索源未装配）"
+            : `并行启用${news.explorationSearchLabel ? ` · ${news.explorationSearchLabel}` : ""}${news.explorationNoteCount ? ` · 已记 ${news.explorationNoteCount} 条笔记` : ""}`]]
+          : [];
         itemPreviewMarkup.set("ext-external", previewCard({title:"外部资讯", state:external.state, tag:external.tag,
-          body:previewFields([["来源", news.label || "尚未配置"], ["自选兴趣", news.explorationInterests || "未指定"],
-            ["检查节奏", [Number.isInteger(news.explorationIntervalHours) ? `最短 ${news.explorationIntervalHours} 小时` : "", Number.isInteger(news.explorationResultCount) ? `每次最多 ${news.explorationResultCount} 条` : ""].filter(Boolean).join(" · ") || "—"],
-            ["最近检查", [news.lastCheckedAt || "—", Number.isInteger(news.itemCount) ? `${news.itemCount} 条` : ""].filter(Boolean).join(" · ")]])
+          body:previewFields([
+            ["来源", externalWindowPending ? "请选择私聊窗口查看" : news.label || "尚未配置"],
+            ...(externalWindowPending ? [] : explorationRow),
+            ["自选兴趣", externalWindowPending ? "按私聊窗口读取" : news.explorationInterests || "未指定"],
+            ["检查节奏", externalWindowPending ? "请选择私聊窗口查看" : [Number.isInteger(news.explorationIntervalHours) ? `最短 ${news.explorationIntervalHours} 小时` : "", Number.isInteger(news.explorationResultCount) ? `每次最多 ${news.explorationResultCount} 条` : ""].filter(Boolean).join(" · ") || "—"],
+            ["最近检查", [news.lastCheckedAt || materialPool?.checked_at || "—", Number.isInteger(news.itemCount) ? `${news.itemCount} 条` : poolCount > 0 ? `资讯池 ${poolCount} 条` : ""].filter(Boolean).join(" · ")]])
             + poolHtml, note:"这里展示当前资讯池中的自选内容；只有实际被选中的条目才会进入对话，不会整批注入。"}));
       }
       const balance = channelById("ext-balance");

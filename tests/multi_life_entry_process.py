@@ -48,7 +48,9 @@ async def run():
             await plugin.initialize()
             assert controller.runtime is not None
             assert controller.session.application.state == "running" and controller._accepting
-            automatic_session = controller.session
+            # Dashboard initialization resolves routes for all configured personas.
+            (await controller.initialize_profile()).unwrap()
+            running_session = controller.session
             group = FakeEvent(native)
             group.message_obj.type = group.session.message_type = SimpleNamespace(value="GroupMessage")
             group.message_obj.group_id = group.message_obj.session_id = group.session.session_id = "300"
@@ -89,11 +91,11 @@ async def run():
                 weather_status = await next(item[1] for item in weather_routes if item[2] == ["GET"])()
             assert weather_status["status"] == "ok" and "credential" not in weather_status["data"]["settings"]
             (await controller.start()).unwrap()
-            assert controller.session is automatic_session
+            assert controller.session is running_session
             event = FakeEvent(native)
             event.stop_event = lambda: setattr(event, "stopped", True)
             with patch.object(controller.session_topology, "services", AsyncMock(return_value={"llm_enabled": False})):
-                await plugin.receive_companion_message(event)
+                await asyncio.create_task(plugin.receive_companion_message(event))
             # The wake flags select AstrBot's automatic core reply path;
             # call_llm stays false because the plugin did not call a model itself.
             assert not getattr(event, "stopped", False)

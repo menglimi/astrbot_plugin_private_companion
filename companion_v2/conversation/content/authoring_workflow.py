@@ -66,6 +66,7 @@ class ContentAuthoringWorkflow:
         self.tasks = None
         self.gateway = None
         self.runner = None
+        self.scheduled_runner = None
         self._jobs: dict[str, _Job] = {}
         self._closed = False
         # Writing is a child of an authorized private reply, with Content mutation
@@ -75,12 +76,13 @@ class ContentAuthoringWorkflow:
                 side_effect=SideEffect.NONE, timeout_seconds=AUTHORING_BUDGET_SECONDS, max_attempts=1,
                 concurrency=2, per_scope_concurrency=1), self.validate),)
 
-    def attach(self, gateway, *, require_running=None):
+    def attach(self, gateway, *, require_running=None, waiting=None):
         if self.gateway is not None or gateway.runtime is not self.runtime:
             raise ValueError("Content authoring must attach once to its original model gateway")
         self.gateway, self.tasks = gateway, gateway.tasks
         self._require_running = require_running
         self.runner = ExactTaskRunner(self.tasks, frozenset({DRAFT_KIND}), self._generate)
+        self.scheduled_runner = ExactTaskRunner(self.tasks, frozenset({DRAFT_KIND}), self._generate, waiting=waiting)
 
     def catalog_for(self, context, native_actions):
         if (self._closed or context.scope.kind is not ScopeKind.PRIVATE
@@ -329,7 +331,8 @@ class ContentAuthoringWorkflow:
                 raise TaskError("content_authoring_expired", "the original writing window has expired")
             spec = TaskSpec(task_id, job.context, DRAFT_KIND, task_id, task_id, now, deadline)
             require(self.tasks.submit(spec))
-            execution = await self.runner.run(job.context, task_id)
+            runner = self.scheduled_runner if job.scheduled else self.runner
+            execution = await runner.run(job.context, task_id)
             parent.revalidate()
             self._require_enabled(parent.context)
             if not execution.is_success:
@@ -355,13 +358,8 @@ class ContentAuthoringWorkflow:
         run.validate()
         action = job.authoring_request["action"]
         instruction = authoring_service.prompt(job.authoring_request, job.materials, settings=job.settings,
-                                               work_type=job.work_type)
-        schema = authoring.schema_for(action)
-        if job.scheduled:
-            instruction += ("\n本次由角色日程触发。额外返回 finished 布尔值，只有文章已有完整自然的收尾时才为 true。"
-                            "系列仍需以后续写时返回 false。")
-            schema = {**schema, "properties": {**schema["properties"], "finished": {"type": "boolean"}},
-                      "required": [*schema["required"], "finished"]}
+                                               work_type=job.work_type, scheduled=job.scheduled)
+        schema = authoring.schema_for(action, scheduled=job.scheduled)
         completion = await self.gateway.generate(run, replace(job.request,
             instruction=instruction, output_format="content_authoring", response_format="json_schema",
             response_schema_json=encode(schema), images=(), reply_images=False,
@@ -374,11 +372,11 @@ class ContentAuthoringWorkflow:
         finished = True
         if job.scheduled:
             try:
-                raw = json.loads(raw)
-                finished = raw.pop("finished")
+                raw = dict(authoring.decode_json_object(raw))
+                finished = raw.pop("finished", False)
                 if type(finished) is not bool:
                     raise ValueError("finished must be a boolean")
-            except (AttributeError, KeyError, TypeError, ValueError) as error:
+            except (TypeError, ValueError) as error:
                 raise TaskError("content_authoring_output", "scheduled writing must report completion") from error
         job.result = replace(authoring_service.parse_draft(raw, action=action), finished=finished)
         return TaskResult("succeeded", result_ref=run.task.spec.task_id)
@@ -655,12 +653,21 @@ class ContentAuthoringWorkflow:
             raise TaskError("content_receipt_mismatch", "Content did not confirm the requested saved version")
         return receipt
 
+    @property
+    def active_handles(self):
+        return tuple(handle for runner in (self.runner, self.scheduled_runner)
+                     if runner is not None for handle in runner.active_handles)
+
     async def close(self):
         if self._closed:
             return ()
         self._closed = True
         self._jobs.clear()
-        return await self.runner.close() if self.runner is not None else ()
+        remaining = ()
+        for runner in (self.runner, self.scheduled_runner):
+            if runner is not None:
+                remaining += tuple(await runner.close())
+        return remaining
 
     def _require_enabled(self, context):
         if not authoring_service.effective_settings(self.runtime, context).enabled:

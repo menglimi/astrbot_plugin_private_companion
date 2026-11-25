@@ -178,25 +178,35 @@ class ConfigurationWebAPI:
             raw = await request.body()
             if request.query or len(raw) > 2048:
                 raise ValueError("invalid phone connection request")
-            data = _document(raw, expected={"action"}, optional=("address", "code", "serial", "edit_token", "operation_key"))
+            data = _document(raw, expected={"action"},
+                             optional=("address", "code", "serial", "edit_token", "operation_key",
+                                       "include_diagnostics", "target_id", "role_id"))
+            include_diagnostics = data.pop("include_diagnostics", False)
+            if type(include_diagnostics) is not bool:
+                raise ValueError("invalid diagnostic flag")
+            target_id = data.pop("target_id", "")
+            role_id = data.pop("role_id", "")
+            if type(target_id) is not str or type(role_id) is not str:
+                raise ValueError("invalid target or role selection")
             controller = self.controller
             if controller._terminated:
                 raise TaskError("staging_host_terminated", "plugin is stopped")
             session, runtime = controller.session or controller.last_session, controller.runtime
             if session is None or runtime is None:
                 raise TaskError("staging_not_initialized", "load the V2 profile first")
-            context = await self._management_context(controller, session, "", "")
+            context = await self._management_context(controller, session, target_id, role_id)
 
             def connect():
                 operator = dashboard_operator(runtime, username, at=controller.now())
-                return PhoneManagement(session.application, context).connection(operator, data)
+                return PhoneManagement(session.application, context).connection(
+                    operator, data, include_diagnostics=include_diagnostics)
 
             result = await asyncio.to_thread(connect)
             if data.get("action") == "use":
                 self._invalidate_section_cache()
             return outcome_response(result)
         except (TaskError, ConfigurationError) as error:
-            return outcome_response(Outcome.failed(error.code, str(error)))
+            return outcome_response(Outcome.failed(error.code, str(error), details=getattr(error, "details", None)))
         except StorageOpenError:
             return outcome_response(Outcome.failed("configuration_storage_unavailable", "the configuration store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
@@ -272,8 +282,14 @@ class ConfigurationWebAPI:
         # scoped controller instead of reinterpreting it as a different window.
         route_target = getattr(controller, "target_id", None)
         if route_target:
+            settings = getattr(controller, "settings", None)
+            canonical_role = (
+                settings.canonical_role_id(role_id)
+                if role_id and settings is not None and hasattr(settings, "canonical_role_id")
+                else role_id
+            )
             if ((target_id and target_id != route_target)
-                    or (role_id and role_id != controller.role_id)):
+                    or (canonical_role and canonical_role != controller.role_id)):
                 raise TaskError("configuration_target_changed",
                                 "the selected target or role differs from the configuration route")
             return active

@@ -84,9 +84,15 @@ class RoleReceiptReader:
         entities = ["角色活动", "活动:" + label_id]
         if reading is not None:
             sources.append(reading.source)
+            coverage_note = "本回执覆盖了这份原文。" if reading.covers_source else "只确认该片段，不代表读完全文。"
+            if not reading.covers_source:
+                progress = self.life.life.book_progress_for_sources(
+                    activity.owner, activity.scope, (reading.source.source_id,), observed_at=at
+                ).get(reading.source.source_id)
+                if progress and progress.get("completed_book") and progress.get("total", 0) > 1:
+                    coverage_note = f"全书共 {progress['total']} 个片段已全部读完，本回执完成了该书的片段。"
             statements.append(f"已读原文的 Unicode 字符区间为 [{reading.start_offset}, {reading.end_offset})，"
-                f"原文共 {reading.text_length} 个字符；" +
-                ("本回执覆盖了这份原文。" if reading.covers_source else "只确认该片段，不代表读完全文。"))
+                f"原文共 {reading.text_length} 个字符；{coverage_note}")
             if reading.reflection:
                 statements.append("阅读后的主观感想（不作为用户事实）：" + excerpt(reading.reflection))
             entities.append("阅读")

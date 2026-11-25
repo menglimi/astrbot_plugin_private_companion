@@ -57,5 +57,41 @@
 .storage-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding-top:var(--sp-2)}
 .storage-message{margin:0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny);overflow-wrap:anywhere}
 .storage-message.is-error{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
-@media(max-width:760px){.storage-usage-legend{grid-template-columns:1fr}.storage-location-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}.storage-retention{grid-template-columns:minmax(0,1fr)}.storage-form-actions{justify-content:flex-start}}
+
+/* 数据库体检与一键瘦身卡 */
+.storage-health-slot,.storage-message-slot{display:contents}
+.storage-health-card{display:grid;gap:var(--sp-3);min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.storage-health-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
+.storage-health-title{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.storage-health-title h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650}
+.storage-health-badge{display:inline-flex;align-items:center;padding:2px var(--sp-2);border-radius:var(--r-pill);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-micro);font-weight:600}
+.storage-health-badge.is-warn{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.storage-health-badge.is-subtle{background:var(--t-surface-sunken);color:var(--t-text-soft);font-weight:500}
+.storage-health-head-actions{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.storage-health-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-2)}
+.storage-health-kpi{display:grid;gap:var(--sp-1);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);min-width:0}
+.storage-health-kpi span{color:var(--t-text-soft);font-size:var(--fs-micro)}
+.storage-health-kpi strong{color:var(--t-text-strong);font-size:var(--fs-lead);font-family:var(--numeric-font);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.storage-health-kpi small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4}
+.storage-health-dbs{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+.storage-health-db-chip{display:inline-flex;align-items:baseline;gap:var(--sp-2);padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface-soft);font-size:var(--fs-micro);color:var(--t-text-soft)}
+.storage-health-db-chip strong{color:var(--t-text-strong);font-family:var(--numeric-font);font-variant-numeric:tabular-nums}
+.storage-health-opps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2)}
+.storage-health-opp{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;min-width:0;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);font-size:var(--fs-micro);color:var(--t-text-soft)}
+.storage-health-opp.has-work{border-color:color-mix(in srgb,var(--t-warn) 38%,var(--t-line));background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.storage-health-opp strong{font-family:var(--numeric-font);font-variant-numeric:tabular-nums;white-space:nowrap}
+.storage-health-recs{margin:0;padding-left:var(--sp-4);display:grid;gap:var(--sp-1);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}
+.storage-health-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;padding-top:var(--sp-2);border-top:1px solid var(--t-line)}
+.storage-health-buttons{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-width:0}
+.storage-health-buttons .button{white-space:normal;text-align:center;height:auto;min-height:34px;max-width:100%}
+.storage-health-hint{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.55;flex:1 1 min(280px,100%);min-width:0}
+.storage-vacuum-confirm{display:grid;gap:var(--sp-2);padding:var(--sp-3);border:1px solid color-mix(in srgb,var(--t-warn) 45%,var(--t-line));border-radius:var(--r-sm);background:var(--t-warn-quiet);color:var(--t-warn-ink);font-size:var(--fs-tiny);line-height:1.55}
+.storage-vacuum-confirm p{margin:0}
+.storage-compact-summary{display:grid;gap:var(--sp-1);padding:var(--sp-3);border:1px solid color-mix(in srgb,var(--t-ok) 40%,var(--t-line));border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny);line-height:1.55}
+.storage-compact-summary strong{font-family:var(--numeric-font);font-variant-numeric:tabular-nums}
+
+@media(max-width:900px){.storage-health-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.storage-usage-legend{grid-template-columns:1fr}.storage-location-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}.storage-retention{grid-template-columns:minmax(0,1fr)}.storage-form-actions{justify-content:flex-start}.storage-health-opps{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:560px){.storage-usage-card,.storage-panel,.storage-health-card{padding:var(--sp-3)}.storage-health-kpi{padding:var(--sp-2)}.storage-health-buttons{width:100%}.storage-health-buttons .button{flex:1 1 auto;min-height:38px}}
 @media(max-width:420px){.storage-usage-header{align-items:flex-start}.storage-usage-header strong,.storage-usage-header>div:first-child strong{font-size:var(--fs-title)}.storage-retention-fields{flex-direction:column;align-items:flex-start}.storage-cache-row{align-items:flex-start}}
+@media(max-width:340px){.storage-health-kpis{grid-template-columns:minmax(0,1fr)}}

@@ -39,11 +39,44 @@ def bedtime_at(owner, local_day: date, timezone_id: str, local_time: time, maxim
 
 def next_bedtime(now: datetime, owner, timezone_id: str, local_time: time, maximum_minutes: int) -> datetime:
     zone = ZoneInfo(timezone_id)
-    day = now.astimezone(zone).date()
-    candidate = bedtime_at(owner, day, timezone_id, local_time, maximum_minutes)
-    if candidate < now:
-        candidate = bedtime_at(owner, day + timedelta(days=1), timezone_id, local_time, maximum_minutes)
-    return candidate
+    # A late bedtime from the previous date can fall after midnight.
+    day = (now.astimezone(zone) - timedelta(minutes=maximum_minutes)).date()
+    while True:
+        candidate = bedtime_at(owner, day, timezone_id, local_time, maximum_minutes)
+        if candidate >= now:
+            return candidate
+        day += timedelta(days=1)
+
+
+def sleep_due_window_expired(now: datetime, next_sleep: datetime, *, window_minutes: int, sleep_minutes: int) -> bool:
+    """Return True when a missed bedtime is far enough in the past that starting night sleep now would be stale."""
+    grace_minutes = max(int(window_minutes), 60) + max(int(sleep_minutes) // 2, 120)
+    return now >= next_sleep + timedelta(minutes=grace_minutes)
+
+
+def sleep_schedule_summary(settings: dict | None) -> dict | None:
+    """Project role.life sleep settings into a compact prompt-ready schedule summary."""
+    if not isinstance(settings, dict):
+        return None
+    sleep_time = settings.get("sleep_time")
+    sleep_timezone = settings.get("sleep_timezone")
+    sleep_minutes = settings.get("sleep_minutes")
+    if not isinstance(sleep_time, str) or not isinstance(sleep_timezone, str) or type(sleep_minutes) is not int:
+        return None
+    try:
+        parsed = time.fromisoformat(sleep_time)
+    except ValueError:
+        return None
+    start_minutes = parsed.hour * 60 + parsed.minute
+    wake_minutes = (start_minutes + max(1, min(1440, sleep_minutes))) % (24 * 60)
+    expected_wake = f"{wake_minutes // 60:02d}:{wake_minutes % 60:02d}"
+    return {
+        "enabled": bool(settings.get("sleep_enabled", False)),
+        "sleep_time": sleep_time,
+        "timezone": sleep_timezone,
+        "duration_minutes": sleep_minutes,
+        "expected_wake_time": expected_wake,
+    }
 
 
 def sleep_rhythm(now: datetime, next_sleep_at: datetime | None, body_sleep: dict | None) -> dict:

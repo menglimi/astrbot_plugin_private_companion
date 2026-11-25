@@ -565,6 +565,19 @@ class MultiHostSession:
             defaults=self._model_defaults, tariff_resolver=self._tariff_resolver)
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
+        local_providers = tuple((model.binding.provider, model.local_provider()) for model in self.models)
+        image_provider = next(
+            (provider_id for provider_id, local in local_providers if "image" in local.capabilities),
+            None,
+        )
+        # Resolve native video before relay lazily: passing an inner next() as
+        # the outer next() default evaluates eagerly and raises StopIteration on
+        # native-only (e.g. Gemini-only) deployments, turning into a PEP 479
+        # RuntimeError at the coroutine boundary.
+        video_provider = (
+            next((provider_id for provider_id, local in local_providers if "video" in local.capabilities), None)
+            or next((provider_id for provider_id, local in local_providers if local.supports_video_relay), None)
+        )
         profiles = (ModelTaskProfile(REPLY_KIND, Lane.FOREGROUND, common.provider_id, common.task_prompt,
                     default_fallback=fallback_provider_id, replacement_rules=replacement_rules,
                     fallback_on_refusal=common.fallback_on_refusal,
@@ -590,18 +603,8 @@ class MultiHostSession:
                     reality_text_profile(common.provider_id),
                     *authoring_profiles(common.provider_id, draft_tokens=common.max_output_tokens),
                     *writing_profiles(common.provider_id, max_output_tokens=common.max_output_tokens),
-                    *((image_narration_profile(next(model.binding.provider for model in self.models
-                        if "image" in model.local_provider().capabilities)),)
-                      if any("image" in model.local_provider().capabilities for model in self.models) else ()),
-                    *((video_narration_profile(next(
-                        (model.binding.provider for model in self.models
-                         if "video" in model.local_provider().capabilities),
-                        next(model.binding.provider for model in self.models
-                             if model.local_provider().supports_video_relay),
-                    )),)
-                      if any("video" in model.local_provider().capabilities
-                             or model.local_provider().supports_video_relay
-                             for model in self.models) else ()))
+                    *((image_narration_profile(image_provider),) if image_provider is not None else ()),
+                    *((video_narration_profile(video_provider),) if video_provider is not None else ()))
         # The host budget is a reply budget; structural tasks register a larger default.
         profiles = with_thinking_margins(profiles)
         modes = ["onebot_private", "onebot_group"]
@@ -1234,6 +1237,7 @@ class MultiHostSession:
         """Prepare only V2 identity and prompt data for AstrBot's normal reply pipeline."""
         async with self._intake[target.target_id]:
             presence, typing_context, typing_turn, prepared_ok = None, None, None, False
+            inflight_context_key, inflight_turn_id = None, None
             try:
                 self.application.require_running()
                 connection_lease = (plan.connection_lease if plan is not None and plan.connection_lease is not None
@@ -1258,6 +1262,9 @@ class MultiHostSession:
                 self.bridge.connections.assert_current(connection_lease)
                 self._validate_core_group_admission(group_admission, context, captured)
                 turn_id = "core-reply:" + digest([context.key, captured.event_id])
+                from companion_v2.conversation.native_turns import begin_inflight_turn
+                begin_inflight_turn(self.runtime, context.key, turn_id)
+                inflight_context_key, inflight_turn_id = context.key, turn_id
                 presence = self.application.presence
                 if presence is not None:
                     typing_context, typing_turn = context, turn_id
@@ -1541,8 +1548,12 @@ class MultiHostSession:
                              target.target_id, type(error).__name__)
                 return CoreReplyOutcome.failed("host_core_reply_prepare_failed", "core reply admission could not be prepared")
             finally:
-                if not prepared_ok and presence is not None and typing_context is not None:
-                    presence.finish_native_reply(typing_context, typing_turn)
+                if not prepared_ok:
+                    if inflight_context_key and inflight_turn_id:
+                        from companion_v2.conversation.native_turns import end_inflight_turn
+                        end_inflight_turn(self.runtime, inflight_context_key, inflight_turn_id)
+                    if presence is not None and typing_context is not None:
+                        presence.finish_native_reply(typing_context, typing_turn)
 
     def _actor_is_core(self, context):
         try:

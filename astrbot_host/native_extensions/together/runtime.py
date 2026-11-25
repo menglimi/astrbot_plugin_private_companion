@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from .common import *
 from ..service import NativeService
 from .settings_methods import TogetherSettingsMethods
@@ -90,9 +92,34 @@ class TogetherRuntime(NativeService, TogetherSettingsMethods, TogetherRoomsMetho
         self.novel_library = NovelLibrary(self.data_dir / 'novel_library', max_upload_mb=self.novel_max_upload_mb)
         self._native_novel_libraries: dict[str, NovelLibrary] = {}
         self.room_server = TogetherRoomServer(self, host=self.server_host, port=self.server_port, web_root=self.plugin_root / 'web', resource_package=__package__ or PLUGIN_NAME)
-        data_root = self.data_dir
-        self.quick_tunnel = CloudflareQuickTunnel(local_url=self.room_server.local_base_url, search_paths=[data_root / 'tools' / 'bin', self.plugin_root / 'tools'])
-        pass
+        self.quick_tunnel = CloudflareQuickTunnel(
+            local_url=self.room_server.local_base_url,
+            search_paths=self._cloudflared_search_paths(),
+        )
+
+    def _cloudflared_search_paths(self) -> list[Path]:
+        """Collect deduplicated local tool directories including AstrBot's data/tools/bin."""
+        candidates: list[Path] = [self.data_dir / 'tools' / 'bin']
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+            astrbot_data = get_astrbot_data_path()
+            if astrbot_data:
+                candidates.append(Path(astrbot_data) / 'tools' / 'bin')
+        except Exception:
+            pass
+        for ancestor in self.data_dir.parents:
+            if ancestor.name == 'plugin_data':
+                candidates.append(ancestor.parent / 'tools' / 'bin')
+                break
+        candidates.append(self.plugin_root / 'tools')
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = os.path.normcase(os.path.abspath(str(path)))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(path)
+        return deduped
 
     async def terminate(self) -> None:
         native = self._native_provider

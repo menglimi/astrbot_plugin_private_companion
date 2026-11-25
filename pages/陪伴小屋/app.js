@@ -63,7 +63,7 @@ const navGroups = [
 ];
 const navItems = navGroups.flatMap(([,items])=>items);
 const lifeTabs=[['home','house','首页'],['state','activity','状态'],['diary','notebook-pen','日记'],['directory','armchair','家具与能力'],['observation','scan-eye','生活观察']];
-const MODEL_TABS=['fn','voice','image','search','laya','pricing'];
+const MODEL_TABS=['fn','voice','image','search','laya','pricing','quota'];
 let route='life', lifeTab='home', manageTab='host', selfPane='profile', modelsPane='fn', libraryFilter='all', memoryView='list', memoryWorkspaceRoute='records';
 let navigationIntent=0;
 let outputTabId='visual';
@@ -214,7 +214,7 @@ function navHref(next,tab='',subtab=''){
     ||next==='manage'&&tab==='expression'&&subtab
     ||next==='manage'&&tab==='learning'&&subtab
     ||next==='manage'&&tab==='maintenance'&&subtab&&subtab!=='overview'
-    ||next==='manage'&&tab==='data'&&['storage','backup','migration','port'].includes(subtab)
+    ||next==='manage'&&tab==='data'&&['storage','tuning','backup','migration','port'].includes(subtab)
     ||next==='life'&&tab==='diary'&&subtab&&subtab!=='archive';
   return nested?path+'/'+subtab:path;
 }
@@ -280,7 +280,7 @@ function navigationDestination(next,tab='',subtab=''){
       :tab==='models'?(MODEL_TABS.includes(subtab)?subtab:'fn')
       :tab==='expression'?(['text','segment','style','cleanup','voice','components','checks','timing','platform','reaction','group'].includes(subtab)?subtab:'')
       :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','system-prompts','logs','patrol'].includes(subtab)?subtab:'')
-        :tab==='data'?(['storage','backup','migration','port'].includes(subtab)?subtab:'storage')
+        :tab==='data'?(['storage','tuning','backup','migration','port'].includes(subtab)?subtab:'storage')
         :tab==='memory'?(['records','settings'].includes(subtab)?subtab:'')
         :tab==='perception'?(['environment','models','news','screen','balance','recall','injection'].includes(subtab)?subtab:'')
         :tab==='governance'&&['profile','relationship','questionnaire','knowledge'].includes(subtab)?subtab:'profile';
@@ -523,6 +523,10 @@ async function probeHost(){
     toast(error?.message||'配置接续失败，请在「开始使用」页查看状态后重试。');
     navigate('manage','setup');
   });
+  if(window.CompanionMemoryCompanionHint){
+    window.CompanionMemoryCompanionHint.subscribe(()=>renderShellSide());
+    void window.CompanionMemoryCompanionHint.load().then(()=>renderShellSide());
+  }
 }
 function onProductChanged(reason){
   if(reason?.kind==='browser-preferences'){updateHostChrome();if(reason.message)toast(reason.message);return;}
@@ -760,16 +764,23 @@ function renderStageBar(){
 function liteHomeSuspended(){
   return litePerformanceMode&&(document.hidden||Boolean(window.CompanionShell?.section));
 }
-let shellSideHost=null,shellSideStateCard='',shellSideAge='',shellSideSchedule='';
+function memoryCompanionHintCard(){
+  const api=window.CompanionMemoryCompanionHint;
+  if(!api)return '';
+  const status=api.current();
+  if(!status||!api.shouldShowBanner(status))return '';
+  return api.renderCard(status,{compact:true,allowDismiss:true,context:'home'});
+}
+let shellSideHost=null,shellSideHint='',shellSideStateCard='',shellSideAge='',shellSideSchedule='';
 function renderShellSide(){
   const host=$('#shellSide');
   if(!host||liteHomeSuspended())return;
   host.setAttribute('aria-label',arrangementDraft?'布置房间工作台':'此刻的状态与今日安排');
   if(arrangementDraft)return;
-  const nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
+  const nextHint=memoryCompanionHintCard(),nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
   const rendered=host===shellSideHost&&Boolean(host.innerHTML)&&!host.innerHTML.includes('id="roomEditor"');
-  if(rendered&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
-  if(rendered&&nextStateCard===shellSideStateCard){
+  if(rendered&&nextHint===shellSideHint&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
+  if(rendered&&nextHint===shellSideHint&&nextStateCard===shellSideStateCard){
     const ageNode=host.querySelector?.('[data-home-state-age]');
     const agendaHost=host.querySelector?.('[data-home-agenda-clock]');
     const ageCompatible=nextAge===shellSideAge||(Boolean(ageNode)&&Boolean(nextAge));
@@ -789,8 +800,9 @@ function renderShellSide(){
       return;
     }
   }
-  host.innerHTML=homeStateBand()+homeScheduleBand();
+  host.innerHTML=nextHint+homeStateBand()+homeScheduleBand();
   shellSideHost=host;
+  shellSideHint=nextHint;
   shellSideStateCard=nextStateCard;
   shellSideAge=nextAge;
   shellSideSchedule=nextSchedule;
@@ -1130,14 +1142,16 @@ function panelScope(){
   if(section==='host')return {kind:'accounts',label:'全部账号'};
   if(section==='maintenance'&&maintenancePane==='reply-diagnostics')return {kind:'window',requiresWindow:true,concreteOnly:true};
   if(section==='data'&&dataPane==='port')return {kind:'window'};
-  if(section==='data'&&['storage','backup'].includes(dataPane)||section==='mobile'
+  if(section==='data'&&['storage','tuning','backup'].includes(dataPane)||section==='mobile'
     ||section==='learning'&&learningTab==='semantic')return {kind:'global',label:'全局'};
   if((section==='memory'||route==='memories')&&memoryWorkspaceRoute==='records')
     return {kind:'window',requiresWindow:true};
+  if(window.CompanionShell?.view==='diary')return {kind:'window',privateOnly:true};
   if(['decision','models','identity-feelings','perception','contact','understanding'].includes(section)
     ||section==='expression'&&['expression-text','expression-voice','expression-platform'].includes(expressionModule)
     ||window.CompanionShell?.view==='state')return {kind:'window'};
   if(section==='learning'&&learningTab==='chain')return {kind:'window',privateOnly:true,requiresWindow:true};
+  if(section==='learning'&&learningTab==='expression')return {kind:'window'};
   return null;
 }
 function roleContextMarkup(){
@@ -1316,7 +1330,7 @@ function mountPanelWorkspaces(){
     :window.CompanionUnderstandingPage?.unmount());
   const expressionHost=$('#expressionWorkspace');
   if(expressionHost){
-    const selected=learningScope('expression');
+    const selected=learningScope('expression',product.selection())||learningScope('expression');
     guarded('表达学习',()=>selected
       ?window.CompanionExpressionLearningPage?.mount(expressionHost,{replyApi:selected.role.reply_api,
         scopeKind:selected.target.scope_kind,scopeKey:selected.key,
@@ -1342,6 +1356,8 @@ function mountPanelWorkspaces(){
   else guarded('备份与还原卸载',()=>window.CompanionBackupPage?.unmount?.());
   if($('#storageWorkspace'))guarded('插件存储管理',()=>window.CompanionStoragePage?.mount($('#storageWorkspace')));
   else guarded('插件存储管理卸载',()=>window.CompanionStoragePage?.unmount?.());
+  if($('#tuningWorkspace'))guarded('性能调优',()=>window.CompanionTuningPage?.mount($('#tuningWorkspace')));
+  else guarded('性能调优卸载',()=>window.CompanionTuningPage?.unmount?.());
   if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
   else guarded('配置导入导出卸载',()=>window.CompanionConfigPortPage?.unmount?.());
   guarded('配置分区',()=>renderConfigEditors());
@@ -1689,7 +1705,8 @@ function render(){
   unmountSetupGuide();
   window.CompanionBackupPage?.unmount();
   window.CompanionStoragePage?.unmount();
- window.CompanionConfigPortPage?.unmount();
+  window.CompanionTuningPage?.unmount();
+  window.CompanionConfigPortPage?.unmount();
   /* Release editor registrations before replacing their DOM. */
   unmountConfigEditors();
   if(arrangementDraft)finishRoomEditor(false);
@@ -2387,7 +2404,7 @@ function activatePerceptionTab(destination,{focus=false,scroll=false,modelTab=''
     tab.setAttribute('aria-selected',String(active));
     tab.tabIndex=active?0:-1;
   });
-  if(id==='config-models'&&selectedSubpanel?.id==='perception-detail-model-route'&&['fn','voice','image','search','laya','pricing'].includes(modelTab)){
+  if(id==='config-models'&&selectedSubpanel?.id==='perception-detail-model-route'&&['fn','voice','image','search','laya','pricing','quota'].includes(modelTab)){
     panel.querySelector(`#modelWorkspace [data-model-tab="${modelTab}"]`)?.click();
   }
   window.CompanionPerceptionOverviewPage?.select?.(`${id}${selectedSubpanel?':'+selectedSubpanel.id:''}`,{modelTab,itemId});
@@ -4671,9 +4688,7 @@ function renderConfigEditors(){
       'device.phone':{navigationLimit:0,onStatus:status=>setup?.phoneSetup?.syncStatus(status)}
     });
     if(editor)configEditorMounts.push(editor);
-    const role=product.role();
-    const configApi=role?.config_api||(role?.reply_api?.endsWith('/reply')?role.reply_api.slice(0,-6)+'/config':'');
-    window.CompanionPhoneSetup?.mount(setup,{editor,configApi});
+    window.CompanionPhoneSetup?.mount(setup,{editor});
   }
    /* proactive.contact（160 项、四层）同样长期是「编辑器与声明都在、却没有挂载点」
       的缺口——它连编辑器与声明都没有。主动联系页保留完整直接配置；感知页按来源
@@ -4861,8 +4876,8 @@ const allFunctionsGroups=[
     ['maintenance','settings-2','治理与维护','运行诊断、缓存、效率与巡护',[
       ['诊断','diagnostics'],['缓存','cache'],['效率','efficiency'],['最近','recent'],
       ['提示词','prompts'],['巡护','patrol']]],
-    ['data','database','资料与维护','存储、备份与迁移',[
-      ['存储','storage'],['备份','backup'],['迁移','migration']]],
+    ['data','database','资料与维护','存储、性能调优、备份与迁移',[
+      ['存储','storage'],['性能调优','tuning'],['备份','backup'],['迁移','migration']]],
   ]],
 ];
 function renderAllFunctionsPage(){
@@ -5611,18 +5626,18 @@ function renderUnderstanding(){
       <div class="understanding-stats" data-understanding-stats="overview" aria-live="polite"></div>
       <div class="understanding-shortcuts">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="decision">
-          <span><strong>群聊回应理解</strong></span>${I('arrow-up-right')}
+          <span><strong>群聊回应理解</strong><small>调整群聊唤醒、旁听与回应判断</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="identity">
-          <span><strong>关系站位</strong></span>${I('arrow-up-right')}
+          <span><strong>关系站位</strong><small>查看角色与私聊、群聊成员关系</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-understanding-scroll="permissions">
-          <span><strong>角色级理解许可</strong></span>${I('arrow-up-right')}
+          <span><strong>角色级理解许可</strong><small>定位到下方私聊与群聊许可开关</small></span>${I('arrow-up-right')}
         </button>
       </div>
       <section id="understandingPermissions" class="understanding-permissions" aria-label="适用范围">
         <header class="understanding-panel-heading">
-          <div><span>子面板 06</span><h3>适用范围</h3></div>
+          <div><span>角色级默认</span><h3>适用范围</h3></div>
           <span class="understanding-scope-badge">角色级 · 与角色共用</span>
         </header>
         <div data-understanding-editor-slot="overview"><div id="contextImageWorkspace" class="understanding-editor-workspace"></div></div>
@@ -5633,10 +5648,10 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="image"></div>
       <div class="understanding-shortcuts understanding-shortcuts-two">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="decision">
-          <span><strong>身份与现实承诺护栏</strong></span>${I('arrow-up-right')}
+          <span><strong>身份与现实承诺护栏</strong><small>管理看图与现实承诺的安全边界</small></span>${I('arrow-up-right')}
         </button>
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="models">
-          <span><strong>识图模型</strong></span>${I('arrow-up-right')}
+          <span><strong>识图模型</strong><small>配置图像理解与视觉转述路由</small></span>${I('arrow-up-right')}
         </button>
       </div>
     </section>
@@ -5645,7 +5660,7 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="video"></div>
       <div class="understanding-shortcuts understanding-shortcuts-one">
         <button type="button" class="understanding-shortcut" data-go="manage" data-manage="models">
-          <span><strong>视频转述模型</strong></span>${I('arrow-up-right')}
+          <span><strong>视频转述模型</strong><small>配置原生视频理解与抽帧视觉模型</small></span>${I('arrow-up-right')}
         </button>
       </div>
     </section>
@@ -5658,12 +5673,20 @@ function renderUnderstanding(){
       <div data-understanding-editor-slot="web">${configEditors('webUnderstandingWorkspace',['web_understanding'],'网页理解')}</div>
     </section>
     <section class="understanding-panel" role="tabpanel" data-understanding-panel="forwards" hidden>
-      <div class="understanding-stats" data-understanding-stats="forwards" aria-live="polite"></div>
-      <button type="button" class="understanding-shortcut understanding-host-link" data-go="manage" data-manage="host">
-        <span><strong>转发摄取上限</strong></span>${I('arrow-up-right')}
-      </button>
+      <div class="understanding-stats understanding-stats-compact" data-understanding-stats="forwards" aria-live="polite"></div>
+      <section class="understanding-card understanding-forward-window-card" aria-label="当前窗口合并转发改写">
+        <header class="understanding-panel-heading">
+          <div><span>当前窗口</span><h3>合并转发改写开关</h3></div>
+          <span class="understanding-scope-badge">可按窗口覆盖 · 可继承角色默认</span>
+        </header>
+        <div data-understanding-editor-slot="forwards"></div>
+      </section>
       <div id="forwardIntakeWorkspace" class="understanding-forward-workspace"></div>
-      <div data-understanding-editor-slot="forwards"></div>
+      <div class="understanding-shortcuts understanding-shortcuts-one">
+        <button type="button" class="understanding-shortcut understanding-host-link" data-go="manage" data-manage="host">
+          <span><strong>账号与会话</strong><small>检查宿主连接、V2 初始化与运行状态</small></span>${I('arrow-up-right')}
+        </button>
+      </div>
     </section>
   </div>`;
 }
@@ -5787,9 +5810,8 @@ function learningChoices(key){
     .filter(role=>matchesCottageRole(target,role)&&learningRoleApi(target,role,key))
     .map(role=>({target,role:{...role,bot_id:target.bot_id}})));
 }
-function learningScope(key){
+function learningScope(key,selection=key==='expression'?product.roleSelection?.():product.selection()){
   const choices=learningChoices(key);
-  const selection=key==='expression'?product.roleSelection?.():product.selection();
   const found=choices.find(item=>item.target.target_id===selection?.target_id&&item.role.role_id===selection?.role_id);
   return found?{...found,key:JSON.stringify([key,found.target.bot_id,found.target.target_id,found.role.role_id])}:null;
 }
@@ -5853,7 +5875,9 @@ function renderLearningPage(){
   }else if(learningTab==='review'){
     content=`<section id="learningReviewWorkspace" class="learning-review-workspace" aria-label="学习审阅中心">${consoleLoading('正在汇总待审阅内容…')}</section>`;
   }else if(learningTab==='expression'){
+    const group=learningScope('expression',product.selection())?.target.scope_kind==='group';
     content=learningExpressionSources().length?`
+        ${group?renderExpressionLearning():''}
         <section id="expressionSignalsWorkspace" class="expression-signals-workspace" aria-label="表达规则库">${consoleLoading('正在读取表达规则…')}</section>
         <section id="expressionSamplesWorkspace" class="expression-samples-workspace" aria-label="表达学习观察素材">${consoleLoading('正在读取观察素材…')}</section>`
       :`<div class="learning-hub-empty" role="status">暂无表达学习记录</div>`;
@@ -5959,19 +5983,22 @@ function renderHostPageOriginal(){
 function renderDataOriginal(){
   const pages=[
     ['storage','01','database','存储位置与清理策略'],
-    ['backup','02','archive','备份与还原'],
-    ['migration','03','arrow-right-left','旧版资料迁入'],
-    ['port','04','archive','配置导入导出'],
+    ['tuning','02','gauge','性能调优'],
+    ['backup','03','archive','备份与还原'],
+    ['migration','04','arrow-right-left','旧版资料迁入'],
+    ['port','05','archive','配置导入导出'],
   ];
   const navigation=`<nav class="data-page-nav" aria-label="资料与维护子页面">${pages.map(([id,index,icon,label])=>
     `<a href="#manage/data/${id}"${dataPane===id?' aria-current="page"':''}><span class="data-page-nav-index">${index}</span>${I(icon)}<span class="data-page-nav-label">${label}</span></a>`).join('')}</nav>`;
   let content='';
-  if(dataPane==='backup'){
-    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>02</span><h3 id="data-page-title">备份与还原</h3></header><div id="backupWorkspace">${consoleLoading('正在读取快照列表…')}</div></section>`;
+  if(dataPane==='tuning'){
+    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>02</span><h3 id="data-page-title">性能调优</h3></header><div id="tuningWorkspace">${consoleLoading('正在识别本机硬件与性能策略…')}</div></section>`;
+  }else if(dataPane==='backup'){
+    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>03</span><h3 id="data-page-title">备份与还原</h3></header><div id="backupWorkspace">${consoleLoading('正在读取快照列表…')}</div></section>`;
   }else if(dataPane==='migration'){
     /* 迁入工作区自带页面抬头；这里保留一份仅供读屏与路由锚点的标题，
-       避免视觉上出现「03 旧版资料迁入」和抬头标题两份。 */
-    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head sr-only"><span>03</span><h3 id="data-page-title">旧版资料迁入</h3></header><div id="legacyMigrationWorkspace"></div></section>`;
+       避免视觉上出现「04 旧版资料迁入」和抬头标题两份。 */
+    content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head sr-only"><span>04</span><h3 id="data-page-title">旧版资料迁入</h3></header><div id="legacyMigrationWorkspace"></div></section>`;
   }else if(dataPane==='port'){
     content=`<div id="configPortWorkspace"></div>`;
   }else{
@@ -6229,11 +6256,13 @@ const searchIndex=[
   ['生图模型','在线生图、ComfyUI 与 SD WebUI 连接','image','manage','models',{subtab:'image',aliases:['ComfyUI','SD WebUI','文生图','改图','画图']}],
   ['联网搜索模型','DeepSeek 与外置联网搜索服务配置','globe','manage','models',{subtab:'search',aliases:['联网搜索','搜索服务','DeepSeek 搜索','网页搜索']}],
   ['计价与汇率','模型单价配置、币种显示与实时汇率','coins','manage','models',{subtab:'pricing',aliases:['模型单价','单价','汇率','费用','价格','成本']}],
+  ['额度看板','多站点余额监控、指定主站、双单位切换与陪伴余额感知联动','wallet-cards','manage','models',{subtab:'quota',aliases:['多站点余额','中转站余额','NewAPI 额度','神人站','余额看板','指定主站','主站','主站点','切换主站','账户余额','quota']}],
   ['Laya 决策模型','Laya 决策接口、连接测试与运行日志','cpu','manage','models',{subtab:'laya',aliases:['Laya','外置决策']}],
   ['治理与维护','Token 费用统计、运行诊断、投递排障与缓存状态','settings-2','manage','maintenance',{aliases:['运行诊断','运行状态','排障','Token 统计','费用统计']}],
   ['每日巡视','每日状态巡视时刻、记录与保留时长','scan-heart','manage','maintenance',{subtab:'patrol',aliases:['巡视','状态巡视']}],
   ['回复诊断','当前会话最近回复的组成、耗时与诊断详情','stethoscope','manage','maintenance',{subtab:'reply-diagnostics',aliases:['消息诊断','回复排障']}],
-  ['资料与维护','插件存储空间占用与数据清理','database','manage','data',{subtab:'storage',aliases:['存储管理','插件存储','数据清理']}],
+  ['资料与维护','插件存储空间占用、数据库体检与一键瘦身','database','manage','data',{subtab:'storage',aliases:['存储管理','插件存储','数据清理','数据库瘦身','数据库体检','一键瘦身','VACUUM']}],
+  ['性能调优','五档性能预设（自动/省内存/平衡/高性能/兼容稳妥）与高级微调','gauge','manage','data',{subtab:'tuning',aliases:['性能档位','省内存','低配机','平衡推荐','高性能','兼容稳妥','机械硬盘','HDD','卡顿','防卡顿']}],
   ['备份与还原','创建、校验与还原插件数据备份','archive','manage','data',{subtab:'backup',aliases:['备份','还原','恢复']}],
   ['旧版资料迁入','从旧版数据目录迁入角色与历史资料','folder-input','manage','data',{subtab:'migration',aliases:['迁移','旧版数据']}],
   ['配置导入导出','导出脱敏配置快照或从文件导入','arrow-up-down','manage','data',{subtab:'port',aliases:['导出配置','导入配置']}],
@@ -6866,6 +6895,13 @@ async function openSearchSetting(result){
       return;
     }
     if(location.modelsTab)window.CompanionModelsPage?.selectTab?.(location.modelsTab,{notify:false});
+    if(location.quotaFocus){
+      window.CompanionModelsPage?.focusQuota?.(location.quotaFocus);
+      if(location.selector){
+        waitAndFocusTarget({root:location.root||'#modelWorkspace',selector:location.selector,highlight:true},jump);
+      }
+      return;
+    }
     if(location.modelsTask){
       const safeTask=globalThis.CSS?.escape?.(location.modelsTask)||String(location.modelsTask).replace(/["\\]/g,'\\$&');
       const taskSel=`[data-fncard="${safeTask}"], [data-model-open="${safeTask}"], [data-model-kind="${safeTask}"], [data-task-kind="${safeTask}"], [data-model-task="${safeTask}"]`;
@@ -6906,6 +6942,9 @@ async function openSearchSetting(result){
     if(entry.group==='device.phone'){
       const details=$('.phone-advanced');
       if(details)details.open=true;
+    }
+    if(location.tuningField&&typeof window.CompanionTuningPage?.focusField==='function'){
+      window.CompanionTuningPage.focusField(location.tuningField);
     }
     if(location.selector){
       waitAndFocusTarget({root:location.root||'#shellPanel',selector:location.selector,highlight:true},jump);
@@ -7046,6 +7085,16 @@ function openSearch(initialQuery=''){
 }
 document.addEventListener('click',event=>{
   const el=event.target.closest('button,a');if(!el)return;
+  if(el.dataset.mcHintAction&&window.CompanionMemoryCompanionHint?.handleAction){
+    if(!el.closest('#memoryWorkspace')&&!el.closest('.setup-shell')){
+      event.preventDefault();
+      void window.CompanionMemoryCompanionHint.handleAction(el.dataset.mcHintAction,{
+        onUpdate:()=>renderShellSide(),
+        notify:message=>{if(message)toast(message);},
+      });
+      return;
+    }
+  }
   if(el.hasAttribute('data-profile-avatar-remove')){
     event.preventDefault();setProfileAvatar('');toast('头像已移除，保存角色档案后生效');return;
   }
@@ -7214,7 +7263,7 @@ document.addEventListener('click',event=>{
   if(el.dataset.clearFurniture!==undefined){furnitureFilter='all';furnitureQuery='';$('[data-directory-search]').value='';updateFurnitureDirectory();return;}
   if(el.dataset.detail){showDetail(el.dataset.detail);return;}
   if(el.dataset.go){
-    const modelTabs=['fn','voice','image','search','laya','pricing'];
+    const modelTabs=['fn','voice','image','search','laya','pricing','quota'];
     if(el.dataset.setupReplySection)navigateToReplySection(el.dataset.go,el.dataset.lifeTarget||el.dataset.manage,
       el.dataset.manageSubtab,el.dataset.setupReplySection);
     else navigate(el.dataset.go,el.dataset.lifeTarget||el.dataset.manage,el.dataset.manageSubtab);

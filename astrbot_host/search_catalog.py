@@ -294,6 +294,45 @@ def registered_model_tasks(controller: Any = None) -> list[dict[str, Any]]:
     return tasks
 
 
+def performance_tuning_catalog() -> list[dict[str, Any]]:
+    """Return searchable metadata for performance profiles, tuning fields, and DB compaction."""
+    from companion_v2.storage.tuning_config import PROFILE_CATALOG, TUNING_FIELDS
+
+    entries: list[dict[str, Any]] = [
+        {
+            "key": "performance_tuning_profile",
+            "label": "性能调优档位（自动 / 省内存 / 平衡 / 高性能 / 兼容稳妥）",
+            "hint": "按本机内存与磁盘特点选择五档预设，支持硬件自动推荐、机械硬盘兼容与防爆内存保护。",
+            "aliases": [
+                "性能调优", "性能档位", "省内存", "低配机", "平衡推荐", "高性能",
+                "兼容稳妥", "机械硬盘", "HDD", "NAS", "卡顿", "防卡顿",
+                *[p.label for p in PROFILE_CATALOG],
+                *[p.id for p in PROFILE_CATALOG],
+            ],
+            "target": "tuning",
+        },
+        {
+            "key": "storage_database_health_compaction",
+            "label": "数据库体检与一键瘦身",
+            "hint": "查看主库与副库体积、空闲页与重复上下文占比，执行在线常规无损瘦身或全量深度重组释放空间。",
+            "aliases": [
+                "数据库瘦身", "数据库体检", "一键瘦身", "瘦身", "体检", "压缩",
+                "释放空间", "清理空闲页", "VACUUM", "SQLite 瘦身", "重复上下文去重", "冷遥测归档",
+            ],
+            "target": "storage",
+        },
+    ]
+    for spec in TUNING_FIELDS:
+        entries.append({
+            "key": spec.key,
+            "label": spec.label,
+            "hint": spec.effect_hint,
+            "aliases": list(spec.aliases),
+            "target": "tuning",
+        })
+    return entries
+
+
 def build_search_catalog(controller: Any = None) -> dict[str, Any]:
     """Build full searchable metadata payload without exposing secrets."""
     config = getattr(controller, "config", None) if controller is not None else None
@@ -309,4 +348,5 @@ def build_search_catalog(controller: Any = None) -> dict[str, Any]:
         "model_tasks": tasks,
         "plugin_config": plugin_items,
         "native_extensions": extensions,
+        "performance_tuning": performance_tuning_catalog(),
     }

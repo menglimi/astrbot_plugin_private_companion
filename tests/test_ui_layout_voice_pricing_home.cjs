@@ -116,8 +116,8 @@ test("需求 5：语音朗读取消强隐面板 hack 与双列卡高矮空洞，
     );
     assert.match(
         voiceCss,
-        /@container\s+wb-group\s*\(\s*min-width:\s*760px\s*\)\s*\{[\s\S]*?\[data-wb-group="voice"\]\s+\.wb-fields,\s*[\s\S]*?\[data-wb-group="voice_render"\]\s+\.wb-fields\s*\{[^}]*repeat\(\s*4\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/s,
-        "宽容器下「开关与触发」(4项)与「朗读方式」(8项)应整齐展开为 4 列网格",
+        /@container\s+wb-group\s*\(\s*min-width:\s*1080px\s*\)\s*\{[\s\S]*?\[data-wb-group="voice"\]\s+\.wb-fields,\s*[\s\S]*?\[data-wb-group="voice_render"\]\s+\.wb-fields[\s\S]*?repeat\(\s*4\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/s,
+        "仅在超宽容器（>= 1080px）下将「开关与触发」「朗读方式」「声线与 TTS 引擎」展开为 4 列，避免 760–1079px 区间被挤压成 165px 窄列",
     );
     assert.match(
         voiceCss,

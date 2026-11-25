@@ -383,3 +383,63 @@ class MemoryHostAPITests(unittest.IsolatedAsyncioTestCase):
                          "memory_request_invalid")
         self.assertEqual((await self.request("/reflections", query="history=1", username=None))["data"]["code"],
                          "dashboard_identity_required")
+
+    async def test_inactive_or_forgotten_fact_detail_degrades_to_readonly_metadata_and_keeps_revisions(self):
+        session = await self.initialize()
+        listed = (await self.request())["data"]["items"][0]
+        forgot = await self.request("/command", data={
+            "atom_id": listed["atom_id"],
+            "expected_revision": listed["revision"],
+            "view_token": listed["view_token"],
+            "operation_key": "forget-for-detail",
+            "action": "forget",
+        })
+        self.assertEqual(forgot["status"], "ok", forgot)
+        after = (await self.request())["data"]["items"][0]
+        self.assertEqual(after["state"], "invalidated")
+
+        detail = await self.request("/detail", data={"atom_id": after["atom_id"], "revision": after["revision"]})
+        self.assertEqual(detail["status"], "ok", detail)
+        self.assertTrue(detail["data"]["item"]["read_only"])
+        self.assertEqual(detail["data"]["item"]["state"], "invalidated")
+        self.assertEqual(detail["data"]["item"]["unavailable_reason"], "memory_inactive")
+        self.assertIsNone(detail["data"]["item"]["representation"])
+        self.assertIsNone(detail["data"]["item"]["object"])
+        self.assertEqual(detail["data"]["sources"], [])
+        self.assertNotIn("实际管理员提供的测试记录", json.dumps(detail, ensure_ascii=False))
+
+        revisions = await self.request("/revisions", query=f"atom_id={after['atom_id']}&limit=16")
+        self.assertEqual(revisions["status"], "ok", revisions)
+        self.assertGreaterEqual(len(revisions["data"]["items"]), 2)
+
+        # Superseded and archived atoms also degrade safely while unauthorized / unknown / stale requests stay denied.
+        for state in ("superseded", "archived"):
+            with session.application.runtime.transaction() as connection:
+                connection.execute("UPDATE memory_atoms SET state = ? WHERE atom_id = ?", (state, after["atom_id"]))
+            degraded_detail = await self.request("/detail", data={"atom_id": after["atom_id"], "revision": after["revision"]})
+            self.assertEqual(degraded_detail["status"], "ok", degraded_detail)
+            self.assertEqual(degraded_detail["data"]["item"]["state"], state)
+            self.assertEqual(degraded_detail["data"]["item"]["unavailable_reason"], "memory_inactive")
+            self.assertTrue(degraded_detail["data"]["item"]["read_only"])
+
+        denied = await self.request("/detail", username=None, data={"atom_id": after["atom_id"], "revision": after["revision"]})
+        self.assertEqual(denied["data"]["code"], "dashboard_identity_required")
+        missing = await self.request("/detail", data={"atom_id": "nonexistent-atom", "revision": 1})
+        self.assertEqual(missing["data"]["code"], "memory_unavailable")
+        stale = await self.request("/detail", data={"atom_id": after["atom_id"], "revision": after["revision"] + 5})
+        self.assertEqual(stale["data"]["code"], "memory_revision_conflict")
+
+    async def test_active_fact_with_revoked_source_degrades_readonly_within_single_snapshot(self):
+        session = await self.initialize()
+        listed = (await self.request())["data"]["items"][0]
+        with session.application.runtime.transaction() as connection:
+            connection.execute("UPDATE sources SET state = 'revoked'")
+        detail = await self.request("/detail", data={"atom_id": listed["atom_id"], "revision": listed["revision"]})
+        self.assertEqual(detail["status"], "ok", detail)
+        self.assertEqual(detail["data"]["item"]["state"], "active")
+        self.assertTrue(detail["data"]["item"]["read_only"])
+        self.assertEqual(detail["data"]["item"]["unavailable_reason"], "source_revoked")
+        self.assertIsNone(detail["data"]["item"]["representation"])
+        self.assertIsNone(detail["data"]["item"]["object"])
+        self.assertEqual(detail["data"]["sources"], [])
+        self.assertNotIn("实际管理员提供的测试记录", json.dumps(detail, ensure_ascii=False))

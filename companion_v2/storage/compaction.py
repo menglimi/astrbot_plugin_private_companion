@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shutil
 import sqlite3
 import time
 from typing import Any
 
+from companion_v2.execution.models import TaskError
 from companion_v2.storage.image_payloads import MARKER_PREFIX as CONV_IMG_MARKER, migrate_image_payloads
 from companion_v2.storage.native_dedup import (
     CONTEXT_REF_LEN,
@@ -31,14 +33,67 @@ from companion_v2.storage.native_dedup import (
 )
 from companion_v2.storage.runtime import table_exists
 from companion_v2.storage.semantic import REACTION_FILE_MARKER, SemanticStore
-from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+from companion_v2.storage.sqlite_tuning import active_sqlite_tuning_profile, apply_sidecar_pragmas
 from companion_v2.storage.telemetry_archive import (
     ARCHIVE_FILENAME,
     DEFAULT_TELEMETRY_TTL_DAYS,
     archive_cold_telemetry,
 )
+from companion_v2.storage.tuning_config import active_telemetry_ttl_days
 
 _AUTO_VACUUM_LABELS = {0: "none", 1: "full", 2: "incremental"}
+def _sqlite_database_bytes(connection) -> int:
+    pages = connection.execute("PRAGMA page_count").fetchone()[0]
+    page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+    return pages * page_size
+
+
+_SIDECAR_VACUUM_NAMES = ("semantic_catalog", "native_image", "telemetry_archive", "memory_search")
+_DB_LABELS = {
+    "main": "主数据库",
+    "semantic_catalog": "语义与表情库",
+    "native_image": "生图制品库",
+    "telemetry_archive": "冷遥测归档库",
+    "memory_search": "记忆检索索引",
+}
+FULL_VACUUM_DISK_MULTIPLIER = 2.2
+FULL_VACUUM_DISK_MARGIN_BYTES = 64 * 1024 * 1024
+
+
+def full_vacuum_required_bytes(db_bytes: int) -> int:
+    """Minimum safe free disk space required before running a full SQLite VACUUM."""
+    return int(max(0, int(db_bytes)) * FULL_VACUUM_DISK_MULTIPLIER) + FULL_VACUUM_DISK_MARGIN_BYTES
+
+
+def inspect_disk_free_bytes(path: Path) -> int | None:
+    """Return free bytes on the filesystem hosting *path*, or None if unavailable."""
+    target = path if path.is_dir() else path.parent
+    try:
+        return int(shutil.disk_usage(target).free)
+    except OSError:
+        return None
+
+
+def _ensure_disk_space_for_full_vacuum(db_path: Path, *, db_label: str = "主数据库",
+                                      logical_bytes: int = 0) -> None:
+    """Fail closed when free disk space is unavailable or below 2.2x DB size + 64 MiB."""
+    db_bytes = max(_file_size(db_path), logical_bytes)
+    required = full_vacuum_required_bytes(db_bytes)
+    free_bytes = inspect_disk_free_bytes(db_path)
+    if free_bytes is None:
+        raise TaskError(
+            "storage_insufficient_disk_for_vacuum",
+            f"无法获取{db_label}所在磁盘可用空间，出于安全保护已暂停全量深度重组；"
+            "请改用「一键常规无损瘦身」。",
+        )
+    if free_bytes < required:
+        free_mb = round(free_bytes / (1024 * 1024), 1)
+        req_mb = round(required / (1024 * 1024), 1)
+        raise TaskError(
+            "storage_insufficient_disk_for_vacuum",
+            f"{db_label}所在磁盘可用空间不足以执行深度重组（当前可用 {free_mb} MB，安全要求至少 {req_mb} MB，约为当前{db_label}的 2.2 倍）；"
+            "建议改用「一键常规无损瘦身」或先释放磁盘空间。",
+        )
 
 
 def _file_size(path: Path) -> int:
@@ -168,17 +223,22 @@ def database_health_report(
     *,
     data_root: Path | None = None,
     native_image_dir: Path | None = None,
-    ttl_days: int = DEFAULT_TELEMETRY_TTL_DAYS,
+    ttl_days: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Produce a read-only SQLite health and slimming opportunity report."""
+    effective_ttl_days = (
+        max(1, int(ttl_days))
+        if ttl_days is not None
+        else active_telemetry_ttl_days(default=DEFAULT_TELEMETRY_TTL_DAYS)
+    )
     paths = _discover_sidecar_paths(runtime, data_root=data_root, native_image_dir=native_image_dir)
     databases = {
         name: _inspect_sqlite_file(name, path)
         for name, path in paths.items()
     }
     now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    cutoff_iso = (now_utc - timedelta(days=max(1, int(ttl_days)))).isoformat()
+    cutoff_iso = (now_utc - timedelta(days=effective_ttl_days)).isoformat()
 
     opportunities: dict[str, int] = {
         "un_deduped_native_turns": 0,
@@ -280,7 +340,7 @@ def database_health_report(
     if opportunities["cold_core_observations"] + opportunities["cold_laya_payloads"] > 0:
         recommendations.append({
             "code": "archive_cold_telemetry",
-            "label": f"存在超过 {int(ttl_days)} 天的冷遥测明细，可归档至冷库并保留完整每日统计",
+            "label": f"存在超过 {effective_ttl_days} 天的冷遥测明细，可归档至冷库并保留完整每日统计",
         })
     if (
         opportunities["inline_conversation_images"]
@@ -299,12 +359,38 @@ def database_health_report(
 
     profile = getattr(runtime, "tuning_profile", None)
     batch_stats_fn = getattr(runtime, "batched_write_stats", None)
+    main_db_bytes = databases["main"]["db_bytes"] if "main" in databases else 0
+    disk_free_bytes = inspect_disk_free_bytes(paths["main"])
+    vacuum_targets = ("main", *_SIDECAR_VACUUM_NAMES)
+    largest_db_bytes = max(
+        (
+            int(databases[name]["db_bytes"])
+            for name in vacuum_targets
+            if name in databases and databases[name].get("exists")
+        ),
+        default=main_db_bytes,
+    )
+    vacuum_required_bytes = full_vacuum_required_bytes(largest_db_bytes)
+    can_full_vacuum = True
+    for name in vacuum_targets:
+        info = databases.get(name)
+        target_path = paths.get(name)
+        if not info or not info.get("exists") or target_path is None:
+            continue
+        target_free = disk_free_bytes if name == "main" else inspect_disk_free_bytes(target_path)
+        if target_free is None or target_free < full_vacuum_required_bytes(int(info.get("db_bytes") or 0)):
+            can_full_vacuum = False
+            break
     return {
         "status": "compact_recommended" if recommendations else "healthy",
         "checked_at": now_utc.isoformat(),
+        "telemetry_ttl_days": effective_ttl_days,
         "total_sqlite_bytes": total_sqlite_bytes,
         "total_reclaimable_bytes": total_reclaimable_bytes,
         "max_fragmentation_ratio": max_frag,
+        "disk_free_bytes": disk_free_bytes,
+        "vacuum_required_bytes": vacuum_required_bytes,
+        "can_full_vacuum": can_full_vacuum,
         "databases": databases,
         "opportunities": opportunities,
         "recommendations": recommendations,
@@ -313,6 +399,11 @@ def database_health_report(
             "tuning_tier": getattr(profile, "tier", None),
             "cache_size_kib": getattr(profile, "cache_size_kib", None),
             "mmap_size": getattr(profile, "mmap_size", None),
+            "synchronous": (
+                profile.effective_synchronous()
+                if hasattr(profile, "effective_synchronous")
+                else getattr(profile, "synchronous", None)
+            ),
             "batched_writes": batch_stats_fn() if callable(batch_stats_fn) else None,
         },
     }
@@ -321,13 +412,14 @@ def database_health_report(
 def _maintain_sidecar_sqlite(
     path: Path,
     *,
+    db_label: str = "副库",
     vacuum: bool = False,
     enable_incremental_vacuum: bool = False,
     pages: int = 512,
 ) -> dict[str, Any]:
     if not path.is_file():
         return {"exists": False, "vacuumed": False, "freed_pages": 0}
-    profile = tuning_profile()
+    profile = active_sqlite_tuning_profile()
     conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
     vacuumed = False
     freed_pages = 0
@@ -340,6 +432,8 @@ def _maintain_sidecar_sqlite(
             busy_timeout_ms=5000,
         )
         mode = int(conn.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+        if vacuum or (enable_incremental_vacuum and mode != 2):
+            _ensure_disk_space_for_full_vacuum(path, db_label=db_label, logical_bytes=_sqlite_database_bytes(conn))
         if enable_incremental_vacuum and mode != 2:
             conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
             conn.execute("VACUUM")
@@ -368,7 +462,7 @@ def compact_and_slim_databases(
     *,
     data_root: Path | None = None,
     native_image_dir: Path | None = None,
-    ttl_days: int = DEFAULT_TELEMETRY_TTL_DAYS,
+    ttl_days: int | None = None,
     vacuum: bool = False,
     enable_incremental_vacuum: bool = False,
     archive_telemetry: bool = True,
@@ -378,6 +472,11 @@ def compact_and_slim_databases(
 ) -> dict[str, Any]:
     """Run lossless database slimming, archiving, media offload, and vacuuming."""
     started = time.perf_counter()
+    effective_ttl_days = (
+        max(1, int(ttl_days))
+        if ttl_days is not None
+        else active_telemetry_ttl_days(default=DEFAULT_TELEMETRY_TTL_DAYS)
+    )
     rt_root = Path(data_root) if data_root is not None else Path(runtime.data_root)
     paths = _discover_sidecar_paths(runtime, data_root=rt_root, native_image_dir=native_image_dir)
 
@@ -389,9 +488,14 @@ def compact_and_slim_databases(
         runtime,
         data_root=rt_root,
         native_image_dir=native_image_dir,
-        ttl_days=ttl_days,
+        ttl_days=effective_ttl_days,
         now=now,
     )
+    for name in ("main", *_SIDECAR_VACUUM_NAMES):
+        info = before["databases"].get(name)
+        if info and info["exists"] and (vacuum or (enable_incremental_vacuum and info["auto_vacuum"] != "incremental")):
+            _ensure_disk_space_for_full_vacuum(
+                paths[name], db_label=_DB_LABELS[name], logical_bytes=info["page_count"] * info["page_size"])
 
     steps: dict[str, Any] = {}
 
@@ -401,7 +505,7 @@ def compact_and_slim_databases(
 
     # 2. Cold telemetry archiving + pre-aggregated daily rollups.
     if archive_telemetry:
-        steps["archive"] = archive_cold_telemetry(runtime, ttl_days=ttl_days, now=now)
+        steps["archive"] = archive_cold_telemetry(runtime, ttl_days=effective_ttl_days, now=now)
 
     # 3. Media filesystem offload (conversation images, reactions, native images).
     if offload_media:
@@ -424,6 +528,8 @@ def compact_and_slim_databases(
         steps["media_offload"] = media_stats
 
     # 4. Reclaim freelist space, checkpoint WAL, and refresh SQLite query planner stats.
+    if callable(flush_fn):
+        flush_fn(timeout=5.0)
     vacuum_stats: dict[str, Any] = {}
     main_vacuumed = False
     main_freed_pages = 0
@@ -433,6 +539,8 @@ def compact_and_slim_databases(
         if connection is not None and not connection.in_transaction:
             try:
                 mode = int(connection.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+                if vacuum or (enable_incremental_vacuum and mode != 2):
+                    _ensure_disk_space_for_full_vacuum(paths["main"], logical_bytes=_sqlite_database_bytes(connection))
                 if enable_incremental_vacuum and mode != 2:
                     connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
                     connection.execute("VACUUM")
@@ -460,11 +568,12 @@ def compact_and_slim_databases(
     if main_error is not None:
         vacuum_stats["main"]["error"] = main_error
 
-    for sidecar_name in ("semantic_catalog", "native_image", "telemetry_archive", "memory_search"):
+    for sidecar_name in _SIDECAR_VACUUM_NAMES:
         sidecar_path = paths.get(sidecar_name)
         if sidecar_path is not None and sidecar_path.is_file():
             vacuum_stats[sidecar_name] = _maintain_sidecar_sqlite(
                 sidecar_path,
+                db_label=_DB_LABELS.get(sidecar_name, sidecar_name),
                 vacuum=vacuum,
                 enable_incremental_vacuum=enable_incremental_vacuum,
             )
@@ -474,7 +583,7 @@ def compact_and_slim_databases(
         runtime,
         data_root=rt_root,
         native_image_dir=native_image_dir,
-        ttl_days=ttl_days,
+        ttl_days=effective_ttl_days,
         now=now,
     )
     elapsed_ms = round((time.perf_counter() - started) * 1000)

@@ -133,9 +133,12 @@
 .wb-context-tip{position:fixed;inset:auto;margin:0;z-index:80;box-sizing:border-box;
   width:max-content;max-width:min(320px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:var(--sp-2) var(--sp-3);
   background:var(--t-surface);color:var(--t-text);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
-  box-shadow:0 6px 22px #0002;font-size:var(--fs-tiny);line-height:1.65;white-space:pre-line;overflow-wrap:anywhere;text-align:start}
+  box-shadow:var(--t-shadow-lift);font-size:var(--fs-tiny);line-height:1.65;white-space:pre-line;overflow-wrap:anywhere;text-align:start}
 .wb-context-tip:not(:popover-open){display:none}
 .wb-save-context{display:inline-flex;align-items:center;gap:var(--sp-1)}
+.wb-actions-status{margin-left:auto;display:inline-flex;align-items:center;gap:var(--sp-1);min-width:0}
+.wb-actions-status>.wb-actions-note{margin-left:0}
+.wb-field-error:empty{display:none}
 
 /* --- 字段主体 --- */
 .wb-field-main{min-width:0}
@@ -556,7 +559,7 @@
   /* 窄屏回落单列：两列会把标签与数字框挤到换行，反而更难读。 */
   .wb-fields{grid-template-columns:minmax(0,1fr);gap:0}
   .wb-actions>.wb-save{flex:1}
-  .wb-actions-note{margin-left:0;flex-basis:100%}
+  .wb-actions-status,.wb-actions-note{margin-left:0;flex-basis:100%}
   .wb-card-body{padding:var(--sp-4)}
   /* 窄屏卡片有 16px 内边距，吸底动作条要重新贴到卡片两边。 */
   .wb-actions{margin-inline:calc(var(--sp-4) * -1);padding-inline:var(--sp-4)}

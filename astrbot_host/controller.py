@@ -424,6 +424,11 @@ class AstrBotStagingController:
         runtime = StorageRuntime.open(data_root=root / "runtime", installation_id=configuration.scope.installation_id)
         runtime.backup_directory = backup_directory
         try:
+            from .tuning_api import apply_host_performance_tuning
+            apply_host_performance_tuning(self, runtime=runtime)
+        except Exception as error:
+            logger.warning("[CompanionV2] 性能调优参数应用跳过 error_type=%s", type(error).__name__)
+        try:
             from companion_v2.expression.configuration import migrate_legacy_policy_values
             from companion_v2.expression.reaction_configuration import migrate_window_values
             from companion_v2.role_work.growth.configuration import migrate_legacy_skill_values
@@ -438,6 +443,8 @@ class AstrBotStagingController:
                 now=self.now,
             )
         except BaseException:
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             runtime.close()
             raise
         self.runtime = runtime
@@ -476,7 +483,12 @@ class AstrBotStagingController:
                                      default_provider_resolver=conversation_provider_resolver(self.context),
                                      weather_port=weather_port,
                                      weather_alert_port=weather_alert_port,
-                                     balance_port=configured_balance_port(self.config, context=self.context),
+                                     balance_port=configured_balance_port(
+                                         self.config,
+                                         context=self.context,
+                                         runtime_root=getattr(self.runtime, "data_root", None),
+                                         controller=self,
+                                     ),
                                      news_port=configured_news_port(self.config, context=self.context,
                                          deepseek_provider_resolver=search_provider_resolver,
                                          search_priority_resolver=search_settings.source_priority),
@@ -1229,10 +1241,14 @@ class AstrBotStagingController:
         finally:
             from .exchange_rate import close_exchange_rate_services
             from .pricing_sources import close_pricing_catalog_services
+            from .quota_service import close_quota_watch_services
             await close_exchange_rate_services(self)
             await close_pricing_catalog_services(self)
+            await close_quota_watch_services(self)
             if self.native_extensions is not None:
                 await self.native_extensions.aclose()
                 self.native_extensions = None
             self._terminated = True
+            from .tuning_api import release_host_performance_tuning
+            release_host_performance_tuning(self)
             self.unregister_routes()

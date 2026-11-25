@@ -57,6 +57,26 @@ class AppointmentFixture(ContactScheduleFixture):
 
 
 class AppointmentTests(AppointmentFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_bound_role_can_deliver_accepted_appointment_before_first_chat(self):
+        self.app = (await self.start(self.host())).application
+        self.origin = self.contact_context()
+        manager = StateManagement(self.app, self.origin)
+        before = manager.status(self.core).unwrap()
+        manager.command(self.core, dict(action="configure", operation_key="enable-bound-calendar",
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"calendar_enabled": True})).unwrap()
+        self.settings(self.app, {"enabled": True, "automatic_enabled": True,
+            "idle_seconds": 600, "appointment_lead_minutes": 5}).unwrap()
+        self.app.state_maintenance.bind(self.origin, "已经绑定的角色人格。")
+        self.commitment(due=self.clock.now() + timedelta(minutes=2))
+        self.app.notify()
+        await self.automatic_delivery(self.app)
+        record = self.records()[0]
+        self.assertEqual(record["purpose"], "reminder")
+        self.assertEqual(record["automatic_origin"]["bound_role"], self.origin.key)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.contact_calls()), 1)
+
     def test_appointment_fields_are_registered_and_bounded(self):
         fields = {field.field_id: field for field in configuration_fields()}
         for name, default, minimum, maximum in (("appointment_lead_minutes", 30, 0, 240),
@@ -201,6 +221,9 @@ class PersonaJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actual, expected)
         self.assertTrue(any("照片刚才发过啦，这次先不画。" in payload for _, payload in actual))
         self.assertTrue(any("记住了。" in payload for _, payload in actual))
+        self.assertTrue(any(item.purpose == "last_confirmed_reply" for item in reviewed.context.materials))
+        self.assertIn("即使更换比喻、句式、视角或细节修饰", reviewed.instruction)
+        self.assertIn("确认草稿只是重述时，给出 drop", reviewed.instruction)
         expected_evidence = [item for item in compose.context.materials if item.purpose == "contact_evidence"]
         actual_evidence = [item for item in reviewed.context.materials if item.purpose == "contact_evidence"]
         self.assertTrue(expected_evidence)
@@ -283,9 +306,24 @@ class PersonaJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status["delivery"], status["judge"], status["skipped"]), ("delivered", "resolved", False))
         self.assertEqual(self.sent[-1].text, "刚想起上次的话题。")
 
+    async def test_persona_judge_can_rewrite_wording_once(self):
+        async def rewrite(_envelope):
+            return answered('{"decision":"rewrite","score":92,"category":"wording",'
+                            '"reason":"口吻像通知","text":"欸，刚又想起咱们上次聊的事。"}')
+        host = await self.judged_host()
+        self.judge_behavior = rewrite
+        app = host.application
+        record = await self.judged(app)
+        self.assertEqual((record["decision"], record["judge"]["rewritten"]), ("send", True))
+        task_id = self.contacts(app)[0]["task_id"]
+        await self.delivery_state(app, task_id, "delivered")
+        self.assertEqual(self.sent[-1].text, "欸，刚又想起咱们上次聊的事。")
+        self.assertEqual(len(self.judge_calls), 1)
+        self.assertEqual(app.proactive.observe(self.contact_context(), task_id).unwrap()["judge_category"], "wording")
+
     async def test_dropped_judgement_withholds_the_draft_without_any_delivery(self):
         async def drop(envelope):
-            return answered('{"decision":"drop","score":12,"reason":"此刻不符合人格"}')
+            return answered('{"decision":"drop","score":12,"category":"timing","reason":"这会儿先让对方休息"}')
         host = await self.judged_host()
         app = host.application
         self.judge_behavior = drop
@@ -298,6 +336,7 @@ class PersonaJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app.proactive._delivery_row(task_id))
         status = app.proactive.observe(self.contact_context(), task_id).unwrap()
         self.assertEqual((status["skipped"], status["delivery"]), (True, None))
+        self.assertEqual(status["judge_category"], "timing")
         self.assertEqual(self.deliveries(app), ())
         judge_id = record["judge"]["task_id"]
         await self.until(lambda: app.runtime.read_one(
@@ -330,6 +369,8 @@ class PersonaJudgeTests(JudgeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record["decision"], "skip")
         self.assertFalse(record["judge"]["allowed"])
         self.assertTrue(record["judge"]["failure"])
+        task_id = self.contacts(app)[0]["task_id"]
+        self.assertEqual(app.proactive.observe(self.contact_context(), task_id).unwrap()["judge_category"], "execution")
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.deliveries(app), ())
 

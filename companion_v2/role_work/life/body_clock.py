@@ -18,14 +18,16 @@ class RoleBodyClock:
     def __init__(self, tasks, life):
         self.tasks, self.life, self.runtime = tasks, life, tasks.runtime
 
-    def _records(self, context, *, states=None, kind=None, limit=200):
+    def _records(self, context, *, states=None, kind=None, request_id=None, limit=200):
         owner_key = digest(role_owner(context))
         state_clause = "" if not states else " AND state IN (" + ",".join("?" for _ in states) + ")"
         kind_clause = "" if kind is None else " AND json_extract(record_json, '$.work.kind') = ?"
+        request_clause = "" if request_id is None else " AND json_extract(record_json, '$.work.request_id') = ?"
         rows = self.runtime.read_all("""SELECT record_json FROM role_activities
             WHERE owner_key = ? AND json_extract(record_json, '$.scope.kind') = 'private'"""
-            + state_clause + kind_clause + " ORDER BY updated_at DESC, activity_id DESC LIMIT ?",
-            (owner_key, *(state.value for state in (states or ())), *((kind,) if kind else ()), limit))
+            + state_clause + kind_clause + request_clause + " ORDER BY updated_at DESC, activity_id DESC LIMIT ?",
+            (owner_key, *(state.value for state in (states or ())), *((kind,) if kind else ()),
+             *((request_id,) if request_id is not None else ()), limit))
         records = []
         for row in rows:
             try:
@@ -44,6 +46,9 @@ class RoleBodyClock:
 
     def episodes(self, context):
         return tuple(reversed(self._records(context, kind="sleep")))
+
+    def scheduled_sleep(self, context, request_id):
+        return next(iter(self._records(context, kind="sleep", request_id=request_id, limit=1)), None)
 
     def workload(self, context, *, now=None):
         now = now or self.tasks.now()
@@ -77,11 +82,44 @@ class RoleBodyClock:
               AND json_extract(b.context_json, '$.role_binding.role.subject_id') = ?""",
             (cutoff, stamp(now), scope.installation_id, scope.bot_id, context.role_binding.role.subject_id))
         inbound_count = int(row["n"] if row else 0)
+        try:
+            native_row = self.runtime.read_one("""SELECT COUNT(*) AS n FROM conversation_native_observations
+                WHERE observed_at >= ? AND observed_at <= ?
+                  AND kind = 'input' AND delivery_state = 'input_observed'
+                  AND COALESCE(NULLIF(scope_kind, ''), json_extract(context_json, '$.role_binding.scope.kind')) = 'private'
+                  AND json_extract(COALESCE(NULLIF(role_binding_key, ''), json_extract(context_json, '$.role_binding')),
+                                   '$.scope.installation_id') = ?
+                  AND json_extract(COALESCE(NULLIF(role_binding_key, ''), json_extract(context_json, '$.role_binding')),
+                                   '$.scope.bot_id') = ?
+                  AND json_extract(COALESCE(NULLIF(role_binding_key, ''), json_extract(context_json, '$.role_binding')),
+                                   '$.role.subject_id') = ?""",
+                (cutoff, stamp(now), scope.installation_id, scope.bot_id, context.role_binding.role.subject_id))
+            inbound_count += int(native_row["n"] if native_row else 0)
+        except Exception:
+            pass
         return max(0, min(100, round(inbound_count * 1.0 + reading_minutes * 0.25)))
 
-    def profile(self, context, *, now=None):
+    def sleep_settings(self, context):
+        """Best-effort read of the role's sleep schedule configuration."""
+        from .configuration import LifeConfigurationOwner, configuration_fields, target_for, values
+        try:
+            store = getattr(self.runtime, "configuration_store", self.runtime)
+            snapshot = LifeConfigurationOwner(store).read(target_for(context), configuration_fields())
+            return values(snapshot)
+        except Exception:
+            return None
+
+    def _sleep_enabled(self, context):
+        settings = self.sleep_settings(context)
+        if settings is None:
+            return True
+        return bool(settings.get("sleep_enabled", False))
+
+    def profile(self, context, *, now=None, sleep_enabled=None):
         now = now or self.tasks.now()
-        return sleep_profile(self.episodes(context), workload_score=self.workload(context, now=now), now=now)
+        enabled = self._sleep_enabled(context) if sleep_enabled is None else bool(sleep_enabled)
+        return sleep_profile(self.episodes(context), workload_score=self.workload(context, now=now),
+                             now=now, sleep_enabled=enabled)
 
     def latest(self, context):
         records = self._records(context, kind="sleep")
@@ -96,7 +134,7 @@ class RoleBodyClock:
         activity = self.latest(context)
         return {"id": activity.activity_id, "revision": activity.revision} if activity else None
 
-    def read(self, context, *, reference=None, historical=False, now=None):
+    def read(self, context, *, reference=None, historical=False, now=None, sleep_enabled=None):
         now = now or self.tasks.now()
         if historical:
             if reference is None:
@@ -117,7 +155,12 @@ class RoleBodyClock:
             episodes = self.episodes(context)
         receipt = activity.sleep
         actual = actual_sleep_seconds(activity, now)
-        profile = sleep_profile(episodes, workload_score=self.workload(context, now=now), now=now)
+        enabled = (
+            True
+            if historical
+            else (self._sleep_enabled(context) if sleep_enabled is None else bool(sleep_enabled))
+        )
+        profile = sleep_profile(episodes, workload_score=self.workload(context, now=now), now=now, sleep_enabled=enabled)
         return {"basis": "execution_receipt", "state": "sleeping" if activity.state is State.ACTIVE else
             "interrupted" if activity.state is State.PAUSED else
             "awake" if activity.state is State.COMPLETED else "interrupted",
@@ -150,7 +193,7 @@ class RoleBodyClock:
         early = segment_seconds < 20 * 60
         interruptions = receipt.interruptions + 1
         early_interruptions = receipt.early_interruptions + int(early)
-        debt = self.profile(context, now=at)["sleep_debt_minutes"]
+        debt = self.profile(context, now=at, sleep_enabled=True)["sleep_debt_minutes"]
         quality_min, quality_max = sleep_quality_range(receipt.workload_score, debt,
                                                         interruptions, early_interruptions)
         updated = replace(receipt, slept_seconds=min(172800, receipt.slept_seconds + segment_seconds),
@@ -177,7 +220,7 @@ class RoleBodyClock:
         # schema bounds one episode at 48h; without this clamp, waking it fails
         # validation and the UI can never end the sleep.
         total = min(172800, receipt.slept_seconds + elapsed)
-        debt = self.profile(context, now=observed_at)["sleep_debt_minutes"]
+        debt = self.profile(context, now=observed_at, sleep_enabled=True)["sleep_debt_minutes"]
         low, high = sleep_quality_range(receipt.workload_score, debt,
                                          receipt.interruptions, receipt.early_interruptions)
         receipt = replace(receipt, slept_seconds=total, wake_until=None,
@@ -221,7 +264,7 @@ class RoleBodyClock:
                 receipt = activity.sleep or self._legacy_receipt(activity)
                 elapsed = max(0, round((at - activity.updated_at).total_seconds()))
                 total = min(172800, receipt.slept_seconds + elapsed)
-                debt = self.profile(context, now=at)["sleep_debt_minutes"]
+                debt = self.profile(context, now=at, sleep_enabled=True)["sleep_debt_minutes"]
                 extension = oversleep_extension(activity, sleep_debt_minutes=debt)
                 if extension:
                     slept = replace(receipt, slept_seconds=total, oversleep_minutes=extension)

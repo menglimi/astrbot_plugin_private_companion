@@ -12,7 +12,7 @@ from companion_v2.execution.models import TaskError, digest, encode, stamp
 # Older plans predate the planner's structured routine field.
 _READING = re.compile(r"阅读|读书|读小说|读原文|读一(?:页|段|章)|翻.{0,6}[页书]|书架")
 _WRITING = re.compile(
-    r"续写|创作|写小说|写故事|写短篇|写散文|写诗|动笔"
+    r"续写|创作|写作|写文|写稿|码字|写小说|写故事|写短篇|写散文|写诗|动笔"
 )
 
 
@@ -57,12 +57,16 @@ def require_window(calendar, context, window, at):
     return record
 
 
-def reserve_routine_slot(calendar, context, *, routine, timezone, now, items, sleep_plan=None):
+def reserve_routine_slot(
+    calendar, context, *, routine, timezone, now, items, sleep_plan=None, title=None, detail=None
+):
     """Put pending work in the next free afternoon or evening block."""
-    title, detail = {
+    default_title, default_detail = {
         "reading": ("书架阅读", "按顺序继续书架中的未读片段。"),
         "writing": ("续写未完成作品", "从已有候选稿接着写，保留原有正文与人物设定。"),
     }[routine]
+    title = title or default_title
+    detail = detail or default_detail
     zone = ZoneInfo(timezone)
     earliest = now + timedelta(minutes=15)
     busy = [
@@ -97,8 +101,8 @@ def reserve_routine_slot(calendar, context, *, routine, timezone, now, items, sl
                     planning={"mode": "routine", "routine": routine},
                     data={
                         "kind": "role_plan",
-                        "title": title,
-                        "detail": detail,
+                        "title": default_title if title is None else title,
+                        "detail": default_detail if detail is None else detail,
                         "schedule": json.loads(encode(Schedule(start, timezone))),
                         "duration_minutes": 30,
                         "presence": "",

@@ -89,20 +89,29 @@ class ExpressionSampleManagement:
         self.app.notify()
         return {"handle": handle, "state": state, "replayed": False}
 
-    @outcome
-    def learn(self, *, operator, context):
+    def _resolve_learn_instruction(self, *, operator, context):
         at = self.styles.management.ledger.now()
         with self.runtime.read_snapshot():
             self.styles._authorize(operator, context, at)
             bound = self.app.state_maintenance.bindings.get(context.key)
             if bound is not None:
-                instruction = bound[1]
-            else:
-                row = self.runtime.read_one("""SELECT role_instruction FROM conversation_batches
-                    WHERE origin_key = ? ORDER BY rowid DESC LIMIT 1""", (context.key,))
-                from companion_v2.conversation.native_turns import latest
-                row = latest(self.runtime, context.key) or row
-                if row is None:
-                    raise TaskError("expression_sample_unavailable", "this window has no original conversation")
-                instruction = row["role_instruction"]
+                return bound[1]
+            row = self.runtime.read_one("""SELECT role_instruction FROM conversation_batches
+                WHERE origin_key = ? ORDER BY rowid DESC LIMIT 1""", (context.key,))
+            from companion_v2.conversation.native_turns import latest
+            row = latest(self.runtime, context.key) or row
+            if row is None:
+                raise TaskError("expression_sample_unavailable", "this window has no original conversation")
+            return row["role_instruction"]
+
+    @outcome
+    def prepare_learn(self, *, operator, context):
+        """Authorize and prepare manual learning off-loop without creating asyncio tasks."""
+        instruction = self._resolve_learn_instruction(operator=operator, context=context)
+        immediate, pending = self.app.expression_style.prepare_start(context, instruction)
+        return {"result": immediate, "launch": pending}
+
+    @outcome
+    def learn(self, *, operator, context):
+        instruction = self._resolve_learn_instruction(operator=operator, context=context)
         return self.app.expression_style.start(context, instruction)

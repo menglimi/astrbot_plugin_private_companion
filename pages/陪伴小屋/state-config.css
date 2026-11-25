@@ -1,27 +1,138 @@
 /* 状态子页的五段骨架；颜色、字号和圆角跟随小屋主题。 */
-.state-feature-detail.state-config-page{padding:var(--sp-5);margin:var(--sp-5) 0;border:0;background:var(--t-canvas);box-shadow:none;border-radius:var(--r-lg)}
-.state-config-page>header{align-items:flex-start;gap:var(--sp-3);padding:0 0 var(--sp-5);border:0}
-.state-config-page .state-feature-head-main{flex:1;gap:var(--sp-2)}
-.state-config-page .state-eyebrow{font-size:var(--fs-tiny)}
-.state-config-page h3{font-size:var(--fs-head);gap:var(--sp-2)}
-.state-config-page h3 svg{width:24px;height:24px;color:var(--t-ok-ink)}
-.state-config-page .state-feature-subtitle{font-size:var(--fs-body);line-height:1.7;max-width:none}
-.state-config-page .state-feature-head-aside{align-items:center;max-width:40%}
-.state-config-page .state-feature-scope-pill{border-radius:var(--r-pill);white-space:normal;font-size:var(--fs-tiny);padding:var(--sp-1) var(--sp-2)}
-.state-config-page .state-feature-back,.state-config-page .state-feature-close{width:36px;height:36px;flex:none}
+.state-feature-detail.state-config-page{
+  --state-tone-bar:var(--t-accent);--state-tone-bg:var(--t-accent-quiet);--state-tone-ink:var(--t-accent-ink);
+  padding:var(--sp-5);margin:var(--sp-5) 0;border:1px solid var(--t-line);background:var(--t-canvas);box-shadow:var(--t-shadow);border-radius:var(--r-lg);
+}
+.state-feature-detail.state-config-page[data-feature-tone="ok"],
+.state-config-page .state-workspace-overview[data-feature-tone="ok"]{--state-tone-bar:var(--t-ok);--state-tone-bg:var(--t-ok-quiet);--state-tone-ink:var(--t-ok-ink)}
+.state-feature-detail.state-config-page[data-feature-tone="warn"],
+.state-config-page .state-workspace-overview[data-feature-tone="warn"]{--state-tone-bar:var(--t-warn);--state-tone-bg:var(--t-warn-quiet);--state-tone-ink:var(--t-warn-ink)}
+.state-feature-detail.state-config-page[data-feature-tone="risk"],
+.state-config-page .state-workspace-overview[data-feature-tone="risk"]{--state-tone-bar:var(--t-risk);--state-tone-bg:var(--t-risk-quiet);--state-tone-ink:var(--t-risk-ink)}
+.state-feature-detail.state-config-page[data-feature-tone="accent"],
+.state-config-page .state-workspace-overview[data-feature-tone="accent"]{--state-tone-bar:var(--t-accent);--state-tone-bg:var(--t-accent-quiet);--state-tone-ink:var(--t-accent-ink)}
+.state-config-page>header{display:flex;align-items:flex-start;gap:var(--sp-3);padding:0 0 var(--sp-4);margin:0 0 var(--sp-4);border:0;border-bottom:1px solid var(--t-line)}
+.state-config-page .state-feature-icon{
+  display:grid;place-items:center;flex:none;width:40px;height:40px;margin-top:2px;
+  border-radius:var(--r-md);background:var(--state-tone-bg);color:var(--state-tone-ink);
+  border:1px solid color-mix(in srgb,var(--state-tone-bar) 24%,transparent);
+}
+.state-config-page .state-feature-icon svg{width:20px;height:20px}
+.state-config-page .state-feature-head-main{flex:1;display:grid;gap:2px;min-width:0}
+.state-config-page .state-eyebrow{font-size:var(--fs-micro);color:var(--state-tone-ink)}
+.state-config-page .state-eyebrow:before{background:var(--state-tone-bar)}
+.state-config-page h3{font-size:var(--fs-head);line-height:1.35;gap:var(--sp-2);margin:0}
+.state-config-page h3 svg{width:22px;height:22px;color:var(--state-tone-ink)}
+.state-config-page .state-feature-subtitle{margin:var(--sp-1) 0 0;font-size:var(--fs-tiny);line-height:1.65;color:var(--t-text-soft);max-width:none}
+.state-config-page .state-feature-head-aside{display:flex;align-items:center;gap:var(--sp-2);flex:none;max-width:44%}
+.state-config-page .state-feature-scope-pill{
+  border-radius:var(--r-pill);white-space:nowrap;font-size:var(--fs-micro);font-weight:500;
+  padding:var(--sp-1) var(--sp-3);background:var(--t-surface);border:1px solid var(--t-line-firm);color:var(--t-text-soft);
+}
+.state-config-page .state-feature-back,.state-config-page .state-feature-close{
+  width:34px;height:34px;flex:none;border-radius:var(--r-sm);border:1px solid var(--t-line);background:var(--t-surface);
+  color:var(--t-text-soft);transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease;
+}
+.state-config-page .state-feature-close:hover:not(:disabled){border-color:var(--t-line-firm);background:var(--t-surface-soft);color:var(--t-text-strong)}
 .state-config-page>.state-feature-content{display:block;padding:0;min-width:0}
-.state-config-page .state-workspace-overview{grid-template-columns:minmax(0,.8fr) minmax(0,2fr);gap:var(--sp-6);padding:var(--sp-5);margin:0 0 var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-lg);background:var(--t-surface)}
-.state-config-page .state-workspace-current{gap:var(--sp-2);padding:0;border:0}
-.state-config-page .state-workspace-current>span,.state-config-page .state-workspace-overview dt{font-size:var(--fs-body);color:var(--t-text-faint)}
-.state-config-page .state-workspace-current>strong{font-size:var(--fs-display);font-weight:650;line-height:1.35}
-.state-config-page .state-workspace-current>small{font-size:var(--fs-body);line-height:1.7}
-.state-config-page .state-workspace-overview dl{column-gap:var(--sp-5);row-gap:var(--sp-4)}
-.state-config-page .state-workspace-overview dd{font-size:var(--fs-body);line-height:1.7}
+
+/* 顶部状态详情卡：按内容形态自适应（narrative 长叙事全通栏阅读块 vs metric 指标醒目读数），
+   下方紧接紧凑水平元信息网格，彻底消除三栏挤压折行与右侧大片空洞。 */
+.state-config-page .state-workspace-overview{
+  display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-4);
+  padding:var(--sp-4) var(--sp-5);margin:0 0 var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-lg);background:var(--t-surface);
+}
+.state-config-page .state-workspace-current{
+  display:grid;align-content:start;gap:var(--sp-2);min-width:0;padding:0;border:0;
+}
+.state-config-page .state-workspace-overview[data-value-kind="narrative"] .state-workspace-current{
+  padding:var(--sp-4) var(--sp-5);border-radius:var(--r-md);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);
+  border-left:3px solid var(--state-tone-bar);
+}
+.state-config-page .state-workspace-current>span{
+  font-size:var(--fs-micro);font-weight:600;letter-spacing:.02em;color:var(--state-tone-ink);
+}
+.state-config-page .state-workspace-overview[data-value-kind="metric"] .state-workspace-current>strong{
+  font-size:var(--fs-head);font-weight:650;line-height:1.35;color:var(--t-text-strong);
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere;
+}
+.state-config-page .state-workspace-overview[data-value-kind="narrative"] .state-workspace-current>strong{
+  font-size:var(--fs-lead);font-weight:500;line-height:1.75;color:var(--t-text-strong);
+  overflow-wrap:anywhere;
+}
+.state-config-page .state-workspace-current>small{font-size:var(--fs-tiny);line-height:1.65;color:var(--t-text-soft)}
+.state-config-page .state-workspace-overview dl{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));
+  align-content:start;gap:var(--sp-3) var(--sp-5);
+  margin:0;padding-top:var(--sp-3);border-top:1px solid var(--t-line);min-width:0;
+}
+.state-config-page .state-workspace-overview[data-value-kind="narrative"] dl{padding-top:var(--sp-1);border-top:0}
+.state-config-page .state-workspace-overview dl>div{display:grid;align-content:start;gap:3px;min-width:0}
+.state-config-page .state-workspace-overview dt{font-size:var(--fs-micro);color:var(--t-text-faint);line-height:1.45}
+.state-config-page .state-workspace-overview dd{
+  margin:0;font-size:var(--fs-body);font-weight:500;line-height:1.55;color:var(--t-text);overflow-wrap:anywhere;
+}
+.state-config-page .state-workspace-overview [data-row-tone="time"] dd{font-variant-numeric:tabular-nums;color:var(--t-text-soft)}
+.state-config-page .state-workspace-overview [data-row-tone="on"] dd,
+.state-config-page .state-workspace-overview [data-row-tone="off"] dd{
+  display:inline-flex;align-items:center;gap:var(--sp-2);
+}
+.state-config-page .state-workspace-overview [data-row-tone="on"] dd::before,
+.state-config-page .state-workspace-overview [data-row-tone="off"] dd::before{
+  content:"";flex:none;width:7px;height:7px;border-radius:50%;
+}
+.state-config-page .state-workspace-overview [data-row-tone="on"] dd::before{background:var(--t-ok)}
+.state-config-page .state-workspace-overview [data-row-tone="on"] dd{color:var(--t-ok-ink)}
+.state-config-page .state-workspace-overview [data-row-tone="off"] dd::before{background:var(--t-text-faint)}
+.state-config-page .state-workspace-overview [data-row-tone="off"] dd{color:var(--t-text-faint)}
 .state-config-page .state-workspace-overview-readonly{grid-template-columns:minmax(0,1fr)}
-.state-config-page .state-workspace-current meter{width:100%;height:7px;appearance:none;border:0;border-radius:var(--r-pill);background:var(--t-surface-sunken)}
-.state-config-page .state-workspace-current meter::-webkit-meter-bar{height:7px;border:0;border-radius:var(--r-pill);background:var(--t-surface-sunken)}
+.state-config-page .state-workspace-current meter{width:100%;height:8px;appearance:none;border:0;border-radius:var(--r-pill);background:var(--t-surface-sunken);margin-top:var(--sp-1)}
+.state-config-page .state-workspace-current meter::-webkit-meter-bar{height:8px;border:0;border-radius:var(--r-pill);background:var(--t-surface-sunken)}
 .state-config-page .state-workspace-current meter::-webkit-meter-optimum-value{border-radius:var(--r-pill);background:var(--t-ok)}
 .state-config-page .state-workspace-current meter::-moz-meter-bar{border-radius:var(--r-pill);background:var(--t-ok)}
+
+/* 心情四维微指标条（喜 / 怒 / 哀 / 惧） */
+.state-config-page .state-mood-axes{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-2);margin-top:var(--sp-2);
+}
+.state-config-page .state-mood-axis{
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:var(--sp-2);
+  padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);
+}
+.state-config-page .state-mood-axis-label{font-size:var(--fs-micro);font-weight:600;color:var(--t-text-soft)}
+.state-config-page .state-mood-axis-track{display:block;height:5px;border-radius:var(--r-pill);background:var(--t-surface-sunken);overflow:hidden}
+.state-config-page .state-mood-axis-track>i{display:block;height:100%;border-radius:var(--r-pill);background:var(--t-accent-solid)}
+.state-config-page .state-mood-axis[data-axis="joy"] .state-mood-axis-track>i{background:var(--t-ok)}
+.state-config-page .state-mood-axis[data-axis="anger"] .state-mood-axis-track>i{background:var(--t-risk)}
+.state-config-page .state-mood-axis[data-axis="sorrow"] .state-mood-axis-track>i{background:var(--t-accent)}
+.state-config-page .state-mood-axis[data-axis="fear"] .state-mood-axis-track>i{background:var(--t-warn)}
+.state-config-page .state-mood-axis-val{font-size:var(--fs-micro);font-weight:650;color:var(--t-text-strong);font-variant-numeric:tabular-nums}
+.state-config-page .state-mood-tags{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-top:var(--sp-1)}
+.state-config-page .state-mood-tags span{
+  padding:2px var(--sp-2);border-radius:var(--r-pill);border:1px solid var(--t-line);
+  background:var(--t-surface);color:var(--t-text-soft);font-size:var(--fs-micro);
+}
+
+/* 底部快捷配置条：替代散落的一行文字 + 孤立按钮 */
+.state-config-page .state-feature-action-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap;
+  padding:var(--sp-4) var(--sp-5);margin:0 0 var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-lg);background:var(--t-surface);
+}
+.state-config-page .state-feature-action-copy{display:grid;gap:3px;flex:1;min-width:min(200px,100%)}
+.state-config-page .state-feature-action-kicker{font-size:var(--fs-micro);font-weight:600;color:var(--t-text-faint)}
+.state-config-page .state-feature-action-copy .state-feature-scope{margin:0;font-size:var(--fs-body);line-height:1.6;color:var(--t-text)}
+.state-config-page .state-feature-action-copy .state-edit-help{margin:2px 0 0;font-size:var(--fs-tiny);color:var(--t-text-faint)}
+.state-config-page .state-feature-action-btn{
+  flex:none;min-height:38px;padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);
+  border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line-firm));
+  background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600;
+}
+.state-config-page .state-feature-action-btn:hover:not(:disabled){
+  background:var(--t-accent-solid);border-color:var(--t-accent-solid);color:var(--t-on-solid);
+}
 .state-config-page .state-feature-editor{margin:0;padding:0;border:0;background:transparent;box-shadow:none}
 .state-config-page .state-config-form{display:grid;gap:var(--sp-5);min-width:0}
 .state-config-page .state-config-body{display:grid;gap:var(--sp-5);min-width:0}
@@ -146,47 +257,39 @@
 .state-config-page :is(button,input,select,textarea):disabled{cursor:default;opacity:.6}
 @media(max-width:1000px){.state-config-page .state-config-phase-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:700px){
+  .state-config-page{padding:var(--sp-3);margin:var(--sp-3) 0}
   .state-feature-detail.state-config-page{padding:var(--sp-3)}
-  .state-config-page>header{display:grid;grid-template-columns:36px minmax(0,1fr);gap:var(--sp-2)}
-  .state-config-page .state-feature-head-aside{grid-column:2;order:initial;max-width:100%;margin-left:0;justify-content:space-between}
-  .state-config-page .state-workspace-overview{grid-template-columns:minmax(0,1fr);gap:var(--sp-4);padding:var(--sp-4)}
-  .state-config-page .state-workspace-current{padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line)}
-  .state-config-page .state-workspace-overview-readonly .state-workspace-current{border:0;padding:0}
-  .state-config-page .state-workspace-overview dl{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
-  .state-config-page .state-config-group,.state-config-page .state-calendar-section{padding:var(--sp-4)}
+  .state-config-page>header{display:grid;grid-template-columns:36px minmax(0,1fr);gap:var(--sp-2);padding:0 0 var(--sp-3);margin:0 0 var(--sp-3)}
+  .state-config-page .state-feature-icon{width:36px;height:36px}
+  .state-config-page .state-feature-head-aside{grid-column:2;order:initial;flex-wrap:wrap;min-width:0;max-width:none;width:100%;margin-left:0;justify-content:space-between}
+  .state-config-page .state-feature-scope-pill{white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%;line-height:1.4}
+  .state-config-page .state-feature-back,.state-config-page .state-feature-close{width:38px;height:38px}
+  .state-config-page .state-workspace-overview{grid-template-columns:minmax(0,1fr);gap:var(--sp-3);padding:var(--sp-3);margin-bottom:var(--sp-3)}
+  .state-config-page .state-workspace-overview[data-value-kind="narrative"] .state-workspace-current{padding:var(--sp-3) var(--sp-4)}
+  .state-config-page .state-workspace-overview[data-value-kind="metric"] .state-workspace-current{padding:0 0 var(--sp-2);border-right:0}
+  .state-config-page .state-workspace-overview dl{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-3)}
+  .state-config-page .state-mood-axes{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .state-config-page .state-feature-action-bar{padding:var(--sp-3) var(--sp-4);gap:var(--sp-3)}
+  .state-config-page .state-feature-action-btn{width:100%}
+  .state-config-page .state-config-group,.state-config-page .state-calendar-section{padding:var(--sp-3)}
   .state-config-page .state-config-grid{grid-template-columns:minmax(0,1fr)}
-  .state-config-page .state-config-row{gap:var(--sp-3);padding:var(--sp-3);flex-wrap:wrap}
-  .state-config-page .state-config-row:not(.state-config-switch)>:is(input,select){width:120px;max-width:100%}
-  .state-config-page .state-config-row.state-config-tile:not(.state-config-switch)>:is(input,select){width:100%}
+  .state-config-page .state-config-row{gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);min-height:56px;flex-wrap:wrap}
+  .state-config-page .state-config-row:not(.state-config-switch)>:is(input,select){width:120px;max-width:50%}
+  .state-config-page .state-config-row.state-config-tile:not(.state-config-switch)>:is(input,select){width:100%;max-width:none}
   .state-config-page .state-config-stepper{margin-left:auto}
   .state-config-page .state-config-actions{padding:var(--sp-3) 0;gap:var(--sp-2)}
   .state-config-page .state-config-actions .memory-button{min-height:44px;min-width:72px;padding:var(--sp-2) var(--sp-3)}
   .state-config-page .state-config-draft-hint{flex-basis:100%}
-  .state-config-page .state-config-link{gap:var(--sp-3);padding:var(--sp-4)}
+  .state-config-page .state-config-link{gap:var(--sp-3);padding:var(--sp-3)}
+  .state-config-page .state-config-note{padding:var(--sp-3);margin:var(--sp-3) 0}
   .state-config-page .state-config-readonly>div{align-items:flex-start;flex-wrap:wrap}
   .state-config-page .state-config-calibration{align-items:flex-start;flex-direction:column}
   .state-config-page .state-planning-mode-options{grid-template-columns:minmax(0,1fr)}
   .state-config-page .state-weather-location-advanced{grid-template-columns:minmax(0,1fr)}
   .state-config-page .state-presentation .state-receipts li{flex-direction:column;gap:var(--sp-2)}
-}
-@media(prefers-reduced-motion:reduce){.state-config-page .state-config-toggle>span,.state-config-page .state-config-toggle>span:after,.state-home-settings .state-feature-close{transition:none}}
-
-/* 窄屏：状态详情页收紧外边距、概览与分组，避免手机上左右各留一圈厚边。 */
-@media(max-width:700px){
-  .state-config-page{padding:var(--sp-3);margin:var(--sp-3) 0}
-  .state-config-page>header{padding:0 0 var(--sp-3);gap:var(--sp-2)}
-  .state-config-page .state-feature-head-aside{max-width:none;width:100%;justify-content:space-between}
-  .state-config-page .state-workspace-overview{grid-template-columns:minmax(0,1fr);gap:var(--sp-2);padding:var(--sp-3);margin-bottom:var(--sp-3)}
-  .state-config-page .state-workspace-current{padding:0 0 var(--sp-2);border-right:0;border-bottom:1px solid var(--t-line)}
-  .state-config-page .state-workspace-overview dl{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
-  .state-config-page .state-config-group,.state-config-page .state-calendar-section{padding:var(--sp-3)}
-  .state-config-page .state-config-grid{grid-template-columns:minmax(0,1fr)}
-  .state-config-page .state-config-row{padding:var(--sp-2) var(--sp-3);min-height:56px}
-  .state-config-page .state-config-row:not(.state-config-switch)>:is(input,select){max-width:50%}
-  .state-config-page .state-config-note{padding:var(--sp-3);margin:var(--sp-3) 0}
-  .state-config-page .state-config-link{padding:var(--sp-3)}
   .state-config-page .state-config-phase-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+@media(prefers-reduced-motion:reduce){.state-config-page .state-config-toggle>span,.state-config-page .state-config-toggle>span:after,.state-config-page .state-feature-close,.state-home-settings .state-feature-close{transition:none}}
 
 /* 标题旁的状态设置按钮与三段式状态设置弹窗（固定顶栏 / 滚动正文 / 贴底操作栏）。
    外层 dialog 使用 overflow:clip 防止搜索定位 scrollIntoView 滚动弹窗框架本身而裁切标题或露白。 */
@@ -210,11 +313,13 @@
 .state-home-settings .state-feature-close svg{width:18px;height:18px}
 .state-home-settings .state-home-settings-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;overflow:hidden;overflow:clip}
 .state-home-settings .state-home-settings-body:not(:has(#state-edit-form)){overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);gap:var(--sp-3)}
+.state-home-settings .state-home-settings-body:not(:has(#state-edit-form))>*{flex:0 0 auto}
 .state-home-settings .state-home-settings-fallback{display:grid;gap:var(--sp-3);justify-items:start}
 .state-home-settings .state-feature-editor{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;margin:0;padding:0;border:0;background:transparent;box-shadow:none}
 .state-home-settings .state-feature-editor>:is(.memory-notice,.state-pending){flex:0 0 auto;margin:var(--sp-4) var(--sp-5) 0}
 .state-home-settings .state-config-form{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:0;min-width:0}
 .state-home-settings .state-config-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:var(--sp-4);overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.state-home-settings .state-config-body>*{flex:0 0 auto}
 .state-home-settings .state-config-body::-webkit-scrollbar{width:6px}
 .state-home-settings .state-config-body::-webkit-scrollbar-track{background:transparent}
 .state-home-settings .state-config-body::-webkit-scrollbar-thumb{border-radius:var(--r-pill);background:var(--t-line-firm)}
@@ -251,4 +356,8 @@
   .state-home-settings .state-home-feature-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3) var(--sp-5)}
   .state-home-settings .state-home-display-policy,.state-home-settings .state-home-display-policy-note{grid-column:1/-1;text-align:left}
   .state-home-settings .state-home-feature-controls .state-config-row{flex-wrap:nowrap}
+}
+@media(max-width:420px){
+  .state-home-settings .state-home-feature-controls{gap:var(--sp-2) var(--sp-3)}
+  .state-home-settings .state-home-feature-controls .state-config-copy{white-space:normal}
 }

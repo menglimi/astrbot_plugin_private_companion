@@ -279,6 +279,21 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn({"stage": "image_attachment", "state": "passed"}, image_result["stages"])
         self.assertTrue(app.proactive.contact.await_args.kwargs["diagnostic_image_intent"])
 
+        app.proactive.observe = lambda _context, _task_id: Outcome.success({"skipped": True,
+            "delivery": None, "judge": "allowed", "judge_allowed": True, "judge_reason": None,
+            "receipt_ref": None, "stage_metrics": {"image_generation": {
+                "state": "unknown", "code": "proactive_image_result_unknown"}}})
+        request.body.return_value = json.dumps({"purpose": "chat", "confirm_delivery": True,
+            "diagnostic_generated_image": True}).encode("utf-8")
+        with patch("astrbot_host.setup_api.request", request), \
+             patch("astrbot_host.setup_api.ContactManagement", ContactManager), \
+             patch("astrbot_host.setup_api.dashboard_operator", return_value=object()):
+            generated = (await api.proactive_diagnostic())["data"]
+        self.assertEqual((generated["state"], generated["stage"], generated["code"]),
+                         ("unknown", "image_generation", "proactive_image_result_unknown"))
+        self.assertTrue(app.proactive.contact.await_args.kwargs["diagnostic_generated_image"])
+        self.assertIsNone(app.proactive.contact.await_args.kwargs["diagnostic_image_intent"])
+
     async def test_proactive_diagnostic_routes_mobile_location_to_reality_producer(self):
         context = NS(scope=NS(kind=ScopeKind.PRIVATE, native_scope_id="200"))
         task = NS(task_id="mobile-location-diagnostic", state="succeeded", reason=None)

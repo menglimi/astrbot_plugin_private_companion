@@ -32,6 +32,7 @@ window.CompanionStateContact = (() => {
   const purposeDefinitions={enabled:{label:"允许此类联系",type:"boolean"},weight:{label:"相对权重",type:"weight"},pause_until:{label:"暂缓此类联系至（本地时间）",type:"datetime"}};
   const reasons={proactive_disabled:"联系或对应目的尚未开启",proactive_paused:"当前仍在暂停期",proactive_quiet_hours:"当前处于免打扰时段",
     automatic_contact_disabled:"后台自动联系尚未开启",proactive_automatic_disabled:"后台自动联系尚未开启",contact_automatic_disabled:"后台自动联系尚未开启",
+    contact_intensity_off:"强度档位已关闭自动联系",
     model_task_unregistered:"主动联系模型尚未就绪",authorization_denied:"当前对象尚未获得联系授权",
     binding_revoked:"当前身份授权已撤销",role_binding_changed:"当前角色绑定已变化",host_not_running:"角色尚未运行"};
   const purposes=value=>value?.purposes&&typeof value.purposes==="object"&&!Array.isArray(value.purposes)
@@ -124,6 +125,7 @@ window.CompanionStateContact = (() => {
     newer_conversation_not_evaluated:["记录属于上一轮私聊","等待最近一轮私聊完成后重新评估。"],
     proactive_permission_denied:["此私聊没有主动联系授权","在关系权限中允许角色主动联系。"],
     automatic_contact_disabled:["后台自动联系已关闭","打开此窗口的后台自动联系开关。"],
+    contact_intensity_off:["强度档位已关闭自动联系","恢复发送时选择自定义或其他启用档位。"],
     contact_settings_disabled:["主动联系总开关已关闭","在当前角色或窗口的主动联系设置中打开总开关。"],
     contact_paused:["主动联系正处于暂缓期","等待暂停结束，或检查全局、窗口与联系目的的暂停时间。"],
     quiet_hours:["当前处于免打扰时段","等待免打扰结束，或核对时区与起止时间。"],

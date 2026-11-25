@@ -25,7 +25,8 @@ from companion_v2.execution.models import (
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import ScopeKind
-from companion_v2.storage.generated_album import album_filename
+from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES
+from companion_v2.storage.generated_album import album_filename, hidden_album_ids
 from companion_v2.storage.image_payloads import MARKER_PREFIX, image_root, is_marker, load_image, store_image
 
 from .models import MAX_ASSET_BYTES, ReferenceRole
@@ -274,6 +275,19 @@ class DailyOutfitPhotos:
         if not self.app.reference_settings.read(context, at)["daily_outfit_enabled"]:
             raise TaskError("daily_outfit_disabled", "enable daily outfit photos for this role")
 
+    def share_photo(self, context, at):
+        self._allowed(context, at)
+        day, _, _ = self._day(context, at)
+        photo = self._read(self._key(context, day)).get("photo")
+        if (not isinstance(photo, dict) or not isinstance(photo.get("content_hash"), str)
+                or not _HEX64_RE.fullmatch(photo["content_hash"])):
+            return None
+        owner = self.app.references.owner(context)
+        image_id = daily_outfit_image_id(owner, day.isoformat(), photo["content_hash"])
+        if image_id in hidden_album_ids(self.runtime, context):
+            return None
+        return {**photo, "image_id": image_id, "local_date": day.isoformat()}
+
     @outcome
     def validate(self, spec, at):
         context = spec.context
@@ -416,8 +430,13 @@ class DailyOutfitPhotos:
                     logger.debug("Daily outfit weather unavailable: %s", type(error).__name__)
         wardrobe = {}
         references = self.app.references
-        wardrobe_options = references.wardrobe_options(context)
-        if wardrobe_options["enabled"] and wardrobe_options["prompt_enabled"]:
+        try:
+            wardrobe_options = references.wardrobe_options(context)
+        except TaskError as error:
+            if error.code not in REVOCABLE_ABSENCE_CODES:
+                raise
+            wardrobe_options = {}
+        if wardrobe_options.get("enabled") and wardrobe_options.get("prompt_enabled"):
             wardrobe = {"preferences": wardrobe_options["tendency"][:500]}
             selected = references.assets.daily_outfit_item(references.owner(context), day.isoformat())
             if selected:

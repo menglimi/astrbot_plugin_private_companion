@@ -12,6 +12,7 @@ from companion_v2.execution.models import digest, stamp
 from companion_v2.role_work.life.configuration import GROUP as LIFE_GROUP, OWNER as LIFE_OWNER, target_for
 from companion_v2.role_work.life.scheduling import bedtime_at, next_bedtime, sleep_rhythm, variation_for
 from companion_v2.foundation.refs import RoleOwnerRef
+from companion_v2.host.tick_offload import advance_life_runtime_async
 from astrbot_host.management_identity import dashboard_operator
 from tests.multi_host_support import multi_config
 from tests.multi_life_support import MultiLifeFixture
@@ -130,6 +131,41 @@ class RoleSleepConfigurationTests(MultiLifeFixture, unittest.IsolatedAsyncioTest
         self.assertEqual(active[0].work.context_key, selected.context.key)
         selected_status = await self.status(selected_target, "role-a")
         self.assertEqual(selected_status["sleep_schedule"]["active_wake_at"], stamp(active[0].work.due_at))
+
+    async def test_open_sleep_window_recovers_after_conversation_rotation_and_restart(self):
+        config = self.shared_role_config()
+        await self.initialize(config)
+        await self.enable(sleep_enabled=True, sleep_time="00:01", sleep_timezone="UTC",
+                          sleep_variation_minutes=0, sleep_window_minutes=120, sleep_minutes=1)
+        original_scope = self.context().scope
+        self.native.conversations["qq-main"] = "conversation-a-rotated"
+        self.clock.advance(timedelta(minutes=2))
+        app = await self.start()
+
+        current = self.context()
+        self.assertNotEqual(current.scope.conversation_id, original_scope.conversation_id)
+        current_status = await self.status()
+        other_status = await self.status("second", "role-a")
+        self.assertTrue(current_status["config"]["enabled"])
+        self.assertFalse(current_status["config"]["diary_enabled"])
+        self.assertFalse(other_status["config"]["enabled"])
+        await self.until(lambda: bool(app.role_state.body_clock.active(current, "sleep")))
+        self.assertEqual(app.role_state.body_clock.episodes(current)[0].scope, current.scope)
+        sleep = (await self.status())["activities"][0]
+
+        self.clock.advance(timedelta(seconds=30))
+        await self.command("wake", item=sleep)
+        await self.controller.terminate()
+        self.native.conversations["qq-main"] = "conversation-a-rotated-again"
+        self.controller = self.make_controller(config)
+        self.register()
+        (await self.controller.load_existing()).unwrap()
+        app = await self.start()
+        await advance_life_runtime_async(app.life_runtime)
+        current = self.context()
+        self.assertEqual(len(app.role_state.body_clock.episodes(current)), 1)
+        schedule = (await self.status())["sleep_schedule"]
+        self.assertGreater(datetime.fromisoformat(schedule["next_sleep_at"]), self.clock.now())
 
     async def test_legacy_configuration_owner_receipt_replays_after_owner_partition(self):
         app = await self.initialize(self.shared_role_config())

@@ -47,6 +47,14 @@ window.CompanionMemoryPage = (() => {
     model_task_unregistered: "尚未配置 事实整理模型。",
     model_response_contract_rejected: "模型返回格式不完整，已有内容保留，未完成项可以单独修复。",
     memory_request_invalid: "请求与当前接口不匹配，请更新页面后重试。",
+    memory_inactive: "这条事实已不再有效（已被取代、失效、撤回或归档），仅保留只读记录。",
+    memory_unavailable: "这条事实当前不可读取，可能不在当前会话范围内。",
+    memory_forgotten: "这条事实已按遗忘规则清除正文，仅保留审计记录。",
+    memory_expired: "这条事实已超过有效期，仅保留历史记录。",
+    memory_not_current: "这条事实尚未到达生效时间。",
+    memory_session_mismatch: "这条会话级事实属于先前的会话窗口，当前窗口仅只读展示。",
+    memory_storage_unavailable: "事实存储当前暂不可用，请稍后重试。",
+    conversation_context_reset: "该条事实所依赖的会话上下文已重置，原文不再可读。",
     memory_revision_conflict: "事实已有新版本，已刷新当前记录。",
     memory_view_stale: "身份或授权版本已变化，请重新打开事实。",
     memory_clear_stale: "预览后事实已有变化，已刷新范围预览，请核对后再确认。",
@@ -77,13 +85,15 @@ window.CompanionMemoryPage = (() => {
     modelled:"待写入", failed:"整理失败", partial:"部分已保存", abandoned:"已放弃", complete:"整理完成", empty:"没有可整理材料"};
   const jobLabels = {queued:"后台已登记", complete:"本次处理完成", blocked:"本次处理受阻"};
   const phases = {source_index:"整理来源索引",sources:"筛选来源",facts:"核对相关事实",ready:"准备完成"};
-  /* 生命周期：后端 memory_atoms.state 的取值就是这四种归宿。
+  /* 生命周期：后端 memory_atoms.state 的取值。
      颜色档位在 memory-page.css 的 .mem-state-* 里，四处共用（比例带/状态条/状态环/徽章）。 */
   const LIFECYCLE = [
-    {key:"active",     label:"有效",   tone:"mem-state-active"},
-    {key:"superseded", label:"被取代", tone:"mem-state-superseded"},
-    {key:"retracted",  label:"已撤回", tone:"mem-state-retracted"},
-    {key:"forgotten",  label:"已遗忘", tone:"mem-state-forgotten"},
+    {key:"active",      label:"有效",   tone:"mem-state-active"},
+    {key:"superseded",  label:"被取代", tone:"mem-state-superseded"},
+    {key:"invalidated", label:"已失效", tone:"mem-state-invalidated"},
+    {key:"archived",    label:"已归档", tone:"mem-state-archived"},
+    {key:"retracted",   label:"已撤回", tone:"mem-state-retracted"},
+    {key:"forgotten",   label:"已遗忘", tone:"mem-state-forgotten"},
   ];
   const retentionLabels = {session:"本次会话",short:"短期",durable:"长期",protected:"受保护"};
   const sourceLabels = {human_message:"对方消息",bot_message:"角色消息",source:"原始资料",observation:"观察记录"};
@@ -207,7 +217,15 @@ window.CompanionMemoryPage = (() => {
     } finally { clearTimeout(timeout); }
   }
   async function api(method, path, body) {
-    const response = await bounded(method === "GET" ? bridge.apiGet(path, body) : bridge.apiPost(path, body));
+    let response;
+    try {
+      response = await bounded(method === "GET" ? bridge.apiGet(path, body) : bridge.apiPost(path, body));
+    } catch (error) {
+      if (error?.code) throw error;
+      const code = typeof error?.message === "string" ? error.message.trim() : "";
+      if (CODE.test(code)) throw problem(code);
+      throw error;
+    }
     const wrapped = ["ok","error"].includes(response?.status) && response?.data !== undefined ? response : ["ok","error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
     /* 后端把机器码放在信封的 message 上（页面桥只转发 message），所以取码要同时
        看 data.code 与 message，不能只认前者。 */
@@ -229,13 +247,17 @@ window.CompanionMemoryPage = (() => {
     }
   }
   function notice(message, error=false) { data.notice = message; data.error = error; }
-  function failure(error) {
+  function failure(error, {preserveCorpus = false} = {}) {
+    const code = error?.code;
     if (data.area === "reflections") { data.items = []; data.detail = null; }
-    if (data.area === "facts") { data.corpus = []; data.factDetail = null; data.revisions = []; }
+    if (data.area === "facts") {
+      if (!preserveCorpus || denied.has(code)) data.corpus = [];
+      data.factDetail = null; data.revisions = [];
+    }
     data.queryResult = null; data.sourceResult = null; data.next = null;
-    if (error.code === "memory_reflection_unavailable") data.detailId = null;
-    notice(error.code ? reason(error.code) : "连接中断，已清空旧内容。请刷新核对。", true);
-    if (denied.has(error.code)) {
+    if (code === "memory_reflection_unavailable") data.detailId = null;
+    notice(code ? reason(code) : (preserveCorpus ? "详情暂时无法读取，请稍后重试。" : "连接中断，已清空旧内容。请刷新核对。"), true);
+    if (denied.has(code)) {
       data.pending = null; savePending(); data.catalog = null; data.ready = false; stopTimer();
     }
   }
@@ -257,7 +279,7 @@ window.CompanionMemoryPage = (() => {
     if (value.owner === "external") {
       return `长期记录：〈${name}〉（外部）`;
     }
-    return "长期记录：本插件事实库";
+    return "长期记录：本插件事实库（轻量内置）";
   }
   /* 徽标与面包屑。
    *
@@ -388,6 +410,7 @@ window.CompanionMemoryPage = (() => {
       .filter(key => Number.isInteger(states[key]) && states[key] > 0)
       .map(key => `${stateLabels[key] || key} ${num(states[key])}`).join(" · ") || "尚无整理批次";
     const linkage = overview.linkage || {};
+    const externalOwned = data.ownership?.owner === "external";
     let linkageTitle = "未接通";
     let linkageNote = "";
     let linkageTone = "is-warn";
@@ -395,15 +418,23 @@ window.CompanionMemoryPage = (() => {
       linkageTitle = `${ownerName(linkage.display_name, "外部记忆插件")}已接通`;
       linkageTone = "is-ok";
     } else if (linkage.state === "not_owner") {
-      linkageTitle = "本插件事实库";
+      linkageTitle = "仅轻量内置事实库";
+      if (!externalOwned) {
+        linkageNote = "当前仅启用本插件轻量内置事实库，长期记忆与深度回忆不完整。强烈建议安装配合插件「我会牢牢记住你」（astrbot_plugin_memory_companion），安装后自动协同接管。";
+      }
     } else if (linkage.reason === "unsupported_scope") {
       linkageTitle = "当前对象不支持外部私聊摘要";
       linkageNote = "切换到已授权的私聊对象后可读取对应摘要。";
     } else if (linkage.reason) {
       linkageNote = `读取状态：${String(linkage.reason).replace(/_/g, " ")}。本地事实不受影响。`;
+    } else if (!externalOwned && data.ownership?.owner === "self") {
+      linkageTitle = "仅轻量内置事实库";
+      linkageNote = "未检测到外部长期记忆插件，当前仅依赖本插件轻量内置事实与经历。强烈建议安装配合插件「我会牢牢记住你」以获得完整长期记忆体验。";
     }
     const categoryLabels = {profile:"个人资料", preference:"偏好", relationship:"关系", private_conversation:"私聊内容", other:"其他"};
     const categories = Array.isArray(linkage.categories) ? linkage.categories : [];
+    const showCompanionGuideButton = !externalOwned && linkage.state !== "ready"
+      && typeof window.CompanionMemoryCompanionHint?.openGuideDialog === "function";
     return `<section class="mem-block mem-overview-block">
       <div class="mem-block-head"><h3>事实与经历概况</h3><span class="mem-badge">本插件 · 当前对象</span></div>
       <div class="mem-overview-grid">
@@ -414,6 +445,7 @@ window.CompanionMemoryPage = (() => {
       </div>
       <section class="mem-linkage" aria-label="外部记忆联动">
         <div class="mem-linkage-head"><div><h4>外部记忆插件</h4><p>${e(linkageNote)}</p></div><span class="mem-badge ${linkageTone}">${e(linkageTitle)}</span></div>
+        ${showCompanionGuideButton ? `<div class="mc-hint-actions"><button type="button" class="mem-btn is-primary" data-mc-hint-action="open-guide">查看「我会牢牢记住你」安装指南</button></div>` : ""}
         ${linkage.state === "ready" ? `<dl class="mem-linkage-counts">${categories.map(item =>
           `<div><dt>${e(categoryLabels[item.key] || "其他")}</dt><dd>${countValue(item.count)}</dd></div>`).join("")}
           <div><dt>合计</dt><dd>${countValue(linkage.counts?.total)}</dd></div></dl>` : ""}
@@ -498,7 +530,7 @@ window.CompanionMemoryPage = (() => {
     }
     const state = stateOf(value);
     const entry = LIFECYCLE.find(x=>x.key===state);
-    const active = value.state === "active";
+    const active = value.state === "active" && !value.read_only && !value.unavailable_reason;
     const pinned = value.context_mode === "pinned";
     return `<div class="mem-detail-top">
       <button type="button" class="mem-btn is-quiet mem-detail-close" id="memory-detail-close">${ICON.back}返回列表</button>
@@ -507,7 +539,7 @@ window.CompanionMemoryPage = (() => {
       <span class="mem-badge ${entry.tone}">${e(entry.label)}</span>
       ${pinned?badge("核心事实","is-accent"):""}
     </div>
-    <blockquote class="mem-quote">${e(value.representation || "来源不可读取，正文已隐藏。")}</blockquote>
+    <blockquote class="mem-quote">${e(value.representation || (value.unavailable_reason ? reason(value.unavailable_reason) : "来源不可读取，正文已隐藏。"))}</blockquote>
     <dl class="mem-fields">
       <div><dt>对象</dt><dd>${e(value.object || "—")}</dd></div>
       <div><dt>版本</dt><dd class="is-mono">v${e(value.revision)}</dd></div>
@@ -1182,7 +1214,7 @@ window.CompanionMemoryPage = (() => {
       /* 打开一条事实就顺手取版本历史：版本是这一页的核心信息，
          让用户再点一次才看得到，等于藏起来。 */
       await loadRevisions({silent:true});
-    } catch (error) { if (live(ticket)) failure(error); }
+    } catch (error) { if (live(ticket)) failure(error, {preserveCorpus: true}); }
     finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
   }
 
@@ -1197,7 +1229,7 @@ window.CompanionMemoryPage = (() => {
       if (!live(ticket)) return;
       if (!Array.isArray(result.items)) throw problem("invalid_response");
       data.revisions = result.items;
-    } catch (error) { if (live(ticket) && !silent) failure(error); }
+    } catch (error) { if (live(ticket) && !silent) failure(error, {preserveCorpus: true}); }
     finally { if (live(ticket)) { data.loading = false; render(); } }
   }
 
@@ -1245,13 +1277,13 @@ window.CompanionMemoryPage = (() => {
       if (!live(ticket)) return;
       if (typeof result.text !== "string") throw problem("invalid_response");
       data.sourceResult = result; notice("");
-    } catch (error) { if (live(ticket)) failure(error); }
+    } catch (error) { if (live(ticket)) failure(error, {preserveCorpus: true}); }
     finally { if (live(ticket)) { data.loading = false; render(); } }
   }
 
   async function mutateFact(action, value) {
     const item = data.factDetail?.item;
-    if (!item || item.state !== "active" || data.busy || data.loading) return;
+    if (!item || item.state !== "active" || item.read_only || item.unavailable_reason || data.busy || data.loading) return;
     const confirmationVersion = version;
     if (["retract","forget"].includes(action)) {
       const accepted = await askConfirm({
@@ -1548,6 +1580,13 @@ window.CompanionMemoryPage = (() => {
     const el = event.target.closest("button");
     if (!el || !root.contains(el) || el.disabled) return;
     const id = el.id;
+    if (el.dataset?.mcHintAction && window.CompanionMemoryCompanionHint?.handleAction) {
+      void window.CompanionMemoryCompanionHint.handleAction(el.dataset.mcHintAction, {
+        onUpdate: () => { load(); },
+        notify: message => { if (message) { notice(message, false); render(); } },
+      });
+      return;
+    }
     if (id === "memory-directory-refresh") { directory(); return; }
     if (id === "memory-disable-reflection") { disableReflection(); return; }
     if (id === "memory-refresh" || id === "memory-detail-refresh") {

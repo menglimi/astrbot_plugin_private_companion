@@ -176,7 +176,7 @@ test("Contract: ALL config search entries resolve to valid routes, subtabs, DOM 
   const validDecisionViews = new Set(["overview", "response", "tempo", "safety", "guard", "group"]);
   const validUnderstandingTabs = new Set(["overview", "image", "video", "file", "web", "forwards"]);
   const validContactViews = new Set(["dial", "morning", "tests", "purposes", "gates", "budgets", "sources", "materials"]);
-  const validModelsTabs = new Set(["fn", "voice", "image", "search", "laya", "pricing"]);
+  const validModelsTabs = new Set(["fn", "voice", "image", "search", "laya", "pricing", "quota"]);
   const validSelfSections = new Set(h.run("SELF_PROFILE_SECTIONS.map(([id]) => id)"));
 
   let total = 0;
@@ -305,7 +305,7 @@ test("Contract: searchIndex has zero dead links, zero duplicates, valid destinat
   const titles = new Set();
   const validHomeSections = new Set(["overview", "observation", "furniture"]);
   const validOutputTabs = new Set(["visual", "capabilities", "gallery", "materials", "creation"]);
-  const validModelsTabs = new Set(["fn", "voice", "image", "search", "laya", "pricing"]);
+  const validModelsTabs = new Set(["fn", "voice", "image", "search", "laya", "pricing", "quota"]);
 
   for (const entry of index) {
     const [title, desc, icon, kind, tab, opts = {}] = entry;

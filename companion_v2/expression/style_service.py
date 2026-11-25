@@ -132,6 +132,12 @@ RULE_READ_LIMIT = 30
 MIN_EXISTING_RULES = 8
 EXISTING_PROPOSAL_SUMMARY_CHARS = 120
 EXISTING_EXPRESSION_FIELD_CHARS = 80
+EXISTING_PATTERN_INDEX_ACTIVE_CAP = 80
+EXISTING_PATTERN_INDEX_EXCLUDED_CAP = 80
+EXISTING_PATTERN_INDEX_CHARS = 60
+EXISTING_PATTERN_SCAN_LIMIT = 600
+RECENT_CITED_SIGNAL_SCAN_LIMIT = 120
+_UNSET = object()
 
 # Not every rule is equally useful to a batch that can only afford part of the
 # window: an adopted or pending rule is a prior a new candidate must not
@@ -156,14 +162,14 @@ def _compact_expression_form(form):
     if not isinstance(form, Mapping):
         return None
     compact = {}
-    for key in ("situation", "form", "usage", "kind"):
+    for key in ("kind", "situation", "pattern", "avoid"):
         value = form.get(key)
         if isinstance(value, str) and value.strip():
             compact[key] = " ".join(value.split())[:EXISTING_EXPRESSION_FIELD_CHARS]
     return compact or None
 
 
-def _compact_existing_rule(runtime, row):
+def _compact_existing_rule(runtime, row, *, form=_UNSET):
     """Compact deduplication prior: signal_id, dimension, state, short proposal, compact form."""
     proposal = " ".join(str(row["proposal"] or "").split())[:EXISTING_PROPOSAL_SUMMARY_CHARS]
     entry = {
@@ -172,10 +178,59 @@ def _compact_existing_rule(runtime, row):
         "proposal": proposal,
         "state": row["state"],
     }
-    expression = _compact_expression_form(rule_details.form_for(runtime, row))
+    raw_form = rule_details.form_for(runtime, row) if form is _UNSET else form
+    expression = _compact_expression_form(raw_form)
     if expression is not None:
         entry["expression"] = expression
     return entry
+
+
+def _build_existing_pattern_index(rows, forms_by_id, *, covered_ids, sample_texts):
+    """Build a compact pattern index for rules outside ``existing_rules``.
+
+    Keeps full deduplication visibility over older adopted rules and
+    rejected/retired exclusions without inflating the prompt with full rule
+    objects. Omitted completely when no extra rules carry concrete forms.
+    """
+    sample_bigrams = set()
+    for text in sample_texts:
+        sample_bigrams.update(learning.pattern_bigrams(text))
+    active_candidates, excluded_candidates = [], []
+    seen_active, seen_excluded = set(), set()
+    for index, row in enumerate(rows):
+        signal_id = row["signal_id"]
+        if signal_id in covered_ids:
+            continue
+        detail = forms_by_id.get(signal_id)
+        form = detail.get("form") if isinstance(detail, Mapping) else None
+        if not isinstance(form, Mapping):
+            continue
+        pattern = form.get("pattern")
+        kind = form.get("kind")
+        if kind not in ("style", "grammar") or not isinstance(pattern, str) or not pattern.strip():
+            continue
+        compact_pattern = " ".join(pattern.split())[:EXISTING_PATTERN_INDEX_CHARS]
+        norm_key = (kind, learning.normalized_pattern_key(compact_pattern) or compact_pattern.casefold())
+        overlap = len(learning.pattern_bigrams(compact_pattern) & sample_bigrams) if sample_bigrams else 0
+        state = row["state"]
+        if state in ("adopted", "pending"):
+            if norm_key in seen_active:
+                continue
+            seen_active.add(norm_key)
+            active_candidates.append((-overlap, index, compact_pattern))
+        else:
+            if norm_key in seen_excluded or norm_key in seen_active:
+                continue
+            seen_excluded.add(norm_key)
+            excluded_candidates.append((-overlap, index, compact_pattern))
+    active_candidates.sort()
+    excluded_candidates.sort()
+    index_payload = {}
+    if active_candidates:
+        index_payload["active"] = [item[2] for item in active_candidates[:EXISTING_PATTERN_INDEX_ACTIVE_CAP]]
+    if excluded_candidates:
+        index_payload["excluded"] = [item[2] for item in excluded_candidates[:EXISTING_PATTERN_INDEX_EXCLUDED_CAP]]
+    return index_payload or None
 
 
 def expression_learning_profile(provider, *, max_output_tokens=2048):
@@ -1110,21 +1165,62 @@ class ExpressionStyleService:
             return None
         owner_key = digest(self.samples.role_owner(context))
         placeholders = ",".join("?" for _ in family_keys)
-        existing_rows = [row for row in self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
+        # Prefer fresh samples that have not already yielded signals in this
+        # scope family, so the sliding window does not repeatedly re-extract the
+        # same older messages while still keeping smaller windows learnable.
+        recent_cited_rows = self.runtime.read_all(f"""SELECT evidence_json
+            FROM expression_style_signals
+            WHERE owner_key = ? AND scope_key IN ({placeholders})
+            ORDER BY created_at DESC, signal_id DESC LIMIT ?""",
+            (owner_key, *family_keys, RECENT_CITED_SIGNAL_SCAN_LIMIT))
+        cited_handles = set()
+        for cited_row in recent_cited_rows:
+            try:
+                parsed_handles = json.loads(cited_row["evidence_json"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed_handles, list):
+                cited_handles.update(value for value in parsed_handles if isinstance(value, str))
+        if cited_handles:
+            uncited = tuple(item for item in samples.samples if item.handle not in cited_handles)
+            if len(uncited) >= minimum and len(uncited) < len(samples.samples):
+                from .style_evidence import SampleSet
+                samples = SampleSet(samples.opened_at, samples.closed_at, uncited, samples.source_kind)
+        all_prior_rows = self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
                 s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
                 s.scope_key, s.created_at, r.sample_json
             FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
             WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
+              AND NOT (s.state IN ('retired', 'rejected') AND COALESCE(s.decided_by, '') = 'system:dedupe')
             ORDER BY CASE s.state WHEN 'adopted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
                      s.created_at DESC, s.signal_id LIMIT ?""",
-            (owner_key, *family_keys, RULE_READ_LIMIT))
-            if row_usable(context, row, samples=self.samples, at=at)]
+            (owner_key, *family_keys, EXISTING_PATTERN_SCAN_LIMIT))
+        forms_by_id = rule_details.read_many(self.runtime, [row["signal_id"] for row in all_prior_rows])
+        existing_rows = []
+        for row in all_prior_rows[:RULE_READ_LIMIT]:
+            if row_usable(context, row, samples=self.samples, at=at):
+                existing_rows.append(row)
         existing_rows.sort(key=lambda row: (row["created_at"], row["signal_id"]), reverse=True)
-        existing_rules = tuple(_compact_existing_rule(self.runtime, row) for row in existing_rows)
+        existing_rules = tuple(
+            _compact_existing_rule(
+                self.runtime,
+                row,
+                form=(forms_by_id.get(row["signal_id"]) or {}).get("form"),
+            )
+            for row in existing_rows
+        )
+        covered_ids = {row["signal_id"] for row in existing_rows}
+        pattern_index = _build_existing_pattern_index(
+            all_prior_rows,
+            forms_by_id,
+            covered_ids=covered_ids,
+            sample_texts=[item.text for item in samples.samples],
+        )
         return {"context": context, "instruction": instruction, "at": at, "policy": policy,
                 "samples": samples, "material_hash": samples.material_hash,
                 "catalogue": self.samples.catalogue(samples), "sample_context_key": context.key,
                 "sample_document": sample_document(samples), "existing_rules": existing_rules,
+                "existing_pattern_index": pattern_index,
                 "family_keys": family_keys, "latest_sequence": latest_sequence}
 
     @outcome
@@ -1309,16 +1405,20 @@ class ExpressionStyleService:
         self._record_outcome(context, report, self.tasks.now())
         return self._set_result(work_key, report)
 
-    def _request(self, job, rules, limit):
+    def _request(self, job, rules, limit, *, pattern_index=_UNSET):
         """The sealed request for one batch of reference rules.
 
-        Only ``existing_rules`` varies between trim rounds: the window, samples,
-        catalogue, ask and output schema stay exactly what the batch prepared.
+        Only ``existing_rules`` (and optional ``existing_pattern_index``) vary
+        between trim rounds: the window, samples, catalogue, ask and output
+        schema stay exactly what the batch prepared.
         """
         context = job["context"]
+        resolved_index = job.get("existing_pattern_index") if pattern_index is _UNSET else pattern_index
         material = {"sample_window": job["sample_document"], "source_channel": context.scope.kind.value,
                     "samples": job["catalogue"],
                     "existing_rules": rules, "output_schema": learning.schema(limit)}
+        if resolved_index:
+            material["existing_pattern_index"] = resolved_index
         return PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
             context.scope, job["at"]), job["instruction"], SealedForegroundContext(
                 (PromptMaterial(OWNER, "role_expression_samples", encode_prompt(material)),), (), ()),
@@ -1485,11 +1585,17 @@ class ExpressionStyleService:
             # the registered profile default, so a thinking model keeps the rest of
             # *that* number for its own reasoning and a smaller route is never
             # over-asked.
-            request = self._request(job, rules, limit)
+            pattern_index = job.get("existing_pattern_index")
+            request = self._request(job, rules, limit, pattern_index=pattern_index)
             # The material is fixed before the first request, but whether it fits is
-            # only known from the route. Trim the reference rules instead of letting
-            # the reservation fail the whole batch, and record why the run sent fewer
-            # than it read. The samples are never trimmed: they are the evidence.
+            # only known from the route. Drop the auxiliary pattern index first if
+            # needed, then trim the reference rules instead of letting the
+            # reservation fail the whole batch. The samples are never trimmed.
+            if pattern_index:
+                fits, ceiling = self._request_fits(run, request)
+                if not fits:
+                    pattern_index = None
+                    request = self._request(job, rules, limit, pattern_index=None)
             for attempt in range(MAX_TRIM_ROUNDS + 1):
                 fits, ceiling = self._request_fits(run, request)
                 if fits:
@@ -1503,7 +1609,7 @@ class ExpressionStyleService:
                 job["trimmed_rules"] = len(job["existing_rules"]) - len(rules)
                 job["trim_reason"] = "model_input_budget"
                 job["input_ceiling"] = ceiling
-                request = self._request(job, rules, limit)
+                request = self._request(job, rules, limit, pattern_index=None)
             if job.get("trimmed_rules"):
                 logger.info("[CompanionV2] 表达学习材料超出模型档案，已按预算裁剪参考规则 "
                             "task=%s rules=%d trimmed=%d ceiling=%s",
@@ -1566,23 +1672,50 @@ class ExpressionStyleService:
                                                  samples=self.samples, at=self.tasks.now(),
                                                  connection=connection)
                 remaining = max(0, policy.active_signal_limit - active_count)
-                existing_rows = [row for row in connection.execute(f"""SELECT s.signal_id, s.dimension,
+                now_commit = self.tasks.now()
+                current_scope_key = digest(context.scope)
+                raw_existing_rows = connection.execute(f"""SELECT s.signal_id, s.dimension,
                         s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
                         s.scope_key, r.sample_json
                     FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
                     WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
-                    ORDER BY s.created_at DESC""",
+                    ORDER BY CASE s.state WHEN 'adopted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                             s.created_at DESC, s.signal_id DESC""",
                     (owner_key, *family_keys)).fetchall()
-                    if row_usable(context, row, samples=self.samples, at=self.tasks.now())]
-                signatures = {learning.candidate_signature(row["dimension"], row["observation"], row["proposal"],
-                    learning.normalize_applicability(json.loads(row["applicability_json"])),
-                    rule_details.form_for(self.runtime, row))
-                              for row in existing_rows}
+                existing_forms_by_id = rule_details.read_many(
+                    self.runtime, [row["signal_id"] for row in raw_existing_rows])
+                existing_rows = []
+                for row in raw_existing_rows:
+                    if row["state"] in ("pending", "adopted"):
+                        if row_usable(context, row, samples=self.samples, at=now_commit):
+                            existing_rows.append(row)
+                    else:
+                        # Keep rejected/retired rules as suppression priors even if their
+                        # original conversation text expired so rejected rules do not resurrect.
+                        existing_rows.append(row)
+                signatures = set()
                 forms = {}
+                dedupe_entries = []
                 for row in existing_rows:
-                    identity = learning.form_identity(rule_details.form_for(self.runtime, row))
+                    detail = existing_forms_by_id.get(row["signal_id"])
+                    stored_form = detail["form"] if isinstance(detail, Mapping) else None
+                    try:
+                        applicability = learning.normalize_applicability(json.loads(row["applicability_json"]))
+                        signatures.add(learning.candidate_signature(
+                            row["dimension"], row["observation"], row["proposal"], applicability, stored_form))
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        stored_handles = json.loads(row["evidence_json"])
+                        if type(stored_handles) is not list:
+                            stored_handles = []
+                    except (TypeError, ValueError):
+                        stored_handles = []
+                    identity = learning.form_identity(stored_form)
                     if identity is not None and (identity not in forms or row["state"] in ("pending", "adopted")):
                         forms[identity] = row
+                    if stored_form is not None:
+                        dedupe_entries.append((row, stored_form, tuple(stored_handles), row["scope_key"]))
                 accepted_signals = []
                 for item in output.signals:
                     if item.confidence < confidence_floor:
@@ -1593,14 +1726,33 @@ class ExpressionStyleService:
                     signature = learning.candidate_signature(item.dimension, item.observation, item.proposal,
                                                              item.applicability, item.expression)
                     identity = learning.form_identity(item.expression)
+                    matched_duplicate = False
+                    matched_prior = None
                     if identity is not None and identity in forms:
-                        prior = forms[identity]
-                        if prior is not None and prior["state"] in ("pending", "adopted") and json.loads(prior["sample_json"]).get(
-                                "source_kind") == INPUT_SAMPLE_SOURCE:
-                            rule_support.record(self.runtime, prior["signal_id"],
+                        matched_duplicate = True
+                        matched_prior = forms[identity]
+                    elif item.expression is not None:
+                        for prior_row, prior_form, prior_handles, prior_scope in dedupe_entries:
+                            if learning.forms_match_duplicate(
+                                item.expression,
+                                prior_form,
+                                left_handles=item.evidence_handles,
+                                right_handles=prior_handles,
+                                same_scope=(prior_scope == current_scope_key),
+                            ):
+                                matched_duplicate = True
+                                matched_prior = prior_row
+                                break
+                    if matched_duplicate:
+                        if (matched_prior is not None
+                                and matched_prior["state"] in ("pending", "adopted")
+                                and job["sample_document"].get("source_kind") == INPUT_SAMPLE_SOURCE
+                                and json.loads(matched_prior["sample_json"]).get("source_kind") == INPUT_SAMPLE_SOURCE):
+                            rule_support.record(self.runtime, matched_prior["signal_id"],
                                 window={**job["sample_document"], "context_key": job["sample_context_key"]},
                                 handles=item.evidence_handles,
-                                original_handles=json.loads(prior["evidence_json"]))
+                                original_handles=json.loads(matched_prior["evidence_json"]),
+                                connection=connection)
                             counters["support"] += 1
                         counters["form"] += 1
                         continue
@@ -1610,6 +1762,8 @@ class ExpressionStyleService:
                     signatures.add(signature)
                     if identity is not None:
                         forms[identity] = None
+                    if item.expression is not None:
+                        dedupe_entries.append((None, item.expression, tuple(item.evidence_handles), current_scope_key))
                     if len(accepted_signals) < remaining:
                         accepted_signals.append(item)
                     else:
@@ -2291,18 +2445,19 @@ class ExpressionStyleService:
             start = self._scan_look % len(candidates)
         return candidates[start:] + candidates[:start]
 
-    def start(self, context, instruction):
+    def prepare_start(self, context, instruction):
+        """Thread-safe preflight for manual learning; must not touch the event loop."""
         if self.closed or KIND not in self.gateway.router.profiles:
             raise TaskError("model_task_unregistered", "expression learning model is unavailable")
         work_key = self._work_key(context)
         with self._lock():
             worker = self.workers.get(work_key)
         if worker is not None and not worker.done():
-            return {"state": "running"}
+            return {"state": "running"}, None
         at = self.tasks.now()
         job = self.prepare(context, instruction, at)
         if job is None:
-            return self._get_result(work_key, {"state": "insufficient_samples"})
+            return self._get_result(work_key, {"state": "insufficient_samples"}), None
         # The operator asked for this batch explicitly, so a refusal recorded for
         # it must not outlive the edit they probably just made: the automatic scan
         # honours the record, an explicit "learn now" is the way out of it.
@@ -2311,13 +2466,28 @@ class ExpressionStyleService:
             logger.info("[CompanionV2] 表达学习按手动请求清除确定性失败记录 material=%s mode=%s request=%s",
                         str(job.get("material_hash") or "")[:12], job["policy"].learning_mode, request_key[:12])
             self._clear_stop(request_key)
-        worker = asyncio.create_task(self.run(context, instruction),
-                                     name="companion:expression-learn")
+        return None, (work_key, context, instruction)
+
+    def launch_prepared(self, work_key, context, instruction):
+        """Spawn the background learning task on the running asyncio event loop."""
+        if self.closed or KIND not in self.gateway.router.profiles:
+            raise TaskError("model_task_unregistered", "expression learning model is unavailable")
         with self._lock():
+            worker = self.workers.get(work_key)
+            if worker is not None and not worker.done():
+                return {"state": "running"}
+            worker = asyncio.create_task(self.run(context, instruction),
+                                         name="companion:expression-learn")
             self.workers[work_key] = worker
         worker.add_done_callback(lambda done: self.app.notify())
         self.app.notify()
         return {"state": "queued"}
+
+    def start(self, context, instruction):
+        immediate, pending = self.prepare_start(context, instruction)
+        if immediate is not None:
+            return immediate
+        return self.launch_prepared(*pending)
 
     def status(self, context):
         """Read-only view of why this exact window is or is not learning.

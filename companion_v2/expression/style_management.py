@@ -31,16 +31,55 @@ from . import style_rotation
 from . import rule_details
 from . import rule_support
 from .configuration import read_settings
-from .learning import DIMENSIONS, candidate_signature, form_identity, normalize_applicability
+from .learning import (
+    DIMENSIONS,
+    candidate_signature,
+    form_identity,
+    forms_match_duplicate,
+    normalize_applicability,
+)
 from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
 from .style_evidence import evidence_snapshot
 from .window_scope import active_rule_count, row_usable, rule_reason, rule_scope_counts
 
 
 SHARE_PACK_SOURCE = "shared_pack"
+DEDUPE_ACTOR = "system:dedupe"
+VALID_KINDS = ("style", "grammar")
+MAX_DEDUPE_PREVIEW_GROUPS = 24
 # ``_run`` needs "the caller already looked this row up" to be distinguishable
 # from "the lookup found nothing": the latter must still raise.
 _UNREAD = object()
+
+
+def _row_kind(row, detail=None):
+    """Classify one expression signal into ``style`` or ``grammar``."""
+    form = detail["form"] if isinstance(detail, dict) and isinstance(detail.get("form"), dict) else None
+    if form is not None and form.get("kind") in VALID_KINDS:
+        return form["kind"]
+    return "grammar" if row["dimension"] == "sentence_rhythm" else "style"
+
+
+def _effective_dedupe_form(row, detail=None):
+    """Return stored concrete form, or derive one for legacy rules without metadata."""
+    form = detail["form"] if isinstance(detail, dict) and isinstance(detail.get("form"), dict) else None
+    if form is not None:
+        return form
+    pattern = " ".join(str(row["proposal"] or "").split())
+    situation = " ".join(str(row["observation"] or "").split())
+    if not pattern:
+        return None
+    return {
+        "kind": _row_kind(row, None),
+        "situation": situation,
+        "pattern": pattern,
+        "avoid": "",
+    }
+
+
+def _is_folded_dedupe_row(row):
+    """Rows archived by ``dedupe_rules`` stay in SQLite for audit, out of active tab noise."""
+    return row["state"] in ("retired", "rejected") and row["decided_by"] == DEDUPE_ACTOR
 
 
 def _exported_form_identity(dimension, observation, proposal):
@@ -113,6 +152,10 @@ class ExpressionStyleManagement:
     def learn(self, **arguments):
         from .sample_management import ExpressionSampleManagement
         return ExpressionSampleManagement(self).learn(**arguments)
+
+    def prepare_learn(self, **arguments):
+        from .sample_management import ExpressionSampleManagement
+        return ExpressionSampleManagement(self).prepare_learn(**arguments)
 
     def revise(self, **arguments):
         from .rule_management import revise
@@ -245,11 +288,13 @@ class ExpressionStyleManagement:
             raise TaskError("expression_sample_changed", str(error)) from None
 
     @outcome
-    def list(self, *, operator, context, state="pending", dimension=None, limit=20, after_id=None):
+    def list(self, *, operator, context, state="pending", dimension=None, kind=None, limit=20, after_id=None):
         if state not in ("pending", "adopted", "rejected", "retired"):
             raise TaskError("expression_query_invalid", "unknown style signal state")
         if dimension is not None and dimension not in DIMENSIONS:
             raise TaskError("expression_query_invalid", "unknown style dimension")
+        if kind is not None and kind not in VALID_KINDS:
+            raise TaskError("expression_query_invalid", "unknown style kind")
         if type(limit) is not int or not 1 <= limit <= 50 or (after_id is not None and
                 (type(after_id) is not str or not after_id.strip() or len(after_id) > 512)):
             raise TaskError("expression_query_invalid", "invalid style page")
@@ -261,16 +306,45 @@ class ExpressionStyleManagement:
         keys = self._family(context)
         placeholders = ",".join("?" * len(keys))
         after_created, after_signal = _page_after(after_id)
-        # Newest first, with the identifier only breaking ties inside one
-        # creation timestamp. The queue index of the signals table already
-        # matches this order.
-        rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
+        # Compute authoritative kind counts over the full visible state bucket
+        # before applying pagination, and exclude rows folded by reversible
+        # duplicate consolidation from retired/rejected tab noise.
+        meta_rows = self.runtime.read_all(f"""SELECT signal_id, dimension, state, decided_by, created_at
+            FROM expression_style_signals
             WHERE owner_key = ? AND scope_key IN ({placeholders}) AND state = ?
               AND (? IS NULL OR dimension = ?)
-              AND (? IS NULL OR created_at < ? OR (created_at = ? AND signal_id < ?))
-            ORDER BY created_at DESC, signal_id DESC LIMIT ?""",
-            (owner_key, *keys, state, dimension, dimension, after_created,
-             after_created, after_created, after_signal, limit + 1))
+            ORDER BY created_at DESC, signal_id DESC""",
+            (owner_key, *keys, state, dimension, dimension))
+        visible_meta = [row for row in meta_rows if not _is_folded_dedupe_row(row)]
+        forms_all = rule_details.read_many(self.runtime, [row["signal_id"] for row in visible_meta])
+        kind_counts = {"style": 0, "grammar": 0}
+        filtered_meta = []
+        for row in visible_meta:
+            row_kind = _row_kind(row, forms_all.get(row["signal_id"]))
+            kind_counts[row_kind] = kind_counts.get(row_kind, 0) + 1
+            if kind is not None and row_kind != kind:
+                continue
+            filtered_meta.append(row)
+        if after_created is not None:
+            cursor_meta = [
+                row for row in filtered_meta
+                if row["created_at"] < after_created
+                or (row["created_at"] == after_created and row["signal_id"] < after_signal)
+            ]
+        else:
+            cursor_meta = filtered_meta
+        has_next = len(cursor_meta) > limit
+        page_meta = cursor_meta[:limit]
+        page_ids = [row["signal_id"] for row in page_meta]
+        if page_ids:
+            fetched = self.runtime.read_all(
+                "SELECT * FROM expression_style_signals WHERE owner_key = ? AND signal_id IN ("
+                + ",".join("?" * len(page_ids)) + ")",
+                (owner_key, *page_ids))
+            by_id = {row["signal_id"]: row for row in fetched}
+            page_rows = [by_id[signal_id] for signal_id in page_ids if signal_id in by_id]
+        else:
+            page_rows = []
         items = []
         evidence_cache = {}
 
@@ -316,8 +390,11 @@ class ExpressionStyleManagement:
         counts = {}
         for scope_key in keys:
             for item in self.runtime.read_all("""SELECT state, COUNT(*) AS count
-                    FROM expression_style_signals WHERE owner_key = ? AND scope_key = ? GROUP BY state""",
-                    (owner_key, scope_key)):
+                    FROM expression_style_signals
+                    WHERE owner_key = ? AND scope_key = ?
+                      AND NOT (state IN ('retired', 'rejected') AND COALESCE(decided_by, '') = ?)
+                    GROUP BY state""",
+                    (owner_key, scope_key, DEDUPE_ACTOR)):
                 counts[item["state"]] = counts.get(item["state"], 0) + item["count"]
         # The state tabs read the same injectable set as the capacity: a
         # rotated group dialogue rule is still listed, but not as an available
@@ -328,9 +405,8 @@ class ExpressionStyleManagement:
         # once: the stored run window and the stored form. Each of them used to be
         # its own statement per rule, and every statement waits on the one storage
         # lock, so the page cost grew with the number of rules instead of the page.
-        page_rows = rows[:limit]
         runs = self._page_runs(page_rows, owner_key)
-        forms = rule_details.read_many(self.runtime, [row["signal_id"] for row in page_rows])
+        forms = forms_all
         for row in page_rows:
             unavailable, evidence = None, []
             applicability = None
@@ -391,18 +467,6 @@ class ExpressionStyleManagement:
                                     evidence = describe_once(handles, opened_at, closed_at,
                                                              sample_context, source_kind)
                                     reset_at = self.samples.evidence_reset_at(sample_context, closed_at)
-                                    if source_kind == "conversation_input":
-                                        for extra in rule_support.observations(self.runtime, row["signal_id"]):
-                                            try:
-                                                extra_window, extra_handles = extra["window"], extra["handles"]
-                                                extra_start, extra_end = self._window(extra_window, at)
-                                                extra_context = self._evidence_context(extra_window, context)
-                                                if self.samples.reviews.allows_handles(extra_context, extra_handles):
-                                                    evidence.extend(describe_once(extra_handles,
-                                                        extra_start, extra_end, extra_context,
-                                                        "conversation_input"))
-                                            except (TaskError, KeyError, TypeError, ValueError):
-                                                continue
                             except TaskError as error:
                                 # Only the text behind the rule cannot be shown.
                                 # The rule is still injectable here, so the page
@@ -411,6 +475,18 @@ class ExpressionStyleManagement:
                                 unavailable = error.code
                             except (TypeError, ValueError):
                                 unavailable = "expression_applicability_invalid"
+                        if unavailable is None and source_kind == "conversation_input":
+                            for extra in rule_support.observations(self.runtime, row["signal_id"]):
+                                try:
+                                    extra_window, extra_handles = extra["window"], extra["handles"]
+                                    extra_start, extra_end = self._window(extra_window, at)
+                                    extra_context = self._evidence_context(extra_window, context)
+                                    if self.samples.reviews.allows_handles(extra_context, extra_handles):
+                                        evidence.extend(describe_once(extra_handles,
+                                            extra_start, extra_end, extra_context,
+                                            "conversation_input"))
+                                except (TaskError, KeyError, TypeError, ValueError):
+                                    continue
             if state == "pending":
                 actions = ["reject"] if unavailable is not None else ["adopt", "reject"]
             elif state == "adopted":
@@ -467,9 +543,282 @@ class ExpressionStyleManagement:
         if current_owner != owner or current_revision != policy_revision:
             raise TaskError("expression_view_stale", "the rule view changed while it was being read")
         return {"items": items, "state": state,
-            "next_cursor": page_cursor(rows[limit - 1]) if len(rows) > limit else None,
+            "next_cursor": page_cursor(page_rows[-1]) if has_next and page_rows else None,
             "context_key": context.key, "role_id": owner.persona_id, "capacity": capacity,
-            "counts": counts, "rotated_rules": rotated_rules}
+            "counts": counts, "kind_counts": kind_counts,
+            "total_count": kind_counts["style"] + kind_counts["grammar"],
+            "rotated_rules": rotated_rules}
+
+    def preview_dedupe(self, *, operator, context):
+        """Read-only preview of duplicate expression rules across this scope family."""
+        return self.dedupe_rules(operator=operator, context=context, dry_run=True)
+
+    @staticmethod
+    def _dedupe_entry_summary(entry, *, action=None):
+        form = entry["form"]
+        payload = {
+            "signal_id": entry["row"]["signal_id"],
+            "state": entry["row"]["state"],
+            "kind": entry["kind"],
+            "pattern": (form.get("pattern") if isinstance(form, dict) else "") or entry["row"]["proposal"] or "",
+            "situation": (form.get("situation") if isinstance(form, dict) else "") or entry["row"]["observation"] or "",
+            "injections": entry["injections"],
+        }
+        if action is not None:
+            payload["action"] = action
+        return payload
+
+    def _plan_dedupe(self, context, owner_key, keys, at, *, connection=None):
+        placeholders = ",".join("?" * len(keys))
+        statement = f"""SELECT s.*, r.sample_json
+            FROM expression_style_signals s
+            JOIN expression_style_runs r ON r.run_id = s.run_id
+            WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
+              AND NOT (s.state IN ('retired', 'rejected') AND COALESCE(s.decided_by, '') = ?)
+            ORDER BY s.created_at DESC, s.signal_id DESC"""
+        parameters = (owner_key, *keys, DEDUPE_ACTOR)
+        rows = (connection.execute(statement, parameters).fetchall()
+                if connection is not None else self.runtime.read_all(statement, parameters))
+        if not rows:
+            return []
+        forms_by_id = rule_details.read_many(self.runtime, [row["signal_id"] for row in rows])
+        rotation = style_rotation.usage_many(self.runtime, owner_key, keys)
+        usage_map = {}
+        for scope_key in keys:
+            for signal_id, (injections, last) in rotation[scope_key].items():
+                previous = usage_map.get(signal_id, (0, None))
+                latest = max((item for item in (previous[1], last) if item is not None), default=None)
+                usage_map[signal_id] = (previous[0] + injections, latest)
+
+        entries_by_state = {"adopted": [], "pending": [], "retired": [], "rejected": []}
+        for row in rows:
+            state = row["state"]
+            if state not in entries_by_state:
+                continue
+            detail = forms_by_id.get(row["signal_id"])
+            form = _effective_dedupe_form(row, detail)
+            if form is None:
+                continue
+            try:
+                handles = json.loads(row["evidence_json"])
+                if type(handles) is not list:
+                    handles = []
+            except (TypeError, ValueError):
+                handles = []
+            try:
+                window = json.loads(row["sample_json"])
+                if type(window) is not dict:
+                    window = {}
+            except (TypeError, ValueError):
+                window = {}
+            rot_injections, last_injected = usage_map.get(row["signal_id"], (0, None))
+            legacy_use = rule_details.legacy_counts(detail).get("use_count", 0)
+            total_injections = rot_injections + legacy_use
+            injectable = (row_usable(context, row, samples=self.samples, at=at)
+                          if state in ("adopted", "pending") else False)
+            entries_by_state[state].append({
+                "row": row,
+                "form": form,
+                "kind": _row_kind(row, detail),
+                "handles": tuple(value for value in handles if isinstance(value, str)),
+                "window": window,
+                "injections": total_injections,
+                "last_injected": last_injected,
+                "injectable": injectable,
+            })
+
+        def rank_key(entry):
+            row = entry["row"]
+            return (1 if entry["injectable"] else 0, entry["injections"], row["created_at"], row["signal_id"])
+
+        def matches(survivor, candidate):
+            return forms_match_duplicate(
+                survivor["form"],
+                candidate["form"],
+                left_handles=survivor["handles"],
+                right_handles=candidate["handles"],
+                same_scope=(survivor["row"]["scope_key"] == candidate["row"]["scope_key"]),
+            )
+
+        def cluster(entries, *, action):
+            ordered = sorted(entries, key=rank_key, reverse=True)
+            claimed = set()
+            survivors = []
+            clusters = []
+            for entry in ordered:
+                signal_id = entry["row"]["signal_id"]
+                if signal_id in claimed:
+                    continue
+                claimed.add(signal_id)
+                survivors.append(entry)
+                duplicates = []
+                for other in ordered:
+                    other_id = other["row"]["signal_id"]
+                    if other_id in claimed:
+                        continue
+                    if matches(entry, other):
+                        claimed.add(other_id)
+                        duplicates.append((other, action))
+                if duplicates:
+                    clusters.append({"survivor": entry, "duplicates": duplicates})
+            return survivors, clusters
+
+        plan = []
+        adopted_survivors, adopted_clusters = cluster(entries_by_state["adopted"], action="retire_and_merge")
+        plan.extend(adopted_clusters)
+
+        # Pending rules that duplicate an already-adopted rule fold into that adopted survivor.
+        adopted_index = {entry["row"]["signal_id"]: entry for entry in adopted_survivors}
+        plan_by_survivor = {item["survivor"]["row"]["signal_id"]: item for item in plan}
+        remaining_pending = []
+        for entry in sorted(entries_by_state["pending"], key=rank_key, reverse=True):
+            matched_adopted = next((surv for surv in adopted_survivors if matches(surv, entry)), None)
+            if matched_adopted is not None:
+                surv_id = matched_adopted["row"]["signal_id"]
+                bucket = plan_by_survivor.get(surv_id)
+                if bucket is None:
+                    bucket = {"survivor": adopted_index[surv_id], "duplicates": []}
+                    plan.append(bucket)
+                    plan_by_survivor[surv_id] = bucket
+                bucket["duplicates"].append((entry, "reject_and_merge"))
+            else:
+                remaining_pending.append(entry)
+        _, pending_clusters = cluster(remaining_pending, action="reject_and_merge")
+        plan.extend(pending_clusters)
+
+        _, retired_clusters = cluster(entries_by_state["retired"], action="fold_duplicate")
+        plan.extend(retired_clusters)
+        _, rejected_clusters = cluster(entries_by_state["rejected"], action="fold_duplicate")
+        plan.extend(rejected_clusters)
+        return plan
+
+    @outcome
+    def dedupe_rules(self, *, operator, context, dry_run=True, operation_key=None):
+        """Safely preview or consolidate duplicate rules without deleting database rows.
+
+        Duplicate ``adopted`` rules merge their support observations and injection
+        counts into the highest-usage / newest injectable survivor and are
+        reversibly retired with a ``merged_into`` audit marker. Duplicate
+        ``pending``, ``retired``, and ``rejected`` entries are folded with the
+        same reversible audit trail.
+        """
+        if type(dry_run) is not bool:
+            raise TaskError("expression_command_invalid", "dry_run must be a boolean")
+        if not dry_run:
+            self.management._validate_operation_key(operation_key)
+        at = self.management.ledger.now()
+
+        def format_plan(plan, *, applied):
+            by_state = {"adopted": 0, "pending": 0, "retired": 0, "rejected": 0}
+            groups = []
+            duplicate_count = 0
+            for item in plan:
+                survivor = item["survivor"]
+                dups = item["duplicates"]
+                duplicate_count += len(dups)
+                for dup, _ in dups:
+                    dup_state = dup["row"]["state"]
+                    if dup_state in by_state:
+                        by_state[dup_state] += 1
+                if len(groups) < MAX_DEDUPE_PREVIEW_GROUPS:
+                    groups.append({
+                        "state": survivor["row"]["state"],
+                        "kind": survivor["kind"],
+                        "survivor": self._dedupe_entry_summary(survivor),
+                        "duplicates": [self._dedupe_entry_summary(dup, action=action) for dup, action in dups],
+                    })
+            return {
+                "dry_run": dry_run,
+                "replayed": False,
+                "group_count": len(plan),
+                "duplicate_count": duplicate_count,
+                "merged_count": duplicate_count if applied else 0,
+                "by_state": by_state,
+                "groups": groups,
+            }
+
+        if dry_run:
+            with self.runtime.read_snapshot():
+                owner, _ = self._authorize(operator, context, at)
+                owner_key = digest(owner)
+                keys = self._family(context)
+                plan = self._plan_dedupe(context, owner_key, keys, at)
+                return format_plan(plan, applied=False)
+
+        receipt_key = rule_details.DEDUPE_OP_PREFIX + digest([operator.subject, context.key, operation_key])
+        with self.runtime.transaction() as connection:
+            owner, _ = self._authorize(operator, context, at)
+            existing_receipt = connection.execute(
+                "SELECT value FROM runtime_metadata WHERE key = ?", (receipt_key,)).fetchone()
+            if existing_receipt is not None:
+                try:
+                    cached = json.loads(existing_receipt["value"])
+                except (TypeError, ValueError):
+                    cached = None
+                if isinstance(cached, dict):
+                    return {**cached, "replayed": True}
+            owner_key = digest(owner)
+            keys = self._family(context)
+            plan = self._plan_dedupe(context, owner_key, keys, at, connection=connection)
+            merged_total = 0
+            for item in plan:
+                survivor = item["survivor"]
+                surv_row = survivor["row"]
+                surv_id = surv_row["signal_id"]
+                surv_handles = list(survivor["handles"])
+                for dup, action in item["duplicates"]:
+                    dup_row = dup["row"]
+                    dup_id = dup_row["signal_id"]
+                    dup_state = dup_row["state"]
+                    if dup_state in ("adopted", "pending") and surv_row["state"] in ("adopted", "pending"):
+                        if dup["window"].get("source_kind") == "conversation_input":
+                            rule_support.merge_from(
+                                self.runtime,
+                                surv_id,
+                                dup_id,
+                                source_window=dup["window"],
+                                source_handles=dup["handles"],
+                                target_original_handles=surv_handles,
+                                connection=connection,
+                            )
+                    if dup_state == "adopted" and surv_row["state"] == "adopted":
+                        if dup["injections"] > 0 or dup["last_injected"] is not None:
+                            style_rotation.add_usage(
+                                self.runtime,
+                                owner_key=owner_key,
+                                scope_key=surv_row["scope_key"],
+                                signal_id=surv_id,
+                                delta=dup["injections"],
+                                last_injected_at=dup["last_injected"],
+                                connection=connection,
+                            )
+                    target_state = "retired" if dup_state in ("adopted", "retired") else "rejected"
+                    decision_key = digest([operator.subject, context.key, operation_key, dup_id, "dedupe", surv_id])
+                    changed = connection.execute("""UPDATE expression_style_signals
+                        SET state = ?, decided_at = ?, decided_by = ?, decision_key = ?
+                        WHERE signal_id = ? AND owner_key = ? AND scope_key = ? AND state = ?""",
+                        (target_state, stamp(at), DEDUPE_ACTOR, decision_key,
+                         dup_id, owner_key, dup_row["scope_key"], dup_state))
+                    if changed.rowcount == 1:
+                        rule_details.write_merge(
+                            self.runtime,
+                            dup_id,
+                            merged_into=surv_id,
+                            previous_state=dup_state,
+                            at=at,
+                            actor=operator.subject.subject_id,
+                            operation_key=operation_key,
+                            connection=connection,
+                        )
+                        merged_total += 1
+            result = format_plan(plan, applied=True)
+            result["merged_count"] = merged_total
+            connection.execute(
+                "INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (receipt_key, encode(result)))
+        self.app.notify()
+        return result
 
     @outcome
     def cleanup_unreadable(self, *, operator, context, operation_key):

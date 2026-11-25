@@ -235,6 +235,7 @@ PURPOSE_INSTRUCTIONS = {
     "screen": "只提及授权分析明确支持、与当前切口直接相关的一点观察；不暴露无关应用、窗口、文字或隐私细节，不推断用户意图、身份、情绪或正在执行的任务。",
 }
 ORIGIN_INSTRUCTIONS = {
+    "outfit_event": "分享角色当天已经生成的穿搭图，正文自然说出一点搭配想法。行程素材只表示计划，画面是角色创作；不补写未发生的出行或体验。",
     "relationship_event": "这是主动表达方向，不代表用户说过特定关键词或当前有同等意愿。关系修复须有可核验分歧，否则改为自然表达或 skip。",
     "activity_event": "只分享回执明确确认的角色活动、阅读或作品片段与时间范围；计划、准备和设想不是完成回执，缺少结果不补过程或感受。",
     "growth_event": "只分享已确认记录的角色技能练习手感、阶段进展或刚达成的长期目标；保持日常聊天的真实摸索感或小确幸，不编造考级、分数或未记录的成果。",
@@ -264,16 +265,32 @@ SOURCE_ORIGINS = {
 }
 DEDUP_INSTRUCTION = (
     "标为 dedup_candidate 的主动消息和标为 last_confirmed_reply 的角色回复是已确认送达、落在配置时间窗内的去重参考，时间窗为 0 时不限时。"
-    "其他历史用于理解已回答的事实、话题进展和收尾；去重窗口之外不等于答案失效。若本次只是换措辞重述同一状态，没有新增交流内容，通常适合 skip 或留白。"
+    "其他历史用于理解已回答的事实、话题进展和收尾；去重窗口之外不等于答案失效。"
+    "对照已发消息，先用一句话概括各条真正表达的场景、动作、状态或请求，再比较用户这次会得到什么新内容。"
+    "同一个场景里仍在做同一件事，或反复表达同一种感受、关心和邀约，即使更换比喻、句式、视角或细节修饰，也应视为重述。"
     "比较话题时看人物、地点、事件等有区分度的锚点，勿把普通寒暄词算作共享锚点。"
-    "短话题按配置的最少共享锚点判断；较长话题参考较短话题锚点中的重叠比例，比例为 0 时由语义判断。"
+    "短话题参考配置的最少共享锚点；较长话题参考较短话题锚点中的重叠比例。比例为 0 时，词面没有重合也可以是语义重复。"
     "重复必须是同一件具体事情、同一事实或仍未解决的同一个邀约；仅用途、领域、情绪、常用词或宽泛主题相同不算重复。"
     "结合相邻问答判断对方是在接梗、期待后续、转向还是明确结束；不按提过几次、回复字数或固定天数给话题设置禁区。"
     "已经自然收尾的内容先让它停住，对方重新提起或出现有意义的新进展时再判断是否适合接续。"
-    "有新来源或事实更新、事情出现新进展、可以从不同角度自然分享，或本轮念头本身能独立开场时，不要仅因话题相近而 skip。"
-    "不要为了避重硬造新话题；若没有自然的新说法，再选择 skip。真实的新事实、约定的新节点或对方新输入后的自然承接可以继续；"
+    "真实的新事实、新观察、新观点、约定的新节点或对方新输入后的自然承接，可以在同一场景中继续。"
+    "遇到重复就找一个有独立交流价值的切口，找不到时让这一轮留白。"
     "不能把未确认的发送当作已送达，也不能把未回应推断为已读或拒绝。"
 )
+
+
+def dedup_guidance(preferences, purpose, origin):
+    """Use the same time window and configured guidance in compose and review."""
+    if not preferences.dedup_applies(purpose, origin):
+        return "", None
+    weather = origin and any(key in origin for key in ("weather_event", "weather_change_event", "official_alert_event"))
+    values = preferences.values
+    window = values["dedup_weather_window_minutes" if weather else "dedup_sent_window_minutes"]
+    cutoff = preferences.observed_at - timedelta(minutes=window) if window else None
+    return (DEDUP_INSTRUCTION + f"主动消息窗口 {window} 分钟；"
+            f"最后一条回复窗口 {values['dedup_last_message_window_minutes']} 分钟；"
+            f"短话题最少共享锚点 {values['dedup_min_shared_tokens']} 个；"
+            f"较长话题最低重叠比例 {values['dedup_min_overlap_ratio']:.2f}。", cutoff)
 REACTION_INSTRUCTION = (
     "发送正文前主动检查图库表情能否让这次表达更生动，不需要等用户明确要求图片。"
     "生活切片（吃饭、路上小发现、刚完成的作品）如果图片能替你说出“你看这个”，可以给出 reaction_intent，让画面承担一部分分享；没有合适图时直接说文字也很好，不必为了配图硬找。"
@@ -283,6 +300,13 @@ REACTION_INSTRUCTION = (
     "\"reaction_intent\":\"惊喜又开心地回应对方，适合轻松熟人闲聊，不适合严肃或悲伤话题\"}。"
     "正文仍需独立完整；严肃、敏感、需要完整信息的通知或没有自然图意时省略，不为每条都带图而硬加。"
     "这只是检索意图，不代表已选中或发送图片。"
+)
+
+GENERATED_IMAGE_INSTRUCTION = (
+    "本轮可主动生成一张新图。适合分享自己的插画、生活场景或创意时，可增加 image_prompt，"
+    "用简短画面描述写出主体、场景和风格。把生成图当作创作，不当作现场照片或事实证据。"
+    "避免把聊天原文、账号、地址等个人信息写入绘图描述。正文独立成立，不预告已生成或已发送。"
+    "一条消息只选一种附图方式。现成表情包用 reaction_intent，新图用 image_prompt。"
 )
 VOICE_INSTRUCTION = (
     "本轮出现此提示表示主动语音已启用且冷却允许。写完正文后主动判断声音能否增强陪伴语气，不需要等用户明确要求语音。"
@@ -398,7 +422,7 @@ def prompt_sections():
 
 
 def request_for(job, records, preferences, history=(), *, last_reply=None, reply_for_dedup=True,
-                reactions_available=False,
+                reactions_available=False, generated_images_available=False,
                 voice_available=False, poke_available=False, memory=(), expression=(), dialogue=(),
                 rhythm_snapshot=None, role_state=None, recent_life=None, annual_calendars=()):
     """One proactive prompt; memory is optional material, never a requirement.
@@ -413,11 +437,9 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
     administrator_test = getattr(job, "administrator_test", False) is True
     if administrator_test:
         history, last_reply, memory, expression, dialogue = (), None, (), (), ()
-    weather = job.automatic_origin and any(key in job.automatic_origin for key in (
-        "weather_event", "weather_change_event", "official_alert_event"))
-    sent_window = preferences.values["dedup_weather_window_minutes" if weather else "dedup_sent_window_minutes"]
-    dedup_active = not administrator_test and preferences.dedup_applies(job.intent.purpose, job.automatic_origin)
-    sent_cutoff = preferences.observed_at - timedelta(minutes=sent_window) if sent_window else None
+    dedup_instruction, sent_cutoff = (("", None) if administrator_test else
+        dedup_guidance(preferences, job.intent.purpose, job.automatic_origin))
+    dedup_active = bool(dedup_instruction)
     # A model cannot turn 2026-10-18 into "星期日" reliably, and a wrong
     # weekday reads to the user as the clock being wrong. Publish the labels
     # instead of the arithmetic: the reply path already ships weekday/period.
@@ -511,6 +533,10 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
             "不必等待真实事件或近期话题，也不要声称刚发生了某件事；除角色边界或安全要求不适合外，选择 send。"
             "不要提测试或图片链路；程序会按管理员指定的沟通意图从当前授权图库检索原图并附在正文之后。"
             "图片仍须符合角色和当前语气，检索不到合适素材时系统会如实报告失败，不会改成纯文本通过。")
+    if getattr(job, "diagnostic_generated_image", False):
+        diagnostic_instruction += (
+            "\n管理员已确认本次创作新图。请写一段简短的创作分享，正文独立成立，不声称已生成或发送。"
+            "绘图主题由程序提供，围绕日常静物提起随手画画的想法；除角色边界不合适外选择 send。")
     # Cache boundary: keep only role/window-stable rules in the system prompt
     # (`instruction`). Per-contact purpose, origin, greeting, delivery switches,
     # optional material rules, and diagnostic guidance ride in `user_instruction`
@@ -528,14 +554,6 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
          if style else "") +
         "\n本轮具体的联系目的、来源边界、可用互动能力与场景补充位于用户消息的 round_guidance 中，请一并严格遵循。"
     )
-    dedup_instruction = (
-        DEDUP_INSTRUCTION +
-        f"主动消息窗口 {sent_window} 分钟；"
-        f"最后一条回复窗口 {preferences.values['dedup_last_message_window_minutes']} 分钟；"
-        f"短话题最少共享锚点 {preferences.values['dedup_min_shared_tokens']} 个；"
-        f"较长话题最低重叠比例 {preferences.values['dedup_min_overlap_ratio']:.2f}。"
-        if dedup_active else ""
-    )
     variable_parts = [
         purpose_instruction,
         "\n".join(origin_instructions) if origin_instructions else "",
@@ -547,6 +565,7 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
         rhythm_instruction,
         OFFICIAL_ALERT_INSTRUCTION if official_alert else "",
         REACTION_INSTRUCTION if reactions_available else "",
+        GENERATED_IMAGE_INSTRUCTION if generated_images_available else "",
         voice_instruction(getattr(job, "voice_policy", None),
             preferences.values["voice_action_max_chars"]) if voice_available else "",
         POKE_INSTRUCTION if poke_available else "",
@@ -605,7 +624,7 @@ def _recent_timing(dialogue, history, last_reply, now):
 
 def contact_output(text, *, official_alert=None, require_confidence=False):
     data = json.loads(text)
-    allowed = {"decision", "text", "reaction_intent", "voice_intent", "voice_text", "poke_intent"}
+    allowed = {"decision", "text", "reaction_intent", "image_prompt", "voice_intent", "voice_text", "poke_intent"}
     allowed.update(("decision_confidence", "skip_reason"))
     if official_alert is not None:
         allowed.update({"coverage", "coverage_quote"})

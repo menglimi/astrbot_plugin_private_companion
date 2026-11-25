@@ -91,6 +91,12 @@ window.CompanionProduct = (() => {
        列出来，所以这几句多半出现在「数据变过了」或「V1 目录不在了」这类真实意外上。 */
     legacy_root_missing:"没有找到旧版数据目录。它通常与当前版本的数据目录平级；也可以在插件配置的「兼容｜旧版资料迁入」里直接填绝对路径。",
     legacy_root_invalid:"这个路径不是目录，请改填旧版数据目录。",
+    legacy_path_empty:"请填写旧版数据目录的绝对路径，或留空以自动查找。",
+    legacy_path_windows_on_posix:"当前 AstrBot 运行在 Linux/容器或手机环境中，无法直接读取 Windows 盘符路径；请先将旧版数据目录传到当前设备，再填写本机或容器内的绝对路径。",
+    legacy_path_not_absolute:"请填写完整的绝对路径（Linux/手机以 / 开头，Windows 如 D:\\...）。",
+    legacy_path_not_found:"找不到该旧版数据目录，请核对目录是否位于当前 AstrBot 所在的服务器、容器或手机内。",
+    legacy_path_is_file:"填写的是文件路径而不是目录，请改为填写包含旧版数据的目录路径。",
+    legacy_path_permission_denied:"当前 AstrBot 进程没有权限读取该目录，请检查权限或将数据复制到插件数据目录同级位置。",
     legacy_plan_stale:"旧版数据在这次试算之后变过，请重新试算再执行，这样写入的才是你看到的那一份。",
     legacy_nothing_to_migrate:"这份旧版数据里没有可以自动迁移的来源。",
     legacy_scope_unavailable:"这份角色设置里没有要写入的配置分组，这一组会跳过，其余照常。",
@@ -596,7 +602,11 @@ window.CompanionProduct = (() => {
     const dataOnly = response && typeof response === "object" && !Array.isArray(response)
       && Object.keys(response).length === 1 && hasOwn(response, "data");
     const wrapped = isEnvelope(response) ? response : dataOnly && isEnvelope(response.data) ? response.data : null;
-    if (wrapped?.status === "error") throw fail(codeOf(wrapped) || "invalid_response", true);
+    if (wrapped?.status === "error") {
+      const err = fail(codeOf(wrapped) || "invalid_response", true);
+      if (wrapped.data && typeof wrapped.data === "object" && !Array.isArray(wrapped.data)) err.details = wrapped.data;
+      throw err;
+    }
     let value = wrapped ? wrapped.data : response;
     /* A bridge shim may preserve one anonymous data layer without the
        envelope fields.  Only unwrap the exact {data: ...} shape. */
@@ -635,13 +645,20 @@ window.CompanionProduct = (() => {
         ? error.code : (CODE.test(error?.message || "") ? error.message : "");
       if (code) {
         const confirmed = error.confirmed === true || !isUncertainCode(code);
-        if (errors[code]) throw fail(code, confirmed);
+        const details = error?.details && typeof error.details === "object" ? error.details : undefined;
+        if (errors[code]) {
+          const err = fail(code, confirmed);
+          if (details) err.details = details;
+          throw err;
+        }
         if (confirmed) throw Object.assign(
           new Error(method === "POST"
             ? `保存没有通过（错误码：${code}），草稿已保留，请按提示调整后再试。`
             : `读取没有完成（错误码：${code}），请刷新后重试。`),
-          {code, confirmed: true});
-        throw fail(code, false);
+          {code, confirmed: true, ...(details ? {details} : {})});
+        const err = fail(code, false);
+        if (details) err.details = details;
+        throw err;
       }
       if (/initialized|explicit V2 profile/i.test(error.message)) throw fail("staging_not_initialized", true);
       if (/Dashboard|sign in/i.test(error.message)) throw fail("dashboard_identity_required", true);

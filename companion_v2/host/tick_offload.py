@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, time, timedelta, timezone as utc_timezone
+from datetime import datetime, timedelta, timezone as utc_timezone
 import inspect
 import json
 from zoneinfo import ZoneInfo
@@ -29,11 +29,7 @@ from companion_v2.conversation.media.review_service import (
     TIMEOUT_SECONDS as IMAGE_REVIEW_TIMEOUT_SECONDS,
 )
 from companion_v2.delivery.presence import PresenceCoordinator
-from companion_v2.device.action_service import (
-    KIND as PHONE_KIND,
-    PhoneActionService,
-    STEP_TIMEOUT_SECONDS as PHONE_STEP_TIMEOUT_SECONDS,
-)
+from companion_v2.device.action_service import PhoneActionService
 from companion_v2.execution.models import (
     TERMINAL,
     TaskContext,
@@ -73,9 +69,8 @@ from companion_v2.role_work.life.calendar_work import (
 )
 from companion_v2.role_work.life.configuration import GROUP as LIFE_GROUP, target_for as life_target_for
 from companion_v2.role_work.life.coordinator import RoleLifeCoordinator
-from companion_v2.role_work.life.physiology import nap_ready, night_sleep_ready
+from companion_v2.role_work.life.physiology import nap_ready
 from companion_v2.role_work.life.runtime import RoleLifeRuntime
-from companion_v2.role_work.life.scheduling import next_bedtime
 from companion_v2.role_work.models import RoleActivityState as LifeState
 from companion_v2.role_work.reader import READ_KIND
 from companion_v2.role_work.state.maintenance import KIND as STATE_KIND, StateMaintenance
@@ -771,7 +766,7 @@ def _scan_life_routine_sync(
         now = routine.app.now()
         routine.app.role_state.body_clock.resume_due(routine.context, observed_at=now)
         for sleeping in routine.app.role_state.body_clock.active(routine.context, "sleep"):
-            wake_key = "wake:" + sleeping.activity_id
+            wake_key = routine.wake_key(sleeping)
             if (
                 sleeping.work.due_at <= now
                 and wake_key not in active_workers
@@ -808,41 +803,8 @@ def _scan_life_routine_sync(
             or any(a.state is LifeState.ACTIVE for a in records)
             or pending_sleep
         )
-        if (
-            routine._next_sleep is not None
-            and routine._next_sleep <= now
-            and not busy
-            and routine.app.life_runtime.owns_sleep_schedule(routine)
-        ):
-            zone = routine.settings["sleep_timezone"]
-            local_now = now.astimezone(ZoneInfo(zone))
-            due_day = routine._next_sleep.astimezone(ZoneInfo(zone)).date()
-            if not (
-                due_day != local_now.date()
-                and local_now.time().replace(tzinfo=None)
-                < time.fromisoformat(routine.settings["sleep_time"])
-            ):
-                profile = routine.app.role_state.body_clock.profile(routine.context, now=now)
-                window_closed = now >= routine._next_sleep + timedelta(
-                    minutes=routine.settings["sleep_window_minutes"]
-                )
-                if night_sleep_ready(profile) or window_closed:
-                    routine._next_sleep = next_bedtime(
-                        now + timedelta(microseconds=1),
-                        routine.owner,
-                        zone,
-                        time.fromisoformat(routine.settings["sleep_time"]),
-                        routine.settings["sleep_variation_minutes"],
-                    )
-                    routine._next_wake = routine._next_sleep + timedelta(
-                        minutes=routine.settings["sleep_minutes"]
-                    )
-                    routine.start_sleep(
-                        "daily-sleep-" + due_day.isoformat(),
-                        routine.settings["sleep_minutes"],
-                        sleep_kind="night",
-                    )
-                    return "ok", to_launch, False
+        if not busy and routine._start_due_night_sleep(now):
+            return "ok", to_launch, False
         local_now = now.astimezone(ZoneInfo(routine.settings["sleep_timezone"]))
         profile = routine.app.role_state.body_clock.profile(routine.context, now=now)
         if routine.settings["sleep_enabled"] and not busy and nap_ready(
@@ -965,8 +927,10 @@ def _scan_calendar_work(routine: RoleLifeRuntime, records, now, writing_active: 
         None,
     )
     current = [item for item in page["items"] if item["state"] == "accepted" and item["start"] <= stamp(now)]
-    if page["scan_truncated"] or any(life_routine_for(item) is None for item in current):
+    if page["scan_truncated"] or any(item.get("kind") == "commitment" for item in current):
         current = []
+    else:
+        current = [item for item in current if life_routine_for(item) is not None]
     if writing_active or routine.app.role_state.body_clock.active(context, "reading"):
         return
     if writer is not None:
@@ -974,11 +938,18 @@ def _scan_calendar_work(routine: RoleLifeRuntime, records, now, writing_active: 
             if life_routine_for(item) != "writing":
                 continue
             key = "writing:" + item["id"] + ":" + str(item["sequence"])
+            prior = routine.results.get(key)
+            retryable_prior = (
+                prior is not None
+                and getattr(prior, "failure", None) is not None
+                and getattr(writer, "is_retryable_failure", lambda _: False)(prior.failure.code)
+            )
             if (
-                key not in routine.results
+                (prior is None or retryable_prior)
                 and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
                 and writer.ready(context, item)
             ):
+                routine.results.pop(key, None)
                 to_launch.append((key, lambda w=writer, r=routine, it=item: w.run(r, it), None))
                 return
     if (
@@ -1184,101 +1155,17 @@ def stage_phone_actions(pa: PhoneActionService) -> StagedOffload | None:
     if pa._closed or pa.runner is None or pa.tasks is None or pa._workers:
         return StagedOffload("skip", value=Outcome.success(0))
 
-    def scan_and_submit():
+    def scan_phone():
         try:
-            now = pa.tasks.now()
-            started = 0
-            to_launch = None
-            for record in pa._records():
-                if record.state == "awaiting_confirmation":
-                    if datetime.fromisoformat(record.checkout["expires_at"]) <= now:
-                        pa._save(
-                            replace(
-                                record, state="cancelled", checkout=None, notice="",
-                                outcome="phone_checkout_expired",
-                            )
-                        )
-                    continue
-                if record.state != "active":
-                    continue
-                try:
-                    due = datetime.fromisoformat(record.next_at)
-                    expires = datetime.fromisoformat(record.expires_at)
-                except ValueError:
-                    continue
-                if now < due:
-                    continue
-                if now >= expires or (record.step >= record.max_steps and not record.checkout):
-                    pa._save(replace(record, state="failed", inflight_at="", outcome="phone_task_expired"))
-                    continue
-                try:
-                    context = TaskContext.restore(json.loads(record.context_json))
-                    settings = pa.settings(context)
-                except (ValueError, KeyError, TypeError, TaskError):
-                    continue
-                if not settings.enabled or not settings.permits(context):
-                    continue
-                if record.inflight_at:
-                    try:
-                        if now - datetime.fromisoformat(record.inflight_at) < timedelta(minutes=3):
-                            continue
-                    except ValueError:
-                        pass
-                    pa._save(replace(record, state="failed", inflight_at="", outcome="phone_step_stalled"))
-                    continue
-                inflight = replace(record, inflight_at=stamp(now))
-                pa._save(inflight)
-                identifier = "phone-step-" + digest([record.task_id, record.step])[:32]
-                spec = TaskSpec(
-                    identifier,
-                    TaskContext.restore(json.loads(record.context_json)),
-                    PHONE_KIND,
-                    identifier,
-                    identifier,
-                    now,
-                    now + timedelta(seconds=PHONE_STEP_TIMEOUT_SECONDS),
-                )
-                pa.pending[identifier] = record
-                try:
-                    require(pa.tasks.submit(spec))
-                except TaskError as error:
-                    pa.pending.pop(identifier, None)
-                    pa._save(
-                        replace(
-                            record,
-                            inflight_at="",
-                            outcome=error.code,
-                            next_at=stamp(now + timedelta(seconds=60)),
-                        )
-                    )
-                    if error.code in CAPACITY_REFUSALS or error.code == "task_storage_full":
-                        break
-                    continue
-                started += 1
-                to_launch = (identifier, spec)
-                if started >= 1:
-                    break
-            return Outcome.success(started), to_launch
+            return pa.prepare_due_step(), None
         except TaskError as error:
-            return Outcome.failed(error.code, str(error)), None
+            return None, Outcome.failed(error.code, str(error))
 
-    def apply_phone(scanned):
-        result, to_launch = scanned
-        if to_launch is not None:
-            identifier, spec = to_launch
-            if pa._closed:
-                pa.pending.pop(identifier, None)
-            elif identifier not in pa._workers:
-                worker = asyncio.create_task(
-                    pa.runner.run(spec.context, spec.task_id),
-                    name="companion:phone:" + identifier,
-                )
-                pa._workers[identifier] = worker
-                worker.add_done_callback(lambda done, step=identifier: pa._step_done(step, done))
-                pa.notify()
-        return result
+    def apply_phone(prepared):
+        spec, failure = prepared
+        return failure if failure is not None else Outcome.success(pa.launch_prepared_step(spec))
 
-    return StagedOffload("offload", scan=scan_and_submit, apply=apply_phone)
+    return StagedOffload("offload", scan=scan_phone, apply=apply_phone)
 
 
 async def advance_phone_actions_async(pa: PhoneActionService):

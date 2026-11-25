@@ -6,21 +6,18 @@ import unittest
 from unittest.mock import patch
 
 from tests.multi_host_support import MultiFixture
+from astrbot.api.web import PluginMultiDict
 from astrbot_host.config_port_api import ConfigPortWebAPI
 from companion_v2.configuration.portability import SCHEMA
 from companion_v2.execution.models import TaskError
 
 
-class Query(dict):
-    def getlist(self, key):
-        return [self[key]] if key in self else []
-
-
 async def call(handler, *, body=None, query=None):
     async def read():
         return json.dumps(body).encode("utf-8")
+    pairs = list(query.items()) if isinstance(query, dict) else list(query or ())
     with patch("astrbot_host.config_port_api.request",
-               NS(username="config-admin", query=Query(query or {}), body=read)):
+               NS(username="config-admin", query=PluginMultiDict(pairs), body=read)):
         return await handler()
 
 
@@ -89,6 +86,10 @@ class ConfigPortWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
     async def test_missing_or_changed_selection_is_rejected(self):
         missing = await call(self.api.export)
         self.assertEqual(missing["message"], "configuration_port_selection_required")
+        selection = {**self.selection(), "window_selected": "false"}
+        for unexpected in (("target_id", "first"), ("extra", "value")):
+            response = await call(self.api.export, query=[*selection.items(), unexpected])
+            self.assertEqual(response["message"], "configuration_port_selection_required", response)
         for changed in ({"bot_id": "bot-a"}, {"role_id": "removed-role"}):
             selection = {**self.selection(), **changed, "window_selected": "false"}
             response = await call(self.api.export, query=selection)

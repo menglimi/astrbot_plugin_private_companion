@@ -42,6 +42,16 @@ class ContactPreferences:
     def __post_init__(self):
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
 
+    def automatic_reason(self):
+        for values in (self.values, self.local_values):
+            if values is None:
+                continue
+            if values.get("proactive_intensity_preset") == "off":
+                return "contact_intensity_off"
+            if values.get("automatic_enabled") is False:
+                return "contact_automatic_disabled"
+        return None
+
     def reason(self, purpose, *, ignore_time_restrictions=False, ignore_master_switch=False):
         if purpose not in PURPOSES:
             raise TaskError("unknown_contact_purpose", "contact purpose must be registered")

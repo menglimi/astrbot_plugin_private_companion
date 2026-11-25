@@ -44,6 +44,7 @@ from .image_material_api import ImageMaterialsWebAPI, PREFIX as IMAGE_MATERIAL_P
 from .qzone_api import QzoneWebAPI, PREFIX as QZONE_PREFIX
 from .host_options_api import HostOptionsWebAPI
 from .storage_api import StorageWebAPI
+from .tuning_api import TuningWebAPI
 from .works_api import WorksWebAPI
 from .display_names import display_names
 from .identity_derivation import role_display_name
@@ -78,8 +79,11 @@ def configuration_routes(reply_route, view, *, allowed_sections=None):
 
 class TargetControllerView:
     """Do not store a globally selected target while concurrent requests await."""
-    def __init__(self, controller, target_id, role_id):
-        self.controller, self.target_id, self.role_id = controller, target_id, role_id
+    def __init__(self, controller, target_id, role_id, *, context_target_id=None):
+        settings = getattr(controller, "settings", None)
+        canonical = settings.canonical_role_id(role_id) if settings is not None else role_id
+        self.controller, self.target_id, self.role_id = controller, target_id, canonical
+        self._context_target_id = context_target_id or target_id
 
     def __getattr__(self, name):
         return getattr(self.controller, name)
@@ -91,12 +95,12 @@ class TargetControllerView:
         if session is None or controller.runtime is None:
             return None
         try:
-            context = controller.authority.context(self.target_id, self.role_id)
+            context = controller.authority.context(self._context_target_id, self.role_id)
         except TaskError:
             # A role shared by several windows only has its context registered
             # on the primary route; page reads for an alias should use that same
             # role context instead of failing with a generic "unreadable" note.
-            link = controller.settings.window_link_for_target(self.target_id)
+            link = controller.settings.window_link_for_target(self._context_target_id)
             if link is None:
                 raise
             context = controller.authority.context(link.primary_target_id, self.role_id)
@@ -364,6 +368,7 @@ class MultiHostWebAPI:
         routes += BackupWebAPI(self.controller).routes()
         routes += HostOptionsWebAPI(self.controller).routes()
         routes += StorageWebAPI(self.controller).routes()
+        routes += TuningWebAPI(self.controller).routes()
         routes += ConfigPortWebAPI(self.controller).routes()
         routes += WorksWebAPI(self.controller).routes()
         # Installation-owned groups stay on one route, away from selected chats.
@@ -439,7 +444,10 @@ class MultiHostWebAPI:
                 if role.get("legacy_api") is not None:
                     routes.extend((role["legacy_api"] + path.removeprefix(LEGACY_PREFIX), handler, methods, description)
                                   for path, handler, methods, description in LegacyMigrationWebAPI(view).routes())
-                routes.extend(configuration_routes(role["reply_api"], view,
+                config_view = TargetControllerView(
+                    self.controller, target["target_id"], role["role_id"], context_target_id=source_target_id
+                )
+                routes.extend(configuration_routes(role["reply_api"], config_view,
                     allowed_sections=TARGET_CONFIGURATION_SECTIONS))
                 routes.extend((role["image_material_api"] + path.removeprefix(IMAGE_MATERIAL_PREFIX),
                                handler, methods, description)

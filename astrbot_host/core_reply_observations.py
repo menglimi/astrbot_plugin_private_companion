@@ -62,6 +62,8 @@ class CoreReplyObservations:
         return self._schedule(work)
 
     def input(self, context, native_input, *, turn_id, expression_signal_ids=()):
+        from companion_v2.conversation.native_turns import begin_inflight_turn
+        begin_inflight_turn(self.session.runtime, context.key, turn_id)
         intervention_ticket = None
         if context.scope.kind is ScopeKind.PRIVATE and native_input.text.strip():
             intervention_ticket = object()
@@ -308,14 +310,22 @@ class CoreReplyObservations:
         context, at = prepared["context"], self.session.now()
 
         def record():
-            self.session.authorize(context)
-            from companion_v2.conversation.native_turns import NativeConversationTurns
-            NativeConversationTurns(self.session.runtime).mark(prepared, state, at=at)
+            try:
+                self.session.authorize(context)
+                from companion_v2.conversation.native_turns import NativeConversationTurns
+                NativeConversationTurns(self.session.runtime).mark(prepared, state, at=at)
+            finally:
+                if state in ("completed", "failed", "absorbed"):
+                    from companion_v2.conversation.native_turns import end_inflight_turn
+                    end_inflight_turn(self.session.runtime, context.key, prepared.get("turn_id"))
 
         pending = self._schedule(record, context_key=context.key)
         if pending is not None:
             pending.add_done_callback(lambda done: self.session.application.notify()
                 if not done.cancelled() and done.exception() is None else None)
+        elif state in ("completed", "failed", "absorbed"):
+            from companion_v2.conversation.native_turns import end_inflight_turn
+            end_inflight_turn(self.session.runtime, context.key, prepared.get("turn_id"))
         return pending
 
     def media(self, event, prepared, *, collection_only=False):

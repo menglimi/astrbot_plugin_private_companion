@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=203e986873876c42">
+    <link rel="stylesheet" href="bundle.css?v=2649261a4751578f">
 
 
 
@@ -156,15 +156,16 @@
     <script defer src="native-extension-panel.js?v=phone-pages-20261121"></script>
     <script defer src="self-relationship.js?v=core-user-profile-20261007"></script>
     <script defer src="home-environment.js?v=home-loading-20261122"></script>
+    <script defer src="memory-companion-hint.js?v=memory-companion-hint-20261125"></script>
     <script defer src="migration-config-review.js?v=consolidated-20261024-r1"></script>
     <script defer src="migration-config-table.js?v=migration-guided-20261025"></script>
-    <script defer src="setup-guide.js?v=setup-init-deferral-20261110"></script>
-    <script defer src="semantic-page.js?v=consolidated-20261024-r1"></script>
+    <script defer src="setup-guide.js?v=setup-model-probe-20261125"></script>
+    <script defer src="semantic-page.js?v=proactive-stickers-20261125"></script>
     <script defer src="perception-page.js?v=consolidated-20261024-r1"></script>
     <script defer src="perception-native-page.js?v=perception-dense-20261028-r29"></script>
-<script defer src="huawei-health-page.js?v=perception-dense-20261028-r29"></script>
+<script defer src="huawei-health-page.js?v=health-role-route-20261125"></script>
     <script defer src="weather-source-page.js?v=weather-source-auth-mode-20261025"></script>
-    <script defer src="perception-overview.js?v=perception-themed-board-20261028-r2"></script>
+    <script defer src="perception-overview.js?v=perception-folds-20261125"></script>
     <script defer src="reality-access.js?v=reality-readonly-consent-20261002"></script>
     <script defer src="game-access.js?v=game-room-consent-20261014"></script>
 
@@ -176,44 +177,46 @@
     <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
-    <script defer src="phone-setup.js?v=20261121"></script>
-    <script defer src="search-engine.js?v=fuzzy-search-20261123"></script>
-    <script defer src="app.js?v=fuzzy-search-20261123"></script>
+    <script defer src="phone-setup.js?v=7.3.4-20261125"></script>
+    <script defer src="search-engine.js?v=7.3.4-20261125"></script>
+    <script defer src="app.js?v=7.3.4-20261125"></script>
     <script defer src="role-card.js?v=role-card-20261118"></script>
     <script defer src="room-editor.js?v=room-theme-persist-20261120"></script>
-    <script defer src="memory-page.js?v=memory-discard-20261112"></script>
-    <script defer src="contact-page.js?v=recipients-20261121"></script>
-    <script defer src="learning-page.js?v=learning-record-ownership-20261012"></script>
+    <script defer src="memory-page.js?v=memory-companion-hint-20261125"></script>
+    <script defer src="contact-page.js?v=proactive-generated-images-20261125"></script>
+    <script defer src="learning-page.js?v=learning-permissions-20261125"></script>
     <script defer src="behavior-page.js?v=group-behavior-20261015"></script>
     <script defer src="learning-overview.js?v=learning-overview-20261103"></script>
-    <script defer src="learning-review-page.js?v=review-center-design-20261120"></script>
-    <script defer src="expression-signals-page.js?v=expression-kind-filter-20261120"></script>
+    <script defer src="learning-review-page.js?v=review-folds-20261125"></script>
+    <script defer src="expression-signals-page.js?v=expression-confirm-20261125-r2"></script>
     <script defer src="expression-samples-page.js?v=samples-dedup-20261121"></script>
     <script defer src="self-review-page.js?v=self-review-switch-20261118"></script>
     <script defer src="state-maintenance.js?v=grant-scope-20261111"></script>
-    <script defer src="state-contact.js?v=contact-event-freshness-20261016"></script>
+    <script defer src="state-contact.js?v=contact-rhythm-20261123"></script>
     <script defer src="calendar-editor.js?v=schedule-workspace-20261003-r2"></script>
-    <script defer src="state-editor.js?v=presence-role-scope-20261027"></script>
-    <script defer src="state-page.js?v=grant-scope-20261111"></script>
-    <script defer src="reply-page.js?v=text-preview-bottom-20261121-r2"></script>
-    <script defer src="host-options-page.js?v=voice-singsing"></script>
-    <script defer src="workbench-page.js?v=identity-segment-20261121"></script>
-    <script defer src="memory-settings-section.js?v=memory-config-ownership-20261001"></script>
-    <script defer src="config-editor.js?v=daily-outfit-20261121"></script>
-    <script defer src="output-page.js?v=image-save-20261112"></script>
+    <script defer src="state-editor.js?v=state-config-20261125"></script>
+    <script defer src="state-page.js?v=state-config-20261125"></script>
+    <script defer src="reply-page.js?v=semantic-debounce-20261125-r2"></script>
+    <script defer src="host-options-page.js?v=voice-generation-20261125"></script>
+    <script defer src="workbench-page.js?v=workspace-dom-id-20261125"></script>
+    <script defer src="memory-settings-section.js?v=memory-companion-hint-20261125"></script>
+    <script defer src="config-editor.js?v=proactive-generated-images-20261125-r2"></script>
+    <script defer src="output-page.js?v=album-confirm-20261125"></script>
     <script defer src="role-profile-draft.js?v=7.1.0"></script>
     <script defer src="role-profile-migration.js?v=migration-ui-20261015"></script>
     <script defer src="role-profile-transfer.js?v=role-profile-transfer-20261123"></script>
     <script defer src="decision-page.js?v=decision-tempo-sections-20261111"></script>
     <script defer src="expression-page.js?v=expression-completion-20261008"></script>
-    <script defer src="pricing-workbench.js?v=pricing-v2-20261121"></script>
-    <script defer src="models-page.js?v=pricing-v2-20261121"></script>
-    <script defer src="image-materials-page.js?v=daily-outfit-photo-20261121-2"></script>
-    <script defer src="maintenance-page.js?v=maintenance-config-relative-20261120"></script>
+    <script defer src="pricing-workbench.js?v=pricing-new-api-20261125"></script>
+    <script defer src="quota-workbench.js?v=quota-v3-20261125"></script>
+    <script defer src="models-page.js?v=quota-v3-20261125"></script>
+    <script defer src="image-materials-page.js?v=wardrobe-withdrawn-20261125"></script>
+    <script defer src="maintenance-page.js?v=quota-v3-20261125"></script>
     <script defer src="reply-diagnostics.js?v=reply-diagnostics-20261123"></script>
-    <script defer src="appearance-page.js?v=account-display-preferences-20261028"></script>
+    <script defer src="appearance-page.js?v=wardrobe-withdrawn-20261125"></script>
     <script defer src="backup-page.js?v=data-subpages-20261008-r2"></script>
-    <script defer src="storage-page.js?v=storage-layout-20261120"></script>
+    <script defer src="storage-page.js?v=perf-tuning-20261124"></script>
+    <script defer src="tuning-page.js?v=perf-tuning-20261124"></script>
     <script defer src="understanding-page.js?v=understanding-figma-layout-20261007"></script>
     <script defer src="module-ready.js?v=module-ready-20261028"></script>
     <script>
@@ -324,7 +327,7 @@
        所以必须排在 app.js 之前。 -->
   <!-- 入场序列：只驱动体素控制器的公开接口，必须在 app.js 之前就位。 -->
   <!-- 工作区采用按需拆包；静态地址留在 inert template 中，运行时才请求。 -->
-  <template data-workspace-bundle="host"><script src="workspace-bundles/host.js?v=group-navigation-20261103"></script></template>
+  <template data-workspace-bundle="host"><script src="workspace-bundles/host.js?v=memory-setup-20261125"></script></template>
   <template data-workspace-bundle="life"><script src="workspace-bundles/life.js?v=workspace-lazy-20261012"></script></template>
   <template data-workspace-bundle="relationships"><script src="workspace-bundles/relationships.js?v=workspace-lazy-20261012"></script></template>
   <template data-workspace-bundle="identity"><script src="workspace-bundles/identity.js?v=hide-idle-20261121"></script></template>

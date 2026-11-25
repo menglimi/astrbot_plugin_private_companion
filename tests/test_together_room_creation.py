@@ -329,6 +329,174 @@ class TogetherRoomExecutionFallbackTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_together_context_execution_uses_live_companion_voice_policy(self):
+        from astrbot_host.native_extensions import together_context_execution
+
+        app = SimpleNamespace(
+            reply_settings=SimpleNamespace(
+                capture=lambda ctx, at: {
+                    "settings": {
+                        "voice_language": "ja",
+                        "voice_provider_id": "default_tts",
+                        "voice_zh_provider_id": "fishaudio_tts",
+                        "voice_ja_provider_id": "SyuanDrama3",
+                        "voice_en_provider_id": "fishaudio_tts",
+                        "voice_timeout_seconds": 55,
+                    }
+                }
+            )
+        )
+        ctx = SimpleNamespace(scope=SimpleNamespace(kind=SimpleNamespace(value="private")))
+        base = {
+            "model_provider_id": "main/chat",
+            "tts_provider_id": "",
+            "tts_language": "zh",
+            "tts_timeout_seconds": 30,
+        }
+        resolved = together_context_execution(base, app, ctx)
+        self.assertEqual(set(resolved), {"model_provider_id", "tts_provider_id", "tts_language", "tts_timeout_seconds"})
+        self.assertEqual(resolved["tts_provider_id"], "SyuanDrama3")
+        self.assertEqual(resolved["tts_language"], "ja")
+        self.assertEqual(resolved["tts_timeout_seconds"], 55)
+
+    def test_together_room_tts_follows_companion_per_language_bindings_and_honors_override(self):
+        from astrbot_host.native_extensions.together.speech_methods import TogetherSpeechMethods
+        from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+        from companion_v2.together.models import NativeRoomBinding, RoomSession
+
+        zh_tts = SimpleNamespace(meta=lambda: SimpleNamespace(id="fishaudio_tts"), get_audio=lambda text: text)
+        ja_tts = SimpleNamespace(meta=lambda: SimpleNamespace(id="SyuanDrama3"), get_audio=lambda text: text)
+        en_tts = SimpleNamespace(meta=lambda: SimpleNamespace(id="en_tts"), get_audio=lambda text: text)
+        room_tts = SimpleNamespace(meta=lambda: SimpleNamespace(id="room_override"), get_audio=lambda text: text)
+
+        class FakeTogether(TogetherSpeechMethods):
+            def __init__(self, policy):
+                self._policy = policy
+                self.tts_provider_id = ""
+                self.direct_multilingual_tts = True
+                self.browser_language = "zh-CN"
+                self.context = SimpleNamespace(
+                    get_all_tts_providers=lambda: [zh_tts, ja_tts, en_tts, room_tts],
+                    get_provider_by_id=lambda pid: None,
+                )
+
+            def _spoken_text(self, value):
+                return str(value or "").strip()
+
+            def _get_provider_by_id(self, provider_id):
+                return None
+
+            def _companion_voice_policy(self, room):
+                return self._policy
+
+            def _companion_realtime_voice_config(self):
+                return {"browser_language": self.browser_language}
+
+        policy = VoiceReplyPolicy(
+            language="ja",
+            zh_provider_id="fishaudio_tts",
+            ja_provider_id="SyuanDrama3",
+            en_provider_id="en_tts",
+        )
+        service = FakeTogether(policy)
+        room = RoomSession(
+            room_id="r1",
+            ticket_token="t1",
+            mode="call",
+            user_id="u1",
+            websocket=None,
+            native_v2=NativeRoomBinding(
+                scope_key="k1", bot_id="b1", account_id="a1", persona_id="p1",
+                prompt="你是冬马和纱。", model_provider_id="m1",
+                tts_provider_id="", tts_language="zh", tts_timeout_seconds=60,
+                platform="aiocqhttp", session_id="u1", scope_kind="private",
+            ),
+        )
+        room.call_active = True
+
+        # Default ("") follows Companion's per-language bindings dynamically by spoken script.
+        self.assertIs(service._room_tts_provider(room, spoken_text="おはよう、今日も寒いね"), ja_tts)
+        self.assertIs(service._room_tts_provider(room, spoken_text="早安，今天天气有点冷"), zh_tts)
+        self.assertIs(service._room_tts_provider(room, spoken_text="Good morning, let us play piano"), en_tts)
+        # Undetermined text / capability probe falls back to Companion's configured default language (ja).
+        self.assertIs(service._room_tts_provider(room, spoken_text=""), ja_tts)
+        # Direct multilingual prompt picks up live Companion language (ja) even if room binding had zh.
+        self.assertIn("ja-JP", service._call_direct_speech_prompt(room))
+
+        # Explicit room-level tts_provider_id override always takes precedence.
+        service.tts_provider_id = "room_override"
+        self.assertIs(service._room_tts_provider(room, spoken_text="おはよう"), room_tts)
+        self.assertIs(service._room_tts_provider(room, spoken_text="早安"), room_tts)
+
+        # Stale explicit override gracefully falls back to Companion per-language bindings.
+        service.tts_provider_id = "deleted_tts"
+        self.assertIs(service._room_tts_provider(room, spoken_text="おはよう"), ja_tts)
+        self.assertIs(service._room_tts_provider(room, spoken_text="早安"), zh_tts)
+
+    def test_synthesize_and_send_resolves_companion_voice_policy_once_per_utterance(self):
+        from astrbot_host.native_extensions.together.activity_methods import TogetherActivityMethods
+        from astrbot_host.native_extensions.together.speech_methods import TogetherSpeechMethods
+        from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+        from companion_v2.together.models import NativeRoomBinding, RoomSession
+
+        calls = []
+        sent = []
+
+        class FakeTogether(TogetherActivityMethods, TogetherSpeechMethods):
+            def __init__(self, policy):
+                self._policy = policy
+                self.tts_provider_id = ""
+                self.browser_language = "zh-CN"
+                self.record_visible_turns = False
+                self.sync_astrbot_conversation = False
+                self.context = SimpleNamespace(
+                    get_all_tts_providers=lambda: [],
+                    get_provider_by_id=lambda pid: None,
+                )
+
+            def _spoken_text(self, value):
+                return str(value or "").strip()
+
+            def _get_provider_by_id(self, provider_id):
+                return None
+
+            def _companion_voice_policy(self, room):
+                calls.append(room.room_id)
+                return self._policy
+
+            def _companion_realtime_voice_config(self):
+                return {"browser_language": self.browser_language}
+
+            async def send_room_payload(self, room, payload):
+                sent.append(payload)
+                return True
+
+        policy = VoiceReplyPolicy(language="ja", ja_provider_id="missing_tts")
+        service = FakeTogether(policy)
+        room = RoomSession(
+            room_id="r-once",
+            ticket_token="t-once",
+            mode="call",
+            user_id="u1",
+            websocket=None,
+            native_v2=NativeRoomBinding(
+                scope_key="k1", bot_id="b1", account_id="a1", persona_id="p1",
+                prompt="你是冬马和纱。", model_provider_id="m1",
+                tts_provider_id="", tts_language="zh", tts_timeout_seconds=60,
+                platform="aiocqhttp", session_id="u1", scope_kind="private",
+            ),
+        )
+        room.call_active = True
+        room.call_tts_enabled = True
+
+        # Neutral spoken text ("123") forces both provider selection and browser language
+        # to rely on the policy, proving a single policy lookup serves both steps.
+        asyncio.run(service._synthesize_and_send(room, "123"))
+        self.assertEqual(calls, ["r-once"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["type"], "tts_fallback")
+        self.assertEqual(sent[0]["language"], "ja-JP")
+
 
 async def _noop_role_guard(scope, role_binding):
     return None

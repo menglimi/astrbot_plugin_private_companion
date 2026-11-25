@@ -13,7 +13,7 @@ V1_PLUGIN_DATA_NAME = "astrbot_plugin_private_companion"
 V1_HOST_CONFIG_NAME = V1_PLUGIN_DATA_NAME + "_config.json"
 V1_REALITY_PLUGIN_DATA_NAME = "astrbot_plugin_reality_companion"
 V1_IMAGE_PLUGIN_DATA_NAME = "astrbot_plugin_image_companion"
-V1_DATA_MARKERS = ("companions.json", ".storage-backend-state.json")
+V1_DATA_MARKERS = ("companions.json", "companions.db", ".storage-backend-state.json")
 
 
 def v1_setting(configuration, path, default=None):

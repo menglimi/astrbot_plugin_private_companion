@@ -1,7 +1,8 @@
 """Run existing native authoring against an authorized calendar occurrence."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 import logging
 import sqlite3
 import time
@@ -30,7 +31,7 @@ from companion_v2.conversation.foreground import (
     PromptRequest,
     SealedForegroundContext,
 )
-from companion_v2.execution.models import TaskError, digest, encode, require
+from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.role_work.life.calendar_work import (
     require_window,
@@ -44,6 +45,64 @@ logger = logging.getLogger(__name__)
 class ScheduledAuthoring:
     BLOCKED_LOG_INTERVAL_SECONDS = 300.0
     BLOCKED_LOG_MAX_KEYS = 256
+    MAX_SLOT_ATTEMPTS = 3
+    RETRY_COOLDOWN_SECONDS = 300
+    RETRYABLE_FAILURE_CODES = frozenset({
+        "content_authoring_output",
+        "content_authoring_failed",
+        "content_authoring_capacity",
+        "content_storage_unavailable",
+        "task_lane_full",
+        "model_usage_unknown",
+        "provider_timeout",
+        "provider_unavailable",
+        "model_timeout",
+    })
+
+    @classmethod
+    def is_retryable_failure(cls, code: str | None) -> bool:
+        return isinstance(code, str) and code in cls.RETRYABLE_FAILURE_CODES
+
+    @staticmethod
+    def _parse_metadata(raw) -> dict:
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _can_retry_metadata(self, meta: dict, now: datetime) -> bool:
+        if meta.get("state") != "failed":
+            return False
+        if not self.is_retryable_failure(meta.get("code")):
+            return False
+        attempts = int(meta.get("attempts") or 1)
+        if attempts >= self.MAX_SLOT_ATTEMPTS:
+            return False
+        failed_at = meta.get("at")
+        if isinstance(failed_at, str) and failed_at:
+            try:
+                parsed = datetime.fromisoformat(failed_at)
+                if now < parsed + timedelta(seconds=self.RETRY_COOLDOWN_SECONDS):
+                    return False
+            except ValueError:
+                pass
+        return True
+
+    def status_key(self, context) -> str:
+        return "content.calendar.last:" + self.app.calendar.records.role_key(context)
+
+    def last_run_status(self, context) -> dict | None:
+        row = self.runtime.read_one(
+            "SELECT value FROM runtime_metadata WHERE key=?",
+            (self.status_key(context),),
+        )
+        if row is None:
+            return None
+        meta = self._parse_metadata(row["value"])
+        return meta or None
 
     def __init__(self, consumer):
         self.consumer = consumer
@@ -107,15 +166,15 @@ class ScheduledAuthoring:
         return port
 
     def ready(self, context, window=None):
-        if (
-            window is not None
-            and self.runtime.read_one(
-                "SELECT 1 FROM runtime_metadata WHERE key=?",
+        if window is not None:
+            row = self.runtime.read_one(
+                "SELECT value FROM runtime_metadata WHERE key=?",
                 (self.key(context, window),),
             )
-            is not None
-        ):
-            return False
+            if row is not None:
+                meta = self._parse_metadata(row["value"])
+                if not self._can_retry_metadata(meta, self.app.now()):
+                    return False
         if DRAFT_KIND not in self.app.gateway.router.profiles:
             if window is not None:
                 self._warn_blocked(context, "ready", "model_task_unregistered", window=window)
@@ -147,21 +206,24 @@ class ScheduledAuthoring:
         ):
             return
         try:
-            self.admit(context, "save_candidate")
             port = self.admit(context, "list")
             works = catalogue(
                 port.service.repository.path, self.consumer.access, context
             )
-            if any(work["needs_writing"] for work in works):
-                return reserve_routine_slot(
-                    self.app.calendar,
-                    context,
-                    routine="writing",
-                    timezone=settings["planning_timezone"],
-                    now=now,
-                    items=page["items"],
-                    sleep_plan=sleep_plan,
-                )
+            if works and not any(work["needs_writing"] for work in works):
+                return
+            self.admit(context, "save_candidate" if works else "create")
+            return reserve_routine_slot(
+                self.app.calendar,
+                context,
+                routine="writing",
+                timezone=settings["planning_timezone"],
+                now=now,
+                items=page["items"],
+                sleep_plan=sleep_plan,
+                title=None if works else "文学创作",
+                detail=None if works else "写一篇短作或新作品开篇。",
+            )
         except (TaskError, ContentError, sqlite3.Error) as error:
             code = getattr(error, "code", type(error).__name__)
             self._warn_blocked(context, "plan_continuation", code)
@@ -285,7 +347,7 @@ class ScheduledAuthoring:
             and not intended
         ):
             work = None
-        if work is None and "续写" in title:
+        if work is None and "续写" in title and works:
             return None
         action = "save_candidate" if work else "create"
         self.admit(context, action)
@@ -346,13 +408,28 @@ class ScheduledAuthoring:
             context.role_binding,
         )
         # The durable claim precedes any model call. A restart may leave a missed
-        # slot, but it cannot write the same calendar occurrence twice.
+        # slot, but it cannot write the same calendar occurrence twice; bounded
+        # retries only reopen explicitly retryable transient failures.
         with self.runtime.transaction() as connection:
-            if not connection.execute(
-                "INSERT OR IGNORE INTO runtime_metadata(key,value) VALUES (?,?)",
-                (key, encode({"state": "running", "at": at})),
-            ).rowcount:
-                return None
+            existing = connection.execute(
+                "SELECT value FROM runtime_metadata WHERE key=?",
+                (key,),
+            ).fetchone()
+            if existing is None:
+                attempts = 1
+                connection.execute(
+                    "INSERT INTO runtime_metadata(key,value) VALUES (?,?)",
+                    (key, encode({"state": "running", "at": stamp(at), "attempts": attempts})),
+                )
+            else:
+                meta = self._parse_metadata(existing["value"])
+                if not self._can_retry_metadata(meta, at):
+                    return None
+                attempts = int(meta.get("attempts") or 1) + 1
+                connection.execute(
+                    "UPDATE runtime_metadata SET value=? WHERE key=?",
+                    (encode({"state": "running", "at": stamp(at), "attempts": attempts}), key),
+                )
         try:
             version = (
                 (
@@ -451,21 +528,41 @@ class ScheduledAuthoring:
                 sources=tuple(source_docs),
                 **arguments,
             )
+            finished_at = stamp(self.app.now())
             result = {
                 "state": "written",
                 "work_id": receipt.work_id,
                 "version_id": receipt.version_id,
                 "operation_id": receipt.operation_id,
+                "attempts": attempts,
+                "at": finished_at,
             }
         except (TaskError, ContentError, sqlite3.Error) as error:
+            finished_at = stamp(self.app.now())
             result = {
                 "state": "failed",
                 "code": getattr(error, "code", "content_storage_unavailable"),
+                "attempts": attempts,
+                "at": finished_at,
             }
             self._warn_blocked(context, "run", result["code"], window=window)
+        summary = {
+            "state": result["state"],
+            "code": result.get("code"),
+            "work_id": result.get("work_id"),
+            "window_title": str(window.get("title") or "")[:120],
+            "attempts": attempts,
+            "retryable": result["state"] == "failed" and self.is_retryable_failure(result.get("code")) and attempts < self.MAX_SLOT_ATTEMPTS,
+            "at": result["at"],
+        }
         with self.runtime.transaction() as connection:
             connection.execute(
                 "UPDATE runtime_metadata SET value=? WHERE key=?", (encode(result), key)
+            )
+            connection.execute(
+                "INSERT INTO runtime_metadata(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self.status_key(context), encode(summary)),
             )
         if result["state"] == "failed":
             return Outcome.failed(

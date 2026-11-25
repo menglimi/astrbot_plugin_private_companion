@@ -78,6 +78,32 @@ class ProfileDiscoveryTestCase(unittest.TestCase):
 
 
 class SqliteOnlyProfileTests(ProfileDiscoveryTestCase):
+    def test_in_place_upgrade_finds_database_without_a_json_file_or_marker(self) -> None:
+        from astrbot_host.legacy_config import find_v1_data_root
+        from astrbot_host.storage_location import resolve_data_root
+
+        self.root = self.root / "data" / "plugin_data" / "astrbot_plugin_private_companion"
+        self.root.mkdir(parents=True)
+        self.write_sqlite("companions.db", {"groups": {"db-group": {}}})
+
+        target = resolve_data_root(self.root)
+        self.assertEqual(target, self.root / "companion-7")
+        self.assertEqual(find_v1_data_root(target), (self.root, "nested-parent"))
+
+    def test_673_resolves_relative_setting_against_absolute_backend_marker(self) -> None:
+        host = self.root
+        (host / "storage").mkdir()
+        database = self.write_sqlite("storage/custom.db", {"groups": {"db-group": {}}})
+        self.root = host / "data" / "plugin_data" / "astrbot_plugin_private_companion"
+        self.marker("sqlite", str(database))
+        configuration = {"basic_config": {
+            "storage_backend": "sqlite", "storage_sqlite_path": "storage/custom.db",
+        }}
+
+        self.assert_all_sources(self.findings(v1_configuration=configuration), MigrationState.DATA_READY)
+        configuration["basic_config"]["storage_sqlite_path"] = "other/custom.db"
+        self.assert_all_sources(self.findings(v1_configuration=configuration), MigrationState.UNREADABLE)
+
     def test_sqlite_only_installation_is_discovered(self) -> None:
         database = self.write_sqlite("companions.db", {"groups": {"db-group": {}}})
         self.marker("sqlite")

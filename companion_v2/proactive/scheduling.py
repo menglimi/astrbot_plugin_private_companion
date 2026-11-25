@@ -1,8 +1,4 @@
-"""Bounded automatic opportunities from the latest accepted private conversation.
-
-The original conversation owns identity and persona. Existing task IDs are the
-durable occurrence ledger, so restart never replays a decision or a missed slot.
-"""
+"""Automatic opportunities from verified conversations and completed role events."""
 
 import asyncio
 from collections.abc import Mapping
@@ -16,7 +12,8 @@ from companion_v2.agenda.service import AgendaService
 from companion_v2.conversation.busy_gate import (SettingsReader, busy_context, busy_exempt_source,
                                                 proactive_defer_until, readable_items)
 from companion_v2.conversation.messages import event_from_document
-from companion_v2.execution.models import QUEUED, TaskContext, TaskError, digest, require, stamp
+from companion_v2.execution.models import QUEUED, TaskContext, TaskError, digest, encode, require, stamp
+from companion_v2.foundation.refs import ScopeKind
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.delivery.history import VERSION as HISTORY_VERSION
 from companion_v2.role_work.life import rest_gate
@@ -40,6 +37,7 @@ from .weather_change_events import WeatherChangeContactEvents
 from .official_alert_events import NO_CURRENT_ALERT, OfficialAlertContactEvents
 from .balance_events import BalanceContactEvents
 from .news_events import NewsContactEvents
+from .outfit_events import OutfitContactEvents
 from .screen_events import ScreenContactEvents
 from .relationship_events import RelationshipContactEvents
 from .wake_events import WakeContactEvents
@@ -48,6 +46,20 @@ from .persona_judge import KIND as JUDGE_KIND
 from .preferences import ContactPreferences
 from .service import CONTACT_KIND
 
+# Minimum quiet period after a completed reply whenever idle gating is enabled
+# (``idle_seconds > 0``). Prevents high-intensity tiers like ``live`` from
+# shrinking a short idle setting into immediate post-reply contact while still
+# honoring explicit ``idle_seconds`` values below this floor.
+POST_REPLY_MIN_COOLDOWN_SECONDS = 60
+
+
+ROLE_EVENT_PRODUCERS = {
+    "calendar_event": "calendar_events",
+    "outfit_event": "outfit_events",
+    "activity_event": "events",
+    "journal_event": "journal_events",
+    "growth_event": "growth_events",
+}
 
 DIAGNOSTIC_ENVIRONMENT_VARIANTS = {
     "weather": ("weather_events", "weather_event", "天气观测生产器"),
@@ -88,7 +100,7 @@ class ContactSchedule:
     def __init__(self, contacts, messages, *, notify, role_life=None, role_growth=None, role_journal=None,
                  calendar=None, relationships=None, role_state=None, weather_port=None,
                  weather_alert_port=None, balance_port=None, news_port=None, screen_peek=None,
-                 wake_port=None, health_source=None, health_settings=None):
+                 wake_port=None, health_source=None, health_settings=None, role_bindings=None, daily_outfit=None):
         self.contacts, self.messages, self.notify = contacts, messages, notify
         self.tasks, self.runtime = contacts.tasks, contacts.runtime
         self.screen_peek = screen_peek
@@ -96,12 +108,15 @@ class ContactSchedule:
         self.wake_events = (WakeContactEvents(contacts, role_state, wake_port)
                             if wake_port is not None else None)
         self._maintenance_contexts = {}
+        self.role_bindings = role_bindings or dict
+        self._role_cursor = 0
         self._workers, self._cursor, self._native_cursor, self._closed = {}, 0, 0, False
         self._advancing = False
         self._planning = None
         self._judges = {}
         self.rhythm = ContactRhythm(contacts.runtime)
         self.events = ActivityContactEvents(contacts, role_life) if role_life is not None else None
+        self.outfit_events = OutfitContactEvents(contacts, daily_outfit) if daily_outfit is not None else None
         self.growth_events = GrowthContactEvents(contacts, role_growth) if role_growth is not None else None
         self.journal_events = JournalContactEvents(contacts, role_journal) if role_journal is not None else None
         self.calendar_events = CalendarContactEvents(contacts, calendar) if calendar is not None else None
@@ -307,6 +322,63 @@ class ContactSchedule:
                 found.append(datetime.fromisoformat(row["observed_at"]))
         return max(found) if found else None
 
+    def _post_reply_idle_seconds(self, preferences):
+        """Effective post-reply idle wait, respecting explicit short overrides."""
+        values = getattr(preferences, "values", None)
+        if not isinstance(values, Mapping) or "idle_seconds" not in values:
+            return 0
+        configured = int(values["idle_seconds"])
+        if configured <= 0:
+            return 0
+        scaled = self.rhythm.idle_seconds(preferences)
+        return min(configured, max(scaled, POST_REPLY_MIN_COOLDOWN_SECONDS))
+
+    def _conversation_activity_at(self, context, event, row, *, at=None):
+        """Latest observable activity timestamp of the conversation window.
+
+        Measures idle time from reply completion (``last_sent_at`` / ``phase_at``
+        and confirmed assistant send timestamps) rather than inbound arrival
+        alone, and preserves the newest media or absorbed follow-up timestamps
+        even when ``_origin`` fell back to an older text turn for evidence.
+        """
+        from companion_v2.conversation.native_turns import latest_assistant_reply_at, latest_turn_activity
+
+        timestamps = [event.received_at, datetime.fromisoformat(row["created_at"])]
+        sources = [row]
+        if isinstance(row, Mapping) and isinstance(row.get("_latest_native_activity"), Mapping):
+            sources.append(row["_latest_native_activity"])
+        end_stamp = stamp(at) if at is not None else None
+        latest_turn = latest_turn_activity(self.runtime, context.key, end=end_stamp)
+        if latest_turn is not None:
+            sources.append(latest_turn)
+        for source in sources:
+            keys = source.keys() if hasattr(source, "keys") else ()
+            for column in ("observed_at", "phase_at", "last_sent_at"):
+                if column not in keys:
+                    continue
+                raw = source[column]
+                if isinstance(raw, str) and raw:
+                    try:
+                        parsed = datetime.fromisoformat(raw)
+                    except ValueError:
+                        continue
+                    if at is None or parsed <= at:
+                        timestamps.append(parsed)
+        reply_at = latest_assistant_reply_at(self.runtime, context.key, end=end_stamp)
+        if reply_at is not None:
+            timestamps.append(reply_at)
+        return max(timestamps)
+
+    def _first_opening(self, context, preferences, event, row, at):
+        input_at = max(event.received_at, datetime.fromisoformat(row["created_at"]))
+        opening = self.rhythm.first_opening(context, preferences, at, input_at=input_at)
+        if opening is None:
+            return None
+        activity_at = self._conversation_activity_at(context, event, row, at=at)
+        if activity_at > input_at:
+            opening = max(opening, activity_at + timedelta(seconds=self._post_reply_idle_seconds(preferences)))
+        return opening
+
     def _origin(self, context, batch_id, at):
         """Select the origin conversation, moving forward when it was superseded.
 
@@ -316,8 +388,10 @@ class ContactSchedule:
         over, the original turn is remembered in ``previous_batch_id``, and the
         caller still runs every safety check against the new row.
         """
-        from companion_v2.conversation.native_turns import input_event, latest_input, latest_scope
+        from companion_v2.conversation.native_turns import foreground_busy, input_event, latest_input, latest_scope
 
+        if foreground_busy(self.runtime, context):
+            raise TaskError("contact_conversation_changed", "a foreground reply is currently in flight")
         row = self.runtime.read_one("""SELECT f.state AS flow_state, b.* FROM conversation_flows f
             JOIN conversation_batches b ON b.batch_id = f.batch_id WHERE f.route_key = ?
             ORDER BY f.sequence DESC LIMIT 1""", (context.scope.key,))
@@ -342,7 +416,16 @@ class ContactSchedule:
             origin = {"batch_id": anchor_turn["turn_id"], "event_key": event.scoped_key,
                       "event_hash": digest([event, context.key, anchor_turn["role_instruction"]]),
                       "role_hash": digest(anchor_turn["role_instruction"])}
-            latest = anchor_turn
+            # A media-only turn can refresh activity while the earlier text still supplies evidence.
+            if fallback_input:
+                latest = {**anchor_turn, "created_at": native["observed_at"]}
+                latest["_latest_native_activity"] = {
+                    "observed_at": native.get("observed_at"),
+                    "phase_at": native.get("phase_at"),
+                    "last_sent_at": native.get("last_sent_at"),
+                }
+            else:
+                latest = anchor_turn
         else:
             if (row is None or row["origin_key"] != context.key
                     or row["flow_state"] != "complete" or row["state"] != "ready"
@@ -416,6 +499,13 @@ class ContactSchedule:
             raise TaskError("contact_conversation_changed",
                             "the latest private conversation has no stable identity")
         origin, batch, event = self._origin(context, batch_id, at)
+        preferences = require(self.contacts.preferences.read(context, observed_at=at))
+        values = getattr(preferences, "values", None)
+        if isinstance(values, Mapping) and not values.get("automatic_enabled", True):
+            raise TaskError("contact_automatic_disabled", "automatic opportunities are disabled")
+        idle = self._post_reply_idle_seconds(preferences)
+        if at < self._conversation_activity_at(context, event, batch, at=at) + timedelta(seconds=idle):
+            raise TaskError("contact_conversation_active", "original conversation has not reached its configured idle time")
         marker = {
             "captured_at": captured_at,
             "source_id": source_id,
@@ -425,6 +515,21 @@ class ContactSchedule:
         return {**origin, "reality_location_event": marker}, batch, event
 
     def validate_origin(self, context, origin, at):
+        preferences = require(self.contacts.preferences.read(context, observed_at=at))
+        automatic_reason = preferences.automatic_reason()
+        if automatic_reason:
+            raise TaskError(automatic_reason, "automatic opportunities are disabled")
+        if "bound_role" in origin:
+            self.bound_role(context, at, origin=origin)
+            markers = [key for key in ROLE_EVENT_PRODUCERS if key in origin]
+            if len(markers) != 1 or set(origin) != {"bound_role", "role_hash", markers[0]}:
+                raise TaskError("contact_role_event_invalid", "a bound role contact requires its original event")
+            marker = markers[0]
+            producer = getattr(self, ROLE_EVENT_PRODUCERS[marker])
+            if producer is None:
+                raise TaskError("contact_role_event_unavailable", "the original role event producer is unavailable")
+            producer.validate(context, origin[marker], at)
+            return origin
         current, row, event = self._origin(context, origin["batch_id"], at)
         event_markers = {"activity_event", "growth_event", "journal_event", "calendar_event",
                          "reminiscence_event", "date_event",
@@ -441,12 +546,9 @@ class ContactSchedule:
         elif current != {key: value for key, value in origin.items()
                          if key not in event_markers | {"reanchored", "previous_batch_id"}}:
             raise TaskError("contact_conversation_changed", "automatic opportunity lost its original conversation")
-        preferences = require(self.contacts.preferences.read(context, observed_at=at))
-        if not preferences.values["automatic_enabled"]:
-            raise TaskError("contact_automatic_disabled", "automatic opportunities are disabled")
-        idle = self.rhythm.idle_seconds(preferences)
-        if at < max(event.received_at, datetime.fromisoformat(row["created_at"])) + timedelta(seconds=idle):
-            raise TaskError("contact_conversation_active", "original conversation has not reached its configured idle time")
+        first = self._first_opening(context, preferences, event, row, at)
+        if first is None or at < first:
+            raise TaskError("contact_conversation_active", "the most recent conversation activity is still within the idle period")
         interaction = None
         if ("greeting_event" in origin or "burst_event" in origin or "followup_event" in origin
                 or "morning_event" in origin or not rhythm_event_markers.intersection(origin)):
@@ -520,6 +622,63 @@ class ContactSchedule:
             self._validate_reality_location(origin["reality_location_event"])
         return current
 
+    def bound_role(self, context, at, *, origin=None):
+        binding = self.role_bindings().get(context.key)
+        if (context.scope.kind is not ScopeKind.PRIVATE or binding is None
+                or binding[0] != context or not binding[1].strip()):
+            raise TaskError("contact_role_unavailable", "the original private role binding is unavailable")
+        self.messages.authorize(context, at)
+        if origin is not None and (origin["bound_role"] != context.key or origin["role_hash"] != digest(binding[1])):
+            raise TaskError("contact_persona_changed", "the bound role's persona changed after selection")
+        return binding[1], binding[2]
+
+    def _plan_role_event(self, context, at):
+        if self.contacts.proactive_denied(context, at=at):
+            return None
+        instruction, _ = self.bound_role(context, at)
+        preferences = require(self.contacts.preferences.read(context, observed_at=at))
+        if preferences.automatic_reason():
+            return None
+        sleep = from_health_source(self.health_source, at)
+        if sleep is not None and sleep.quiet_until > at:
+            return None
+        self.contacts.budget.contacts(context, preferences, at)
+        base = {"bound_role": context.key, "role_hash": digest(instruction)}
+        if self.calendar_events is not None:
+            selection, more = self.calendar_events.select(context, preferences, at)
+            if selection is not None:
+                opportunity, intents, marker = selection
+                return context, opportunity, intents, instruction, {**base, "calendar_event": marker}
+            if more:
+                return None
+        if self._appointment_silence(context, preferences, at):
+            return None
+        if self.contacts.history is not None:
+            interaction = self.contacts.history.interaction(context, at, action=GROUP)
+            if interaction["last_input_at"] is not None:
+                first = self.rhythm.first_opening(context, preferences, at,
+                    input_at=datetime.fromisoformat(interaction["last_input_at"]))
+                if first is None or at < first:
+                    return None
+        if self._recent_attempt_blocking(
+                context, at, timedelta(seconds=self.rhythm.base_interval_seconds(preferences))):
+            return None
+        for marker, attribute in ROLE_EVENT_PRODUCERS.items():
+            producer = getattr(self, attribute)
+            if producer is None:
+                continue
+            select = producer.select_transitions if marker == "calendar_event" else producer.select
+            candidate, more = select(context, preferences, at)
+            if marker != "calendar_event":
+                candidate = self._share_candidate(context, preferences, candidate)
+            if candidate is not None:
+                opportunity, intents, evidence = candidate
+                if self.rhythm.hour_allows(context, preferences, opportunity.opened_at, observed_at=at):
+                    return context, opportunity, intents, instruction, {**base, marker: evidence}
+            elif more:
+                break
+        return None
+
     def _plan(self, row, at):
         context = TaskContext.restore(json.loads(row["context_json"]))
         # 主动权限：操作员收回 proactive.contact 之后，这一轮直接不做。
@@ -530,18 +689,23 @@ class ContactSchedule:
             return None
         preferences = require(self.contacts.preferences.read(context, observed_at=at))
         self.contacts._adopt(context, preferences)
-        if not preferences.values["automatic_enabled"]:
-            self._note_window(context, row, at, "settings", "skipped", "automatic_contact_disabled")
+        automatic_reason = preferences.automatic_reason()
+        if automatic_reason:
+            reason = "automatic_contact_disabled" if automatic_reason == "contact_automatic_disabled" else automatic_reason
+            self._note_window(context, row, at, "settings", "skipped", reason)
             return None
         sleep = from_health_source(self.health_source, at)
         if sleep is not None and sleep.quiet_until > at:
             self._note_window(context, row, at, "sleep", "skipped", "sleep_wake_grace",
                               next_at=sleep.morning_opened_at)
             return None
+        from companion_v2.conversation.native_turns import foreground_busy
+        if foreground_busy(self.runtime, context):
+            self._note_window(context, row, at, "conversation", "skipped", "foreground_reply_in_flight")
+            return None
         origin, batch, event = self._origin(context, row["batch_id"], at)
-        first = max(event.received_at, datetime.fromisoformat(batch["created_at"])) + timedelta(
-            seconds=self.rhythm.idle_seconds(preferences))
-        if at < first:
+        first = self._first_opening(context, preferences, event, batch, at)
+        if first is None or at < first:
             self._note_window(context, row, at, "rhythm", "skipped", "idle_period_not_elapsed", next_at=first)
             return None
         if self.contacts.history is None:
@@ -1412,6 +1576,10 @@ class ContactSchedule:
         context, opportunity, intents, instruction, origin = plan
         purpose = intents[0].purpose if intents else None
         try:
+            if "bound_role" in origin:
+                _, guard = self.bound_role(context, self.tasks.now(), origin=origin)
+                if guard is not None and await guard(context.scope, context.role_binding) != instruction:
+                    raise TaskError("contact_persona_changed", "the host persona changed after event selection")
             if "weather_pending" in origin:
                 prepared = await self.weather_events.prepare(context, origin["weather_pending"])
                 if prepared is None:
@@ -1503,22 +1671,16 @@ class ContactSchedule:
                               "contact_worker", "failed", "contact_schedule_failed", purpose=purpose)
             return Outcome.failed("contact_schedule_failed", "automatic opportunity stopped without replaying its model task")
 
-    def _advance_judges(self, at, available):
-        """Run the outstanding persona judgements on this tick's free background slots.
-
-        A judgement is its own supervised task, submitted when the draft was
-        sealed, so it needs one background slot of its own rather than a slot
-        nested inside the contact worker. A draft whose judgement can never
-        complete (an attempt that died, an expired window) is archived as
-        withheld instead of waiting forever or being sent unjudged.
-        """
+    def _prepare_judges(self, at, available, active_judge_count, active_judge_ids):
+        """Inspect outstanding persona judgements off the event loop; return spawn specs."""
         if self.contacts.judge_runner is None or JUDGE_KIND not in self.contacts.gateway.router.profiles:
-            return
+            return ()
+        to_spawn = []
         for row in self.contacts.outstanding_judgements(limit=4):
-            if len(self._judges) >= available:
-                return
+            if active_judge_count + len(to_spawn) >= available:
+                break
             task_id = row["judge_task_id"]
-            if task_id is None or task_id in self._judges:
+            if task_id is None or task_id in active_judge_ids:
                 continue
             if row["judge_state"] in QUEUED:
                 spec = json.loads(row["judge_record"])["spec"]
@@ -1529,12 +1691,33 @@ class ContactSchedule:
                     continue
                 if not self._account_available(context):
                     continue
-                worker = asyncio.create_task(self.contacts.judge_runner.run(context, task_id),
-                                             name="companion:contact-judge:" + task_id)
-                self._judges[task_id] = worker
-                worker.add_done_callback(lambda done: self.notify())
+                to_spawn.append((context, task_id))
                 continue
             self._withhold(row, "judge_unknown", "主动人格判定没有可用结果，未判定的草稿不发送")
+        return tuple(to_spawn)
+
+    def _spawn_judges(self, candidates):
+        """Spawn asyncio tasks for prepared persona judgements on the event loop."""
+        for context, task_id in candidates:
+            if self._closed or task_id in self._judges:
+                continue
+            worker = asyncio.create_task(self.contacts.judge_runner.run(context, task_id),
+                                         name="companion:contact-judge:" + task_id)
+            self._judges[task_id] = worker
+            worker.add_done_callback(lambda done: self.notify())
+
+    def _advance_judges(self, at, available):
+        """Run the outstanding persona judgements on this tick's free background slots.
+
+        A judgement is its own supervised task, submitted when the draft was
+        sealed, so it needs one background slot of its own rather than a slot
+        nested inside the contact worker. A draft whose judgement can never
+        complete (an attempt that died, an expired window) is archived as
+        withheld instead of waiting forever or being sent unjudged.
+        """
+        candidates = self._prepare_judges(at, available, len(self._judges), frozenset(self._judges))
+        if candidates:
+            self._spawn_judges(candidates)
 
     def _withhold(self, row, failure, reason):
         with self.runtime.transaction():
@@ -1570,21 +1753,43 @@ class ContactSchedule:
             AND NOT EXISTS (SELECT 1 FROM conversation_flows newer WHERE newer.route_key = f.route_key AND newer.sequence > f.sequence)
             ORDER BY f.sequence LIMIT 16""", (cursor,))
 
-    def _begin_tick(self):
-        """Read the tick's bounded input set; no candidate source is evaluated here."""
-        if self._closed:
-            return None
-        now = self.tasks.now()
-        for context in tuple(self._maintenance_contexts.values()):
-            try:
-                preferences = self.contacts.preferences.read(context, observed_at=self.tasks.now())
-                if preferences.is_success:
-                    self.news_events.maintain(context, preferences.unwrap())
-                    if getattr(self, "exploration", None) is not None:
-                        self.exploration.maintain(context, preferences.unwrap())
-            except (TaskError, ValueError, TypeError, AttributeError):
-                # A source status must never take down the contact coordinator.
-                pass
+    def _native_rows(self, native_cursor):
+        """Fetch latest completed private native turns per context via covering index."""
+        from companion_v2.conversation.native_turns import turns_available
+
+        if not turns_available(self.runtime):
+            return ()
+        return self.runtime.read_all("""WITH RECURSIVE distinct_ctx(context_key) AS (
+                SELECT MIN(context_key) FROM conversation_native_turns
+                UNION ALL
+                SELECT (
+                    SELECT MIN(t.context_key) FROM conversation_native_turns t
+                    WHERE t.context_key > d.context_key
+                )
+                FROM distinct_ctx d
+                WHERE d.context_key IS NOT NULL
+            ),
+            latest_ids(latest_rowid) AS (
+                SELECT (
+                    SELECT t.rowid FROM conversation_native_turns t
+                    WHERE t.context_key = d.context_key AND t.generation_state != 'absorbed'
+                    ORDER BY t.observed_at DESC, t.rowid DESC
+                    LIMIT 1
+                )
+                FROM distinct_ctx d
+                WHERE d.context_key IS NOT NULL
+            )
+            SELECT n.rowid AS sequence, n.*
+            FROM latest_ids l
+            JOIN conversation_native_turns n ON n.rowid = l.latest_rowid
+            WHERE n.rowid > ? AND n.scope_kind = 'private'
+              AND n.generation_state = 'completed'
+              AND NOT EXISTS (SELECT 1 FROM conversation_native_turns open_t
+                  WHERE open_t.scope_kind = 'private' AND open_t.context_key = n.context_key
+                    AND open_t.generation_state IN ('prepared', 'running'))
+            ORDER BY n.rowid ASC LIMIT 16""", (native_cursor,))
+
+    def _reap_completed_workers(self):
         for key, worker in tuple(self._workers.items()):
             if worker.done():
                 if not worker.cancelled():
@@ -1595,15 +1800,34 @@ class ContactSchedule:
                 if not worker.cancelled():
                     worker.result()
                 del self._judges[key]
-        require(self.tasks.check_generation())
-        if CONTACT_KIND not in self.contacts.gateway.router.profiles:
-            self._note_coordinator(self.tasks.now(), "blocked", "contact_model_unregistered")
-            return None
-        held = self.runtime.read_one("SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", ())[0]
-        available = self.tasks.limits.background_slots - held - len(self._workers) - len(self._judges)
-        self._advance_judges(self.tasks.now(), max(0, available))
-        held = self.runtime.read_one("SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", ())[0]
-        available = self.tasks.limits.background_slots - held - len(self._workers) - len(self._judges)
+
+    def _read_maintenance_preferences(self, contexts):
+        ready = []
+        for context in contexts:
+            try:
+                preferences = self.contacts.preferences.read(context, observed_at=self.tasks.now())
+                if preferences.is_success:
+                    ready.append((context, preferences.unwrap()))
+            except (TaskError, ValueError, TypeError, AttributeError):
+                # A source status must never take down the contact coordinator.
+                pass
+        return tuple(ready)
+
+    def _dispatch_maintenance_sources(self, source_prefs):
+        for context, prefs in source_prefs:
+            try:
+                self.news_events.maintain(context, prefs)
+                if getattr(self, "exploration", None) is not None:
+                    self.exploration.maintain(context, prefs)
+            except (TaskError, ValueError, TypeError, AttributeError):
+                # A source status must never take down the contact coordinator.
+                pass
+
+    def _finish_tick_candidates(self, now, active_workers, active_judges, cursor, native_cursor):
+        held = self.runtime.read_one(
+            "SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", (),
+        )[0]
+        available = self.tasks.limits.background_slots - held - active_workers - active_judges
         if available <= 0:
             self._note_coordinator(self.tasks.now(), "blocked", "background_capacity_exhausted")
             return None
@@ -1611,22 +1835,67 @@ class ContactSchedule:
         if retained >= self.tasks.limits.retained_tasks:
             self._note_coordinator(self.tasks.now(), "blocked", "task_storage_full")
             return None
-        legacy_rows = self._legacy_rows(self._cursor)
-        from companion_v2.conversation.native_turns import project, turns_available
-        native_rows = self.runtime.read_all("""SELECT n.rowid AS sequence, n.* FROM conversation_native_turns n
-            WHERE n.rowid > ? AND n.scope_kind = 'private'
-            AND n.generation_state = 'completed'
-            AND NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
-                WHERE newer.context_key = n.context_key
-                AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
-            ORDER BY n.rowid LIMIT 16""", (self._native_cursor,)) if turns_available(self.runtime) else ()
-        rows = (*legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
+        from companion_v2.conversation.native_turns import project
+        legacy_rows = self._legacy_rows(cursor)
+        native_rows = self._native_rows(native_cursor)
+        bindings = tuple(binding[0] for binding in self.role_bindings().copy().values()
+                         if binding[0].scope.kind is ScopeKind.PRIVATE)
+        start = self._role_cursor % len(bindings) if bindings else 0
+        role_rows = tuple({"role_event_only": True, "origin_key": context.key, "context_json": encode(context)}
+                          for context in (bindings[start:] + bindings[:start])[:16])
+        rows = (*role_rows, *legacy_rows, *(project(row, runtime=self.runtime) for row in native_rows))
         return now, rows, available, len(legacy_rows), len(native_rows)
+
+    def _begin_tick_offload(self, maintenance_contexts, active_workers, active_judges,
+                            active_judge_ids, cursor, native_cursor):
+        """Run tick SQLite reads off the event loop; return pending judges or ready candidates."""
+        if self._closed:
+            return ("ready", None, ())
+        now = self.tasks.now()
+        source_prefs = self._read_maintenance_preferences(maintenance_contexts)
+        require(self.tasks.check_generation())
+        if CONTACT_KIND not in self.contacts.gateway.router.profiles:
+            self._note_coordinator(self.tasks.now(), "blocked", "contact_model_unregistered")
+            return ("ready", None, source_prefs)
+        held = self.runtime.read_one(
+            "SELECT COUNT(*) FROM execution_attempts WHERE lane = 'background' AND slot_held = 1", (),
+        )[0]
+        available = self.tasks.limits.background_slots - held - active_workers - active_judges
+        pending_judges = self._prepare_judges(
+            self.tasks.now(), max(0, available), active_judges, active_judge_ids,
+        )
+        if pending_judges:
+            return ("judges", now, pending_judges, source_prefs)
+        return ("ready", self._finish_tick_candidates(now, active_workers, active_judges, cursor, native_cursor), source_prefs)
+
+    def _begin_tick(self):
+        """Read the tick's bounded input set; no candidate source is evaluated here."""
+        if self._closed:
+            return None
+        self._reap_completed_workers()
+        phase = self._begin_tick_offload(
+            tuple(self._maintenance_contexts.values()),
+            len(self._workers),
+            len(self._judges),
+            frozenset(self._judges),
+            self._cursor,
+            self._native_cursor,
+        )
+        self._dispatch_maintenance_sources(phase[-1])
+        if phase[0] == "judges":
+            _, now, pending_judges, _ = phase
+            self._spawn_judges(pending_judges)
+            return self._finish_tick_candidates(
+                now, len(self._workers), len(self._judges), self._cursor, self._native_cursor,
+            )
+        return phase[1]
 
     def _plan_one(self, row, now):
         """Evaluate one candidate off the write transaction."""
         if self._closed or row["origin_key"] in self._workers:
             return None
+        if isinstance(row, dict) and row.get("role_event_only"):
+            return self._plan_role_event(TaskContext.restore(json.loads(row["context_json"])), now)
         if self._peek(row, now):
             context = TaskContext.restore(json.loads(row["context_json"]))
             self._note_window(context, row, now, "sources", "pending", "screen_observation_pending")
@@ -1678,7 +1947,9 @@ class ContactSchedule:
         return available - 1
 
     def _row_cursor(self, row):
-        if isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
+        if isinstance(row, dict) and row.get("role_event_only"):
+            self._role_cursor += 1
+        elif isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
             self._native_cursor = row["sequence"]
         else:
             self._cursor = row["sequence"]
@@ -1712,13 +1983,40 @@ class ContactSchedule:
         self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
 
     async def advance_async(self):
-        """Keep each source scan off AstrBot's event loop; activation stays on it."""
+        """Keep tick preparation and each source scan off the event loop; activation stays on it."""
         if self._closed or self._advancing:
             return
         self._advancing = True
         try:
-            prepared = self._begin_tick()
-            if prepared is None:
+            self._reap_completed_workers()
+            if self._closed:
+                return
+            phase = await asyncio.to_thread(
+                self._begin_tick_offload,
+                tuple(self._maintenance_contexts.values()),
+                len(self._workers),
+                len(self._judges),
+                frozenset(self._judges),
+                self._cursor,
+                self._native_cursor,
+            )
+            if self._closed:
+                return
+            self._dispatch_maintenance_sources(phase[-1])
+            if phase[0] == "judges":
+                _, now, pending_judges, _ = phase
+                self._spawn_judges(pending_judges)
+                prepared = await asyncio.to_thread(
+                    self._finish_tick_candidates,
+                    now,
+                    len(self._workers),
+                    len(self._judges),
+                    self._cursor,
+                    self._native_cursor,
+                )
+            else:
+                prepared = phase[1]
+            if prepared is None or self._closed:
                 return
             now, rows, available, legacy_count, native_count = prepared
             exhausted = True
@@ -1749,7 +2047,10 @@ class ContactSchedule:
                     self._cursor = 0
                 if native_count < 16:
                     self._native_cursor = 0
-            self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
+            if not self._closed:
+                await asyncio.to_thread(
+                    self._note_coordinator, self.tasks.now(), "running", "contact_schedule_running",
+                )
         finally:
             self._advancing = False
         self._planning = None

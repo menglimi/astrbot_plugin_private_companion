@@ -187,6 +187,7 @@ class NativeTypingCallbacksTests(unittest.IsolatedAsyncioTestCase):
         await plugin.observe_companion_core_reply_sent(event)
         presence.finish_native_reply.assert_called_once_with(prepared["context"], prepared["turn_id"])
         presence.native_reply_stage.assert_called_with(prepared["context"], prepared["turn_id"], "delivering")
+        presence.note_native_reply_sent.assert_called_once_with(prepared["context"])
 
     async def test_empty_decorated_and_deduplicated_finals_end_without_after_send(self):
         for text, sent in (("", []), ("工具已发", ["工具已发"])):

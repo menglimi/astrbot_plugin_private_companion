@@ -94,11 +94,11 @@ window.CompanionHostOptionsPage = (() => {
       <form data-host-form="voice" novalidate>
         <div class="host-options-row"><div class="host-options-copy"><strong>允许语音回复</strong>
           <small>全局总开关。对象的「启用语音」也需要打开。</small></div>
-          <label class="host-options-switch"><input type="checkbox" name="enabled" data-wb-field="enabled" ${value.enabled ? "checked" : ""}>
+          <label class="host-options-switch"><input type="checkbox" role="switch" name="enabled" data-wb-field="enabled" ${value.enabled ? "checked" : ""}>
             <span>${value.enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>普通回复自主唱歌</strong>
           <small>须通过本轮语音准入，只支持已选的 Fish Audio Drama 3。请保持 AstrBot 与本会话的 TTS 开启，并在 AstrBot 将该会话所用预设的自动转语音概率设为 0；此处不会修改 AstrBot 设置。替代使用时请关闭独立的 SingSing 插件。</small></div>
-          <label class="host-options-switch"><input type="checkbox" name="singsing_enabled" data-wb-field="singsing_enabled" ${value.singsing_enabled ? "checked" : ""}>
+          <label class="host-options-switch"><input type="checkbox" role="switch" name="singsing_enabled" data-wb-field="singsing_enabled" ${value.singsing_enabled ? "checked" : ""}>
             <span>${value.singsing_enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>基础触发概率</strong>
           <small>私聊或群聊没有覆盖值时使用。</small></div>
@@ -126,7 +126,7 @@ window.CompanionHostOptionsPage = (() => {
       <form data-host-form="poke" novalidate>
         <div class="host-options-row"><div class="host-options-copy"><strong>回应收到的戳一戳</strong>
           <small>关闭后仍可单独保留下方短句和概率设置。</small></div>
-          <label class="host-options-switch"><input type="checkbox" name="enabled" data-wb-field="enabled" ${value.enabled ? "checked" : ""}>
+          <label class="host-options-switch"><input type="checkbox" role="switch" name="enabled" data-wb-field="enabled" ${value.enabled ? "checked" : ""}>
             <span>${value.enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>回复概率</strong>
           <small>决定收到戳一戳后是否回复。</small></div>
@@ -142,7 +142,7 @@ window.CompanionHostOptionsPage = (() => {
             inputmode="numeric" data-wb-field="back_times" value="${value.back_times}"></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>模型即兴回复</strong>
           <small>开启后由戳一戳专用模型生成短回复，生成失败时使用预设短句。</small></div>
-          <label class="host-options-switch"><input type="checkbox" name="model_reply_enabled" data-wb-field="model_reply_enabled" ${value.model_reply_enabled ? "checked" : ""}>
+          <label class="host-options-switch"><input type="checkbox" role="switch" name="model_reply_enabled" data-wb-field="model_reply_enabled" ${value.model_reply_enabled ? "checked" : ""}>
             <span>${value.model_reply_enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>模型回复概率</strong>
           <small>在已决定回应的戳一戳中，命中后使用模型生成。</small></div>
@@ -150,7 +150,7 @@ window.CompanionHostOptionsPage = (() => {
             inputmode="numeric" data-wb-field="model_reply_probability" value="${percent(value.model_reply_probability)}"><span>%</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>拍一拍上下文接话</strong>
           <small>默认关闭，仅群聊生效：拍一拍发生数秒后，模型查看最近几条群消息，有需要接的话题才回一句，否则保持安静。与上面的拍一拍回应相互独立。</small></div>
-          <label class="host-options-switch"><input type="checkbox" name="context_reply_enabled" data-wb-field="context_reply_enabled" ${value.context_reply_enabled ? "checked" : ""}>
+          <label class="host-options-switch"><input type="checkbox" role="switch" name="context_reply_enabled" data-wb-field="context_reply_enabled" ${value.context_reply_enabled ? "checked" : ""}>
             <span>${value.context_reply_enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>上下文接话延迟秒数</strong>
           <small>拍一拍后等待多少秒再查看群消息。0 = 瞬时快照（立即读取，先拍后说的话来不及进入上下文）；1–30 秒 = 等待后读取。</small></div>
@@ -171,21 +171,33 @@ window.CompanionHostOptionsPage = (() => {
     if (!value) return `<div class="host-options-empty" role="status"><p>${esc(state.error || "合并转发设置暂时不可用。")}</p>
       <button type="button" class="button small" data-host-reload>重新读取</button></div>`;
     const fields = [
-      ["max_forwards", "单条消息最大转发数"],
-      ["max_nodes", "单次最多展开节点数"],
-      ["max_depth", "最大嵌套深度"],
+      ["max_forwards", "单条消息最大转发数", "条"],
+      ["max_nodes", "单次最多展开节点数", "个节点"],
+      ["max_depth", "最大嵌套深度", "层"],
     ];
-    return `<section class="host-options-panel" aria-label="合并转发设置">
-      <header class="host-options-heading"><div><h3>合并转发理解</h3></div></header>
+    return `<section class="host-options-panel host-options-panel-forwards" aria-label="合并转发全局解析上限">
+      <header class="host-options-heading">
+        <div>
+          <span class="host-options-eyebrow">全局解析上限</span>
+          <h3>合并转发理解</h3>
+          <p>保护上下文长度与解析耗时；以下数值对所有会话统一生效，保存后应用于下一条合并转发消息。</p>
+        </div>
+        <span class="host-options-scope-badge">全局设置 · 立即生效</span>
+      </header>
       <form data-host-form="forward_intake" novalidate>
-        ${fields.map(([name, title]) => `<label class="host-options-row">
-          <span class="host-options-copy"><strong>${title}</strong><small>1–${state.forwardBounds[name]}</small></span>
-          <input class="host-options-number" type="number" name="${name}" min="1" max="${state.forwardBounds[name]}"
-            step="1" inputmode="numeric" data-wb-field="${name}" value="${value[name]}">
-        </label>`).join("")}
-        <div class="host-options-row"><div class="host-options-copy"><strong>展开嵌套合并转发</strong>
+        <div class="host-options-metrics-grid">
+          ${fields.map(([name, title, unit]) => `<label class="host-options-metric-field">
+            <span class="host-options-copy"><strong>${title}</strong><small>范围 1–${state.forwardBounds[name]} ${unit}</small></span>
+            <span class="host-options-unit-input">
+              <input class="host-options-number" type="number" name="${name}" min="1" max="${state.forwardBounds[name]}"
+                step="1" inputmode="numeric" data-wb-field="${name}" value="${value[name]}">
+              <span class="host-options-unit">${unit}</span>
+            </span>
+          </label>`).join("")}
+        </div>
+        <div class="host-options-row host-options-row-switch"><div class="host-options-copy"><strong>展开嵌套合并转发</strong>
           <small>关闭时保留未展开提示，不读取内部节点。</small></div>
-          <label class="host-options-switch"><input type="checkbox" name="parse_nested" data-wb-field="parse_nested" ${value.parse_nested ? "checked" : ""}>
+          <label class="host-options-switch"><input type="checkbox" role="switch" name="parse_nested" data-wb-field="parse_nested" ${value.parse_nested ? "checked" : ""}>
             <span>${value.parse_nested ? "已开启" : "已关闭"}</span></label></div>
         <footer class="host-options-footer">${messageMarkup("forward_intake")}
           <button type="submit" class="button small primary" ${state.saving === "forward_intake" ? "disabled" : ""}>
@@ -315,6 +327,11 @@ window.CompanionHostOptionsPage = (() => {
   }
 
   function onChange(event) {
+    const toggle = event.target?.closest?.(".host-options-switch input[type=\"checkbox\"]");
+    if (toggle) {
+      const labelSpan = toggle.parentElement?.querySelector?.("span");
+      if (labelSpan) labelSpan.textContent = toggle.checked ? "已开启" : "已关闭";
+    }
     const input = event.target?.closest?.("[data-inherit-field]");
     if (!input) return;
     const field = input.dataset.inheritField;

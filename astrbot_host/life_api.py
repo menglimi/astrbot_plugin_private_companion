@@ -57,17 +57,20 @@ class LifeWebAPI:
         from .web_api import outcome_response
         try:
             query = request.query
-            if set(query.keys()) - {"before", "after_activity"} or any(len(query.getlist(k)) != 1 for k in query.keys()):
+            if set(query.keys()) - {"before", "after_activity", "after_reading", "after_sleep"} or any(len(query.getlist(k)) != 1 for k in query.keys()):
                 raise ValueError("invalid query")
             username = request.username
             before = query.get("before") or None
             after_activity = query.get("after_activity") or None
+            after_reading = query.get("after_reading") or None
+            after_sleep = query.get("after_sleep") or None
             async with self.controller._control_lock:
                 session, runtime, observed_at, profile_id, target_id, resolved_username = self._snapshot(username)
 
             def load():
                 manager, operator = self._build_manager(session, runtime, resolved_username, observed_at)
-                return manager.status(operator, before=before, after_activity=after_activity)
+                return manager.status(operator, before=before, after_activity=after_activity,
+                                      after_reading=after_reading, after_sleep=after_sleep)
 
             result = await asyncio.to_thread(load)
             result["profile_id"] = profile_id

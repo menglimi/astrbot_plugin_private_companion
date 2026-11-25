@@ -90,3 +90,32 @@ test("life workspace sends with getRandomValues and localizes command errors", a
   assert.match(requests[0].body.operation_key, /^(?:[0-9a-f]{32}|life-[0-9]+-[a-z0-9]+)$/);
   assert.equal(elements.get("notice").textContent, "生活记录或操作信息已变化，请刷新后重新尝试。");
 });
+
+test("life workspace mobile compact spacing overrides roomy density in cascade order", () => {
+  const cssPath = path.join(__dirname, "..", "pages", "日记与生活", "style.css");
+  const css = fs.readFileSync(cssPath, "utf8");
+  const densityMainIdx = css.indexOf(":root[data-density] main { padding: var(--pad); }");
+  const embeddedRoomyIdx = css.indexOf(':root[data-embedded="true"][data-density="roomy"] main');
+  assert.ok(densityMainIdx > 0, "density main rule should exist");
+  assert.ok(embeddedRoomyIdx > densityMainIdx, "embedded roomy density rule should follow density main");
+
+  const tail = css.slice(embeddedRoomyIdx);
+  const mobileBlockMatch = tail.match(/@media\s*\(max-width:\s*640px\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(mobileBlockMatch, "mobile <=640px media block should appear after density rules");
+  const mobileBlock = mobileBlockMatch[1];
+  assert.match(
+    mobileBlock,
+    /:root\[data-density\]\s+main\s*\{\s*padding:\s*14px\s+14px\b/,
+    "mobile <=640px must re-assert compact standalone main padding after density rules",
+  );
+  assert.match(
+    mobileBlock,
+    /:root\[data-embedded="true"\]\[data-density\]\s+main\s*\{\s*padding:\s*10px\s+12px\s+16px\s*;/,
+    "mobile <=640px must re-assert compact embedded main padding after embedded density rules",
+  );
+  assert.match(
+    mobileBlock,
+    /:root\[data-density\]\s+:is\(\.activity,\s*\.retry-form\)\s*\{\s*padding:\s*14px\s+15px\s*;/,
+    "mobile <=640px must re-assert compact card padding after density rules",
+  );
+});

@@ -152,11 +152,16 @@ window.CompanionContactPage = (() => {
       setup:"读取终端当前未过期地点，经过现实触及授权和变化校验，再进入环境主动联系与 QQ 投递链。测试不伪造坐标，也不改生产去重标记。",
       instruction:"只把手机上报的地点标签作为可选聊天素材；不能据此推断用户正在做什么、心情如何或是否安全。",
       expect:"终端地点读取、来源发布、主动消息生成与 QQ 回执全部完成；没有有效地点或授权时明确失败。"},
-    {id:"reaction_image", label:"带图主动消息", bucket:"拓展", coverage:"ready",
+    {id:"generated_image", label:"带图主动消息", bucket:"拓展", coverage:"ready",
+      source:"角色当前配置的文生图服务",
+      setup:"调用角色的文生图模型生成一张日常静物图，计入生图额度。",
+      instruction:"以角色口吻分享一次日常静物创作，正文独立成立。",
+      expect:"新图生成、原图投递和平台回执全部完成。"},
+    {id:"reaction_image", label:"带表情包主动消息", bucket:"拓展", coverage:"ready",
       source:"当前私聊已授权的表情图库、原图校验与图片投递回执",
-      setup:"按一次性测试意图从授权图库检索素材，执行原图校验、封存和真实 QQ 图片投递；不修改生产图片频率。",
-      instruction:"正文保持自然完整；只附一张适合日常友好互动的原图，不适合时或本人停用表情时不得发送。",
-      expect:"授权素材检索、图片原件、文本与图片同一投递载荷及平台回执全部匹配；不会以纯文本冒充通过。"},
+      setup:"从当前私聊已授权的图库检索并投递一张表情包原图。",
+      instruction:"正文保持自然完整，附一张适合日常友好互动的表情包。",
+      expect:"图库检索、原图投递和平台回执全部完成。"},
   ];
   const TEST_COVERAGE = {ready:"生产器已接通", partial:"只有资格检查", missing:"尚无独立生产器"};
   const TEST_BUCKET_IDS = {关系:"bond", 日程:"daily", 分享:"share", 拓展:"extension"};
@@ -165,6 +170,7 @@ window.CompanionContactPage = (() => {
      不参与任何计算。 */
   const TIERS = [
     {key:"off",         label:"关闭",   interval:1.0,  idle:1.0,  burst:0, chars:0},
+    {key:"custom",      label:"自定义", interval:1.0,  idle:1.0,  burst:0, chars:0},
     {key:"balanced",    label:"均衡",   interval:0.8,  idle:0.7,  burst:2, chars:300},
     {key:"high_private",label:"高频私聊", interval:0.5, idle:0.35, burst:3, chars:300},
     {key:"high_group",  label:"高频群聊", interval:0.9, idle:0.8,  burst:2, chars:240},
@@ -173,7 +179,7 @@ window.CompanionContactPage = (() => {
   const TIER_BY_KEY = Object.fromEntries(TIERS.map(t => [t.key, t]));
   /* 强度别名。后端 INTENSITY_ALIASES 会把 直播/高频 这类写法归一，
      页面显示时必须显示归一后的档位，否则「设了实时却显示直播」会让人以为没保存上。 */
-  const TIER_ALIAS = {manual:"off",none:"off",default:"off","":"off",standard:"balanced",
+  const TIER_ALIAS = {manual:"custom",none:"custom",default:"custom","":"custom",standard:"balanced",
     active:"high_private",private:"high_private",group:"high_group",online:"live",直播:"live",高频:"live"};
   const DEFAULT_CURVE = "0.22,0.16,0.12,0.10,0.10,0.14,0.28,0.50,0.66,0.72,0.78,0.92,1.0,0.94,"
     + "0.82,0.74,0.78,0.92,1.0,0.98,0.88,0.70,0.48,0.32";
@@ -221,6 +227,7 @@ window.CompanionContactPage = (() => {
     material_pool_unavailable:"角色共享素材暂时无法读取，请稍后重试。",
     proactive_quiet_hours:"当前处于免打扰时段。", proactive_paused:"当前已暂停主动联系。",
     proactive_disabled:"主动联系总开关已关闭。", contact_automatic_disabled:"后台自动联系未开启。",
+    contact_intensity_off:"强度档位已关闭自动联系。",
     model_task_unregistered:"请先登记主动联系模型。", host_not_running:"当前运行实例尚未启动。",
     contact_model_profile_exceeded:"主动联系的上下文超过当前模型输入或输出上限。请减少历史长度，或在「模型与连接」换用上下文更大的模型。",
     model_estimation_failed:"当前模型无法接受这次主动联系的上下文长度；请减少历史长度或换用上下文更大的模型。",
@@ -278,7 +285,7 @@ window.CompanionContactPage = (() => {
   const curveText = list => list.map(w => w.toFixed(2)).join(",");
   const tierOf = value => {
     const raw = String(value ?? "").trim().toLowerCase();
-    return TIER_BY_KEY[raw] ? raw : (TIER_ALIAS[raw] || "off");
+    return TIER_BY_KEY[raw] ? raw : (TIER_ALIAS[raw] || "custom");
   };
   /* 一天里的第几分钟（带小数）→ 环上的角度。0:00 在正上方，顺时针。 */
   const angle = minute => (minute / 1440) * 360 - 90;
@@ -935,6 +942,9 @@ window.CompanionContactPage = (() => {
     if (observedValue("enabled") === false) {
       return {tone:"blocked", title:"全局默认已关闭", detail:"具体私聊用户可在私聊用户页单独设置。", code:"", automatic:false};
     }
+    if (tierOf(observedValue("proactive_intensity_preset")) === "off") {
+      return {tone:"blocked", title:"全局自动联系已关闭", detail:"当前强度档位为关闭。", code:"contact_intensity_off", automatic:false};
+    }
     if (typeof pauseUntil === "string" && Date.parse(pauseUntil) > Date.now()) {
       return {tone:"blocked", title:"全局暂停中", detail:"暂缓至 " + pauseUntil.slice(0, 16).replace("T", " "), code:"", automatic:false};
     }
@@ -1121,9 +1131,9 @@ window.CompanionContactPage = (() => {
     const v = verdict();
     const interval = Number(value("interval_seconds"));
     const idle = Number(value("idle_seconds"));
-    const effectiveInterval = Number.isFinite(interval) && interval > 0
+    const effectiveInterval = tier.key !== "off" && Number.isFinite(interval) && interval > 0
       ? Math.max(1, Math.round(interval * tier.interval)) : null;
-    const effectiveIdle = Number.isFinite(idle)
+    const effectiveIdle = tier.key !== "off" && Number.isFinite(idle)
       ? Math.max(0, Math.round(idle * tier.idle)) : null;
     /* 这一帧要闪哪几片盘面。取出来就清空：动效只放一次，
        下一次渲染（哪怕什么都没改）不该重放。 */
@@ -1453,17 +1463,19 @@ window.CompanionContactPage = (() => {
     return `<div class="ct-tiers" role="radiogroup" aria-label="强度档位">
       ${TIERS.map(t => {
         const on = t.key === tier.key;
+        const off = t.key === "off";
         const effectiveInterval = Number.isFinite(interval) && interval > 0
           ? fmtDuration(Math.max(1, Math.round(interval * t.interval))) : "—";
         const effectiveIdle = Number.isFinite(idle)
           ? fmtDuration(Math.max(0, Math.round(idle * t.idle))) : "—";
         return `<button type="button" role="radio" aria-checked="${on}" data-tier="${t.key}"
           class="ct-tier${on ? " is-on" : ""}${dirty("proactive_intensity_preset") ? " is-dirty" : ""}"
-          title="间隔 ×${t.interval}　等候 ×${t.idle}">
+          title="${off ? "关闭自动联系" : `间隔 ×${t.interval}　等候 ×${t.idle}`}">
           <span class="ct-tier-bar" style="--fill:${(1 - t.interval) * 100}%"></span>
           <span class="ct-tier-label">${e(t.label)}</span>
-          <span class="ct-tier-meta">间隔 ×${t.interval}</span>
-          <span class="ct-tier-effective">约 ${e(effectiveInterval)} · 等候 ${e(effectiveIdle)}</span>
+          ${off ? `<span class="ct-tier-meta">停发自动消息</span>` :
+            `<span class="ct-tier-meta">间隔 ×${t.interval}</span>
+             <span class="ct-tier-effective">约 ${e(effectiveInterval)} · 等候 ${e(effectiveIdle)}</span>`}
         </button>`;
       }).join("")}
     </div>`;
@@ -1551,14 +1563,15 @@ window.CompanionContactPage = (() => {
       synthetic ? "按角色身处该情境时会主动发出的消息生成正文；除边界或安全要求不适合外，选择 send。"
         : "根据本次真实来源生成自然、符合角色的消息；内容受实际来源支持，报告 QQ 真实投递回执。",
       `类型要求：${item.instruction}`,
-      ...(item.id === "reaction_image" ? ["本次确认的是一次性带图测试，按生产图库检索与 QQ 图片投递链验证；不改变日常图片概率或频率配置。"] : []),
+      ...(item.id === "reaction_image" ? ["本次验证授权图库检索和表情包投递。"] : []),
+      ...(item.id === "generated_image" ? ["本次调用文生图模型创作一张新图，计入生图额度。"] : []),
       "测试状态与合成标识只在管理端呈现；QQ 正文按正式效果表达，不加入测试、模拟、演练或链路说明。",
       "保持当前角色口吻和称呼，由角色先带来内容；可以自然提问或发出具体邀请，不催促回复。严格遵守通用 JSON 合同，并给出 decision_confidence。",
       `通过条件：${item.expect}`,
     ].join("\n");
   }
   const SYNTHETIC_SOURCE_TESTS = new Set(["news", "environment", "screen"]);
-  const NON_SYNTHETIC_TESTS = new Set(["mobile_location", "reaction_image"]);
+  const NON_SYNTHETIC_TESTS = new Set(["mobile_location", "reaction_image", "generated_image"]);
   const TEST_ENVIRONMENT_SOURCES = {weather:"当前真实天气", weather_change:"真实天气变化",
     official_alert:"当前官方预警", service_balance:"真实服务余额", external_news:"当前真实资讯"};
   function testUsesSynthetic(id) {
@@ -1616,7 +1629,7 @@ window.CompanionContactPage = (() => {
           <span><i class="is-partial"></i>只有资格检查 <strong>${counts.partial}</strong></span>
           <span><i class="is-missing"></i>尚无独立生产器 <strong>${counts.missing}</strong></span>
         </div>
-        <p class="ct-test-boundary">资讯、天气、屏幕和手机地点读取真实来源；屏幕会实际截图并调用视觉模型，手机地点读取终端授权快照。带图测试使用授权图库素材。测试调用角色模型；实际投递由上方收件人及关联转发开关决定。</p>
+        <p class="ct-test-boundary">带图测试调用文生图模型。带表情包测试从授权图库选图。实际投递由上方收件人及关联转发开关决定。</p>
       </div>
       ${data.testUncertain ? `<div class="ct-test-lock" role="alert">
         <span>${data.testGuard?.state === "pending" ? "上次测试没有收到最终回执。" : "上次测试结果未确认。"}请先核对核心管理员私聊及本次允许转发的关联账号；确认前不能再次启动测试，以免重复投递。</span>
@@ -1645,14 +1658,14 @@ window.CompanionContactPage = (() => {
       </div>
       <div class="ct-tests-grid">${cards}</div>
       <p class="ct-test-empty" hidden>没有匹配的消息类型</p>
-      ${testConfirmationMarkup()}
+      ${useLiveDom() ? "" : testConfirmationMarkup()}
     </div>`;
   }
   const TEST_STAGE_LABELS = {
     request:"诊断请求", authorization:"管理员身份", binding:"管理员私聊绑定", runtime:"运行环境",
     settings:"主动联系设置", purpose:"联系目的", trusted_candidate:"联系机会/来源", contact_admission:"主动联系准入",
     news_fetch:"真实资讯抓取", weather_fetch:"真实天气获取", screen_capture:"本次真实截图", screen_interpretation:"本次视觉分析",
-    mobile_location_fetch:"手机地点读取", image_attachment:"主动图片素材与投递",
+    mobile_location_fetch:"手机地点读取", image_attachment:"表情包检索与校验", image_generation:"文生图",
     attempt_budget:"主动模型调用次数上限",
     delivery_budget:"本窗口今日实际联系额度",
     model_route:"主动联系模型路由", model_generation:"模型生成", persona_review:"人格复核",
@@ -1808,10 +1821,9 @@ window.CompanionContactPage = (() => {
       ${technical}
     </section>`;
   }
-  function testConfirmationMarkup() {
+  function testConfirmationBodyMarkup() {
     if (!data.confirmTest) return "";
-    if (data.confirmTest === TEST_GUARD_RESET) return `<dialog class="ct-test-dialog" data-test-confirm-dialog aria-labelledby="ct-test-confirm-title">
-      <div class="ct-test-dialog-body">
+    if (data.confirmTest === TEST_GUARD_RESET) return `<div class="ct-test-dialog-body">
         <p class="ct-test-dialog-kicker">上一轮结果未确认</p>
         <h2 id="ct-test-confirm-title">解除主动测试锁？</h2>
         <p>请先核对核心管理员私聊，并确认上一轮测试已经结束。解除后可以重新发起测试，仍可能产生另一条真实消息。</p>
@@ -1819,29 +1831,32 @@ window.CompanionContactPage = (() => {
           <button type="button" class="ct-btn" data-test-action="cancel">继续等待</button>
           <button type="button" class="ct-btn is-primary" data-test-action="confirm-unlock">我已核实，解除锁定</button>
         </div>
-      </div>
-    </dialog>`;
+      </div>`;
     const item = TEST_INSTRUCTIONS.find(candidate => candidate.id === data.confirmTest);
     if (!item) return "";
     const synthetic = testUsesSynthetic(item.id);
+    const generated = item.id === "generated_image";
     const realAction = item.id === "mobile_location" ? "读取手机陪伴终端当前经授权且未过期的真实地点快照；不伪造坐标，也不改变生产去重标记"
-      : item.id === "reaction_image" ? "从当前私聊授权图库检索一张表情原图，执行素材校验并真实投递图片；不修改生产图片频率"
+      : item.id === "reaction_image" ? "从当前私聊授权图库检索一张表情包原图并校验素材"
       : item.id === "screen" ? "调用当前已授权的窥屏设备取得一张新截图，并调用视觉模型分析该截图"
       : item.id === "news" || data.testVariants?.environment === "external_news" ? "即时抓取当前配置的真实资讯源，使用带日期和原链接的有效条目"
       : item.id === "environment" && (data.testVariants?.environment || "weather") === "weather" ? "即时获取已配置角色所在地的真实天气观测"
       : "读取所选环境来源的当前真实事件";
-    return `<dialog class="ct-test-dialog" data-test-confirm-dialog aria-labelledby="ct-test-confirm-title">
-      <div class="ct-test-dialog-body">
-        <p class="ct-test-dialog-kicker">${synthetic ? "合成事件" : "真实来源"} · 真实投递</p>
+    return `<div class="ct-test-dialog-body">
+        <p class="ct-test-dialog-kicker">${generated ? "文生图" : synthetic ? "合成事件" : "真实来源"} · 真实投递</p>
         <h2 id="ct-test-confirm-title">运行「${e(item.label)}」测试？</h2>
-        <p>${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。来源获取失败会显示失败阶段。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递${data.testAllowLinkedAccounts ? `，以 ${e(recipientLabel())} 为起点按关联账号策略选择目标，可能转发到关联账号` : `到所选核心管理员私聊：${e(recipientLabel())}`}。消息正文按正式效果呈现，测试标识只保留在本页。</p>
-        <p class="ct-test-dialog-warning">测试不占日常联系额度。带图测试可能记录素材实际已投递；若结果未知，请核对所选管理员及本次允许转发的关联账号，不要重新运行。</p>
+        <p>${generated ? "调用角色配置的消息模型，通过复核后生成一张日常静物图，并真实投递"
+          : `${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递`}${data.testAllowLinkedAccounts ? `，以 ${e(recipientLabel())} 为起点按关联账号策略选择目标，可能转发到关联账号` : `到所选核心管理员私聊：${e(recipientLabel())}`}。</p>
+        <p class="ct-test-dialog-warning">${generated ? "本次生成计入生图额度。" : "测试不占日常联系额度。"}结果未确认时，请先核对实际收件人。</p>
         <div class="ct-test-dialog-actions">
           <button type="button" class="ct-btn" data-test-action="cancel">取消</button>
           <button type="button" class="ct-btn is-primary" data-test-action="confirm">确认并运行</button>
         </div>
-      </div>
-    </dialog>`;
+      </div>`;
+  }
+  function testConfirmationMarkup() {
+    const bodyMarkup = testConfirmationBodyMarkup();
+    return bodyMarkup ? `<dialog class="ct-test-dialog" data-test-confirm-dialog aria-labelledby="ct-test-confirm-title">${bodyMarkup}</dialog>` : "";
   }
   function testMatches(id) {
     const item = TEST_INSTRUCTIONS.find(candidate => candidate.id === id);
@@ -1875,6 +1890,11 @@ window.CompanionContactPage = (() => {
       .some(until => typeof until === "string" && Date.parse(until) > Date.now())) return "paused";
     return "available";
   }
+  function sliderRatio(val, min, max) {
+    const numeric = Number(val), lo = Number(min), hi = Number(max);
+    if (!Number.isFinite(numeric) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return 0;
+    return Math.max(0, Math.min(1, (numeric - lo) / (hi - lo)));
+  }
   function purposeRow(name, label) {
     const enabled = value(name + ".enabled") !== false;
     const weight = Number(value(name + ".weight"));
@@ -1882,7 +1902,8 @@ window.CompanionContactPage = (() => {
     const pauseUntil = [value(name + ".pause_until"), value("pause_until")]
       .filter(until => typeof until === "string" && Date.parse(until) > Date.now())
       .sort((a, b) => Date.parse(b) - Date.parse(a))[0];
-    const scale = Math.max(0, Math.min(5, Number.isFinite(weight) ? weight : 1));
+    const weightVal = Math.max(0.1, Math.min(5, Number.isFinite(weight) ? weight : 1));
+    const ratio = sliderRatio(weightVal, 0.1, 5).toFixed(6);
     return `<article class="ct-purpose${enabled ? " is-on" : ""}"
       data-purpose="${e(name)}">
       <label class="ct-check">
@@ -1890,9 +1911,11 @@ window.CompanionContactPage = (() => {
         <span class="ct-check-box">${ICON.check}</span>
         <span class="ct-purpose-name">${e(label)}</span></label>
       <div class="ct-weight" title="相对权重 ${Number.isFinite(weight) ? weight.toFixed(2) : "—"}">
-        <input type="range" min="0.1" max="5" step="0.1" data-field="${e(name)}.weight"
-          value="${Number.isFinite(weight) ? weight : 1}" aria-label="${e(label)} 相对权重">
-        <span class="ct-weight-fill" style="--w:${(scale / 5) * 100}%"></span>
+        <span class="ct-weight-track">
+          <input type="range" min="0.1" max="5" step="0.1" data-field="${e(name)}.weight"
+            value="${weightVal}" style="--p:${ratio}" aria-label="${e(label)} 相对权重">
+          <span class="ct-weight-fill" style="--p:${ratio}"></span>
+        </span>
         <em>${Number.isFinite(weight) ? weight.toFixed(1) : "—"}</em>
       </div>
       <div class="ct-purpose-state">
@@ -1968,7 +1991,7 @@ window.CompanionContactPage = (() => {
     ];
     const blocked = gates.filter(g => !g.ok).length;
     const paused = Date.parse(pauseUntil) > Date.now();
-    return `<div class="ct-gates">
+    return `<div class="ct-gates${data.gatesEnteringNow ? " is-entering" : ""}">
       <p class="ct-gates-sum${paused || value("enabled") === false ? " is-shut" : blocked ? " is-shut" : " is-open"}">${paused ? "全局暂停生效中" : value("enabled") === false ? "全局主动联系默认关闭" : "全局默认配置已读取"}</p>
       ${gates.map((g, i) => `<article class="ct-gate${g.ok ? " is-ok" : " is-shut"}" style="--i:${i}">
         <span class="ct-gate-mark">${g.ok ? ICON.check : ICON.alert}</span>
@@ -2021,10 +2044,10 @@ window.CompanionContactPage = (() => {
     const burstOn = value("enable_proactive_burst") === true;
     const quota = [["max_contacts_24h", "本窗口每日最多实际联系", "条", 100]];
     const dedupSliders = [
-      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440, !dedupOn],
-      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440, !lastMsgOn],
-      ["dedup_min_shared_tokens", "最少共有词数", 4, !dedupOn],
-      ["dedup_min_overlap_ratio", "最低重合比例", 1, !dedupOn],
+      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440, 30, !dedupOn],
+      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440, 30, !lastMsgOn],
+      ["dedup_min_shared_tokens", "最少共有词数", 4, 1, !dedupOn],
+      ["dedup_min_overlap_ratio", "最低重合比例", 1, 0.05, !dedupOn],
     ];
     return `<div class="ct-budgets">
       <section class="ct-block"><h3>每日额度</h3>
@@ -2032,11 +2055,12 @@ window.CompanionContactPage = (() => {
         <div class="ct-budget-quota-list">
         ${quota.map(([name, label, unit, max]) => {
           const current = num(name);
+          const ratio = sliderRatio(current ?? 0, 0, max).toFixed(6);
           return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}">
             <div class="ct-quota-head"><strong>${e(label)}</strong>
               <span class="ct-quota-value"><b>${current === null ? "—" : current}</b><i>${e(unit)}</i></span></div>
             <input type="range" min="0" max="${max}" step="1" data-field="${e(name)}"
-              value="${current ?? 0}" aria-label="${e(label)}">
+              value="${current ?? 0}" style="--p:${ratio}" aria-label="${e(label)}">
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div>
           </div>`;
         }).join("")}
@@ -2048,13 +2072,15 @@ window.CompanionContactPage = (() => {
           ${toggle("dedup_last_message_enabled", "与上一条原文比对", "避免连续两次说出几乎相同的话。", {muted: !dedupOn})}
         </div>
         <div class="ct-budget-sliders${dedupOn ? "" : " is-branch-off"}">
-        ${dedupSliders.map(([name, label, max, muted]) => {
+        ${dedupSliders.map(([name, label, max, step, muted]) => {
           const current = num(name);
+          const ratio = sliderRatio(current ?? 0, 0, max).toFixed(6);
+          const formatted = current === null ? "—" : step < 1 ? current.toFixed(2) : String(current);
           return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}${muted ? " is-muted" : ""}">
             <div class="ct-quota-head"><strong>${e(label)}</strong>
-              <span class="ct-quota-value"><b>${current === null ? "—" : current}</b></span></div>
-            <input type="range" min="0" max="${max}" step="${max <= 4 ? 1 : max <= 100 ? 5 : 30}"
-              data-field="${e(name)}" value="${current ?? 0}" aria-label="${e(label)}">
+              <span class="ct-quota-value"><b>${e(formatted)}</b></span></div>
+            <input type="range" min="0" max="${max}" step="${step}"
+              data-field="${e(name)}" value="${current ?? 0}" style="--p:${ratio}" aria-label="${e(label)}">
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div></div>`;
         }).join("")}
         </div>
@@ -2153,7 +2179,7 @@ window.CompanionContactPage = (() => {
           ]},
       ]},
       {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", sections:[
-        {master:srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。", {master:true}),
+        {master:srcToggle("web_exploration_enabled", "网络探索", "独立使用搜索源运行，可与 RSS / B 站 / 热榜等资讯来源同时开启；生日等惊喜目标只记笔记，不会直接说破。", {master:true}),
           active:webExploreOn, fields:[
             srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。", {stacked:true, span:true}),
             srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
@@ -2493,6 +2519,39 @@ window.CompanionContactPage = (() => {
     if (next === "tests") void loadRecipients();
   }
   let testDialogCloseTimer = null;
+  let ctMainSlot = null, ctTestDialogHost = null, lastRenderedGatesReady = false, lastRenderedTestDialogHtml = "";
+  function useLiveDom() {
+    return Boolean(
+      root
+      && typeof document !== "undefined"
+      && typeof document.createElement === "function"
+      && typeof root.appendChild === "function"
+    );
+  }
+  function ensureContactSlots() {
+    if (!useLiveDom()) return false;
+    if (!ctMainSlot || ctMainSlot.parentNode !== root) {
+      root.innerHTML = "";
+      ctMainSlot = document.createElement("div");
+      ctMainSlot.className = "ct-main-slot";
+      root.appendChild(ctMainSlot);
+    }
+    if (!ctTestDialogHost || ctTestDialogHost.parentNode !== root) {
+      ctTestDialogHost = document.createElement("dialog");
+      ctTestDialogHost.className = "ct-test-dialog";
+      ctTestDialogHost.setAttribute("data-test-confirm-dialog", "");
+      ctTestDialogHost.setAttribute("aria-labelledby", "ct-test-confirm-title");
+      ctTestDialogHost.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+      ctTestDialogHost.addEventListener("click", event => {
+        if (event.target !== ctTestDialogHost) return;
+        const box = ctTestDialogHost.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+      });
+      lastRenderedTestDialogHtml = "";
+      root.appendChild(ctTestDialogHost);
+    }
+    return true;
+  }
   function canAnimateTestDialog(dialog) {
     return Boolean(
       dialog
@@ -2515,7 +2574,7 @@ window.CompanionContactPage = (() => {
       if (typeof afterClose === "function") afterClose();
       render();
     };
-    const dialog = root?.querySelector?.("[data-test-confirm-dialog]");
+    const dialog = ctTestDialogHost || root?.querySelector?.("[data-test-confirm-dialog]");
     if (dialog && typeof dialog.close === "function" && dialog.open) {
       dialog.close();
       if (canAnimateTestDialog(dialog)) {
@@ -2536,10 +2595,16 @@ window.CompanionContactPage = (() => {
     /* 换页方向同样在这一帧消费掉：下一次渲染（比如改一个开关）不该重放
        入场动画，否则每动一下整屏都要再滑一次。 */
     data.viewShiftNow = data.viewShift; data.viewShift = null;
+    const gatesReadyNow = data.view === "gates" && settingsAvailable();
+    data.gatesEnteringNow = gatesReadyNow && (!lastRenderedGatesReady || Boolean(data.viewShiftNow));
+    lastRenderedGatesReady = gatesReadyNow;
     const shift = data.viewShiftNow;
     const enter = shift ? (shift > 0 ? " is-from-next" : " is-from-prev") : "";
-    root.innerHTML = `<div class="ct-app">${railMarkup()}<div class="ct-main">`
+    const liveDom = ensureContactSlots();
+    const appMarkup = `<div class="ct-app">${railMarkup()}<div class="ct-main">`
       + `<div class="ct-view${enter}">${headMarkup()}${noticeMarkup()}${body()}</div></div></div>`;
+    if (liveDom) ctMainSlot.innerHTML = appMarkup;
+    else root.innerHTML = appMarkup;
     if (data.pendingWrite) for (const field of root.querySelectorAll("[data-field]")) field.disabled = true;
     const gateSettingsArea = document.getElementById("contact-gate-settings-area");
     if (gateSettingsArea) gateSettingsArea.hidden = data.view !== "gates";
@@ -2549,15 +2614,36 @@ window.CompanionContactPage = (() => {
     const screenObservationHost = root.querySelector?.("[data-screen-observation]");
     if (screenObservationHost) window.CompanionScreenObservation?.mount(screenObservationHost);
     else window.CompanionScreenObservation?.unmount();
-    const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
-    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
-      testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
-      testDialog.addEventListener("click", event => {
-        if (event.target !== testDialog) return;
-        const box = testDialog.getBoundingClientRect();
-        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
-      });
-      testDialog.showModal();
+    if (liveDom) {
+      const dialogBody = data.view === "tests" ? testConfirmationBodyMarkup() : "";
+      if (dialogBody && !testDialogCloseTimer) {
+        if (dialogBody !== lastRenderedTestDialogHtml) {
+          ctTestDialogHost.innerHTML = dialogBody;
+          lastRenderedTestDialogHtml = dialogBody;
+        }
+        if (typeof ctTestDialogHost.showModal === "function" && !ctTestDialogHost.open) {
+          ctTestDialogHost.showModal();
+        }
+      } else {
+        if (ctTestDialogHost.open && typeof ctTestDialogHost.close === "function") {
+          ctTestDialogHost.close();
+        }
+        if (!testDialogCloseTimer && lastRenderedTestDialogHtml) {
+          ctTestDialogHost.innerHTML = "";
+          lastRenderedTestDialogHtml = "";
+        }
+      }
+    } else {
+      const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
+      if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
+        testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+        testDialog.addEventListener("click", event => {
+          if (event.target !== testDialog) return;
+          const box = testDialog.getBoundingClientRect();
+          if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+        });
+        testDialog.showModal();
+      }
     }
     if (data.scanning && data.ready) {
       data.scanning = false;
@@ -2923,16 +3009,30 @@ window.CompanionContactPage = (() => {
        整页重画会把手上的滑块弄丢，拖到一半就断了。 */
     const range = field.type === "range" ? field : null;
     if (range) {
-      const fill = range.parentElement?.querySelector(".ct-weight-fill");
-      if (fill) fill.style.setProperty("--w", (Number(range.value) / 5) * 100 + "%");
-      const em = range.parentElement?.querySelector("em");
+      const isWeight = String(range.dataset?.field || "").endsWith(".weight");
+      const min = range.min !== "" && range.min !== undefined && Number.isFinite(Number(range.min))
+        ? Number(range.min) : (isWeight ? 0.1 : 0);
+      const max = range.max !== "" && range.max !== undefined && Number.isFinite(Number(range.max))
+        ? Number(range.max) : (isWeight ? 5 : 100);
+      const ratio = sliderRatio(range.value, min, max).toFixed(6);
+      range.style?.setProperty?.("--p", ratio);
+      const weightBox = range.closest?.(".ct-weight");
+      const fill = range.parentElement?.querySelector?.(".ct-weight-fill")
+        || weightBox?.querySelector?.(".ct-weight-fill");
+      if (fill) fill.style.setProperty("--p", ratio);
+      if (weightBox && Number.isFinite(Number(range.value))) {
+        weightBox.title = "相对权重 " + Number(range.value).toFixed(2);
+      }
+      const em = weightBox?.querySelector?.("em") || range.parentElement?.querySelector?.("em");
       /* 权重是小数（0.1 步进），额度是整数（整步进）——判据是**步长**，不是 max。
          曾经写成 `range.max === "5"`：max 是字符串，恒不等于数字 5，
          于是权重永远被显示成整数，3.5 变成 4（草稿里存的是 3.5，界面却写 4）。 */
-      if (em) em.textContent = Number(range.step) < 1 ? Number(range.value).toFixed(1) : String(range.value);
-      const quota = range.closest(".ct-quota");
-      const shown = quota?.querySelector(".ct-quota-value b");
-      if (shown) shown.textContent = String(range.value);
+      const stepNum = Number(range.step);
+      const isFractional = Number.isFinite(stepNum) && stepNum > 0 && stepNum < 1;
+      if (em) em.textContent = isFractional ? Number(range.value).toFixed(1) : String(range.value);
+      const quota = range.closest?.(".ct-quota");
+      const shown = quota?.querySelector?.(".ct-quota-value b");
+      if (shown) shown.textContent = isFractional ? Number(range.value).toFixed(2) : String(range.value);
       return;
     }
     render();
@@ -2992,12 +3092,15 @@ window.CompanionContactPage = (() => {
     notice(synthetic ? "正在生成合成事件并等待模型与目标账号投递回执…" : "正在获取真实来源、运行分析与消息模型，并等待目标账号投递回执…");
     render();
     try {
-      const purpose = id === "mobile_location" ? "environment" : id === "reaction_image" ? "chat" : id;
+      const purpose = id === "mobile_location" ? "environment"
+        : id === "reaction_image" || id === "generated_image" ? "chat" : id;
       const result = await api("POST", "setup/proactive-diagnostic",
         {purpose, confirm_delivery: true, synthetic_event: synthetic, target_id:targetId, allow_linked_accounts:allowLinkedAccounts,
           ...(id === "environment" ? {variant:data.testVariants?.environment || "weather"} : {}),
           ...(id === "mobile_location" ? {variant:"mobile_location"} : {}),
-          ...(id === "reaction_image" ? {diagnostic_image:true} : {})}, id === "screen" && !synthetic ? 300000 : 180000);
+          ...(id === "reaction_image" ? {diagnostic_image:true} : {}),
+          ...(id === "generated_image" ? {diagnostic_generated_image:true} : {})},
+        id === "screen" && !synthetic || id === "generated_image" ? 300000 : 180000);
       if (!live(ticket)) return;
       if (!["passed", "skipped", "failed", "unknown", "pending"].includes(result.state)) {
         throw problem("invalid_response");
@@ -3168,6 +3271,11 @@ window.CompanionContactPage = (() => {
     pendingFocus = null;
     clearTimeout(testDialogCloseTimer);
     testDialogCloseTimer = null;
+    if (ctTestDialogHost?.open && typeof ctTestDialogHost.close === "function") ctTestDialogHost.close();
+    ctMainSlot = null;
+    ctTestDialogHost = null;
+    lastRenderedGatesReady = false;
+    lastRenderedTestDialogHtml = "";
     if (autoRecoveryTimer !== null) clearTimeout(autoRecoveryTimer);
     autoRecoveryTimer = null;
     autoRecoveryKey = "";

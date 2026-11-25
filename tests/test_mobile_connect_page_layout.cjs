@@ -216,7 +216,7 @@ test("手机端连接与手机使用 CSS 布局契约：全通栏卡片零右半
   assert.doesNotMatch(panelCss, /rgba\s*\(/i);
 });
 
-test("手机使用页 syncStatus 为已启用状态胶囊切换 is-enabled 语义类", () => {
+test("手机使用页用编辑器的角色入口扫描，并显示 ADB 配置来源", async () => {
   const classes = new Set();
   const statusEl = {
     hidden: true,
@@ -228,22 +228,32 @@ test("手机使用页 syncStatus 为已启用状态胶囊切换 is-enabled 语�
       },
     },
   };
+  const listeners = new Map();
+  const statusNotice = {textContent: "", classList: {toggle() {}}};
+  const download = {hidden: true};
   const root = {
     isConnected: true,
     innerHTML: "",
-    addEventListener() {},
+    addEventListener(type, listener) { listeners.set(type, listener); },
     querySelector(sel) {
       if (sel === "[data-phone-enabled]") return statusEl;
+      if (sel === "[data-phone-notice]") return statusNotice;
+      if (sel === "[data-phone-download]") return download;
       return {hidden: true, textContent: "", classList: {toggle() {}}, replaceChildren() {}, append() {}};
     },
     querySelectorAll() { return []; },
   };
-  const window = {};
+  const requests = [];
+  const window = {CompanionProduct: {async request(method, path, body) {
+    requests.push({method, path, body});
+    return {adb_error: {code:"adb_not_found", adb_path:"E:/Android/平台工具/adb.exe",
+      source:"role", role_id:"role-t1"}};
+  }}};
   const sandbox = vm.createContext({window, document: {}, console});
   vm.runInContext(phoneSetupSource, sandbox);
   const setup = sandbox.window.CompanionPhoneSetup.mount(root, {
-    configApi: "/astrbot_plugin_private_companion/targets/t1/roles/r1/config",
-    editor: {state: {instances: [{state: {status: {settings: {enabled: false}}}}]}},
+    editor: {endpoint: "/astrbot_plugin_private_companion/targets/t1/roles/r1/config",
+      state: {instances: [{state: {status: {settings: {enabled: false}}}}]}},
   });
   assert.equal(statusEl.textContent, "未启用");
   assert.equal(classes.has("is-enabled"), false);
@@ -251,4 +261,12 @@ test("手机使用页 syncStatus 为已启用状态胶囊切换 is-enabled 语�
   setup.syncStatus({settings: {enabled: true}});
   assert.equal(statusEl.textContent, "已启用");
   assert.equal(classes.has("is-enabled"), true);
+
+  const scan = {dataset:{}, hasAttribute:name => name === "data-phone-scan"};
+  listeners.get("click")({target:{closest: () => scan}});
+  await settle();
+  assert.equal(requests[0].path, "targets/t1/roles/r1/config/phone-connection");
+  assert.equal(requests[0].body.include_diagnostics, true);
+  assert.match(statusNotice.textContent, /E:\/Android\/平台工具\/adb\.exe.*角色层.*role-t1/);
+  assert.equal(download.hidden, false);
 });

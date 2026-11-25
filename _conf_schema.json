@@ -9,6 +9,27 @@
         "hint": "适合低配置设备或远程访问卡顿的环境。保存后请重载插件；性能模式下如需修改高级设置，请先关闭本项并重载。",
         "type": "bool",
         "default": false
+      },
+      "profile": {
+        "description": "性能调优档位",
+        "hint": "自动推荐（auto）会根据本机可用内存与 CPU 核心数自动匹配；也可手动选省内存轻量化（eco）、平衡推荐（balanced）、高性能流畅（turbo）或兼容稳妥（compat）。请在「陪伴小屋 → 资料与维护 → 性能调优」中管理。",
+        "type": "string",
+        "options": [
+          "auto",
+          "eco",
+          "balanced",
+          "turbo",
+          "compat"
+        ],
+        "default": "auto",
+        "invisible": true
+      },
+      "overrides": {
+        "description": "性能高级微调覆盖项",
+        "hint": "仅保存手动微调过的参数覆盖值，由陪伴小屋「资料与维护 → 性能调优」管理。",
+        "type": "dict",
+        "default": {},
+        "invisible": true
       }
     }
   },
@@ -1092,6 +1113,34 @@
       }
     }
   },
+  "private_debounce_semantic": {
+    "description": "私聊语义防抖",
+    "type": "object",
+    "items": {
+      "model_dir": {
+        "description": "本地 ONNX 模型目录",
+        "type": "string",
+        "default": "",
+        "hint": "填写绝对路径。目录需包含 model.onnx 和 tokenizer/tokenizer.json。"
+      },
+      "threshold": {
+        "description": "完整性阈值",
+        "type": "float",
+        "default": 0.8
+      },
+      "maximum_wait_ms": {
+        "description": "未说完时等待（毫秒）",
+        "type": "int",
+        "default": 15000,
+        "hint": "从最近一条消息起算，仍受私聊连续输入的单轮总上限限制。"
+      },
+      "inference_timeout_ms": {
+        "description": "推理超时（毫秒）",
+        "type": "int",
+        "default": 1500
+      }
+    }
+  },
   "legacy": {
     "description": "兼容｜从 V1 迁移数据",
     "hint": "首次从 V1 换到 V2 时用。V1 的数据留在原来的插件数据目录里，这里填它的绝对路径（例如 …/data/plugin_data/astrbot_plugin_private_companion）。留空则按 V2 数据目录的同级目录自动寻找 V1。迁移是只读 V1、单向写入 V2：过程中不会修改或删除 V1 的任何文件，所以可以先试算几遍再决定。实际执行在「陪伴小屋 → 开始使用」的最后一步完成。",
@@ -1104,5 +1153,36 @@
         "default": ""
       }
     }
+  },
+  "private_debounce_semantic": {
+    "description": "私聊语义防抖",
+    "type": "object",
+    "items": {
+      "model_dir": {
+        "description": "本地模型目录",
+        "type": "string",
+        "default": "",
+        "hint": "填写 AstrBot 进程可读取的绝对目录。目录下应直接包含 model.onnx 和 tokenizer/tokenizer.json。已有消息防抖插件模型可复用，手动下载方法见 README「配置本地 ONNX 语义防抖」。留空时使用计时防抖。"
+      },
+      "threshold": {
+        "description": "完整性阈值",
+        "hint": "范围为大于 0 至 1，分数低于阈值时继续等补话。",
+        "type": "float",
+        "default": 0.8
+      },
+      "maximum_wait_ms": {
+        "description": "未说完时等待毫秒",
+        "hint": "范围 10～120000，从最近一条消息起算。仍受陪伴小屋中的单轮总上限限制。",
+        "type": "int",
+        "default": 15000
+      },
+      "inference_timeout_ms": {
+        "description": "推理超时毫秒",
+        "hint": "范围 10～10000，推理超时后按原静默规则收口。",
+        "type": "int",
+        "default": 1500
+      }
+    },
+    "hint": "在 AstrBot 的 Python 环境安装 onnxruntime 和 tokenizers，填写模型目录并重载插件，再到陪伴小屋「私聊节奏 · 连续输入」开启本地模型判断。"
   }
 }

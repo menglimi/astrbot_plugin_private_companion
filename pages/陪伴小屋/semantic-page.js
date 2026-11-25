@@ -46,9 +46,7 @@ window.CompanionSemanticPage = (() => {
   const flags = [["enabled","启用语义目录"],["memory_enabled","语义记忆检索"],
     ["reactions_enabled","启用表情包表达"],["reactions_private_enabled","私聊使用表情包"],
     ["reactions_group_enabled","群聊使用表情包"],
-    /* 主动消息带图不是“概率”能单独控制的：模型先要提出 reaction_intent，
-       这一项决定那次请求是否允许真正附图。默认关闭，必须可从这里打开。 */
-    ["reactions_proactive_enabled","允许主动消息带图"],
+    ["reactions_proactive_enabled","允许主动消息带表情包"],
     ["reactions_collection_private_enabled","从私聊自动收录"],
     ["reactions_collection_group_enabled","从群聊自动收录"],
     ["slang_enabled","群聊黑话目录"],["slang_learning","黑话自动学习"],
@@ -57,9 +55,7 @@ window.CompanionSemanticPage = (() => {
   const semanticNumberFields = [["timeout_seconds","模型超时 / 秒",1,30],["batch_size","索引批次",1,64],
     ["learning_interval_seconds","群词义整理间隔 / 分钟",1,1440],
     ["slang_web_search_candidates","联网检索词数 / 个",1,12],["slang_web_search_results","每词参考条数",1,5]];
-  /* 这个概率只在模型已经要图之后生效，不是“每条主动/回复会带图的概率”。
-     旧标签“自动发送概率”会让 20% 看起来像整体带图率，和实际差一个模型决策。 */
-  const reactionNumberFields = [["reactions_trigger_probability","模型要图后的发送概率 / %",0,100,1],
+  const reactionNumberFields = [["reactions_trigger_probability","表情包触发概率 / %",0,100,1],
     ["reactions_cooldown_seconds","发送间隔 / 秒",0,3600,1],
     ["reactions_collection_private_probability","私聊收录概率 / %",0,100,1],
     ["reactions_collection_group_probability","群聊收录概率 / %",0,100,1]];
@@ -274,7 +270,7 @@ window.CompanionSemanticPage = (() => {
     const heading=view==="expression"?"表情配图":group?"群词义与语义设置":"语义理解与学习素材";
     let html='<div class="settings-heading"><div><h2>'+heading+'</h2></div><div class="refresh-cluster"><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span>'+(refreshedAt?'<span class="refresh-stamp" role="status">刚刚已刷新 '+escape(refreshedAt)+'</span>':'')+'<button type="button" class="lh-refresh'+(refreshing?' is-refreshing':'')+'" data-semantic="refresh" aria-label="重新读取" title="重新读取" aria-busy="'+(refreshing?'true':'false')+'" '+(busy?'disabled':'')+'><i data-lucide="refresh-cw"></i></button></div></div>';
     if(message)html+='<p class="semantic-feedback'+(conflict?" semantic-conflict":"")+'" role="status">'+escape(message)+'</p>';
-    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情使用与自动收录":"语义模型与学习")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("表情使用、自动收录与检索策略由所有账号与角色共用。\n表情先由角色模型决定要不要用；这里的概率只在模型已经要图之后生效，不是每条回复/主动消息的带图率。主动消息还要开启「允许主动消息带图」。", "查看表情设置范围与使用说明"):"")+'</h3></div><form id="semanticSettings">';
+    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情使用与自动收录":"语义模型与学习")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("表情包使用、自动收录与检索策略由所有账号与角色共用。\n主动联系使用表情包需开启「允许主动消息带表情包」。", "查看表情设置范围与使用说明"):"")+'</h3></div><form id="semanticSettings">';
     html+='<div class="semantic-flags">'+currentViewFlags.map(([id,label])=>toggle(id,label,shown[id])).join("")+'</div>';
     const currentViewSelects=visibleSelects();
     if(currentViewProviders.length||currentViewNumbers.length||currentViewSelects.length)html+='<div class="semantic-providers">';

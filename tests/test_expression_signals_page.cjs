@@ -157,7 +157,7 @@ test("空页的 unavailable_reason 作为中性说明而不是读取失败", asy
       replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
   ]});
   for (let index = 0; index < 40 && page.state.busy; index++) await flush();
-  assert.equal(page.state.notice, "1 个来源还没有可读取的表达学习记录，已显示其他来源。");
+  assert.equal(page.state.notice, "「群聊来源」还没有可读取的表达学习记录，已显示其他来源。");
   assert.match(root.innerHTML, /私聊规则/);
   assert.match(root.innerHTML, /群聊来源/);
   assert.match(root.innerHTML, /这个来源还没有绑定角色/);
@@ -794,4 +794,117 @@ test("多来源重复列出的轮换规则按 signal_id 只计一次", async () 
   assert.match(root.innerHTML, /记录来源 · 来源乙/,
     "filtering to one source keeps that source's own copy");
   page.unmount();
+});
+
+test("类型筛选展示服务端全量计数、已加载分页进度、多来源合计容量说明并按类型重查服务端", async () => {
+  const gets = [];
+  const bridge = {
+    apiGet: async (route, query) => {
+      gets.push({route, query: {...query}});
+      const isA = route.includes("profile-a");
+      const allItems = isA
+        ? [SIGNAL_RULE("a-1", {expression: {kind: "style", situation: "日常", pattern: "说法A1", avoid: ""}}),
+           SIGNAL_RULE("a-2", {expression: {kind: "grammar", situation: "日常", pattern: "句式A2", avoid: ""}})]
+        : [SIGNAL_RULE("b-1", {expression: {kind: "style", situation: "群聊", pattern: "说法B1", avoid: ""}})];
+      const filtered = query?.kind ? allItems.filter(item => item.expression.kind === query.kind) : allItems;
+      return {status: "ok", data: {
+        items: filtered,
+        next_cursor: isA ? "2026-10-08T10:00:00+00:00|a-2" : null,
+        capacity: {active: isA ? 10 : 5, limit: 60},
+        counts: {adopted: isA ? 120 : 40, pending: 0, retired: 2, rejected: 3},
+        kind_counts: isA ? {style: 70, grammar: 50} : {style: 25, grammar: 15},
+        total_count: isA ? 120 : 40,
+      }};
+    },
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const {root, page, listeners} = rotatedMountPage(bridge);
+  await rotatedSettle(page, root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "私聊来源",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "群聊来源",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+  ]});
+
+  assert.match(root.innerHTML, /待审与启用 15 \/ 120（2 个来源合计上限）/);
+  assert.match(root.innerHTML, /全部<span>160<\/span>/);
+  assert.match(root.innerHTML, /情境表达<span>95<\/span>/);
+  assert.match(root.innerHTML, /语法句式<span>65<\/span>/);
+  assert.match(root.innerHTML, /当前已加载 3 \/ 160 条/);
+  assert.match(root.innerHTML, /加载更多（剩余 157 条）/);
+
+  gets.length = 0;
+  listeners.get("click")({target: {closest: selector =>
+    selector === "[data-signal-kind]" ? {dataset: {signalKind: "grammar"}} : null}});
+  for (let index = 0; index < 40 && (page.state.busy || !gets.length); index++) await flush();
+  assert.ok(gets.length >= 2);
+  assert.ok(gets.every(call => call.query.kind === "grammar"));
+  assert.match(root.innerHTML, /当前已加载 1 \/ 65 条/);
+  page.unmount();
+});
+
+test("重复条目排查与安全合并支持预览与确认合并并刷新规则库", async () => {
+  const posts = [];
+  let merged = false;
+  const bridge = {
+    apiGet: async () => ({status: "ok", data: {
+      items: [SIGNAL_RULE("sig-keep", {injections: merged ? 5 : 3})],
+      next_cursor: null,
+      capacity: {active: merged ? 1 : 2, limit: 60},
+      counts: {adopted: merged ? 1 : 2, pending: 0, retired: 0, rejected: 0},
+      kind_counts: {style: merged ? 1 : 2, grammar: 0},
+    }}),
+    apiPost: async (route, body) => {
+      posts.push({route, body});
+      if (route.endsWith("/style/dedupe") && body.dry_run === true) {
+        return {status: "ok", data: {
+          dry_run: true, group_count: 1, duplicate_count: 1, merged_count: 0,
+          by_state: {adopted: 1, pending: 0, retired: 0, rejected: 0},
+          groups: [{
+            state: "adopted", kind: "style",
+            survivor: {signal_id: "sig-keep", pattern: "懂的都懂", injections: 3},
+            duplicates: [{signal_id: "sig-dup", pattern: "懂的都懂！", injections: 2, action: "retire_and_merge"}],
+          }],
+        }};
+      }
+      if (route.endsWith("/style/dedupe") && body.dry_run === false) {
+        merged = true;
+        return {status: "ok", data: {
+          dry_run: false, replayed: false, group_count: 1, duplicate_count: 1, merged_count: 1,
+          by_state: {adopted: 1, pending: 0, retired: 0, rejected: 0}, groups: [],
+        }};
+      }
+      return {status: "ok", data: {}};
+    },
+  };
+  const {root, page, listeners} = rotatedMountPage(bridge);
+  await rotatedSettle(page, root, {sources: rotatedSingleSource});
+
+  const click = selector => listeners.get("click")({target: {closest: value => value === selector ? {} : null}});
+  click("[data-dedupe-toggle]");
+  for (let index = 0; index < 40 && !root.innerHTML.includes("发现 1 组 · 1 条重复规则"); index++) await flush();
+  assert.ok(posts.some(call => call.route.endsWith("/style/dedupe") && call.body.dry_run === true));
+  assert.match(root.innerHTML, /不会物理删除数据库记录/);
+  assert.match(root.innerHTML, /懂的都懂/);
+  assert.match(root.innerHTML, /确认合并 1 条重复/);
+
+  click("[data-dedupe-apply]");
+  for (let index = 0; index < 40 && !root.innerHTML.includes("已安全合并并归档 1 条重复规则"); index++) await flush();
+  const applyCall = posts.find(call => call.route.endsWith("/style/dedupe") && call.body.dry_run === false);
+  assert.ok(applyCall && typeof applyCall.body.operation_key === "string" && applyCall.body.operation_key.length > 0);
+  assert.match(root.innerHTML, /已启用<span>1<\/span>/);
+  assert.match(root.innerHTML, /5 次注入/);
+  page.unmount();
+});
+
+test("窄屏移动端表达规则库顶栏与查重面板顶栏允许自然折行不挤压标题", () => {
+  const css = fs.readFileSync(path.join(__dirname, "..", "pages", "陪伴小屋", "learning-hub.css"), "utf8");
+  const headRule = css.match(/\.lh-signal-head\{[^}]*\}/);
+  const headTitleGroupRule = css.match(/\.lh-signal-head>div\{[^}]*\}/);
+  const dedupeHeadRule = css.match(/\.lh-expression-dedupe-head\{[^}]*\}/);
+  const capacityRule = css.match(/\.lh-signal-capacity\{[^}]*\}/);
+  assert.ok(headRule && /flex-wrap:\s*wrap/.test(headRule[0]) && /gap:\s*var\(--sp-2\)/.test(headRule[0]));
+  assert.ok(headTitleGroupRule && /flex-wrap:\s*wrap/.test(headTitleGroupRule[0]));
+  assert.ok(dedupeHeadRule && /flex-wrap:\s*wrap/.test(dedupeHeadRule[0]) && /gap:\s*var\(--sp-2\)/.test(dedupeHeadRule[0]));
+  assert.ok(capacityRule && !/white-space:\s*nowrap/.test(capacityRule[0]));
 });

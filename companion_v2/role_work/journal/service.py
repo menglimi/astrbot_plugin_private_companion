@@ -131,7 +131,10 @@ class RoleJournalService:
                 if cached_parsed is not None and cached_parsed[0] == row["revision"]:
                     entry = cached_parsed[1]
             if entry is None:
-                entry = codec.entry_from_row(row)
+                try:
+                    entry = codec.entry_from_row(row)
+                except (AttributeError, KeyError, TypeError, ValueError) as error:
+                    raise TaskError("journal_unavailable", "stored journal content could not be decoded") from error
                 if entry_cache is not None:
                     entry_cache[entry_key] = (row["revision"], entry)
             if scope is not None:

@@ -21,6 +21,7 @@ REASONS = {"mention": "明确 @ 机器人", "native_wakeup": "命中宿主唤醒
            "quoted_reply": "引用机器人发送记录中的群消息", "active_follow_up": "当前成员补充正在处理的任务",
            "native_quote": "宿主识别到引用机器人消息", "mention_all": "宿主配置允许 @ 全体唤醒",
            "reply_follow_up": "群成员可能接续机器人刚发出的回复", "direct_word": "命中配置的直接唤醒词或名称",
+           "wake_word_with_other_mention": "正文命中机器人唤醒词或名称，同时 @ 了他人",
            "image_interest": "已开启图片唤醒", "question": "命中群聊问题或求助策略",
            "context_word": "命中配置的群聊相关词", "interest": "命中配置的兴趣词",
            "repeat": "本群复读达到配置阈值", "interjection": "命中已开启的自主插话线索",
@@ -139,14 +140,17 @@ class GroupReplyAdmission:
             direct.append(wakeup["group_wakeup_bot_name"] or persona_name)
         if context.actor.principal.native_account_id in wakeup["group_wakeup_primary_member_ids"]:
             direct.extend(wakeup["group_wakeup_owner_direct_words"])
-        if (wakeup["group_wakeup_enabled"] and not mentions_others
-                and any(word and word.casefold() in compact.casefold() for word in direct)):
+        matches_direct = (wakeup["group_wakeup_enabled"]
+                          and any(word and word.casefold() in compact.casefold() for word in direct))
+        if matches_direct and not mentions_others:
             return "direct_word"
         continuation = continuation if continuation is not None else self.continuation_status(
             context, instruction, at, settings=settings, event_id=event_id)
         if continuation["limit_reached"]:
             return ""
         if mentions_others:
+            if matches_direct:
+                return "wake_word_with_other_mention"
             return "behavior" if self._behavior_candidate(context, compact, wakeup, participation) else ""
         if continuation["candidate_reason"]:
             return continuation["candidate_reason"]

@@ -122,6 +122,7 @@ window.CompanionSetup = (() => {
       <div class="setup-actions">
         ${button("complete-step", complete ? "重新确认完成" : skipped ? "改为已完成" : "已完成这部分", {primary: true})}
         ${button("skip-step", "暂时跳过")}
+        ${stepNavActions(step)}
       </div>
     </section>`;
   }
@@ -171,6 +172,9 @@ window.CompanionSetup = (() => {
       setup_progress_unavailable: "读取设置进度失败（已保留上次结果）；点「重新读取」再试一次，仍失败请查看 AstrBot 日志。",
       setup_model_invalid: "请选择当前已加载的文本模型后再试。",
       setup_model_apply_failed: "模型已通过校验，但保存或初始化没有完成。请查看 AstrBot 日志并重新读取状态。",
+      setup_model_required: "请先选择一个可用的插件通用模型。",
+      setup_binding_confirmation_required: "请先确认核心管理员私聊窗口。",
+      setup_finish_failed: "完成引导检查未通过，请核对上方缺项后重试。",
       model_route_unavailable: "当前小屋角色没有可编辑的模型路由，请切换到已关联私聊的人格。",
       model_route_scope_changed: "小屋角色已经切换，请重新读取当前角色的模型路由后再保存。",
       legacy_plan_stale: "配置在执行前已更新；重新执行会先重新试算再写入。",
@@ -211,8 +215,26 @@ window.CompanionSetup = (() => {
   let notice = "";
   let migrationProgress = "";
   let modelDraft = "";
+  let modelTouched = false;
   let fallbackModelDraft = "";
   let fallbackModelTouched = false;
+  let visionModelDraft = "";
+  let visionModelTouched = false;
+  let modelProbeState = null;
+  let modelProbeBusy = false;
+  let activeStep = "";
+  let wizardReopened = false;
+  let setupHealth = null;
+  let setupHealthBusy = false;
+  let setupTargets = null;
+  let setupTargetsLoaded = false;
+  let setupTargetsBusy = false;
+  let setupRoleEditorOpen = false;
+  let setupRoleBotKey = "";
+  let setupRoleName = "";
+  let setupRolePersonas = new Set();
+  let setupRoleBusy = false;
+  let setupRoleMessage = "";
   let pendingQuickBlock = "";
   let modelTasks = null;
   let modelTasksStatus = "idle";
@@ -545,14 +567,20 @@ window.CompanionSetup = (() => {
   function currentRoleModelRoute() {
     const productApi = product();
     const endpoint = productApi?.role?.()?.model_api;
-    if (typeof endpoint !== "string" || !endpoint) {
-      throw Object.assign(new Error("model_route_unavailable"), {code: "model_route_unavailable"});
+    if (typeof endpoint === "string" && endpoint) {
+      const path = productApi.relative(endpoint);
+      if (typeof path === "string" && path) {
+        return {path, configurePath: path + "/configure", scope: productApi.scopeKey?.() || endpoint};
+      }
     }
-    const path = productApi.relative(endpoint);
-    if (typeof path !== "string" || !path) {
-      throw Object.assign(new Error("model_route_unavailable"), {code: "model_route_unavailable"});
+    if (state?.prepared) {
+      return {
+        path: PREFIX + "/model-tasks",
+        configurePath: PREFIX + "/model-tasks/configure",
+        scope: "setup:" + (state?.binding?.participant_id || "current"),
+      };
     }
-    return {path, scope: productApi.scopeKey?.() || endpoint};
+    throw Object.assign(new Error("model_route_unavailable"), {code: "model_route_unavailable"});
   }
 
   function modelTaskPayload(response) {
@@ -657,8 +685,32 @@ window.CompanionSetup = (() => {
     return index < 0 ? 0 : index;
   }
 
+  function currentStep() {
+    if (activeStep && ORDER.includes(activeStep)) return activeStep;
+    const serverStep = state?.step;
+    if (serverStep && ORDER.includes(serverStep)) return serverStep;
+    return state?.binding_confirmed ? "model" : "binding";
+  }
+
+  function canJumpToStep(id) {
+    if (id === "binding") return true;
+    return Boolean(state?.binding_confirmed || state?.ready);
+  }
+
+  function stepNavActions(step) {
+    const index = stepIndex(step);
+    const prev = index > 0 ? ORDER[index - 1] : "";
+    const next = index >= 0 && index < ORDER.length - 1 ? ORDER[index + 1] : "";
+    const items = [];
+    if (prev) items.push(button("prev-step", `← 上一步：${LABELS[prev] || prev}`));
+    if (next && canJumpToStep(next) && step !== "binding" && step !== "model") {
+      items.push(button("next-step", `下一步：${LABELS[next] || next} →`));
+    }
+    return items.join("");
+  }
+
   function renderRail(step) {
-    /* 旧版引导的分组树：四段标题下挂各自的步骤，完成打勾、当前高亮。 */
+    /* 分组进度导航：支持随时点击切换任意已解锁步骤，避免单向卡死。 */
     const items = progress();
     const byId = new Map(items.map(item => [item.id, item]));
     const groups = STEP_GROUPS.map(group => {
@@ -666,9 +718,12 @@ window.CompanionSetup = (() => {
         const item = byId.get(id);
         if (!item) return "";
         const index = items.findIndex(entry => entry.id === id);
+        const clickable = canJumpToStep(id);
         return `<li class="setup-progress-step ${item.complete ? "complete" : ""} ${item.id === step ? "current" : ""}">
-          <span class="setup-progress-marker">${item.complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
-          <span>${escape(item.label)}</span>
+          <button type="button" class="setup-progress-btn" data-setup-goto-step="${escape(id)}" ${!clickable || busy ? "disabled" : ""} ${item.id === step ? 'aria-current="step"' : ""}>
+            <span class="setup-progress-marker">${item.complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
+            <span>${escape(item.label)}</span>
+          </button>
         </li>`;
       }).join("");
       const complete = group.steps.every(id => byId.get(id)?.complete);
@@ -1122,7 +1177,8 @@ window.CompanionSetup = (() => {
         <details class="setup-migration-source-manual">
           <summary>手动指定来源</summary>
           <label class="setup-legacy-path"><span>旧版数据目录（可选）</span><input type="text" inputmode="text" autocomplete="off" spellcheck="false" data-setup-legacy="root" value="${escape(legacyRootDraft)}" placeholder="留空时自动查找"></label>
-          <p class="setup-migration-micro">使用旧版插件数据目录的绝对路径；留空时自动查找。</p>
+          <p class="setup-migration-micro">使用当前 AstrBot 所在设备/容器内的绝对路径（留空时自动查找）。</p>
+          ${legacyFinding?.current_plugin_data_dir ? `<p class="setup-migration-micro">当前插件数据目录：<code>${escape(legacyFinding.current_plugin_data_dir)}</code> <button type="button" class="setup-migration-text-action" data-setup-copy-data-dir>复制路径</button></p>` : ""}
         </details>
       </div>
     </div>`;
@@ -1262,6 +1318,12 @@ window.CompanionSetup = (() => {
     legacy_scope_stale: "迁移范围已变化，请重新读取后再执行",
     legacy_plan_stale: "配置在执行前已更新，重新执行会先重新试算",
     legacy_request_invalid: "请求未被接受，重新执行会先重新试算",
+    legacy_path_empty: "请填写旧版数据目录路径，或留空自动查找",
+    legacy_path_windows_on_posix: "当前运行在 Linux/容器或手机环境中，不能填写 Windows 盘符路径；请填写本机/容器内的绝对路径",
+    legacy_path_not_absolute: "请填写完整的绝对路径（如 /AstrBot/data/plugin_data/... 或 D:\\...）",
+    legacy_path_not_found: "找不到该目录，请确认数据已放到当前 AstrBot 所在设备或容器内",
+    legacy_path_is_file: "填写的是文件路径，请改为填写旧版数据目录路径",
+    legacy_path_permission_denied: "没有权限读取该目录，请检查权限或移至插件数据目录同级位置",
     legacy_source_missing: "旧版来源已不可读取",
     legacy_source_changed: "旧版来源在试算后发生变化，请重新试算",
     legacy_nothing_to_import: "没有可导入内容",
@@ -2909,6 +2971,141 @@ window.CompanionSetup = (() => {
     </dl>`;
   }
 
+  function isModelDirty() {
+    const model = state?.model || {};
+    const savedPrimary = model.provider_id || "";
+    const savedFallback = model.fallback_provider_id || "";
+    const primaryChanged = Boolean(modelDraft && modelDraft !== savedPrimary);
+    const fallbackChanged = Boolean(fallbackModelTouched && fallbackModelDraft !== savedFallback);
+    const visionChanged = Boolean(visionModelTouched && visionModelDraft);
+    return modelTouched || primaryChanged || fallbackChanged || visionChanged;
+  }
+
+  function capabilityTags(item) {
+    const caps = Array.isArray(item?.capabilities) ? item.capabilities : [];
+    const labels = [];
+    if (caps.includes("text")) labels.push("文本");
+    if (caps.includes("image")) labels.push("识图");
+    if (caps.includes("video")) labels.push("视频");
+    return labels.length ? ` [${labels.join("/")}]` : "";
+  }
+
+  function providerOptionLabel(item) {
+    const base = item.name && item.name !== item.id ? `${item.name} · ${item.id}` : item.id;
+    const modelPart = item.model && !base.includes(item.model) ? ` (${item.model})` : "";
+    return `${base}${modelPart}${capabilityTags(item)}`;
+  }
+
+  function memoryCompanionStatus() {
+    return state?.memory_companion || window.CompanionMemoryCompanionHint?.current?.() || null;
+  }
+
+  function memoryCompanionCardMarkup(context = "setup") {
+    const info = memoryCompanionStatus();
+    if (!info) return "";
+    if (typeof window.CompanionMemoryCompanionHint?.renderCard === "function") {
+      return window.CompanionMemoryCompanionHint.renderCard(info, {
+        compact: false,
+        allowDismiss: false,
+        showWhenConnected: true,
+        context,
+      });
+    }
+    const connected = info.state === "connected" || info.state === "external_other";
+    const summary = connected
+      ? `长期记忆搭档「${info.display_name || "我会牢牢记住你"}」已连接。`
+      : "当前仅启用本插件轻量内置记忆，长期记忆与深度回忆不完整，强烈建议安装配合插件「我会牢牢记住你」（astrbot_plugin_memory_companion）。";
+    return `<section class="mc-hint-card ${connected ? "is-ok" : "is-warn"}" data-mc-hint-card data-mc-hint-state="${escape(info.state || "missing")}"><div class="mc-hint-head"><strong class="mc-hint-title">${connected ? "长期记忆搭档已就绪" : "当前仅启用轻量内置记忆"}</strong></div><p class="mc-hint-body">${escape(summary)}</p></section>`;
+  }
+
+  function discoveredPrivateWindows() {
+    const rows = Array.isArray(setupTargets?.targets) ? setupTargets.targets : [];
+    return rows.filter(item => item && item.scope_kind === "private"
+      && item.participant_id && item.participant_id !== "*");
+  }
+
+  function renderInlineRoleCreator() {
+    const accounts = Array.isArray(setupTargets?.accounts) ? setupTargets.accounts : [];
+    const personas = Array.isArray(setupTargets?.personas) ? setupTargets.personas : [];
+    if (!accounts.length) return "";
+    const mappedCount = personas.filter(item => item.mapped).length;
+    const activeAccount = accounts.find(item => `${item.platform_id}|${item.account_id}|${item.bot_id}` === setupRoleBotKey) || accounts[0];
+    const activeKey = activeAccount ? `${activeAccount.platform_id}|${activeAccount.account_id}|${activeAccount.bot_id}` : "";
+    const accountPersonas = personas.filter(item => item.bot_id === activeAccount?.bot_id);
+    return `<section class="setup-inline-box" aria-label="机器人与角色人格">
+      <div class="setup-inline-box-head">
+        <div>
+          <strong>机器人与角色人格</strong>
+          <small>已发现 ${accounts.length} 个在线机器人账号 · 已映射 ${mappedCount} 个人格${mappedCount ? "（可直接复用）" : "（绑定管理员窗口时会自动建好默认映射，也可先新建自定义角色）"}</small>
+        </div>
+        <button type="button" class="button small" data-setup-action="toggle-role-creator" ${busy || setupRoleBusy ? "disabled" : ""}>${setupRoleEditorOpen ? "收起" : "+ 新增角色"}</button>
+      </div>
+      ${setupRoleEditorOpen ? `<div class="setup-role-creator">
+        <label class="setup-model-field"><span>选择机器人账号</span>
+          <select data-setup-role="bot" ${setupRoleBusy ? "disabled" : ""}>
+            ${accounts.map(acc => {
+              const key = `${acc.platform_id}|${acc.account_id}|${acc.bot_id}`;
+              return `<option value="${escape(key)}" ${key === activeKey ? "selected" : ""}>${escape(legacyAccountLabel(acc))} · ${escape(product()?.platformLabel?.(acc) || acc.platform_id)}</option>`;
+            }).join("")}
+          </select>
+        </label>
+        <label class="setup-model-field"><span>角色名称（例如：晚星、小初）</span>
+          <input type="text" data-setup-role="name" value="${escape(setupRoleName)}" maxlength="64" placeholder="给这个陪伴角色起个名字" ${setupRoleBusy ? "disabled" : ""}>
+        </label>
+        <fieldset class="setup-role-personas"><legend>绑定 AstrBot 人格（至少选 1 个）</legend>
+          <div class="setup-role-persona-list">
+            ${accountPersonas.map(item => `<label class="setup-role-persona-chip">
+              <input type="checkbox" data-setup-role="persona" value="${escape(item.persona_id)}" ${setupRolePersonas.has(item.persona_id) ? "checked" : ""} ${item.mapped || setupRoleBusy ? "disabled" : ""}>
+              <span>${escape(item.persona_id === "[%None]" ? "默认人格" : item.label || item.persona_id)}${item.mapped ? "（已归入角色）" : ""}</span>
+            </label>`).join("") || `<p class="setup-question-note">当前账号暂无可新建的未分配人格。</p>`}
+          </div>
+        </fieldset>
+        ${setupRoleMessage ? `<p class="setup-notice" role="status">${escape(setupRoleMessage)}</p>` : ""}
+        <div class="setup-actions">
+          <button type="button" class="button primary small" data-setup-action="save-inline-role" ${setupRoleBusy || !setupRoleName.trim() || !setupRolePersonas.size ? "disabled" : ""}>${setupRoleBusy ? "保存中…" : "创建角色并生效"}</button>
+        </div>
+      </div>` : ""}
+    </section>`;
+  }
+
+  function renderDiscoveredWindowsPicker() {
+    const windows = discoveredPrivateWindows();
+    if (!windows.length) return "";
+    const current = state?.binding || {};
+    return `<section class="setup-inline-box" aria-label="快捷选择已发现私聊窗口">
+      <div class="setup-inline-box-head">
+        <div>
+          <strong>方式一：直接从已发现的私聊窗口选择（免发指令）</strong>
+          <small>已识别到 ${windows.length} 个私聊会话，直接点右侧按钮即可设为核心管理员窗口。</small>
+        </div>
+        <button type="button" class="button small" data-setup-action="refresh-targets" ${busy || setupTargetsBusy ? "disabled" : ""}>${setupTargetsBusy ? "读取中…" : "刷新列表"}</button>
+      </div>
+      <ul class="setup-window-list">
+        ${windows.slice(0, 12).map(win => {
+          const isCurrent = Boolean(state?.binding_confirmed
+            && current.platform_id === win.platform_id
+            && current.account_id === win.account_id
+            && current.participant_id === win.participant_id);
+          const payload = JSON.stringify({
+            platform_id: win.platform_id || "",
+            account_id: win.account_id || "",
+            participant_id: win.participant_id || "",
+            persona_id: (win.roles?.[0]?.persona_ids?.[0]) || "",
+          });
+          return `<li class="setup-window-row${isCurrent ? " is-active" : ""}">
+            <div class="setup-window-meta">
+              <strong>${escape(legacyTargetLabel(win))}</strong>
+              <small>${escape(product()?.platformLabel?.(win) || win.platform_id || "QQ")} · ${escape(legacyAccountLabel(win))}</small>
+            </div>
+            ${isCurrent
+              ? `<span class="setup-status-pill is-ok">当前管理员窗口</span>`
+              : `<button type="button" class="button small primary" data-setup-select-window="${escape(payload)}" ${busy ? "disabled" : ""}>选为管理员窗口</button>`}
+          </li>`;
+        }).join("")}
+      </ul>
+    </section>`;
+  }
+
   function renderBinding() {
     const binding = state?.binding || {};
     const command = "我会永远陪着你";
@@ -2931,14 +3128,18 @@ window.CompanionSetup = (() => {
         ${bindingFacts(binding)}
         <p>这个私聊窗口用于管理员控制，也是主动消息测试的目标。下一步配置模型后，当前版本才会建立运行实例。</p>
         <p class="setup-confirm-copy">要换到另一个私聊窗口、或这个人格在上游改过名字时，先在这里解除确认再重新绑定。已保存的角色映射、模型和记忆都不会被删除。</p>
+        ${renderInlineRoleCreator()}
+        ${renderDiscoveredWindowsPicker()}
         ${noticeMarkup()}
-        <div class="setup-actions">${button("refresh", "继续配置模型", {primary: true})}${button("reset-binding", "解除确认并重新绑定")}</div>
+        <div class="setup-actions">${button("next-step", "继续配置模型", {primary: true})}${button("reset-binding", "解除确认并重新绑定")}</div>
       </section>`;
     }
     return `<section class="setup-stage">
       <p class="setup-kicker">第 1 步 · 约 2 分钟</p><h3>绑定核心管理员窗口</h3>
+      ${renderInlineRoleCreator()}
+      ${renderDiscoveredWindowsPicker()}
       <p>在希望当前版本接收管理员指令、也作为主动消息主要投递窗口的私聊中，发送固定指令：</p>
-      <p class="setup-command"><code>${escape(command)}</code></p>
+      <div class="setup-command-row"><p class="setup-command"><code>${escape(command)}</code></p><button type="button" class="button small" data-setup-action="copy-bind-command">复制指令</button></div>
       <p>回到这里核对平台、Bot 账号、私聊对象和人格，再由管理面板确认。若该账号使用多个人格，可发送 <code>我会永远陪着你 人格名</code> 指定。</p>
       <p class="setup-confirm-copy">绑定指令不会触发聊天回复，结果以本页核对为准。如果之前试过、页面却一直停在这里，先在该私聊发送 <code>companion_unbind</code>，再重新发送绑定指令。</p>
       ${connectionDiagnostic()}
@@ -2970,6 +3171,7 @@ window.CompanionSetup = (() => {
     }).join("");
     return `<section class="setup-stage">
       <p class="setup-kicker">${definitions.number}</p><h3>${definitions.title}</h3>
+      ${step === "knowledge" ? memoryCompanionCardMarkup("setup-step-3") : ""}
       <p>${target === "role_profile" ? "读取当前 AstrBot 人格，结合已导入的当前版本世界资料生成角色档案草稿。检查后直接保存为当前版本角色设定。" : "从当前人格整理对管理员的称呼、关系和相处方式；仅保存到当前私聊的熟人卡。"}</p>
       <label class="setup-profile-supplement"><span>${target === "role_profile" ? "补充已确认的角色事实" : "补充已确认的关系资料"}</span><textarea data-profile-supplement rows="3" maxlength="4000" ${busy ? "disabled" : ""} placeholder="${target === "role_profile" ? "例如：她是人造人，生日是第一次醒来的那天；表达担心时会比较含蓄。" : "例如：希望称呼我为小舟；我是角色的搭档，我们会直接提醒彼此休息。"}">${escape(profileSupplement[target] || "")}</textarea></label>
       ${current ? `<p class="setup-profile-source">当前角色：${escape(state?.binding?.persona_id === "[%None]" ? "默认人格" : state?.binding?.persona_id || "已绑定人格")} · 已保存 ${Object.values(currentValues).filter(value => String(value || "").trim()).length} 项</p>` : ""}
@@ -2982,8 +3184,16 @@ window.CompanionSetup = (() => {
         ${button("generate-profile", draft ? "重新生成人格草稿" : target === "role_profile" ? "从人格生成角色设定" : "从人格生成熟人卡", {primary: !draft, disabled: !current})}
         ${button("complete-step", complete ? "重新确认完成" : skipped ? "改为已完成" : "已完成这部分", {primary: true})}
         ${definitions.canSkip ? button("skip-step", "暂时跳过") : ""}
+        ${stepNavActions(step)}
       </div>
     </section>`;
+  }
+
+  function renderProbeResultMarkup(probe) {
+    if (!probe) return "";
+    return `<p class="setup-probe-result ${probe.ok ? "is-ok" : "is-error"}" role="status">${probe.ok
+      ? `✓ 连通正常 · 耗时 ${probe.latency_ms}ms${probe.model ? ` · 模型 ${escape(probe.model)}` : ""}`
+      : `✗ 连通检测未通过（${escape(probe.status === "timeout" ? "超时" : probe.error || "失败")}）：${escape(probe.hint || "请核对 AstrBot 中的 Provider 配置。")}`}</p>`;
   }
 
   function renderModel() {
@@ -2997,6 +3207,12 @@ window.CompanionSetup = (() => {
     const taskProviders = Array.isArray(modelTasks?.providers) ? modelTasks.providers : [];
     const tasks = Array.isArray(modelTasks?.tasks) ? modelTasks.tasks : [];
     const selectedProvider = providers.find(item => item.id === providerId);
+    const effectiveChat = model.effective_chat_model || null;
+    const selectedCaps = Array.isArray(selectedProvider?.capabilities) ? selectedProvider.capabilities : null;
+    const primaryLacksVision = Boolean(selectedProvider && selectedCaps && !selectedCaps.includes("image"));
+    const visionChoices = providers.filter(item => Array.isArray(item.capabilities) && item.capabilities.includes("image"));
+    const dirty = isModelDirty();
+    const probeForCurrent = modelProbeState && modelProbeState.provider_id === providerId ? modelProbeState : null;
     const taskMarkup = tasks.map(task => {
       const draft = modelTaskDrafts[task.kind] || {};
       const provider = draft.provider ?? task.fields.provider.value;
@@ -3010,29 +3226,45 @@ window.CompanionSetup = (() => {
         <p class="setup-kicker">本步只问一件事</p>
         <h3>先选一个陪伴通用模型（全局默认）</h3>
         <p>日常聊天仍然使用 AstrBot 当前人格和主模型；这里只决定主动联系、日程、状态和事实整理这些后台任务默认使用哪个模型（原称「共享启动模型」）。</p>
+        ${effectiveChat ? `<p class="setup-chat-model-pill"><strong>日常对话主模型（只读）：</strong>${escape(effectiveChat.name || effectiveChat.id)}${effectiveChat.model ? ` · ${escape(effectiveChat.model)}` : ""}（由 AstrBot 主链管理，无需在此修改）</p>` : ""}
         <ul class="setup-question-points">
           <li>选择陪伴通用模型（全局默认）：先选一个能稳定调用的文本模型即可，不必一开始就分得很细</li>
           <li>保存后会沿用为后台任务的默认模型，仍可随时修改或逐项覆盖</li>
           <li>任务路由可以稍后在「模型与连接」中调整，不影响角色设定</li>
         </ul>
         ${providers.length ? `<label class="setup-model-field"><span>陪伴通用模型（全局默认 · 初始主 Provider） <span class="setup-recommendation">推荐只选这里</span></span>
-          <select name="setup-provider" ${busy ? "disabled" : ""}>
-            <option value="">选择 Provider</option>
-            ${providers.map(item => `<option value="${escape(item.id)}" ${providerId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}
-          </select></label>
+          <div class="setup-model-select-row">
+            <select name="setup-provider" ${busy ? "disabled" : ""}>
+              <option value="">选择 Provider</option>
+              ${providers.map(item => `<option value="${escape(item.id)}" ${providerId === item.id ? "selected" : ""}>${escape(providerOptionLabel(item))}</option>`).join("")}
+            </select>
+            <button type="button" class="button small" data-setup-action="probe-model" ${busy || modelProbeBusy || !providerId ? "disabled" : ""}>${modelProbeBusy ? "测试中…" : "测一下"}</button>
+          </div></label>
+          <div class="setup-probe-slot" data-setup-probe-slot>${renderProbeResultMarkup(probeForCurrent)}</div>
           <label class="setup-model-field"><span>全局备用模型（可选，主模型波动时自动回退）</span>
           <select name="setup-fallback-provider" ${busy ? "disabled" : ""}>
             <option value="">不使用备用模型</option>
-            ${fallbackChoices.map(item => `<option value="${escape(item.id)}" ${fallbackId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}
+            ${fallbackChoices.map(item => `<option value="${escape(item.id)}" ${fallbackId === item.id ? "selected" : ""}>${escape(providerOptionLabel(item))}</option>`).join("")}
           </select></label>
-          ${selectedProvider ? `<p class="setup-question-note">当前选择：${escape(selectedProvider.name || selectedProvider.id)}。保存后先作为插件后台任务的默认入口。</p>` : ""}`
+          ${primaryLacksVision ? `<div class="setup-vision-warning" role="status">
+            <strong>提醒：当前所选通用模型不支持图片理解</strong>
+            <p>主动联系、日程与事实整理仍可正常运行，但看图转述、图片摘要与识屏理解需要支持视觉的模型。</p>
+            ${visionChoices.length ? `<label class="setup-model-field"><span>单独指定识图模型（可选，一键配置全部视觉任务）</span>
+              <select name="setup-vision-provider" ${busy ? "disabled" : ""}>
+                <option value="">暂不指定（稍后在模型与连接配置）</option>
+                ${visionChoices.map(item => `<option value="${escape(item.id)}" ${visionModelDraft === item.id ? "selected" : ""}>${escape(providerOptionLabel(item))}</option>`).join("")}
+              </select></label>`
+              : `<p class="setup-question-note">当前 AstrBot 里暂未检测到带「识图」能力的 Provider；如果暂不使用看图或识屏可直接继续。</p>`}
+          </div>` : ""}
+          ${selectedProvider ? `<p class="setup-question-note">当前选择：${escape(selectedProvider.name || selectedProvider.id)}${dirty ? "（有未保存的改动，点下方按钮立即保存生效）" : "。保存后先作为插件后台任务的默认入口。"}</p>` : ""}`
           : `<p class="setup-inline-error">AstrBot 当前没有已加载的文本 Provider。请先在 AstrBot 的提供商管理中添加模型，再回来刷新。</p>`}
         ${state?.settings_error ? `<p class="setup-inline-error">${escape(state.settings_error)}</p>` : ""}
         ${noticeMarkup()}
-        <div class="setup-actions">${state?.prepared
-          ? button("complete-step", "继续到角色设定", {primary: true})
-          : button("save-model", "保存并继续", {primary: true, disabled: !providers.length || !providerId})}
+        <div class="setup-actions">${state?.prepared && !dirty
+          ? `${button("complete-step", "继续到角色设定", {primary: true})}${button("save-model", "重新应用模型", {disabled: !providers.length || !providerId})}`
+          : button("save-model", state?.prepared ? "保存并应用模型" : "保存并继续", {primary: true, disabled: !providers.length || !providerId})}
           ${providers.length ? button("refresh", "刷新 Provider") : ""}
+          ${stepNavActions("model")}
         </div>
       </div>
       ${state?.prepared ? `<details class="setup-model-advanced">
@@ -3076,42 +3308,82 @@ window.CompanionSetup = (() => {
     return `${progress ? `<ol class="setup-checklist" aria-label="主动测试进度">${progress}</ol>` : ""}${code ? `<p class="setup-inline-error" role="alert">${escape(PROACTIVE_TEST_FAILURE_SUGGESTIONS[code] || "本次测试未完成，请核对模型与投递状态。")}（${escape(code)}）</p>` : ""}`;
   }
 
+  function healthChecklistMarkup({showRefresh = true} = {}) {
+    const checks = Array.isArray(setupHealth?.checks) ? setupHealth.checks : [];
+    if (!checks.length) return "";
+    const statusLabels = {ok: "就绪", warn: "建议关注", error: "待修复"};
+    return `<section class="setup-health-box" aria-label="就绪体检清单">
+      <div class="setup-inline-box-head">
+        <div>
+          <strong>陪伴就绪一键体检</strong>
+          <small>${setupHealth.can_finish ? "全部必选项已就绪，可直接完成并开始陪伴。" : "还有必选项未完成，点右侧「去修复」直达对应步骤。"}</small>
+        </div>
+        ${showRefresh ? `<button type="button" class="button small" data-setup-action="check-health" ${busy || setupHealthBusy ? "disabled" : ""}>${setupHealthBusy ? "体检中…" : "重新体检"}</button>` : ""}
+      </div>
+      <ul class="setup-health-list">
+        ${checks.map(item => `<li class="setup-health-item is-${escape(item.status || "warn")}">
+          <span class="setup-status-pill is-${escape(item.status || "warn")}">${escape(statusLabels[item.status] || "待核对")}</span>
+          <div class="setup-health-copy">
+            <strong>${escape(item.label || item.id)}</strong>
+            <small>${escape(item.summary || "")}</small>
+          </div>
+          ${item.id === "memory" && item.status === "warn" && typeof window.CompanionMemoryCompanionHint?.openGuideDialog === "function"
+            ? `<button type="button" class="button small" data-mc-hint-action="open-guide">安装指南</button>`
+            : item.status !== "ok" && item.fix_step && ORDER.includes(item.fix_step)
+            ? `<button type="button" class="button small" data-setup-goto-step="${escape(item.fix_step)}" ${busy ? "disabled" : ""}>去修复</button>`
+            : ""}
+        </li>`).join("")}
+      </ul>
+    </section>`;
+  }
+
   function renderProactiveTest() {
     const test = state?.proactive_test;
     if (state?.ready) {
       const accepting = Boolean(state?.host?.accepting);
+      const receiptText = test?.state === "received"
+        ? `你已确认收到测试消息 · ${escape(test?.confirmed_at || test?.finished_at || "")}`
+        : test?.state === "delivered"
+        ? `平台已确认发送测试消息 · ${escape(test?.finished_at || "")}`
+        : state?.finished_at
+        ? `已通过体检确认就绪 · ${escape(state.finished_at)}`
+        : "平台已确认发送测试消息";
       return `<section class="setup-stage setup-finished">
         <p class="setup-kicker">首次连接</p><h3>首次设置已完成</h3>
         <p>核心管理员窗口、模型与初始资料已记录。之后直接使用陪伴小屋和聊天窗口，不需要重新走向导。</p>
         <p class="setup-test-receipt setup-connection-state ${accepting ? "" : "is-stopped"}">${accepting ? "当前版本正在接收消息" : "首次设置已保留，当前运行实例尚未接收消息"}</p>
-        <p class="setup-test-receipt">${test?.state === "received" ? "你已确认收到测试消息" : "平台已确认发送测试消息"} · ${escape(test?.confirmed_at || test?.finished_at || "")}</p>
+        <p class="setup-test-receipt">${receiptText}</p>
         <div class="setup-actions">${accepting ? "" : button("reconnect-host", "重新连接", {primary: true})}${homeButton("进入陪伴小屋", !accepting)}</div>
       </section>`;
     }
+    const canFinishDirectly = Boolean(setupHealth ? setupHealth.can_finish : (state?.binding_confirmed && state?.model?.provider_id));
     if (test?.state === "started") {
       return `<section class="setup-stage">
         <p class="setup-kicker">第 8 步 · 验证使用</p><h3>主动测试进行中</h3>
+        ${healthChecklistMarkup()}
         ${proactiveTestProgressMarkup()}${noticeMarkup()}
-        <div class="setup-actions">${button("confirm-test-received", "已收到测试消息", {primary: true})}${button("refresh", "刷新状态")}${homeButton("进入陪伴小屋")}</div>
+        <div class="setup-actions">${button("confirm-test-received", "已收到测试消息", {primary: true})}${button("refresh", "刷新状态")}${homeButton("进入陪伴小屋")}${stepNavActions("proactive_test")}</div>
       </section>`;
     }
     if (test?.state === "unknown") {
       return `<section class="setup-stage">
         <p class="setup-kicker">第 8 步 · 验证使用</p><h3>主动测试结果未知</h3>
         <p>本次测试尚无确定结果。</p>
+        ${healthChecklistMarkup()}
         ${proactiveTestProgressMarkup()}${noticeMarkup()}
-        <div class="setup-actions">${button("confirm-test-received", "已收到测试消息", {primary: true})}${button("refresh", "刷新状态")}${homeButton("进入陪伴小屋")}</div>
+        <div class="setup-actions">${button("confirm-test-received", "已收到测试消息", {primary: true})}${button("refresh", "刷新状态")}${homeButton("进入陪伴小屋")}${stepNavActions("proactive_test")}</div>
       </section>`;
     }
     if (test?.state === "failed") {
-      return `<section class="setup-stage"><p class="setup-kicker">第 8 步 · 验证使用</p><h3>主动联系没有送达</h3>${proactiveTestProgressMarkup()}${noticeMarkup()}<label class="setup-opt-in"><input type="checkbox" data-setup-proactive-opt-in ${proactiveOptIn ? "checked" : ""} ${busy ? "disabled" : ""}><span>我同意当前版本向已绑定的管理员私聊发送一次主动联系测试</span></label><div class="setup-actions">${button("proactive-test", "重新运行主动联系", {primary: true, disabled: !proactiveOptIn})}${button("refresh", "刷新状态")}${homeButton("进入陪伴小屋")}</div></section>`;
+      return `<section class="setup-stage"><p class="setup-kicker">第 8 步 · 验证使用</p><h3>主动联系没有送达</h3>${healthChecklistMarkup()}${proactiveTestProgressMarkup()}${noticeMarkup()}<label class="setup-opt-in"><input type="checkbox" data-setup-proactive-opt-in ${proactiveOptIn ? "checked" : ""} ${busy ? "disabled" : ""}><span>我同意当前版本向已绑定的管理员私聊发送一次主动联系测试</span></label><div class="setup-actions">${button("proactive-test", "重新运行主动联系", {primary: true, disabled: !proactiveOptIn})}${canFinishDirectly ? button("finish-setup", "跳过主动测试，直接完成并启动") : ""}${button("refresh", "刷新状态")}${homeButton("进入陪伴小屋")}${stepNavActions("proactive_test")}</div></section>`;
     }
     return `<section class="setup-stage">
       <p class="setup-kicker">第 8 步 · 约 1 分钟</p><h3>测试主动消息</h3>
-      <p>当前版本会为当前角色发起一次主动联系，完整经过主动联系模型、策略检查与真实投递。只有勾选同意后才会发送；若平台回执未知，不会重复补发。</p>
+      ${healthChecklistMarkup()}
+      <p>当前版本会为当前角色发起一次主动联系，完整经过主动联系模型、策略检查与真实投递。只有勾选同意后才会发送；若平台回执未知，不会重复补发。如果暂时不想发送测试消息，也可以直接完成并启动。</p>
       <label class="setup-opt-in"><input type="checkbox" data-setup-proactive-opt-in ${proactiveOptIn ? "checked" : ""} ${busy ? "disabled" : ""}><span>我同意当前版本向已绑定的管理员私聊发送一次主动联系测试</span></label>
       ${noticeMarkup()}
-      <div class="setup-actions">${button("proactive-test", "运行主动联系测试", {primary: true, disabled: !proactiveOptIn})}</div>
+      <div class="setup-actions">${button("proactive-test", "运行主动联系测试", {primary: true, disabled: !proactiveOptIn})}${canFinishDirectly ? button("finish-setup", "跳过测试，直接完成并启动") : ""}${stepNavActions("proactive_test")}</div>
     </section>`;
   }
 
@@ -3224,20 +3496,31 @@ window.CompanionSetup = (() => {
     head.scrollIntoView?.({block: "nearest", behavior: reduce || motion === "low" ? "auto" : "smooth"});
   }
 
-  /* 开始使用 = 旧版「配置引导」那种一页式清单：编号分区、每区一句说明、
-     点开就在本页编辑，不再让用户去六个页面来回找。 */
+  /* 开始使用 = 常用设置导览 + 可随时重新打开复用的分步向导 + 一键体检入口。 */
   function renderStartGuide() {
     const items = ADVANCED_BLOCKS.map((item, index) => `<li class="setup-guide-item">
       <span class="setup-guide-number">${String(index + 1).padStart(2, "0")}</span>
       <div class="setup-guide-copy"><h3>${escape(item.label)}</h3><p>${escape(item.note)}</p></div>
       <button type="button" class="button small" data-setup-open-block="${escape(item.id)}">展开设置</button>
     </li>`).join("");
+    const mcInfo = memoryCompanionStatus();
+    const mcCard = mcInfo && ["missing", "disabled", "bridge_disabled"].includes(mcInfo.state)
+      ? memoryCompanionCardMarkup("setup-ready")
+      : "";
     return `<div class="setup-shell setup-complete-shell setup-guide-shell">
       <header class="setup-header"><div class="setup-header-copy"><span class="setup-kicker">我会永远陪着你</span><h2>开始使用 · 常用设置导览</h2>
-        <p class="setup-header-sub">首次连接与主动测试已完成。下面按使用频率整理了 6 组常用设置，点「展开设置」即可就地修改，不必在多个页面来回寻找。</p></div>
-        <div class="setup-header-actions"><button type="button" class="button" data-setup-action="advanced-open">快速配置</button>${homeButton("进入陪伴小屋")}</div></header>
+        <p class="setup-header-sub">首次连接已完成。下面按使用频率整理了 ${ADVANCED_BLOCKS.length} 组常用设置，点「展开设置」即可就地修改；也可随时重新打开分步向导新增角色或复检配置。</p></div>
+        <div class="setup-header-actions">
+          <button type="button" class="button" data-setup-action="reopen-wizard">重新打开分步向导</button>
+          <button type="button" class="button" data-setup-action="check-health" ${setupHealthBusy ? "disabled" : ""}>${setupHealthBusy ? "体检中…" : "一键体检"}</button>
+          <button type="button" class="button" data-setup-action="advanced-open">快速配置</button>
+          ${homeButton("进入陪伴小屋")}
+        </div></header>
       ${upgradeCard()}
-      <p class="setup-guide-status" role="status">首次设置已完成 · 之后随时可以回来调整这些设置。</p>
+      ${mcCard}
+      <p class="setup-guide-status" role="status">首次设置已完成 · 之后随时可以回来调整这些设置或重新体检。</p>
+      ${healthChecklistMarkup()}
+      ${noticeMarkup()}
       <ol class="setup-guide-list" aria-label="配置引导">${items}</ol>
       ${renderProactiveTest()}
     </div>`;
@@ -3288,11 +3571,11 @@ window.CompanionSetup = (() => {
       </div>`;
       return;
     }
-    if (state.ready) {
+    if (state.ready && !wizardReopened) {
       root.innerHTML = renderStartGuide();
       return;
     }
-    const step = state.step || "binding";
+    const step = currentStep();
     const content = step === "binding" ? renderBinding()
       : step === "model" ? renderModel()
       : step === "proactive_test" ? renderProactiveTest()
@@ -3301,30 +3584,101 @@ window.CompanionSetup = (() => {
     const current = stepIndex(step);
     root.innerHTML = `<div class="setup-shell">
       <header class="setup-header">
-        <div class="setup-header-copy"><span class="setup-kicker">我会永远陪着你</span><h2>开始使用</h2>
-          <p class="setup-header-sub">第 ${current + 1} 步 / 共 ${ORDER.length} 步 · ${escape((STEP_GROUPS.find(group => group.steps.includes(step)) || {}).title || "")} · 可随时跳过或回来继续</p></div>
-        <div class="setup-header-actions">${state.prepared ? `<button type="button" class="button" data-setup-action="advanced-open">快速配置</button>` : ""}<span class="setup-step-count">${String(current + 1).padStart(2, "0")} / ${String(ORDER.length).padStart(2, "0")}</span></div>
+        <div class="setup-header-copy"><span class="setup-kicker">我会永远陪着你</span><h2>开始使用${wizardReopened ? " · 配置向导" : ""}</h2>
+          <p class="setup-header-sub">第 ${current + 1} 步 / 共 ${ORDER.length} 步 · ${escape((STEP_GROUPS.find(group => group.steps.includes(step)) || {}).title || "")} · 点击步骤可随时来回切换</p></div>
+        <div class="setup-header-actions">${wizardReopened ? `<button type="button" class="button" data-setup-action="close-wizard">返回导览总览</button>` : ""}${state.prepared ? `<button type="button" class="button" data-setup-action="advanced-open">快速配置</button>` : ""}<span class="setup-step-count">${String(current + 1).padStart(2, "0")} / ${String(ORDER.length).padStart(2, "0")}</span></div>
         <div class="setup-header-progress" aria-hidden="true"><i style="width:${((current + 1) / ORDER.length * 100).toFixed(1)}%"></i></div>
       </header>
       ${renderRail(step)}<div class="setup-content${step === "model" ? " setup-question-mode" : ""}">${upgradeCard()}${stageBanner(step)}${content}${nextStepPreview(step)}</div>
     </div>`;
+    scrollActiveStepIntoView();
     if (STEP_EDITORS[step] && state.prepared) mountStepEditor(step);
+  }
+
+  function scrollActiveStepIntoView() {
+    const rail = root?.querySelector?.(".setup-progress");
+    const active = rail?.querySelector?.('.setup-progress-btn[aria-current="step"]');
+    if (!rail || !active || !(rail.scrollWidth > rail.clientWidth + 2)) return;
+    let targetLeft = 0;
+    if (typeof rail.getBoundingClientRect === "function" && typeof active.getBoundingClientRect === "function") {
+      const railRect = rail.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      targetLeft = Math.max(0, rail.scrollLeft + (activeRect.left - railRect.left) - (railRect.width - activeRect.width) / 2);
+    } else if (typeof active.offsetLeft === "number") {
+      targetLeft = Math.max(0, active.offsetLeft - (rail.clientWidth - (active.offsetWidth || 0)) / 2);
+    }
+    const motion = typeof document !== "undefined" ? document.documentElement?.dataset?.motion : "";
+    const reduce = motion === "off"
+      || (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true);
+    if (typeof rail.scrollTo === "function") {
+      rail.scrollTo({left: targetLeft, behavior: reduce ? "auto" : "smooth"});
+    } else {
+      rail.scrollLeft = targetLeft;
+    }
+  }
+
+  async function loadSetupTargets({force = false} = {}) {
+    if (setupTargetsBusy) return;
+    if (setupTargetsLoaded && !force) return;
+    setupTargetsBusy = true;
+    const ticket = generation;
+    try {
+      const result = await api("GET", "/targets");
+      if (ticket !== generation) return;
+      if (result && typeof result === "object" && (Array.isArray(result.accounts) || Array.isArray(result.targets))) {
+        setupTargets = result;
+        setupTargetsLoaded = true;
+        if (!setupRoleBotKey && result.accounts?.[0]) {
+          const acc = result.accounts[0];
+          setupRoleBotKey = `${acc.platform_id}|${acc.account_id}|${acc.bot_id}`;
+        }
+      }
+    } catch (_) {
+      /* 发现列表读取失败不阻断原有指令绑定流程 */
+    } finally {
+      setupTargetsBusy = false;
+    }
+  }
+
+  async function loadSetupHealth({force = false} = {}) {
+    if (setupHealthBusy) return;
+    if (setupHealth && !force) return;
+    setupHealthBusy = true;
+    const ticket = generation;
+    try {
+      const result = await api("GET", "/health");
+      if (ticket !== generation) return;
+      if (result && Array.isArray(result.checks) && result.checks.length) {
+        setupHealth = result;
+      }
+    } catch (_) {
+      /* 体检端点不可用时保持现有状态 */
+    } finally {
+      setupHealthBusy = false;
+    }
   }
 
   async function loadStepData(result) {
     let loadError = "";
+    const step = currentStep();
     const quickModelsNeeded = advancedOpen && advancedBlock === "runtime" && result?.prepared;
-    if (result?.prepared && ((result?.step === "model" && modelDraft) || quickModelsNeeded)) {
+    if (result?.prepared && ((step === "model" && (modelDraft || result?.model?.provider_id)) || quickModelsNeeded)) {
       loadError = await refreshModelTasks();
     } else if (!quickModelsNeeded) {
       modelTasks = null;
       modelTasksStatus = "idle";
       modelTasksError = "";
     }
-    if (["knowledge", "relationships"].includes(result?.step) && result?.prepared) {
+    if (["knowledge", "relationships"].includes(step) && result?.prepared) {
       try { profileState = await api("GET", "/profile"); }
       catch (error) { profileState = null; loadError = errorText(error, "角色档案暂时无法读取。"); }
-    } else if (!["knowledge", "relationships"].includes(result?.step)) profileState = null;
+    } else if (!["knowledge", "relationships"].includes(step)) profileState = null;
+    if (step === "binding" && (!result?.ready || wizardReopened)) {
+      await loadSetupTargets();
+    }
+    if (step === "proactive_test" && (!result?.ready || wizardReopened)) {
+      await loadSetupHealth();
+    }
     if (loadError) notice = loadError;
   }
 
@@ -3334,12 +3688,18 @@ window.CompanionSetup = (() => {
       const result = await api("GET", "/status");
       if (ticket !== generation) return;
       state = result;
+      if (result?.memory_companion) {
+        window.CompanionMemoryCompanionHint?.seed?.(result.memory_companion);
+      }
       /* 成功读到新状态后，上一轮网络失败提示必须消失；子步骤若读失败，
          loadStepData() 会再写入更具体的提示。 */
       notice = "";
       modelDraft = result?.model?.provider_id || "";
+      modelTouched = false;
       fallbackModelDraft = result?.model?.fallback_provider_id || "";
       fallbackModelTouched = false;
+      visionModelDraft = "";
+      visionModelTouched = false;
       if (pendingQuickBlock && (result?.ready || result?.prepared)) {
         advancedBlock = ADVANCED_BLOCKS.some(item => item.id === pendingQuickBlock) ? pendingQuickBlock : ADVANCED_BLOCKS[0].id;
         advancedOpen = true;
@@ -3366,7 +3726,7 @@ window.CompanionSetup = (() => {
   }
 
   async function generateProfileDraft() {
-    const target = state?.step === "relationships" ? "relationship_profile" : "role_profile";
+    const target = currentStep() === "relationships" ? "relationship_profile" : "role_profile";
     const productApi = product();
     const bridge = productApi?.bridgeNow?.() || (productApi?.bridgeFor ? await productApi.bridgeFor() : window.AstrBotPluginPage);
     if (!bridge?.apiPost) throw new Error("Dashboard 页面接口尚未连接。");
@@ -3395,7 +3755,7 @@ window.CompanionSetup = (() => {
   }
 
   async function saveProfileDraft() {
-    const target = state?.step === "relationships" ? "relationship_profile" : "role_profile";
+    const target = currentStep() === "relationships" ? "relationship_profile" : "role_profile";
     const current = profileState?.[target];
     if (!current?.edit_token || profileDraftTarget !== target || !profileDraft?.fields) throw new Error("当前草稿或配置版本已变化，请重新读取后生成。");
     const changes = {};
@@ -3433,7 +3793,7 @@ window.CompanionSetup = (() => {
     const draft = modelTaskDrafts[kind] || {};
     const provider = draft.provider ?? task.fields.provider.value;
     const fallback = draft.fallback ?? task.fields.fallback.value;
-    const saved = await product().request("POST", route.path + "/configure", {
+    const saved = await product().request("POST", route.configurePath || (route.path + "/configure"), {
       kind, operation_key: operationKey("setup-model-route"), edit_token: task.edit_token,
       changes: {provider, fallback}, reset: [],
     });
@@ -3457,11 +3817,19 @@ window.CompanionSetup = (() => {
     const currentWatch = () => root && proactiveWatcher === watcher && mountGeneration === watcher.generation
       && !state?.ready && state?.proactive_test?.attempt_id === watcher.attemptId;
     try {
+      let lastSnapshot = JSON.stringify({
+        ready: Boolean(state?.ready),
+        proactive_test: state?.proactive_test || null,
+      });
       for (let attempt = 0; attempt < 205 && currentWatch(); attempt += 1) {
         const result = await product().request("GET", PREFIX + "/proactive-test/status", undefined, {timeoutMs: 10000});
         if (!currentWatch() || result?.proactive_test?.attempt_id !== watcher.attemptId) return;
+        const nextSnapshot = JSON.stringify({
+          ready: Boolean(result?.ready),
+          proactive_test: result?.proactive_test || null,
+        });
+        const changed = nextSnapshot !== lastSnapshot;
         state = {...state, ...result, ...(result.ready ? {step: "complete"} : {})};
-        render();
         const current = result?.proactive_test?.state;
         if (result?.ready || current !== "started") {
           if (current === "failed") proactiveOptIn = false;
@@ -3470,6 +3838,10 @@ window.CompanionSetup = (() => {
             : "投递结果未知；请核对目标私聊，不要再次发送。";
           render();
           return;
+        }
+        if (changed) {
+          lastSnapshot = nextSnapshot;
+          render();
         }
         await new Promise(resolve => setTimeout(resolve, 750));
       }
@@ -3859,6 +4231,150 @@ window.CompanionSetup = (() => {
     migrationProgress = "";
   }
 
+  async function copyBindCommand() {
+    const text = "我会永远陪着你";
+    let copied = false;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch (_) {}
+    notice = copied ? "已复制绑定指令「我会永远陪着你」，直接粘贴发给 Bot 私聊即可。"
+      : "请复制绑定指令：我会永远陪着你";
+    render();
+  }
+
+  async function jumpToStep(stepId) {
+    if (!ORDER.includes(stepId) || !canJumpToStep(stepId)) return;
+    activeStep = stepId;
+    notice = "";
+    render();
+    if (state) {
+      await loadStepData(state);
+      render();
+    }
+  }
+
+  async function saveInlineRole() {
+    if (setupRoleBusy) return;
+    const accounts = Array.isArray(setupTargets?.accounts) ? setupTargets.accounts : [];
+    const activeAccount = accounts.find(item => `${item.platform_id}|${item.account_id}|${item.bot_id}` === setupRoleBotKey) || accounts[0];
+    if (!activeAccount || !setupRoleName.trim() || !setupRolePersonas.size) {
+      setupRoleMessage = "请选择机器人账号、填写角色名并勾选至少一个人格。";
+      render();
+      return;
+    }
+    setupRoleBusy = true;
+    setupRoleMessage = "";
+    render();
+    try {
+      await product().request("POST", "accounts/role", {
+        platform_id: activeAccount.platform_id,
+        account_id: activeAccount.account_id,
+        bot_id: activeAccount.bot_id,
+        persona_ids: [...setupRolePersonas],
+        role_id: setupRoleName.trim(),
+      });
+      await refreshDirectoryQuietly();
+      await loadSetupTargets({force: true});
+      setupRoleName = "";
+      setupRolePersonas = new Set();
+      setupRoleEditorOpen = false;
+      notice = "新角色已创建并同步到当前运行配置。";
+    } catch (error) {
+      setupRoleMessage = errorText(error, "角色创建未完成，请核对后重试。");
+    } finally {
+      setupRoleBusy = false;
+      render();
+    }
+  }
+
+  function syncProbeSlotInPlace() {
+    const providerId = modelDraft || state?.model?.provider_id || "";
+    const probeForCurrent = modelProbeState && modelProbeState.provider_id === providerId ? modelProbeState : null;
+    const btn = root?.querySelector?.('[data-setup-action="probe-model"]');
+    const slot = root?.querySelector?.("[data-setup-probe-slot]");
+    if (!btn && !slot) return false;
+    if (btn) {
+      const disabled = Boolean(busy || modelProbeBusy || !providerId);
+      btn.disabled = disabled;
+      if (disabled) btn.setAttribute?.("disabled", "");
+      else btn.removeAttribute?.("disabled");
+      btn.textContent = modelProbeBusy ? "测试中…" : "测一下";
+    }
+    if (slot) {
+      slot.innerHTML = renderProbeResultMarkup(probeForCurrent);
+    }
+    return true;
+  }
+
+  async function probeSelectedModel() {
+    if (busy || modelProbeBusy) return;
+    const providerId = modelDraft || state?.model?.provider_id || "";
+    if (!providerId) {
+      notice = "请先选择一个 Provider 再测试连通性。";
+      render();
+      return;
+    }
+    const activeGeneration = mountGeneration;
+    modelProbeBusy = true;
+    if (!syncProbeSlotInPlace()) render();
+    try {
+      const result = await api("POST", "/model/probe", {provider_id: providerId});
+      if (mountGeneration !== activeGeneration) return;
+      modelProbeState = result;
+    } catch (error) {
+      if (mountGeneration !== activeGeneration) return;
+      modelProbeState = {
+        provider_id: providerId,
+        ok: false,
+        status: "failed",
+        error: error?.code || "Error",
+        hint: errorText(error, "连通检测失败，请核对 AstrBot 中的 Provider 配置。"),
+      };
+    } finally {
+      if (mountGeneration === activeGeneration) {
+        modelProbeBusy = false;
+        if (!syncProbeSlotInPlace()) render();
+      }
+    }
+  }
+
+  async function saveSelectedModel({silentNotice = false} = {}) {
+    const providerId = modelDraft || state?.model?.provider_id || "";
+    const payload = {provider_id: providerId};
+    if (fallbackModelTouched) {
+      payload.fallback_provider_id = fallbackModelDraft === providerId ? "" : fallbackModelDraft;
+    }
+    if (visionModelTouched && visionModelDraft) {
+      payload.vision_provider_id = visionModelDraft;
+    }
+    const useSetupRoute = Boolean(state?.binding_confirmed || state?.step === "model" || wizardReopened);
+    const saved = useSetupRoute
+      ? await api("POST", "/model", payload)
+      : await product().request("POST", "accounts/model-provider", payload);
+    modelTaskDrafts = {};
+    modelTouched = false;
+    fallbackModelTouched = false;
+    visionModelTouched = false;
+    await refreshDirectoryQuietly();
+    if (!silentNotice) {
+      const deferred = saved?.init_deferred === true || saved?.data?.init_deferred === true;
+      const visionApplied = Array.isArray(saved?.vision_applied) ? saved.vision_applied : [];
+      notice = deferred
+        ? `陪伴通用模型（全局默认）已保存。${(saved?.init_reason || saved?.data?.init_reason) || "配置的 Bot 账号当前未连接 AstrBot。"}账号连上后回到这一步再点一次即可完成初始化。`
+        : saved?.restart_required || saved?.data?.restart_required
+        ? "陪伴通用模型（全局默认）已保存；当前宿主仍在运行，重载插件后生效。"
+        : visionApplied.length
+        ? `陪伴通用模型已保存生效，同时已为 ${visionApplied.length} 项视觉任务配置识图模型。`
+        : useSetupRoute
+        ? "陪伴通用模型（全局默认）已初始化；任务路由可直接选择 AstrBot 当前已加载的 Provider。"
+        : "陪伴通用模型（全局默认）已保存。";
+    }
+    return saved;
+  }
+
   async function act(action) {
     const migrationAction = action.startsWith("legacy-");
     if (migrationAction ? legacyActionDisabled(action) : busy) return;
@@ -3871,6 +4387,16 @@ window.CompanionSetup = (() => {
     try {
       if (action === "confirm-binding") {
         await api("POST", "/binding/confirm", {});
+        await refreshDirectoryQuietly();
+        if (!wizardReopened) activeStep = "";
+      } else if (action.startsWith("select-window:")) {
+        const payload = JSON.parse(action.slice("select-window:".length));
+        await api("POST", "/binding/select", payload);
+        await refreshDirectoryQuietly();
+        setupHealth = null;
+        if (!wizardReopened) activeStep = "";
+        else activeStep = "model";
+        notice = "已直接绑定所选私聊为核心管理员窗口。";
       } else if (action === "reset-binding") {
         const accepted = typeof window.CompanionConfirm === "function"
           && await window.CompanionConfirm({
@@ -3880,6 +4406,7 @@ window.CompanionSetup = (() => {
             confirmText: "解除确认", cancelText: "保持现状", danger: true});
         if (!accepted) return;
         await api("POST", "/binding/reset", {confirm: true});
+        setupHealth = null;
         notice = "已解除确认。核对下面的窗口信息后，点「确认此窗口」重新绑定。";
       } else if (action === "prepare-upgrade") {
         const result = await api("POST", "/upgrade", {confirmed: true, plan_token: state?.upgrade?.plan_token});
@@ -3890,25 +4417,8 @@ window.CompanionSetup = (() => {
       } else if (action === "prepare") {
         await api("POST", "/prepare", {});
       } else if (action === "save-model") {
-        const providerId = modelDraft || state?.model?.provider_id || "";
-        const payload = {provider_id: providerId};
-        if (fallbackModelTouched) {
-          payload.fallback_provider_id = fallbackModelDraft === providerId ? "" : fallbackModelDraft;
-        }
-        const useInitialSetup = state?.step === "model" && !state?.ready;
-        const saved = useInitialSetup
-          ? await api("POST", "/model", payload)
-          : await product().request("POST", "accounts/model-provider", payload);
-        modelTaskDrafts = {};
-        fallbackModelTouched = false;
-        const deferred = saved?.init_deferred === true || saved?.data?.init_deferred === true;
-        notice = deferred
-          ? `陪伴通用模型（全局默认）已保存。${(saved?.init_reason || saved?.data?.init_reason) || "配置的 Bot 账号当前未连接 AstrBot。"}账号连上后回到这一步再点一次即可完成初始化。`
-          : saved?.restart_required || saved?.data?.restart_required
-          ? "陪伴通用模型（全局默认）已保存；当前宿主仍在运行，重载插件后生效。"
-          : useInitialSetup
-          ? "陪伴通用模型（全局默认）已初始化；任务路由可直接选择 AstrBot 当前已加载的 Provider。"
-          : "陪伴通用模型（全局默认）已保存。";
+        await saveSelectedModel();
+        setupHealth = null;
       } else if (action.startsWith("save-task:")) {
         await saveModelTask(action.slice("save-task:".length));
       } else if (action === "generate-profile") {
@@ -3916,7 +4426,31 @@ window.CompanionSetup = (() => {
       } else if (action === "save-profile") {
         await saveProfileDraft();
       } else if (action === "complete-step" || action === "skip-step") {
-        await api("POST", "/complete", {step: state.step, skipped: action === "skip-step"});
+        const step = currentStep();
+        if (step === "model" && action === "complete-step" && isModelDirty()) {
+          await saveSelectedModel({silentNotice: true});
+        }
+        await api("POST", "/complete", {step, skipped: action === "skip-step"});
+        setupHealth = null;
+        if (wizardReopened) {
+          const nextIdx = stepIndex(step) + 1;
+          if (nextIdx < ORDER.length) activeStep = ORDER[nextIdx];
+        } else {
+          activeStep = "";
+        }
+      } else if (action === "finish-setup") {
+        const result = await api("POST", "/finish", {start_host: true});
+        if (result?.health && Array.isArray(result.health.checks)) setupHealth = result.health;
+        if (result?.init_deferred) {
+          notice = `核心配置已保存，但 Bot 账号暂未上线：${result.init_reason || "等待连接"}。连上后点这里即可完成启动。`;
+        } else {
+          wizardReopened = false;
+          activeStep = "";
+          await refreshDirectoryQuietly();
+          notice = result?.started
+            ? "首次配置已通过体检并启动接收消息，欢迎进入陪伴小屋！"
+            : "首次配置已完成；如运行实例尚未启动，可点下方「重新连接」。";
+        }
       } else if (action === "proactive-test") {
         const result = await api("POST", "/proactive-test", {enable_proactive: true});
         if (mountGeneration !== activeGeneration) return;
@@ -3931,6 +4465,8 @@ window.CompanionSetup = (() => {
         const result = await api("POST", "/proactive-test/confirm", {attempt_id: state.proactive_test.attempt_id});
         if (mountGeneration !== activeGeneration) return;
         proactiveWatcher = null;
+        wizardReopened = false;
+        activeStep = "";
         state = {...state, ready: result.ready, ...(result.ready ? {step: "complete"} : {}),
           proactive_test: result.proactive_test || {...state.proactive_test, state: result.state}};
         notice = "已记录你收到测试消息，首次设置已完成。";
@@ -3938,6 +4474,8 @@ window.CompanionSetup = (() => {
         return;
       } else if (action === "reconnect-host") {
         await api("POST", "/host/start", {});
+        await refreshDirectoryQuietly();
+        setupHealth = null;
         notice = "当前版本已重新连接并开始接收消息。";
       } else if (action === "open-migration") {
         /* 升级引导：去拓展页的「资料与维护 → 旧版数据迁移」走完整流程。 */
@@ -3954,11 +4492,17 @@ window.CompanionSetup = (() => {
       } else {
         const result = await api("GET", "/status");
         state = result;
+        if (result?.memory_companion) {
+          window.CompanionMemoryCompanionHint?.seed?.(result.memory_companion);
+        }
         modelDraft = result?.model?.provider_id || "";
+        modelTouched = false;
         fallbackModelDraft = result?.model?.fallback_provider_id || "";
         fallbackModelTouched = false;
+        visionModelDraft = "";
+        visionModelTouched = false;
         await loadStepData(result);
-        if (result.ready && action !== "save-model") notice = "";
+        if (result.ready && !["save-model", "finish-setup", "reconnect-host"].includes(action)) notice = "";
         render();
         if (result?.proactive_test?.state === "started") void watchProactive();
       }
@@ -4211,9 +4755,51 @@ window.CompanionSetup = (() => {
       }
       return;
     }
+    const mcHintButton = event.target.closest?.("[data-mc-hint-action]");
+    if (mcHintButton && window.CompanionMemoryCompanionHint?.handleAction) {
+      void window.CompanionMemoryCompanionHint.handleAction(mcHintButton.dataset.mcHintAction, {
+        onUpdate: next => {
+          if (next && state) state = {...state, memory_companion: next};
+          setupHealth = null;
+          if (root) render();
+        },
+        notify: message => { if (message) { notice = message; render(); } },
+      });
+      return;
+    }
+    if (event.target.closest?.("[data-setup-copy-data-dir]")) {
+      const dataDir = legacyFinding?.current_plugin_data_dir;
+      if (dataDir) {
+        if (navigator?.clipboard?.writeText) {
+          navigator.clipboard.writeText(dataDir).then(() => {
+            notice = "已复制当前插件数据目录路径。";
+            render();
+          }).catch(() => {
+            notice = `当前插件数据目录：${dataDir}`;
+            render();
+          });
+        } else {
+          notice = `当前插件数据目录：${dataDir}`;
+          render();
+        }
+      }
+      return;
+    }
     const legacyAction = event.target.closest?.("[data-setup-legacy-action]")?.dataset.setupLegacyAction;
     if (legacyAction) { act(legacyAction); return; }
     if (busy) return;
+    const gotoStepButton = event.target.closest?.("[data-setup-goto-step]");
+    if (gotoStepButton) {
+      const targetStep = gotoStepButton.dataset.setupGotoStep;
+      if (state?.ready && !wizardReopened) wizardReopened = true;
+      void jumpToStep(targetStep);
+      return;
+    }
+    const selectWindowButton = event.target.closest?.("[data-setup-select-window]");
+    if (selectWindowButton) {
+      void act("select-window:" + selectWindowButton.dataset.setupSelectWindow);
+      return;
+    }
     const openBlock = event.target.closest?.("[data-setup-open-block]");
     if (openBlock && (state?.ready || state?.prepared)) {
       const wanted = openBlock.dataset.setupOpenBlock;
@@ -4231,6 +4817,57 @@ window.CompanionSetup = (() => {
     }
     const action = event.target.closest?.("[data-setup-action]")?.dataset.setupAction;
     if (action === "retry-model-routes") { void retryQuickModels(); return; }
+    if (action === "reopen-wizard") {
+      wizardReopened = true;
+      activeStep = "binding";
+      notice = "";
+      render();
+      if (state) void loadStepData(state).then(() => render());
+      return;
+    }
+    if (action === "close-wizard") {
+      wizardReopened = false;
+      activeStep = "";
+      notice = "";
+      render();
+      return;
+    }
+    if (action === "prev-step") {
+      const idx = stepIndex(currentStep());
+      if (idx > 0) void jumpToStep(ORDER[idx - 1]);
+      return;
+    }
+    if (action === "next-step") {
+      const idx = stepIndex(currentStep());
+      if (idx >= 0 && idx < ORDER.length - 1) void jumpToStep(ORDER[idx + 1]);
+      return;
+    }
+    if (action === "check-health") {
+      void loadSetupHealth({force: true}).then(() => render());
+      return;
+    }
+    if (action === "refresh-targets") {
+      void loadSetupTargets({force: true}).then(() => render());
+      return;
+    }
+    if (action === "copy-bind-command") {
+      void copyBindCommand();
+      return;
+    }
+    if (action === "toggle-role-creator") {
+      setupRoleEditorOpen = !setupRoleEditorOpen;
+      setupRoleMessage = "";
+      render();
+      return;
+    }
+    if (action === "save-inline-role") {
+      void saveInlineRole();
+      return;
+    }
+    if (action === "probe-model") {
+      void probeSelectedModel();
+      return;
+    }
     if (action === "advanced-open" && (state?.ready || state?.prepared)) {
       advancedOpen = true;
       render();
@@ -4245,6 +4882,18 @@ window.CompanionSetup = (() => {
   }
 
   function onInput(event) {
+    if (event.target.dataset?.setupRole === "name") {
+      setupRoleName = event.target.value;
+      setupRoleMessage = "";
+      const saveBtn = root?.querySelector?.('[data-setup-action="save-inline-role"]');
+      if (saveBtn) {
+        const disabled = Boolean(setupRoleBusy || !setupRoleName.trim() || !setupRolePersonas.size);
+        saveBtn.disabled = disabled;
+        if (disabled) saveBtn.setAttribute?.("disabled", "");
+        else saveBtn.removeAttribute?.("disabled");
+      }
+      return;
+    }
     if (event.target.dataset?.setupLegacy === "new-role-name") {
       legacyNewRoleName = event.target.value;
       legacyRoleSaveMessage = "";
@@ -4697,14 +5346,35 @@ window.CompanionSetup = (() => {
       legacyConfirmPersonaMapping = input.checked;
       render();
     }
+    if (input?.dataset?.setupRole === "bot") {
+      setupRoleBotKey = input.value;
+      setupRolePersonas = new Set();
+      setupRoleMessage = "";
+      render();
+      return;
+    }
+    if (input?.dataset?.setupRole === "persona") {
+      if (input.checked) setupRolePersonas.add(input.value);
+      else setupRolePersonas.delete(input.value);
+      setupRoleMessage = "";
+      render();
+      return;
+    }
     if (input?.name === "setup-provider") {
       modelDraft = input.value;
+      modelTouched = true;
+      modelProbeState = null;
       if (fallbackModelTouched && fallbackModelDraft === modelDraft) fallbackModelDraft = "";
       render();
     }
     if (input?.name === "setup-fallback-provider") {
       fallbackModelDraft = input.value;
       fallbackModelTouched = true;
+      render();
+    }
+    if (input?.name === "setup-vision-provider") {
+      visionModelDraft = input.value;
+      visionModelTouched = true;
       render();
     }
     if (input?.dataset?.setupModelTask && input?.dataset?.setupModelField) {
@@ -4716,7 +5386,7 @@ window.CompanionSetup = (() => {
       render();
     }
     if (input?.dataset?.profileSupplement !== undefined) {
-      const target = state?.step === "relationships" ? "relationship_profile" : "role_profile";
+      const target = currentStep() === "relationships" ? "relationship_profile" : "role_profile";
       profileSupplement[target] = input.value;
     }
     if (input?.dataset?.profileField) {
@@ -4752,8 +5422,26 @@ window.CompanionSetup = (() => {
     state = null;
     notice = "";
     modelDraft = "";
+    modelTouched = false;
     fallbackModelDraft = "";
     fallbackModelTouched = false;
+    visionModelDraft = "";
+    visionModelTouched = false;
+    modelProbeState = null;
+    modelProbeBusy = false;
+    activeStep = "";
+    wizardReopened = false;
+    setupHealth = null;
+    setupHealthBusy = false;
+    setupTargets = null;
+    setupTargetsLoaded = false;
+    setupTargetsBusy = false;
+    setupRoleEditorOpen = false;
+    setupRoleBotKey = "";
+    setupRoleName = "";
+    setupRolePersonas = new Set();
+    setupRoleBusy = false;
+    setupRoleMessage = "";
     modelTasks = null;
     modelTasksStatus = "idle";
     modelTasksError = "";
@@ -4893,12 +5581,13 @@ window.CompanionSetup = (() => {
     const changed=[];
     if(modelDraft && modelDraft !== (state?.model?.provider_id || ''))changed.push('陪伴通用模型（全局默认）');
     if(fallbackModelTouched && fallbackModelDraft !== (state?.model?.fallback_provider_id || ''))changed.push('全局备用模型');
+    if(visionModelTouched && visionModelDraft)changed.push('识图专用模型');
     for(const [kind,values] of Object.entries(modelTaskDrafts || {})){
       const task=modelTasks?.tasks?.find(item=>item.kind===kind);
       for(const [name,value] of Object.entries(values))if(value !== task?.fields?.[name]?.value)
         changed.push(`${taskLabel(kind)} · ${name==='provider'?'主模型':'备用模型'}`);
     }
-    const target=state?.step==='relationships'?'relationship_profile':'role_profile';
+    const target=currentStep()==='relationships'?'relationship_profile':'role_profile';
     const labels=window.CompanionConfigEditors?.spec?.[target]?.labels || {};
     for(const [name,value] of Object.entries(profileFieldDrafts || {}))
       if(String(value ?? '') !== String(profileState?.[target]?.settings?.[name] ?? profileDraft?.fields?.[name] ?? ''))
@@ -4917,17 +5606,16 @@ window.CompanionSetup = (() => {
       }
       const primaryChanged = modelDraft && modelDraft !== (state?.model?.provider_id || '');
       const fallbackChanged = fallbackModelTouched && fallbackModelDraft !== (state?.model?.fallback_provider_id || '');
-      if(primaryChanged || fallbackChanged){
-        const providerId = modelDraft || state?.model?.provider_id || '';
-        const payload = {provider_id: providerId};
-        if (fallbackChanged) payload.fallback_provider_id = fallbackModelDraft === providerId ? '' : fallbackModelDraft;
-        const useInitialSetup = state?.step === 'model' && !state?.ready;
-        if (useInitialSetup) await api('POST','/model',payload);
-        else await product().request('POST','accounts/model-provider',payload);
-        fallbackModelTouched = false;
+      const visionChanged = visionModelTouched && visionModelDraft;
+      if(primaryChanged || fallbackChanged || visionChanged){
+        await saveSelectedModel({silentNotice: true});
         state=await api('GET','/status');
         modelDraft = state?.model?.provider_id || '';
+        modelTouched = false;
         fallbackModelDraft = state?.model?.fallback_provider_id || '';
+        fallbackModelTouched = false;
+        visionModelDraft = '';
+        visionModelTouched = false;
       }
       if(Object.keys(profileFieldDrafts || {}).length)await saveProfileDraft();
       return !isDirty()?true:{error:'还有所选资料未写入，请回到向导核对写入字段。'};
@@ -4936,8 +5624,11 @@ window.CompanionSetup = (() => {
   function discardChanges() {
     if(busy)return {error:'设置正在处理，请稍后切换。'};
     modelDraft=state?.model?.provider_id || '';
+    modelTouched=false;
     fallbackModelDraft=state?.model?.fallback_provider_id || '';
     fallbackModelTouched=false;
+    visionModelDraft='';
+    visionModelTouched=false;
     modelTaskDrafts={}; profileFieldDrafts={}; legacyRootDraft='';
     return true;
   }

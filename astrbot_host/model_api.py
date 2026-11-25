@@ -50,6 +50,7 @@ from .native_extensions.image_settings import read_image_settings, write_image_s
 from .settings import HostControlError
 from .native_extensions.images import IMAGE_ACTIONS
 from .reply_api import ReplyWebAPI
+from .quota_api import QuotaWebEndpoints
 from .service_balance import configured_balance_port, display_amount
 from .token_sources import read_token_sources
 from .host_token_usage import read_astrbot_token_usage
@@ -519,6 +520,7 @@ class ModelWebAPI:
         self.controller = controller
         self._balance_lock = asyncio.Lock()
         self._laya_lock = asyncio.Lock()
+        self._quota_api = QuotaWebEndpoints(self)
 
     def routes(self):
         return [
@@ -542,6 +544,7 @@ class ModelWebAPI:
             (PREFIX + "/pricing/sync-rates", self.pricing_sync_rates, ["POST"], "Refresh live USD to CNY exchange rate"),
             (PREFIX + "/pricing/sync", self.pricing_sync_catalog, ["POST"], "Sync enabled online and New API price catalog sources"),
             (PREFIX + "/pricing/sources/toggle", self.pricing_source_toggle, ["POST"], "Toggle a price catalog source"),
+            (PREFIX + "/pricing/sources/currency", self.pricing_source_currency, ["POST"], "Override New API price source currency and resync"),
             (PREFIX + "/pricing/sources/detect", self.pricing_source_detect, ["POST"], "Probe a provider for New API /api/pricing"),
             (PREFIX + "/pricing/select", self.pricing_select, ["POST"], "Persist a catalog candidate selection for a provider model"),
             (PREFIX + "/pricing/select/reset", self.pricing_select_reset, ["POST"], "Clear persisted catalog candidate selection"),
@@ -568,6 +571,7 @@ class ModelWebAPI:
             (PREFIX + "/image/output/reconnect", self.image_output_reconnect, ["POST"], "Reload the active V2 session's native providers"),
             (PREFIX + "/image/observability", self.image_observability, ["GET"], "Read image invocation outcomes and Content dashboard counts"),
             (PREFIX + "/image/review/providers", self.image_review_providers, ["GET"], "List loaded image-capable V2 providers"),
+            *self._quota_api.routes(PREFIX),
         ]
 
     async def catalog(self):
@@ -812,10 +816,17 @@ class ModelWebAPI:
 
     async def balance(self):
         try:
-            await self._run_authorized_read()
+            session, _op, _mgr, _status = await self._run_authorized_read()
+            runtime = getattr(getattr(session, "application", None), "runtime", None) or getattr(self.controller, "runtime", None)
+            runtime_root = getattr(runtime, "data_root", None)
             async with self._balance_lock:
                 try:
-                    port = configured_balance_port(self.controller.config, context=getattr(self.controller, "context", None))
+                    port = configured_balance_port(
+                        self.controller.config,
+                        context=getattr(self.controller, "context", None),
+                        runtime_root=runtime_root,
+                        controller=self.controller,
+                    )
                 except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
                     return self._response(Outcome.success({
                         "configured": True, "available": False, "provider": "unknown",
@@ -832,14 +843,18 @@ class ModelWebAPI:
                     observation = await asyncio.wait_for(port.fetch(), timeout=12)
                 except Exception as error:
                     from .service_balance import balance_failure_data
+                    meta_fn = getattr(port, "balance_metadata", None)
+                    extra_meta = meta_fn(None) if callable(meta_fn) else {"source_kind": "legacy_balance"}
                     data = {"configured": True, "available": False, "provider": port.provider,
                             "provider_label": port.provider_label, "currency_label": port.currency_label,
-                            "observed_at": None, "amount": None, **balance_failure_data(error)}
+                            "observed_at": None, "amount": None, **extra_meta, **balance_failure_data(error)}
                 else:
                     from .service_balance import balance_observation_data
+                    meta_fn = getattr(port, "balance_metadata", None)
+                    extra_meta = meta_fn(observation) if callable(meta_fn) else {"source_kind": "legacy_balance"}
                     data = {"configured": True, "available": True, "provider": port.provider,
                             "provider_label": port.provider_label, "state": "available",
-                            **balance_observation_data(port, observation)}
+                            **extra_meta, **balance_observation_data(port, observation)}
                 return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -1019,17 +1034,44 @@ class ModelWebAPI:
         key = str(Path(runtime_root).resolve())
         service = services.get(key)
         if service is None:
+            import inspect
+            from .quota_service import get_quota_watch_service
+
             def _connections():
                 _p, _s, conns = collect_provider_inventory(self.controller, session)
                 return conns
 
+            def _quota_station_resolver(origin: str):
+                try:
+                    qsvc = get_quota_watch_service(self.controller, Path(runtime_root))
+                    return qsvc.resolve_station_for_origin(origin, session=session)
+                except Exception:
+                    return None
+
+            init_kwargs: dict[str, Any] = {
+                "now": getattr(base, "now", None),
+                "proxy_resolver": lambda: read_astrbot_http_proxy(self.controller),
+                "connections_resolver": _connections,
+            }
+            try:
+                if "quota_station_resolver" in inspect.signature(PricingCatalogService.__init__).parameters:
+                    init_kwargs["quota_station_resolver"] = _quota_station_resolver
+            except (TypeError, ValueError):
+                pass
+
             service = PricingCatalogService(
                 PricingSettingsStore(Path(runtime_root)),
                 PriceCatalogStore(Path(runtime_root)),
-                now=getattr(base, "now", None),
-                proxy_resolver=lambda: read_astrbot_http_proxy(self.controller),
-                connections_resolver=_connections,
+                **init_kwargs,
             )
+            setter = getattr(service, "set_quota_station_resolver", None)
+            if callable(setter):
+                setter(_quota_station_resolver)
+            elif hasattr(service, "_quota_station_resolver"):
+                try:
+                    service._quota_station_resolver = _quota_station_resolver
+                except Exception:
+                    pass
             services[key] = service
         return service
 
@@ -1205,6 +1247,64 @@ class ModelWebAPI:
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return self._response(Outcome.failed("pricing_source_invalid", "价格源切换请求无效"))
 
+    async def pricing_source_currency(self):
+        try:
+            data = _document_optional(
+                await request.body(),
+                {"source_id", "currency_override"},
+                optional=("sync", "revision", "fiat_per_base_unit"),
+                limit=4096,
+            )
+            source_id = data["source_id"]
+            currency_override = data["currency_override"]
+            do_sync = data.get("sync", True)
+            revision = data.get("revision")
+            has_fiat_rate = "fiat_per_base_unit" in data
+            raw_fiat_rate = data.get("fiat_per_base_unit") if has_fiat_rate else ...
+            if (
+                type(source_id) is not str or not source_id.strip()
+                or type(currency_override) is not str
+                or currency_override not in ("auto", "CNY", "USD")
+                or type(do_sync) is not bool
+            ):
+                raise ValueError("invalid source currency override")
+            if revision is not None and type(revision) is not str:
+                raise ValueError("invalid revision")
+            if has_fiat_rate and raw_fiat_rate is not None:
+                if isinstance(raw_fiat_rate, bool) or type(raw_fiat_rate) not in (int, float):
+                    raise ValueError("invalid fiat_per_base_unit")
+            sid = source_id.strip()
+            session, operator, manager, _status = await self._authorize_pricing()
+            runtime = getattr(getattr(session, "application", None), "runtime", None) or self.controller.runtime
+            updated = await asyncio.to_thread(
+                self._pricing_store(runtime).set_source_currency_override,
+                sid,
+                currency_override,
+                fiat_per_base_unit=raw_fiat_rate,
+                revision=revision,
+            )
+            sync_result = None
+            if do_sync:
+                _p, _s, connections = await asyncio.to_thread(collect_provider_inventory, self.controller, session)
+                catalog_service = self._pricing_catalog_service(runtime.data_root, session)
+                sync_result = await catalog_service.sync_sources(
+                    source_ids=[sid], connections=connections
+                )
+                updated = await asyncio.to_thread(self._pricing_store(runtime).read)
+            payload = await self._build_pricing_response(session, operator, manager, runtime, updated)
+            return self._response(Outcome.success({
+                **payload,
+                "source_id": sid,
+                "currency_override": currency_override,
+                "sync": sync_result,
+            }))
+        except TaskError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except PricingSettingsError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return self._response(Outcome.failed("pricing_source_invalid", "价格源币种设置请求无效"))
+
     async def pricing_source_detect(self):
         try:
             data = _document_optional(
@@ -1227,12 +1327,14 @@ class ModelWebAPI:
             if not conn or not conn.get("api_base"):
                 return self._response(Outcome.failed("pricing_detect_unavailable", "该供应商未配置可探测的接口地址"))
             catalog_service = self._pricing_catalog_service(runtime.data_root, session)
+            prov_info = providers_by_id.get(pid) or {}
             detection = await catalog_service.detect_newapi_source(
                 provider_id=pid,
                 api_base=conn["api_base"],
                 api_key=conn.get("api_key", ""),
                 proxy=conn.get("proxy", ""),
-                supplier_label=conn.get("supplier_name") or (providers_by_id.get(pid) or {}).get("supplier_name") or pid,
+                supplier_label=conn.get("supplier_name") or prov_info.get("supplier_name") or pid,
+                cluster_id=conn.get("cluster_id") or prov_info.get("cluster_id") or pid,
                 enable=enable,
             )
             session, operator, manager, _status = await self._authorize_pricing()
@@ -1327,7 +1429,7 @@ class ModelWebAPI:
             data = _document_optional(
                 await request.body(),
                 set(),
-                optional=("expr", "tiers", "default_expr", "cluster_multiplier", "sample"),
+                optional=("expr", "tiers", "default_expr", "cluster_multiplier", "currency", "sample"),
                 limit=32_768,
             )
             session, _operator, _manager, _status = await self._authorize_pricing()
@@ -1337,6 +1439,9 @@ class ModelWebAPI:
             sample = data.get("sample")
             if sample is not None and type(sample) is not dict:
                 raise ValueError("invalid sample")
+            if "currency" in data and data["currency"] is not None:
+                if type(data["currency"]) is not str or data["currency"] not in ("USD", "CNY"):
+                    raise ValueError("invalid currency")
             rule_payload = {k: v for k, v in data.items() if k != "sample"}
             result = await asyncio.to_thread(
                 validate_tiered_expr_rule, rule_payload, usd_cny_rate=usd_cny_rate, sample=sample

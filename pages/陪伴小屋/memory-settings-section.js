@@ -64,7 +64,7 @@ window.CompanionMemorySettingsSection = (() => {
               "habit_refresh_minutes", "food_menu_recommendation_enabled"]},
   ];
 
-  let host = null, instance = null, boundPath = null;
+  let host = null, instance = null, boundPath = null, unsubscribeHint = null, hintHost = null, wbHost = null;
 
   /* memory_api 的角色根路径（相对，PREFIX 已剥掉）。 */
   function relativePath() {
@@ -76,10 +76,21 @@ window.CompanionMemorySettingsSection = (() => {
     return value;
   }
 
+  function renderHintBanner() {
+    if (!hintHost || !window.CompanionMemoryCompanionHint) return;
+    const status = window.CompanionMemoryCompanionHint.current();
+    hintHost.innerHTML = status && window.CompanionMemoryCompanionHint.needsAttention(status)
+      ? window.CompanionMemoryCompanionHint.renderCard(status, {
+          compact: true, allowDismiss: false, context: "memory-settings",
+        })
+      : "";
+  }
+
   function unmount() {
+    if (unsubscribeHint) { unsubscribeHint(); unsubscribeHint = null; }
     if (instance) instance.unmount();
     if (host) host.textContent = "";
-    instance = null; host = null; boundPath = null;
+    instance = null; host = null; boundPath = null; hintHost = null; wbHost = null;
   }
 
   function mount(element) {
@@ -103,6 +114,21 @@ window.CompanionMemorySettingsSection = (() => {
       return;
     }
     boundPath = path;
+    let targetHost = host;
+    if (window.CompanionMemoryCompanionHint && typeof document?.createElement === "function"
+        && typeof host.appendChild === "function") {
+      host.textContent = "";
+      hintHost = document.createElement("div");
+      wbHost = document.createElement("div");
+      host.appendChild(hintHost);
+      host.appendChild(wbHost);
+      targetHost = wbHost;
+      renderHintBanner();
+      unsubscribeHint = window.CompanionMemoryCompanionHint.subscribe(() => renderHintBanner());
+      if (!window.CompanionMemoryCompanionHint.current()) {
+        void window.CompanionMemoryCompanionHint.load().then(() => renderHintBanner());
+      }
+    }
     instance = window.CompanionWorkbench.create({
       group: "memory",
       title: "整理策略",
@@ -122,7 +148,7 @@ window.CompanionMemorySettingsSection = (() => {
       sendTokenKey: "expected_edit_token",
       resetKey: "reset_to_inherit",
       outbound: name => "memory." + name,
-      mount: () => host,
+      mount: () => targetHost,
     });
     instance.mount();
   }

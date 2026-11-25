@@ -19,7 +19,7 @@ from companion_v2.role_work.journal.models import JournalKind
 
 from .calendar_work import require_window, reserve_routine_slot, routine_for
 from .configuration import GROUP, target_for, values
-from .scheduling import next_bedtime
+from .scheduling import next_bedtime, sleep_due_window_expired
 
 
 class RoleLifeRuntime:
@@ -44,6 +44,11 @@ class RoleLifeRuntime:
         scope = context.scope
         return (scope.installation_id, scope.platform, scope.bot_id, scope.account_id,
                 scope.native_scope_id, context.role_binding.role.subject_id)
+
+    @staticmethod
+    def wake_key(activity):
+        # A snooze changes the revision and wake time of the same activity.
+        return f"wake:{activity.activity_id}:{activity.revision}"
 
     def bind(self, context, role_instruction, *, guard=None):
         # Unrelated grant changes advance policy_revision without changing the
@@ -129,13 +134,16 @@ class RoleLifeRuntime:
         return a
 
     def _projected_sleep_at(self, settings, now):
-        return next_bedtime(
-            now,
-            self.owner,
-            settings["sleep_timezone"],
-            time.fromisoformat(settings["sleep_time"]),
-            settings["sleep_variation_minutes"],
-        )
+        zone = settings["sleep_timezone"]
+        bedtime_args = (self.owner, zone, time.fromisoformat(settings["sleep_time"]),
+                        settings["sleep_variation_minutes"])
+        window = timedelta(minutes=settings["sleep_window_minutes"])
+        due = next_bedtime(now - window, *bedtime_args)
+        if due <= now:
+            due_day = due.astimezone(ZoneInfo(zone)).date()
+            if self.app.role_state.body_clock.scheduled_sleep(self.context, "daily-sleep-" + due_day.isoformat()):
+                return next_bedtime(now + timedelta(microseconds=1), *bedtime_args)
+        return due
 
     def sleep_projection(self, *, now=None):
         """Read sleep eligibility and next bedtime without writes or state mutation."""
@@ -163,26 +171,25 @@ class RoleLifeRuntime:
             return
         settings = values(snapshot)
         generation = self.app.life_runtime.consumer_generation()
-        if self._revision is not None:
+        if self.schedule_id in self.app.journal_schedule._schedules:
             self.app.journal_schedule.remove(self.schedule_id)
-        self.settings, self._revision = settings, snapshot.resolution_token
+        self.settings = settings
         self._next_sleep = self._next_wake = self._next_calendar_work = self.next_reading_at = None
         self.failure_code = None
         if not settings["enabled"]:
             self.cancel_running()
-            require(self.app.configuration.report_application(self.context.actor, snapshot=snapshot,
-                generation=generation, succeeded=True, observed_at=self.app.now()))
-            return
-        self.authorize()
-        if settings["diary_enabled"]:
-            event = self.event("routine-registration", "管理员启用了本窗口的私人日记日程；这不是用户发来的聊天。")
-            require(self.app.journal_schedule.register_daily(self.schedule_id, self.context, event,
-                role_instruction=self.instruction, timezone=settings["timezone"], local_time=settings["diary_time"]))
-        if settings["sleep_enabled"]:
-            self._next_sleep = self._projected_sleep_at(settings, self.app.now())
-            self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
+        else:
+            self.authorize()
+            if settings["diary_enabled"]:
+                event = self.event("routine-registration", "管理员启用了本窗口的私人日记日程；这不是用户发来的聊天。")
+                require(self.app.journal_schedule.register_daily(self.schedule_id, self.context, event,
+                    role_instruction=self.instruction, timezone=settings["timezone"], local_time=settings["diary_time"]))
+            if settings["sleep_enabled"]:
+                self._next_sleep = self._projected_sleep_at(settings, self.app.now())
+                self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
         require(self.app.configuration.report_application(self.context.actor, snapshot=snapshot,
             generation=generation, succeeded=True, observed_at=self.app.now()))
+        self._revision = snapshot.resolution_token
 
     def start_sleep(self, request_id, minutes, *, label="角色开始一段睡眠", sleep_kind="manual"):
         with self.runtime.transaction():
@@ -200,13 +207,19 @@ class RoleLifeRuntime:
         except TaskError as error:
             if error.code != "life_activity_unavailable":
                 raise
-        if self.app.role_state.body_clock.pending_sleep(self.context):
+        clock = self.app.role_state.body_clock
+        if sleep_kind == "night":
+            previous = clock.scheduled_sleep(self.context, request_id)
+            if previous is not None:
+                return previous
+        if clock.pending_sleep(self.context):
             raise TaskError("life_already_sleeping", "there is already an active sleep")
-        if self.app.role_state.body_clock.active(self.context, "reading"):
+        if clock.active(self.context, "reading"):
             raise TaskError("life_reading_active", "wait for the current reading or cancel it before sleeping")
         now = self.app.now()
         base_need = self.settings["sleep_minutes"] if self.settings else minutes
-        profile = self.app.role_state.body_clock.profile(self.context, now=now)
+        sleep_enabled = self.settings["sleep_enabled"] if self.settings else None
+        profile = clock.profile(self.context, now=now, sleep_enabled=sleep_enabled)
         target = (25 if sleep_kind == "nap" else recommended_sleep_minutes(base_need,
             profile["sleep_debt_minutes"], profile["workload_score"])) if sleep_kind != "manual" else minutes
         receipt = sleep_receipt(kind=sleep_kind, base_need_minutes=base_need, target_minutes=target,
@@ -216,6 +229,30 @@ class RoleLifeRuntime:
             self.context.scope, now, State.ACTIVE, description=label, work=work, sleep=receipt))
         self.app.notify()
         return saved
+
+    def _start_due_night_sleep(self, now):
+        due = self._next_sleep
+        if due is None or due > now or not self.app.life_runtime.owns_sleep_schedule(self):
+            return False
+        settings = self.settings
+        timezone_id = settings["sleep_timezone"]
+        zone = ZoneInfo(timezone_id)
+        bedtime = time.fromisoformat(settings["sleep_time"])
+        due_local = due.astimezone(zone)
+        closes_at = due + timedelta(minutes=settings["sleep_window_minutes"])
+        if sleep_due_window_expired(now, due, window_minutes=settings["sleep_window_minutes"],
+                                    sleep_minutes=settings["sleep_minutes"]):
+            self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, timezone_id, bedtime,
+                                            settings["sleep_variation_minutes"])
+            self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
+            return False
+        if now < closes_at and not night_sleep_ready(self.app.role_state.body_clock.profile(self.context, now=now)):
+            return False
+        self.start_sleep("daily-sleep-" + due_local.date().isoformat(), settings["sleep_minutes"], sleep_kind="night")
+        self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, timezone_id, bedtime,
+                                        settings["sleep_variation_minutes"])
+        self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
+        return True
 
     def wake(self, identifier, *, expected_revision, operation_id):
         self.authorize()
@@ -365,7 +402,7 @@ class RoleLifeRuntime:
             now = self.app.now()
             self.app.role_state.body_clock.resume_due(self.context, observed_at=now)
             for sleeping in self.app.role_state.body_clock.active(self.context, "sleep"):
-                wake_key = "wake:" + sleeping.activity_id
+                wake_key = self.wake_key(sleeping)
                 if (sleeping.work.due_at <= now and wake_key not in self._workers
                         and wake_key not in self.results):
                     self.launch(wake_key, self._wake_shared_due, timeout_seconds=30)
@@ -382,22 +419,8 @@ class RoleLifeRuntime:
                     self.launch(a.activity_id, lambda a=a: self.dream(a))
             pending_sleep = self.app.role_state.body_clock.pending_sleep(self.context)
             busy = self._workers or any(a.state is State.ACTIVE for a in records) or pending_sleep
-            if (self._next_sleep is not None and self._next_sleep <= now and not busy
-                    and self.app.life_runtime.owns_sleep_schedule(self)):
-                zone = self.settings["sleep_timezone"]
-                local_now = now.astimezone(ZoneInfo(zone))
-                due_day = self._next_sleep.astimezone(ZoneInfo(zone)).date()
-                if not (due_day != local_now.date()
-                        and local_now.time().replace(tzinfo=None) < time.fromisoformat(self.settings["sleep_time"])):
-                    profile = self.app.role_state.body_clock.profile(self.context, now=now)
-                    window_closed = now >= self._next_sleep + timedelta(minutes=self.settings["sleep_window_minutes"])
-                    if night_sleep_ready(profile) or window_closed:
-                        self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, zone,
-                            time.fromisoformat(self.settings["sleep_time"]), self.settings["sleep_variation_minutes"])
-                        self._next_wake = self._next_sleep + timedelta(minutes=self.settings["sleep_minutes"])
-                        self.start_sleep("daily-sleep-" + due_day.isoformat(),
-                            self.settings["sleep_minutes"], sleep_kind="night")
-                        return
+            if not busy and self._start_due_night_sleep(now):
+                return
             local_now = now.astimezone(ZoneInfo(self.settings["sleep_timezone"]))
             profile = self.app.role_state.body_clock.profile(self.context, now=now)
             if (self.settings["sleep_enabled"] and not busy
@@ -444,9 +467,12 @@ class RoleLifeRuntime:
             if pending and item["start"] > stamp(now) and routine_for(item) == "reading"), None)
         current = [item for item in page["items"]
                    if item["state"] == "accepted" and item["start"] <= stamp(now)]
-        # Leave an overlapping commitment or other planned activity its time.
-        if page["scan_truncated"] or any(routine_for(item) is None for item in current):
+        # Leave an overlapping commitment its time, without letting an unrelated
+        # role_plan suppress an explicitly scheduled reading or writing slot.
+        if page["scan_truncated"] or any(item.get("kind") == "commitment" for item in current):
             current = []
+        else:
+            current = [item for item in current if routine_for(item) is not None]
         writing = any(key.startswith("writing:") for other in self.app.life_runtime.routines.values()
                       if other.owner == self.owner for key in other._workers)
         if writing or self.app.role_state.body_clock.active(context, "reading"):
@@ -456,8 +482,16 @@ class RoleLifeRuntime:
                 if routine_for(item) != "writing":
                     continue
                 key = "writing:" + item["id"] + ":" + str(item["sequence"])
-                if (key not in self.results and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
+                prior = self.results.get(key)
+                retryable_prior = (
+                    prior is not None
+                    and getattr(prior, "failure", None) is not None
+                    and getattr(writer, "is_retryable_failure", lambda _: False)(prior.failure.code)
+                )
+                if ((prior is None or retryable_prior)
+                        and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
                         and writer.ready(context, item)):
+                    self.results.pop(key, None)
                     self.launch(key, lambda: writer.run(self, item))
                     return
         if (writer is not None and (self._next_writing_plan_check is None or now >= self._next_writing_plan_check)

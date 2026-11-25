@@ -516,5 +516,107 @@ class CoreReplyVideoStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parts[0].text, "今晚想吃什么")
 
 
+class CoreReplyAnimatedImageOptimizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_astrbot_montage_skips_duplicate_notice_across_separate_host_parts(self):
+        from astrbot_host.core_reply_perception import _astrbot_montage_notice_state
+
+        event = Event()
+        turn = prepared()
+        turn["astrbot_animated_image_understanding_enabled"] = True
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": turn}
+        request = NS(
+            system_prompt="AstrBot 人格",
+            model=None,
+            image_urls=["https://example.invalid/montage.jpg"],
+            audio_urls=[],
+            func_tool=None,
+            extra_user_content_parts=[
+                TextPart(
+                    text="[Image 1: original path /tmp/demo.gif; animation converted to a 3x3 frame montage]"
+                ),
+                TextPart(
+                    text="<system_notice>\n"
+                    "Images labeled as animation montages contain frames in reading order. "
+                    "Treat them as animations; do not mention the conversion or frame layout.\n"
+                    "</system_notice>"
+                ),
+            ],
+        )
+        self.assertEqual(_astrbot_montage_notice_state(request), (True, True))
+        await inject_core_reply_perception_context(event, request)
+        payload = context_payload(request)
+        self.assertNotIn("astrbot_animated_image_understanding", payload)
+
+    async def test_astrbot_montage_injects_notice_when_host_has_no_montage_system_notice(self):
+        from astrbot_host.core_reply_perception import _astrbot_montage_notice_state
+        from companion_v2.conversation.media.understanding import ASTRBOT_ANIMATED_IMAGE_INSTRUCTION
+
+        event = Event()
+        turn = prepared()
+        turn["astrbot_animated_image_understanding_enabled"] = True
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": turn}
+        request = NS(
+            system_prompt="AstrBot 人格",
+            model=None,
+            image_urls=["https://example.invalid/montage.jpg"],
+            audio_urls=[],
+            func_tool=None,
+            extra_user_content_parts=[
+                TextPart(
+                    text="[Image 1: original path /tmp/demo.gif; animation converted to a 3x3 frame montage]"
+                ),
+                # An unrelated oversized-image notice must NOT suppress the montage instruction.
+                TextPart(
+                    text="<system_notice>\n"
+                    "For skipped images, use astrbot_file_read_tool if available, "
+                    "or ask the user to resend a smaller image.\n"
+                    "</system_notice>"
+                ),
+            ],
+        )
+        self.assertEqual(_astrbot_montage_notice_state(request), (True, False))
+        await inject_core_reply_perception_context(event, request)
+        payload = context_payload(request)
+        self.assertEqual(
+            payload["astrbot_animated_image_understanding"]["state"],
+            "astrbot_montage_detected",
+        )
+        self.assertEqual(
+            payload["astrbot_animated_image_understanding"]["instruction"],
+            ASTRBOT_ANIMATED_IMAGE_INSTRUCTION,
+        )
+
+    def test_animated_image_file_detects_gif_apng_and_webp_and_ignores_static(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from PIL import Image
+        from astrbot_host.core_reply_perception import _animated_gif_file
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frame_a = Image.new("RGBA", (8, 8), (255, 0, 0, 255))
+            frame_b = Image.new("RGBA", (8, 8), (0, 0, 255, 255))
+
+            anim_gif = root / "anim.gif"
+            frame_a.save(anim_gif, save_all=True, append_images=[frame_b], duration=100, loop=0)
+            self.assertTrue(_animated_gif_file(anim_gif))
+
+            anim_apng = root / "anim.png"
+            frame_a.save(anim_apng, format="PNG", save_all=True, append_images=[frame_b], duration=100, loop=0)
+            self.assertTrue(_animated_gif_file(anim_apng))
+
+            static_png = root / "static.png"
+            frame_a.save(static_png, format="PNG")
+            self.assertFalse(_animated_gif_file(static_png))
+
+            anim_webp = root / "anim.webp"
+            frame_a.save(anim_webp, format="WEBP", save_all=True, append_images=[frame_b], duration=100, loop=0)
+            self.assertTrue(_animated_gif_file(anim_webp))
+
+            static_webp = root / "static.webp"
+            frame_a.save(static_webp, format="WEBP")
+            self.assertFalse(_animated_gif_file(static_webp))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,7 @@ function status() {
   };
 }
 
-function harness(requestOverride) {
+function harness(requestOverride, productOverrides = {}) {
   const requests = [];
   const listeners = new Map();
   const fields = new Map();
@@ -68,6 +68,7 @@ function harness(requestOverride) {
     },
   };
   const product = {
+    ...productOverrides,
     request: requestOverride || (async (method, route, body, options) => {
       requests.push({method, route, body, options});
       if (route === "huawei-health/status") return status();
@@ -170,4 +171,35 @@ test("trust choices call the existing backend route", async () => {
   await flush();
   const trust = requests.find(item => item.route === "huawei-health/login/trust");
   assert.equal(JSON.stringify(trust?.body), JSON.stringify({choice: "later"}));
+});
+
+test("multi-host switches read and write only the selected private role", async () => {
+  const requests = [];
+  const scoped = "targets/private/roles/character/perception-native";
+  let role;
+  const {root, page} = harness(async (method, route, body) => {
+    requests.push({method, route, body});
+    if (route === "huawei-health/status") return status();
+    if (route === scoped) return {model: {edit_token: "role-token", settings: {health_enabled: false}}};
+    return {ok: true};
+  }, {
+    hosted: () => true, role: () => role,
+    relative: path => path.replace("/astrbot_plugin_private_companion/", ""),
+  });
+  await flush();
+  assert.deepEqual(requests.map(item => item.route), ["huawei-health/status"]);
+  assert.doesNotMatch(root.innerHTML, /data-hw-perception-field/);
+
+  role = {perception_native_api: "/astrbot_plugin_private_companion/" + scoped};
+  page.mount(root);
+  await flush();
+  assert.match(root.innerHTML, /健康摘要进入当前私聊/);
+  root.dispatch("change", {target: {dataset: {hwPerceptionField: "health_enabled"}, checked: true}});
+  await flush();
+  const write = requests.find(item => item.method === "POST");
+  assert.equal(write?.route, scoped + "/configure");
+  assert.equal(write.body.command.edit_token, "role-token");
+  assert.equal(write.body.command.changes.health_enabled, true);
+  assert.ok(!requests.some(item => item.route.startsWith("perception-native")));
+  page.unmount();
 });

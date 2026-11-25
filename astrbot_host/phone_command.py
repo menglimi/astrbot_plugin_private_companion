@@ -1,4 +1,4 @@
-"""Handle a checkout decision directly from the authenticated private message."""
+"""Handle explicit phone commands in the authenticated private chat."""
 
 import re
 
@@ -13,14 +13,21 @@ from .recalls import authenticate_notice_route
 
 
 PATTERN = re.compile(rf"({APPROVAL_COMMAND}|{CANCEL_COMMAND})[ \t]+([0-9a-f]{{10}})")
+SCREEN_COMMANDS = frozenset(("手机屏幕", "查看手机屏幕", "看看手机屏幕", "手机现在显示什么"))
+SCREEN_FAILURES = {
+    "phone_disabled": "请先在「手机使用」里启用 ADB 手机。",
+    "phone_subject_denied": "当前私聊未获得手机读取权限。",
+    "phone_busy": "手机正在执行另一个任务，结束后可以查看画面。",
+}
 
 
-async def receive_phone_confirmation(controller, event, *, target):
+async def receive_phone_command(controller, event, *, target):
     if not is_private_message(event):
         return None
     command = message_text(event).strip()
+    screen_read = command.rstrip("。？?！!").strip() in SCREEN_COMMANDS
     match = PATTERN.fullmatch(command)
-    if match is None and command not in (QUICK_APPROVAL, CANCEL_COMMAND):
+    if not screen_read and match is None and command not in (QUICK_APPROVAL, CANCEL_COMMAND):
         return None
     session = controller.session
     if session is None or not controller.claims(event):
@@ -43,15 +50,22 @@ async def receive_phone_confirmation(controller, event, *, target):
             raise TaskError("phone_checkout_unavailable", "the event differs from the checkout requester")
         if captured.text.strip() != command:
             raise TaskError("phone_checkout_unavailable", "the command is not the original private message")
+        service = session.application.phone_actions
+        if screen_read:
+            service.create_screen_read(context, "手机当前显示什么？", request_id=captured.event_id)
+            return Outcome.success("phone-screen:queued")
         approve = command == QUICK_APPROVAL if match is None else match[1] == APPROVAL_COMMAND
         token = match[2] if match is not None else None
-        session.application.phone_actions.answer_checkout(context, token, approve=approve, received_at=captured.at)
+        service.answer_checkout(context, token, approve=approve, received_at=captured.at)
         text = "收到确认，我会先核对手机上的订单。" if approve else "已取消这次手机订单操作。"
-    except TaskError:
+    except TaskError as error:
         if not route:
             return Outcome.failed("phone_checkout_unavailable", "there is no active private route")
-        text = "当前私聊没有可确认的订单。请先让 Bot 核对结账页并发出订单回执。"
+        if screen_read:
+            text = SCREEN_FAILURES.get(error.code, "当前私聊暂时无法读取手机画面。")
+        else:
+            text = "当前私聊没有可确认的订单。请先让 Bot 核对结账页并发出订单回执。"
     receipt = await send_private_notice(controller, event, text=text, route=route)
     if receipt.get("state") != "delivered":
         return Outcome.failed("phone_checkout_reply_not_sent", "checkout status could not be delivered")
-    return Outcome.success("phone-checkout:received")
+    return Outcome.success("phone-screen:unavailable" if screen_read else "phone-checkout:received")

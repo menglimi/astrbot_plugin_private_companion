@@ -3325,26 +3325,162 @@ window.CompanionMaintenancePage = (() => {
       '</div><p class="maint-cache-table-note">材料文本 + 不含材料文本的消息估算 + system + 工具文本。各项按同一批请求合计；含消息包装结构估算，不含多模态载荷 Token。估算不替代 Provider 实际用量。</p></section></section>';
   }
 
+  function formatUpstreamCost(amount, displayType, symbol) {
+    const n = Number(amount);
+    if (!Number.isFinite(n)) return "—";
+    const dt = String(displayType || "USD").toUpperCase();
+    if (dt === "TOKENS") return number(Math.round(n)) + " tokens";
+    if (dt === "CREDIT") return n.toLocaleString("zh-CN", {maximumFractionDigits: 4}) + " " + (symbol || "credit");
+    const sym = symbol || (dt === "USD" ? "$" : "¥");
+    return sym + n.toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 4});
+  }
+
+  function upstreamReconcileMarkup() {
+    const data = state.upstreamData;
+    const openAttr = state.upstreamOpen ? " open" : "";
+    let body = "";
+    if (state.upstreamOpen) {
+      if (state.upstreamLoading && !data) {
+        body = '<p class="maint-upstream-empty">正在向中转站拉取近期消费日志对照（只读，最多 5 页 / 200 条）…</p>';
+      } else if (state.upstreamError) {
+        body = '<div class="maint-upstream-empty is-error"><span>' + escapeHtml(state.upstreamError) + '</span>' +
+          '<button type="button" class="maint-balance-query" data-upstream-refresh>重试拉取</button></div>';
+      } else if (!data || !(data.stations || []).length) {
+        body = '<div class="maint-upstream-empty"><span>尚未在额度看板配置已启用的 NewAPI / OneAPI 站点；前往额度看板添加后即可在此对照上游真实扣费。</span>' +
+          '<button type="button" class="maint-balance-open" data-go="manage" data-manage="models" data-manage-subtab="quota">前往额度看板 ↗</button></div>';
+      } else {
+        const dt = data.display_type || "USD";
+        const sym = data.symbol || "";
+        const fiatCur = data.inferred_fiat_currency || "";
+        const fiatSym = fiatCur === "USD" ? "$" : "¥";
+        const fiatNote = (val) => (dt === "CREDIT" && val != null && fiatCur)
+          ? "（≈ " + fiatSym + Number(val).toFixed(2) + "）" : "";
+        const groups = Object.entries(data.observed_groups || {})
+          .map(([g, r]) => escapeHtml(g) + " ×" + escapeHtml(String(r)))
+          .join(" · ") || "未上报";
+        const stationOpts = (data.stations || []).map(st =>
+          '<option value="' + escapeHtml(st.id) + '"' + (st.id === data.station_id ? " selected" : "") + '>' + escapeHtml(st.name) + '</option>'
+        ).join("");
+        const daysOpts = [1, 7, 14, 30].map(d =>
+          '<option value="' + d + '"' + (Number(data.days || state.upstreamDays) === d ? " selected" : "") + '>近 ' + d + ' 天</option>'
+        ).join("");
+        const tokenOpts = '<option value="">全部 API 密钥</option>' + (data.token_names || []).map(tn =>
+          '<option value="' + escapeHtml(tn) + '"' + (tn === (data.token_name || "") ? " selected" : "") + '>' + escapeHtml(tn) + '</option>'
+        ).join("");
+
+        const rowsHtml = (data.items || []).slice(0, 10).map(item =>
+          '<tr>' +
+            '<td>' + escapeHtml(item.model_name || "—") + '</td>' +
+            '<td><span class="maint-upstream-pill' + (item.billing_source === "subscription" ? " is-sub" : "") + '">' +
+              (item.billing_source === "subscription" ? "订阅套餐" : "钱包余额") + '</span></td>' +
+            '<td>' + escapeHtml(item.token_name || "—") + '</td>' +
+            '<td class="maint-num">' + number(item.cache_tokens || 0) + '</td>' +
+            '<td class="maint-num">' + escapeHtml(formatUpstreamCost(item.cost, dt, sym)) + '</td>' +
+          '</tr>'
+        ).join("");
+
+        body =
+          '<div class="maint-upstream-controls">' +
+            '<label><span>中转站点</span><select data-upstream-station>' + stationOpts + '</select></label>' +
+            '<label><span>时间范围</span><select data-upstream-days>' + daysOpts + '</select></label>' +
+            '<label><span>密钥筛选</span><select data-upstream-token>' + tokenOpts + '</select></label>' +
+            '<button type="button" class="maint-balance-query" data-upstream-refresh ' + (state.upstreamLoading ? "disabled" : "") + '>' +
+              (state.upstreamLoading ? "拉取中…" : "刷新账单") + '</button>' +
+          '</div>' +
+          '<div class="maint-upstream-kpis">' +
+            '<div><span>钱包实扣</span><strong class="maint-num">' + escapeHtml(formatUpstreamCost(data.wallet_cost, dt, sym)) + '</strong>' +
+              '<small>' + number(data.wallet_calls || 0) + ' 次' + escapeHtml(fiatNote(data.wallet_fiat_cost)) + '</small></div>' +
+            '<div><span>订阅套餐实扣</span><strong class="maint-num">' + escapeHtml(formatUpstreamCost(data.subscription_cost, dt, sym)) + '</strong>' +
+              '<small>' + number(data.subscription_calls || 0) + ' 次' + escapeHtml(fiatNote(data.subscription_fiat_cost)) + '</small></div>' +
+            '<div><span>上游缓存命中率</span><strong class="maint-num">' + percent(data.cache_hit_rate || 0) + '</strong>' +
+              '<small>命中 ' + number(data.cache_tokens || 0) + ' / 输入 ' + number(data.prompt_tokens || 0) + '</small></div>' +
+            '<div><span>实扣分组倍率</span><strong>' + groups + '</strong>' +
+              '<small>样本 ' + number(data.total_calls || 0) + ' 条' + (data.truncated ? "（已截断上限 200 条）" : "") + '</small></div>' +
+          '</div>' +
+          (rowsHtml
+            ? '<div class="maint-upstream-table-wrap"><table class="maint-upstream-table"><thead><tr><th>模型</th><th>扣费渠道</th><th>密钥</th><th>缓存命中</th><th>上游实扣</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>'
+            : '<p class="maint-upstream-empty">所选时间与密钥范围内暂无上游消费记录。</p>') +
+          '<p class="maint-upstream-note">数据来自中转站 /api/log/self 只读对照（最多 5 页 / 200 条，缓存 5 分钟），反映站点账号级真实扣费，绝不计入角色本地账本与预算。</p>';
+      }
+    }
+    return '<details class="maint-upstream-reconcile" data-upstream-reconcile' + openAttr + '>' +
+      '<summary data-upstream-toggle><span class="maint-upstream-title">中转站上游账单对照（只读）</span>' +
+      '<span class="maint-upstream-scope">站点账号级口径 · 不计入角色本地账本与预算</span></summary>' +
+      '<div class="maint-upstream-body">' + body + '</div></details>';
+  }
+
   function balanceMarkup() {
     const balance = state.balance || {};
+    const isQuotaBoard = balance.source_kind === "quota_dashboard" || balance.provider === "multi_station";
     const providerLabel = balance.provider_label || "NewAPI";
-    const title = providerLabel === "服务余额" ? "服务账户余额" : providerLabel + " 账户余额";
+    const awarenessMode = balance.awareness_mode || "primary";
+    const stationName = String(balance.station_name || balance.plan_name || "").trim();
+
+    let eyebrow = "ACCOUNT BALANCE";
+    let title = providerLabel === "服务余额" ? "服务账户余额" : providerLabel + " 账户余额";
+    let modeBadge = "";
+    if (isQuotaBoard) {
+      eyebrow = "ACCOUNT BALANCE · 额度看板";
+      if (awarenessMode === "aggregate_sum") {
+        title = "多站点汇总余额";
+        modeBadge = balance.participating_count ? "汇总 " + balance.participating_count + " 站" : "多站汇总";
+      } else if (awarenessMode === "any_low") {
+        title = stationName || "额度看板站点";
+        modeBadge = "优先关注";
+      } else {
+        title = stationName || "额度看板站点";
+        modeBadge = balance.is_primary_explicit === false ? "默认主站" : "主站";
+      }
+    }
+
     const status = !state.balanceLoaded ? "尚未查询" : !balance.configured ? "未配置"
       : balance.available ? "已连接" : balance.state === "configuration_invalid" ? "配置无效" : "查询失败";
-    const value = balance.available
-      ? balance.amount == null || String(balance.amount).trim() === "" ? "未提供余额" : balanceAmount(balance.amount) + " " + (balance.currency_label || "额度")
-      : status;
-    const detail = !state.balanceLoaded ? "读取已配置的模型服务余额；查询结果与 本插件角色预算分开显示。"
+
+    let value = status;
+    if (balance.available) {
+      if (balance.amount == null || String(balance.amount).trim() === "") {
+        value = "未提供余额";
+      } else if (isQuotaBoard && (balance.currency_symbol === "¥" || balance.currency_symbol === "$")) {
+        value = balance.currency_symbol + balanceAmount(balance.amount);
+      } else if (isQuotaBoard && balance.currency_symbol) {
+        value = balanceAmount(balance.amount) + " " + balance.currency_symbol;
+      } else {
+        value = balanceAmount(balance.amount) + " " + (balance.currency_label || "额度");
+      }
+    }
+
+    let detail = !state.balanceLoaded ? "读取已配置的模型服务余额；查询结果与 本插件角色预算分开显示。"
       : !balance.configured ? "未配置余额端点；NewAPI 需要单独的用户访问令牌。"
       : balance.available ? "查询于 " + time(balance.observed_at) + "；不会并入 本插件角色预算。"
       : balance.state === "configuration_invalid" ? "余额查询配置无效，请检查余额查询配置。"
       : "查询失败，请检查 HTTPS 地址、访问令牌与额度单位配置。";
-    return '<div class="maint-balance-availability" data-state="' + (balance.available ? "ok" : balance.configured ? "warn" : "unknown") + '">' +
-      '<div><i data-lucide="wallet-cards"></i><span><small>ACCOUNT BALANCE</small><strong>' + escapeHtml(title) + '</strong></span></div>' +
+
+    if (isQuotaBoard && state.balanceLoaded && balance.configured) {
+      if (balance.available) {
+        const obsPart = "查询于 " + time(balance.observed_at);
+        if (awarenessMode === "aggregate_sum" && balance.extra) {
+          detail = balance.extra + " · " + obsPart + "；不会并入本插件角色预算。";
+        } else if (balance.participating_count > 1) {
+          detail = obsPart + " · 共监测 " + balance.participating_count + " 站；不会并入本插件角色预算。";
+        } else {
+          detail = obsPart + "；不会并入本插件角色预算。";
+        }
+      } else if (stationName) {
+        detail = "站点「" + stationName + "」余额暂不可用，点击可前往额度看板检查配置。";
+      }
+    }
+
+    const ariaTarget = isQuotaBoard ? (stationName || "额度看板") : providerLabel;
+    return '<div class="maint-balance-availability" data-balance-card-jump="quota" data-state="' + (balance.available ? "ok" : balance.configured ? "warn" : "unknown") + '">' +
+      '<div><i data-lucide="wallet-cards"></i><span><small>' + escapeHtml(eyebrow) + '</small><strong>' + escapeHtml(title) +
+      (modeBadge ? '<span class="maint-balance-badge">' + escapeHtml(modeBadge) + '</span>' : '') + '</strong></span></div>' +
       '<p><b>' + escapeHtml(value) + '</b><span>' + escapeHtml(detail) + '</span></p>' +
+      '<div class="maint-balance-actions">' +
       '<button class="maint-balance-query" type="button" data-balance-refresh ' + (state.balanceLoading ? "disabled" : "") +
-      ' aria-label="查询 ' + escapeHtml(providerLabel) + ' 账户余额" title="查询账户余额"><i data-lucide="refresh-cw"></i><span>' +
-      (state.balanceLoading ? "查询中" : state.balanceLoaded ? "重新查询" : "查询余额") + '</span></button></div>';
+      ' aria-label="查询 ' + escapeHtml(ariaTarget) + ' 账户余额" title="查询账户余额"><i data-lucide="refresh-cw"></i><span>' +
+      (state.balanceLoading ? "查询中" : state.balanceLoaded ? "重新查询" : "查询余额") + '</span></button>' +
+      '<button class="maint-balance-open" type="button" data-balance-open-quota data-go="manage" data-manage="models" data-manage-subtab="quota" title="前往模型与连接 · 额度看板"><span>额度看板 ↗</span></button>' +
+      '</div></div>';
   }
 
   function tokenDashboardControlsMarkup(today, roleData) {
@@ -3448,7 +3584,8 @@ window.CompanionMaintenancePage = (() => {
       '<section class="maint-history-panel maint-token-details" id="maint-history"><div class="maint-subhead"><div><strong>调用与用量明细</strong><span>Provider 回执和本地计价分列展示</span></div>' + pricingControlsMarkup() + '</div>' +
       tokenDetailTabsMarkup(activeDetail, [["daily", "每日明细"], ["providers", "Provider 明细"], ["tasks", "任务明细"], ["recent", "最近调用"]]) +
       tokenDetailPanel("daily", activeDetail, historyMarkup(data)) + tokenDetailPanel("providers", activeDetail, detailTable(providerRows, "providers")) +
-      tokenDetailPanel("tasks", activeDetail, detailTable(taskRows, "tasks")) + tokenDetailPanel("recent", activeDetail, recentPreviewMarkup(data)) + '</section>';
+      tokenDetailPanel("tasks", activeDetail, detailTable(taskRows, "tasks")) + tokenDetailPanel("recent", activeDetail, recentPreviewMarkup(data)) + '</section>' +
+      (state.tokenSource === "companion" ? upstreamReconcileMarkup() : "");
   }
 
   function efficiencyDuration(value) {
@@ -4274,6 +4411,35 @@ window.CompanionMaintenancePage = (() => {
     }
   }
 
+  async function loadUpstreamLogs({force = false} = {}) {
+    if (!state || state.upstreamLoading) return;
+    const current = state;
+    const ticket = generation;
+    current.upstreamLoading = true;
+    current.upstreamError = "";
+    render();
+    try {
+      const qs = new URLSearchParams();
+      if (current.upstreamStationId) qs.set("station_id", current.upstreamStationId);
+      qs.set("days", String(current.upstreamDays || 7));
+      if (current.upstreamTokenName) qs.set("token_name", current.upstreamTokenName);
+      if (force) qs.set("force", "1");
+      const res = await api("GET", modelPath() + "/quota/upstream-logs?" + qs.toString());
+      if (ticket !== generation || state !== current) return;
+      current.upstreamData = res;
+      current.upstreamLoaded = true;
+      if (res?.station_id) current.upstreamStationId = res.station_id;
+    } catch (error) {
+      if (ticket !== generation || state !== current) return;
+      current.upstreamError = error?.message || "无法读取上游账单对照日志。";
+    } finally {
+      if (ticket === generation && state === current) {
+        current.upstreamLoading = false;
+        render();
+      }
+    }
+  }
+
   async function probe() {
     if (!state || state.testing || !state.provider) return;
     const current = state;
@@ -4782,7 +4948,30 @@ window.CompanionMaintenancePage = (() => {
     const currencyBtn = target.closest("[data-currency-switch]");
     if (currencyBtn && state) { void switchCurrency(currencyBtn.dataset.currencySwitch); return; }
     if (target.closest("[data-pricing-sync-rates]")) { void syncExchangeRates(); return; }
-    if (target.closest("[data-balance-refresh]")) { void refreshBalance(); return; }
+    if (target.closest("[data-balance-refresh]")) { event.stopPropagation?.(); void refreshBalance(); return; }
+    if (target.closest("[data-balance-open-quota]")) { return; }
+    if (target.closest('[data-balance-card-jump="quota"]')) {
+      if (target.closest("button, a, input, select, summary")) return;
+      const selected = typeof window !== "undefined" && typeof window.getSelection === "function"
+        ? String(window.getSelection() || "").trim()
+        : "";
+      if (!selected) window.navigate?.("manage", "models", "quota");
+      return;
+    }
+    if (target.closest("[data-upstream-toggle]") && state) {
+      event.preventDefault?.();
+      state.upstreamOpen = !state.upstreamOpen;
+      if (state.upstreamOpen && !state.upstreamLoaded && !state.upstreamLoading) {
+        void loadUpstreamLogs({force: false});
+      } else {
+        render();
+      }
+      return;
+    }
+    if (target.closest("[data-upstream-refresh]") && state) {
+      void loadUpstreamLogs({force: true});
+      return;
+    }
     if (target.closest("[data-memory-start]")) { startMemoryDiagnostic(); return; }
     if (target.closest("[data-memory-stop]")) { stopMemoryDiagnostic(); return; }
     const focus = target.closest("[data-focus-panel]");
@@ -4824,6 +5013,22 @@ window.CompanionMaintenancePage = (() => {
       state.logLevel = target.value;
       state.logsLoaded = false;
       void loadLogs();
+      return;
+    }
+    if (target.matches("[data-upstream-station]")) {
+      state.upstreamStationId = target.value;
+      state.upstreamTokenName = "";
+      void loadUpstreamLogs({force: false});
+      return;
+    }
+    if (target.matches("[data-upstream-days]")) {
+      state.upstreamDays = Number(target.value) || 7;
+      void loadUpstreamLogs({force: false});
+      return;
+    }
+    if (target.matches("[data-upstream-token]")) {
+      state.upstreamTokenName = target.value;
+      void loadUpstreamLogs({force: false});
       return;
     }
     if (target.matches("[data-prompt-section]")) {
@@ -4979,6 +5184,8 @@ window.CompanionMaintenancePage = (() => {
       proactiveTesting: false, proactiveConfirming: false, proactiveNotice: "", proactivePurpose: "care", proactiveTest: null,
       test: null, voiceTest: null, imageTest: null, provider: "", voiceProvider: "", imageAction: "", voiceLanguage: "zh",
       storageTest: null, storageTesting: false, balance: null, balanceLoaded: false, balanceLoading: false,
+      upstreamOpen: false, upstreamLoading: false, upstreamLoaded: false, upstreamError: "", upstreamData: null,
+      upstreamStationId: "", upstreamDays: 7, upstreamTokenName: "",
       currencyOverride: "", pricingSyncing: false, pricingNotice: "",
       diagnosticNotice: "", diagnosticClearTimer: null, diagnosticResultExpiresAt: 0,
       memorySamples: [], memoryRunning: false, memorySampling: false, memoryComplete: false,

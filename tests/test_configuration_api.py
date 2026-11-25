@@ -21,13 +21,17 @@ from tests.native_adapter_support import FakeEvent, FakeProvider, FakeReverseApi
 from astrbot_host.controller import AstrBotStagingController
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
 from companion_v2.configuration.management import DiaryAndRestManagement, ProactiveContactManagement
-from companion_v2.device.adb import AdbDevice
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget
+from companion_v2.device.adb import AdbDevice, AdbError
+from companion_v2.device.configuration import (GROUP as PHONE_GROUP, PhoneConfigurationOwner,
+    configuration_fields as phone_fields)
 from companion_v2.identity_policy.grants import PERSON_PERMISSION_GRANT_PREFIX
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.proactive.management import GRANT_PREFIX as PROACTIVE_GRANT_PREFIX
 from companion_v2.proactive.configuration import GROUP as CONTACT_GROUP
 from companion_v2.expression.configuration import read_settings as expression_read_settings
 from companion_v2.foundation.outcome import Outcome
+from companion_v2.foundation.refs import SubjectKind, SubjectRef
 from companion_v2.role_work.growth.configuration import skill_settings
 from companion_v2.role_profile.configuration import FIELD_LIMITS
 from companion_v2.screen.configuration import (ScreenSettings, ScreenConfigurationOwner,
@@ -88,6 +92,20 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         try:
             read = await call(handlers[first], query={"sections": "device.phone"})
             token = read["data"]["sections"]["device.phone"]["edit_token"]
+            adb_path = "E:/Android/平台工具/adb.exe"
+            saved = await call(handlers[first + "/configure"], {
+                "section": "device.phone", "operation_key": "phone-save-adb",
+                "edit_token": token, "changes": {"adb_path": adb_path},
+            })
+            self.assertEqual(saved["status"], "ok", saved)
+            token = saved["data"]["result"]["edit_token"]
+            with patch("companion_v2.device.adb.discover_adb", side_effect=AdbError("adb_not_found", "missing")):
+                failure = await call(connect, {"action": "scan", "include_diagnostics": True})
+                self.assertEqual(failure["status"], "ok", failure)
+                self.assertEqual(failure["data"]["adb_error"], {"code": "adb_not_found", "source": "role",
+                    "adb_path": adb_path, "role_id": handlers[first].__self__.controller.role_id})
+                legacy = await call(connect, {"action": "scan"})
+                self.assertEqual(legacy["message"], "adb_not_found")
             with patch("companion_v2.device.adb.discover_adb", return_value=Path("adb.exe")) as discover, \
                     patch("companion_v2.device.adb.AdbClient") as client:
                 adb = client.return_value
@@ -98,6 +116,7 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                 discover.assert_not_called()
                 scan = await call(connect, {"action": "scan"})
                 self.assertEqual(scan["status"], "ok", scan)
+                discover.assert_called_once_with(adb_path)
                 self.assertEqual([(item["state"], item["wireless"]) for item in scan["data"]["devices"]],
                                  [("unauthorized", False), ("device", True)])
                 pair = await call(connect, {"action": "pair", "address": "192.168.1.20:35125", "code": "123456"})
@@ -116,6 +135,44 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(settings["enabled"])
             self.assertEqual(settings["connect"], "192.168.1.20:37123")
             self.assertEqual(settings["serial"], "192.168.1.20:37123")
+            self.assertEqual(settings["adb_path"], adb_path)
+        finally:
+            self.controller.unregister_routes()
+
+    async def test_phone_legacy_persona_settings_move_to_the_runtime_role_on_start(self):
+        self.controller = self.make_controller(multi_config())
+        await self.controller._open_async()
+        runtime = self.controller.runtime
+        owner = PhoneConfigurationOwner(runtime)
+        legacy = ConfigTarget(runtime.installation_id, ConfigLayer.ROLE,
+            SubjectRef(runtime.installation_id, SubjectKind.BOT, "original"), bot_id="bot-a")
+        path = "E:/Android/平台工具/adb.exe"
+        owner.write(legacy, phone_fields(), changes={PHONE_GROUP + ".adb_path": path,
+                    PHONE_GROUP + ".enabled": True, PHONE_GROUP + ".connect": "127.0.0.1:37345"},
+                    reset=(), expected_revision=0, observed_at=self.clock.now())
+
+        app = await self.start_host()
+        owner = PhoneConfigurationOwner(runtime)
+        context = self.controller.authority.context("first", "role-a")
+        canonical = app.phone_settings.target_for(context)
+        self.assertEqual(canonical.role.subject_id, "role-a")
+        self.assertEqual(owner.read(canonical, phone_fields()).fields[PHONE_GROUP + ".adb_path"].value, path)
+        self.assertIsNone(owner.read(legacy, phone_fields()).fields[PHONE_GROUP + ".adb_path"].source)
+        self.controller.register_routes()
+        handlers = {route: handler for route, handler, _, _ in self.native.registered_web_apis}
+        manifest = next(item for item in self.controller.web_api.target_inventory() if item["target_id"] == "first")
+        endpoint = next(role["config_api"] for role in manifest["roles"] if role["role_id"] == "role-a")
+        try:
+            status = await call(handlers[endpoint], query={"sections": "device.phone"})
+            settings = status["data"]["sections"]["device.phone"]["settings"]
+            self.assertTrue(settings["enabled"])
+            self.assertEqual(settings["connect"], "127.0.0.1:37345")
+            with patch("companion_v2.device.adb.discover_adb", return_value=Path("adb.exe")) as discover, \
+                    patch("companion_v2.device.adb.AdbClient") as client:
+                client.return_value.devices.return_value = ()
+                scanned = await call(handlers[endpoint + "/phone-connection"], {"action": "scan"})
+                self.assertEqual(scanned["data"]["devices"], [])
+                discover.assert_called_once_with(path)
         finally:
             self.controller.unregister_routes()
 
@@ -184,6 +241,7 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                                  # 于是 assertEqual 把"多了一个真分区"报成失败——这正是本会话
                                  # 反复出现的模式：新增能力却不更新按字面枚举的名单。
                                  "qzone",
+                                 "device.phone",
                                  "relay",
                                  "relationship_profile",
                                  "role_profile", "screen", "wardrobe", "web_understanding", "proactive.contact",
@@ -192,6 +250,8 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(expected_sections.issubset(status))
             self.assertEqual(set(status), expected_sections)
             self.assertEqual(status["quota"]["scope"], "role")
+            self.assertEqual(status["device.phone"]["scope"], "role")
+            self.assertIn("adb_diagnostic", status["device.phone"])
             self.assertEqual(status["budget"]["scope"], "installation")
             self.assertEqual(status["library"]["scope"], "role")
             self.assertEqual(status["role_profile"]["scope"], "role")
@@ -257,7 +317,7 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                                 ("conversation", "expression", "model", "screen", "person",
                                  "role", "knowledge", "library", "photo", "wardrobe",
                                  "proactive", "private_access", "relationship", "content",
-                                 "qzone", "system"), name)
+                                 "qzone", "system", "device"), name)
             # The workbench renders its layer rail from these, so every section
             # must publish the chain and a per-field source, not just its values.
             for name, section in status.items():

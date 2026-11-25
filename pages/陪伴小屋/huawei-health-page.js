@@ -49,18 +49,34 @@ window.CompanionHuaweiHealthPage = (() => {
     } catch (failure) { throw new Error(errorText(failure)); }
   }
   function setNotice(text) { notice = String(text || ""); render(); }
-  async function loadPerception() {
+  function perceptionApiPath() {
+    if (!product.hosted?.()) return "perception-native";
+    const path = product.role?.()?.perception_native_api;
+    return path ? product.relative(path) : "";
+  }
+  async function loadPerception(ticket) {
+    const path = perceptionApiPath();
+    if (!path) return;
     try {
-      perception = await product.request("GET", "perception-native");
-      perceptionError = "";
+      const next = await product.request("GET", path);
+      if (active(ticket) && path === perceptionApiPath()) {
+        perception = next;
+        perceptionError = "";
+      }
     } catch (failure) {
-      perception = null;
-      perceptionError = errorText(failure);
+      if (active(ticket) && path === perceptionApiPath()) {
+        perception = null;
+        perceptionError = errorText(failure);
+      }
     }
   }
-  async function configurePerception(changes) {
-    const current = perception || await product.request("GET", "perception-native");
-    await product.request("POST", "perception-native/configure", {
+  async function configurePerception(changes, ticket) {
+    const path = perceptionApiPath();
+    if (!path) throw new Error("请选择一个私聊角色。");
+    if (!active(ticket)) return false;
+    const current = await product.request("GET", path);
+    if (!active(ticket) || path !== perceptionApiPath()) return false;
+    await product.request("POST", path + "/configure", {
       section: "model",
       command: {
         operation_key: crypto.randomUUID(),
@@ -68,14 +84,14 @@ window.CompanionHuaweiHealthPage = (() => {
         changes,
       },
     }, {timeoutMs: 15000});
-    perception = await product.request("GET", "perception-native");
+    if (active(ticket) && path === perceptionApiPath()) await loadPerception(ticket);
     return true;
   }
-  async function ensureHealthPerception() {
+  async function ensureHealthPerception(ticket) {
     try {
+      if (!active(ticket) || !perceptionApiPath()) return false;
       if (perception?.model?.settings?.health_enabled === true) return true;
-      await configurePerception({health_enabled: true});
-      return true;
+      return await configurePerception({health_enabled: true}, ticket);
     } catch (_) { return false; }
   }
   function fmtLeft(seconds) {
@@ -239,8 +255,8 @@ window.CompanionHuaweiHealthPage = (() => {
     busy = true; notice = "正在保存健康感知开关…"; render();
     const ticket = generation;
     try {
-      await configurePerception({[field]: value});
-      if (active(ticket)) notice = value ? "健康感知开关已开启。" : "健康感知开关已关闭。";
+      const saved = await configurePerception({[field]: value}, ticket);
+      if (saved && active(ticket)) notice = value ? "健康感知开关已开启。" : "健康感知开关已关闭。";
     } catch (failure) {
       if (active(ticket)) notice = errorText(failure);
     } finally {
@@ -257,7 +273,7 @@ window.CompanionHuaweiHealthPage = (() => {
       const next = await call("GET", "status");
       if (!active(ticket)) return;
       status = next;
-      await loadPerception();
+      await loadPerception(ticket);
       if (active(ticket)) render();
     } catch (failure) {
       if (!active(ticket)) return;
@@ -331,7 +347,7 @@ window.CompanionHuaweiHealthPage = (() => {
         notice = "正在通过运动健康取数，首次可能需要 30 秒完成 OAuth…";
         const result = await call("POST", "refresh", {}, 120000);
         if (active(ticket)) status = result.status || status;
-        const enabled = await ensureHealthPerception();
+        const enabled = await ensureHealthPerception(ticket);
         notice = enabled ? "运动健康摘要已更新，并已打开健康感知。" : "运动健康摘要已更新；请打开上方「健康感知」开关。";
       }
       if (action === "status" || action === "cookie-import" || action === "cookie-clear" ||
@@ -409,8 +425,8 @@ window.CompanionHuaweiHealthPage = (() => {
         if (state === "DONE" || state === "FAILED" || state === "IDLE") {
           stopPolling();
           if (state === "DONE") {
-            await ensureHealthPerception();
-            if (active(ticket)) setNotice("登录成功，健康感知已打开。现在可以拉取最新健康数据。");
+            const enabled = await ensureHealthPerception(ticket);
+            if (active(ticket)) setNotice(enabled ? "登录成功，健康感知已打开。" : "登录成功。");
           }
           return;
         }

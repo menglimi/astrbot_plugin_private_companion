@@ -22,12 +22,19 @@
 /* ---- 顶栏 / 主页签 / 二级页签 ---- */
 .model-topbar{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
 .model-topbar-t{font-size:var(--fs-body);color:var(--m-ink3)}
-.model-tabs{display:flex;flex-wrap:wrap;gap:var(--sp-1);background:var(--m-card);border:1px solid var(--m-line);border-radius:var(--m-r);padding:var(--sp-1);box-shadow:var(--m-shadow)}
-.model-tabs button{flex:1 0 auto;flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:var(--sp-1);border:0;background:transparent;border-radius:var(--m-rs);padding:var(--sp-2) var(--sp-2);font-size:var(--fs-body);color:var(--m-ink2);white-space:nowrap;cursor:pointer;transition:.15s}
+.model-tabs-wrap{position:relative;min-width:0;border-radius:var(--m-r)}
+.model-tabs-wrap[data-fade-right="1"] .model-tabs{-webkit-mask-image:linear-gradient(to right,currentColor 0%,currentColor calc(100% - 28px),transparent 100%);mask-image:linear-gradient(to right,currentColor 0%,currentColor calc(100% - 28px),transparent 100%)}
+.model-tabs-wrap[data-fade-left="1"] .model-tabs{-webkit-mask-image:linear-gradient(to right,transparent 0%,currentColor 28px,currentColor 100%);mask-image:linear-gradient(to right,transparent 0%,currentColor 28px,currentColor 100%)}
+.model-tabs-wrap[data-fade-left="1"][data-fade-right="1"] .model-tabs{-webkit-mask-image:linear-gradient(to right,transparent 0%,currentColor 24px,currentColor calc(100% - 24px),transparent 100%);mask-image:linear-gradient(to right,transparent 0%,currentColor 24px,currentColor calc(100% - 24px),transparent 100%)}
+.model-tabs{display:flex;align-items:center;flex-wrap:nowrap;gap:var(--sp-1);overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity;touch-action:pan-x;background:var(--m-card);border:1px solid var(--m-line);border-radius:var(--m-r);padding:var(--sp-1);box-shadow:var(--m-shadow)}
+.model-tabs::-webkit-scrollbar{display:none}
+.model-tabs button{flex:0 0 auto;flex-shrink:0;min-height:40px;display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-1);border:0;background:transparent;border-radius:var(--m-rs);padding:var(--sp-2) var(--sp-3);font-size:var(--fs-body);color:var(--m-ink2);white-space:nowrap;scroll-snap-align:start;cursor:pointer;transition:.15s}
 .model-tabs button:hover{background:var(--m-card2);color:var(--m-ink)}
 .model-tabs button.on{background:var(--m-sel);color:var(--m-accent);font-weight:600}
+.model-tabs-sep{width:1px;height:18px;margin-inline:var(--sp-1);background:var(--m-line2);flex:0 0 auto;align-self:center}
 .model-tabs .ic{width:16px;height:16px;flex:none;opacity:.85}
-.model-tabs .c{font-size:var(--fs-tiny);color:var(--m-ink3);background:var(--m-card2);border-radius:var(--r-pill);padding:0 var(--sp-2);margin-left:2px;white-space:nowrap;flex-shrink:0}
+.model-tabs .c{font-size:var(--fs-micro);color:var(--m-ink3);background:var(--m-card2);border-radius:var(--r-pill);padding:0 var(--sp-2);margin-left:2px;white-space:nowrap;flex-shrink:0}
+.model-tabs .c-dot{width:7px;height:7px;border-radius:var(--r-pill);background:var(--t-ok);flex:0 0 auto}
 .model-tabs button.on .c{background:var(--m-sel2);color:var(--m-accent)}
 .model-subtabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2);border:0;margin:var(--sp-2) 0 var(--sp-3);padding:0}
 .model-subtabs button{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;gap:var(--sp-2);min-width:0;padding:var(--sp-2) var(--sp-3);border:1px solid var(--m-line);border-radius:var(--r-md);background:var(--m-card);color:var(--m-ink2);font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease}
@@ -394,10 +401,9 @@
   .model-runstat,.model-rf2{grid-template-columns:minmax(0,1fr)}
   .model-item{flex-wrap:wrap}
   .model-item-ch{flex-basis:100%}
-  .model-tabs button{padding:var(--sp-2) var(--sp-1);font-size:var(--fs-body)}
+  .model-tabs button{padding:var(--sp-2) var(--sp-2);font-size:var(--fs-body)}
 }
 @media(max-width:520px){
-  .model-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   .model-tabs button{min-width:0;white-space:nowrap}
   .model-provider-filter{flex:1 1 160px}
   .model-provider-filter select{max-width:none}

@@ -62,6 +62,46 @@ def together_execution_binding(settings):
             "tts_timeout_seconds": voice.timeout_seconds}
 
 
+def together_voice_policy(application, context, *, now=None):
+    """Read the live Companion per-language voice policy for one role/window."""
+    reply_settings = getattr(application, "reply_settings", None)
+    capture = getattr(reply_settings, "capture", None)
+    if not callable(capture) or context is None:
+        return None
+    try:
+        from companion_v2.conversation.reply_settings import VOICE_FIELDS
+        from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+
+        observed_at = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+        captured = capture(context, observed_at)
+        values = captured.get("settings") if isinstance(captured, Mapping) else None
+        if not isinstance(values, Mapping):
+            return None
+        defaults = VoiceReplyPolicy()
+        return VoiceReplyPolicy(**{
+            key: values.get("voice_" + key, getattr(defaults, key))
+            for key in VOICE_FIELDS
+        })
+    except Exception:
+        return None
+
+
+def together_context_execution(base_binding, application, context, *, now=None):
+    """Overlay live Companion per-language voice defaults onto the 4-key room execution binding."""
+    execution = dict(base_binding or {})
+    policy = together_voice_policy(application, context, now=now)
+    if policy is None:
+        return execution
+    scope_kind = getattr(getattr(getattr(context, "scope", None), "kind", None), "value", "private")
+    channel = "group" if scope_kind == "group" else "private"
+    provider_id = policy.provider_for_language(channel)
+    if provider_id:
+        execution["tts_provider_id"] = provider_id
+    execution["tts_language"] = policy.language
+    execution["tts_timeout_seconds"] = policy.timeout_seconds
+    return execution
+
+
 def _together_provider_id(provider):
     try:
         meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
@@ -435,6 +475,9 @@ class NativeExtensionRegistry(AstrBotToolPort):
         self.application, self.runtime = application, runtime
         if getattr(application, "daily_outfit", None) is not None:
             application.daily_outfit.port = self
+        proactive_images = getattr(getattr(application, "proactive", None), "images", None)
+        if proactive_images is not None:
+            proactive_images.port = self
         # The real V2 application always exposes ``tasks.identity``.  Keep
         # registry attachment tolerant of a lightweight host fixture (or a
         # partially constructed application) and defer the Screen consumer
@@ -576,6 +619,9 @@ class NativeExtensionRegistry(AstrBotToolPort):
             self._guard(host_tool_id, invocation)
 
     def outfit_image_route(self, context, identity=None):
+        return self.role_image_route(context, identity)
+
+    def role_image_route(self, context, identity=None):
         external = self.application.external if self.application else None
         if external is None:
             return None
@@ -598,19 +644,26 @@ class NativeExtensionRegistry(AstrBotToolPort):
         return persona["prompt"]
 
     async def generate_outfit_image(self, run, prompt, identity):
+        return await self.generate_role_image(
+            run, prompt, identity, invocation_id=run.task.spec.request_ref, call_id="daily-outfit")
+
+    async def generate_role_image(self, run, prompt, identity, *, invocation_id, call_id, on_dispatch=None):
         context = run.task.spec.context
-        declaration = self.outfit_image_route(context, identity)
+        declaration = self.role_image_route(context, identity)
         if declaration is None:
-            raise TaskError("daily_outfit_image_unavailable", "the role has no active Image route")
+            code = "daily_outfit_image_unavailable" if call_id == "daily-outfit" else "proactive_image_route_unavailable"
+            raise TaskError(code, "the role has no active Image route")
         arguments = {"prompt": prompt}
         if declaration.descriptor.tool.action == "image.edit":
             arguments.update(reference_ids=[identity], reference_indices=[], reference_roles=["identity"])
-        invocation = ExternalToolInvocation(run.task.spec.request_ref, run.task.task_id, "daily-outfit",
+        if on_dispatch is None:
+            run.begin_effect()
+        invocation = ExternalToolInvocation(invocation_id, run.task.task_id, call_id,
             context, declaration.descriptor, encode_prompt(arguments), run.task.spec.deadline_at, run.validate, run)
-        run.begin_effect()
-        return await self.invoke(declaration.host_tool_id, invocation, role_references_only=True)
+        return await self.invoke(declaration.host_tool_id, invocation, role_references_only=True,
+                                 on_dispatch=on_dispatch)
 
-    async def invoke(self, host_tool_id, invocation, *, role_references_only=False):
+    async def invoke(self, host_tool_id, invocation, *, role_references_only=False, on_dispatch=None):
         entry = self._entries.get(host_tool_id)
         if entry is None or entry[0].descriptor != invocation.descriptor:
             raise TaskError("native_provider_changed", "the original native declaration is unavailable")
@@ -658,8 +711,10 @@ class NativeExtensionRegistry(AstrBotToolPort):
                 raise TaskError("native_persona_guard_missing", "room creation requires a verified host persona")
             request["host_persona"] = await self.persona_guard(
                 invocation.context.scope, invocation.context.role_binding)
+            live_execution = together_context_execution(
+                self.together_execution, self.application, invocation.context, now=self.now())
             request["host_execution"] = together_room_execution(
-                self.together_execution, entry[1].instance, context=self.context)
+                live_execution, entry[1].instance, context=self.context)
             guard()
         if self.content is not None and invocation.descriptor.tool.action in CONTENT_ACTIONS:
             self.content.sources.synchronize()
@@ -681,6 +736,8 @@ class NativeExtensionRegistry(AstrBotToolPort):
                     self.camera.recheck(invocation, camera_check)
                 if image_references is not None:
                     image_references.recheck()
+                if not guarded and on_dispatch is not None:
+                    on_dispatch()
                 guarded = True
 
             guard()

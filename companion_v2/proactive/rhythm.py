@@ -25,6 +25,7 @@ from .configuration import CURVE_CEILING, CURVE_FLOOR, INTENSITY_PRESETS, hour_a
 # An unclaimed burst slot is gone, exactly like an unclaimed ordinary slot: the
 # window is the same five minutes the ordinary opportunity already uses.
 SLOT_WINDOW = timedelta(minutes=5)
+POST_REPLY_MIN_COOLDOWN_SECONDS = 60
 # Only role-share candidates (activity and journal sharing) answer to the share
 # probability; reminders, alerts and weather keep their own event authorization.
 SHARE_PURPOSES = frozenset({"life", "creation"})
@@ -37,11 +38,11 @@ def sample(parts):
 
 
 def effects(value):
-    """The tier effects for an already stored value; unusable values mean ``off``."""
+    """The tier effects for an already stored value."""
     try:
         name = intensity_preset(value)
     except (AttributeError, ValueError):
-        name = "off"
+        name = "custom"
     return name, dict(INTENSITY_PRESETS[name])
 
 
@@ -90,7 +91,9 @@ def burst_limit(preferences):
     """Messages allowed in one round; 1 means no burst continuation."""
     if not preferences.values["enable_proactive_burst"]:
         return 1
-    _, preset = tier(preferences)
+    name, preset = tier(preferences)
+    if name == "off":
+        return 1
     configured = preferences.values["proactive_burst_max_messages"]
     if preset["burst_messages"] <= 0:
         return max(1, configured)
@@ -106,6 +109,7 @@ def body_chars(preferences):
 class ContactRhythm:
     def __init__(self, runtime):
         self.runtime = runtime
+        self.native_reply_activity = None
 
     # ---- intensity tier -------------------------------------------------
     tier = staticmethod(tier)
@@ -114,6 +118,37 @@ class ContactRhythm:
     idle_seconds = staticmethod(idle_seconds)
     burst_limit = staticmethod(burst_limit)
     body_chars = staticmethod(body_chars)
+
+    def first_opening(self, context, preferences, at, *, input_at):
+        """Return the first eligible time, or None while a native reply is still active."""
+        from companion_v2.conversation.native_turns import turns_available
+
+        live_sent_at = None
+        if self.native_reply_activity is not None:
+            active, live_sent_at = self.native_reply_activity(context)
+            if active:
+                return None
+
+        idle = self.idle_seconds(preferences)
+        first = input_at + timedelta(seconds=idle)
+        burst_gap = (preferences.values["proactive_burst_gap_min_seconds"]
+                     if preferences.values["enable_proactive_burst"] else 0)
+        configured_idle = preferences.values["idle_seconds"]
+        after_reply = timedelta(seconds=max(idle, burst_gap, min(configured_idle, POST_REPLY_MIN_COOLDOWN_SECONDS)))
+        if not after_reply:
+            return first
+        params = (context.key, stamp(first - after_reply), stamp(at))
+        legacy = self.runtime.read_one("""SELECT MAX(delivered_at) AS at FROM conversation_sent_history
+            WHERE origin_key = ? AND delivered_at > ? AND delivered_at <= ?""", params)
+        native = None
+        if turns_available(self.runtime):
+            native = self.runtime.read_one("""SELECT MAX(last_sent_at) AS at FROM conversation_native_turns
+                WHERE context_key = ? AND last_sent_at > ? AND last_sent_at <= ?""", params)
+        latest = max((datetime.fromisoformat(row["at"]) for row in (legacy, native)
+                      if row and row["at"]), default=first - after_reply)
+        if live_sent_at is not None:
+            latest = max(latest, live_sent_at)
+        return latest + after_reply
 
     # ---- hourly activity curve ------------------------------------------
     def hour_allows(self, context, preferences, opened_at, *, observed_at=None, curve=None):

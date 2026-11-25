@@ -4,6 +4,9 @@ from .common import *
 from .native_context import existing_host_conversation
 from .native_transcripts import delivered_output
 
+_VOICE_POLICY_UNSET = object()
+
+
 class TogetherActivityMethods:
 
     @staticmethod
@@ -172,11 +175,13 @@ class TogetherActivityMethods:
         # do not write it through a removed external-plugin API.
         return
 
-    async def _capabilities(self, room: RoomSession | None=None) -> dict[str, dict[str, Any]]:
+    async def _capabilities(self, room: RoomSession | None=None, *, voice_policy: Any=_VOICE_POLICY_UNSET) -> dict[str, dict[str, Any]]:
         chat = self._room_chat_provider(room)
         vision = self._room_vision_provider(room)
         stt = self._room_stt_provider(room)
-        tts = self._room_tts_provider(room)
+        if voice_policy is _VOICE_POLICY_UNSET:
+            voice_policy = await asyncio.to_thread(self._companion_voice_policy, room)
+        tts = self._room_tts_provider(room, policy=voice_policy)
         return {'chat': {'available': chat is not None, 'label': self._provider_label(chat)}, 'vision': {'available': vision is not None, 'label': self._provider_label(vision)}, 'stt': {'available': stt is not None, 'label': self._provider_label(stt)}, 'tts': {'available': tts is not None, 'label': self._provider_label(tts)}, 'work': self._work_collaboration_capability(), 'novel': {'available': bool(self.novel_library_enabled), 'label': '小说书库' if self.novel_library_enabled else '已关闭'}}
 
     def _apply_player_state(self, room: RoomSession, state: dict[str, Any], event: str) -> None:
@@ -688,6 +693,7 @@ class TogetherActivityMethods:
         epoch: int = 0,
     ) -> str | None:
         """Push one private-owner-only shared experience to MemoryCompanion via the one-way push port."""
+        from .native_context import canonical_private_session_id
         from companion_v2.adapters.astrbot.memory_push import memory_push_provider
         from companion_v2.capabilities.memory_push import (
             DEFAULT_MEMORY_PUSH,
@@ -703,22 +709,25 @@ class TogetherActivityMethods:
         if port is None or port is DEFAULT_MEMORY_PUSH:
             port = memory_push_provider(getattr(self, 'context', None))
         platform = ''
-        session_id = room.user_id
+        raw_session_id = room.user_id
+        native_scope_id = room.user_id
         bot_id = ''
         bot_account_id = ''
         if context is not None:
             platform = str(getattr(context.scope, 'platform', '') or '')
-            session_id = str(getattr(context.scope, 'session_id', '') or room.user_id)
+            raw_session_id = str(getattr(context.scope, 'session_id', '') or room.user_id)
+            native_scope_id = str(getattr(context.scope, 'native_scope_id', '') or room.user_id)
             bot_id = str(getattr(context.scope, 'bot_id', '') or '')
             bot_account_id = str(getattr(context.scope, 'account_id', '') or '')
         elif room.native_v2 is not None:
             platform = str(room.native_v2.platform or '')
-            session_id = str(room.native_v2.session_id or room.user_id)
+            raw_session_id = str(room.native_v2.session_id or room.user_id)
             bot_id = str(room.native_v2.bot_id or '')
             bot_account_id = str(room.native_v2.account_id or '')
         else:
             platform_ids = self._astrbot_conversation_platform_ids()
             platform = platform_ids[0] if platform_ids else ''
+        session_id = canonical_private_session_id(platform, raw_session_id, native_scope_id) or raw_session_id
         bot_name = ''
         room_bot_name = getattr(self, '_room_bot_name', None)
         if callable(room_bot_name):
@@ -987,11 +996,12 @@ class TogetherActivityMethods:
             if visible_text:
                 await send({'type': 'bot_text', 'text': visible_text, 'source': display_source})
             return False
-        provider = self._room_tts_provider(room)
+        voice_policy = await asyncio.to_thread(self._companion_voice_policy, room)
+        provider = self._room_tts_provider(room, spoken_text=spoken, policy=voice_policy)
         # Native V2 Together owns provider selection and browser fallback.
         # Speech is kept inside this extension; no external voice facade is
         # consulted on the reply path.
-        voice_config = {'voice_language': room.native_v2.tts_language} if room.native_v2 is not None else self._companion_realtime_voice_config()
+        voice_config = self._room_voice_config(room, spoken_text=spoken, policy=voice_policy)
         browser_language = self._companion_tts_browser_language(voice_config)
         timeout_seconds = room.native_v2.tts_timeout_seconds if room.native_v2 is not None else _clamp_int(getattr(self, 'tts_timeout_seconds', 60), 60, 15, 180)
         if provider is None:

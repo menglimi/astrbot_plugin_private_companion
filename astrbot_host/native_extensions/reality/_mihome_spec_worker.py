@@ -78,6 +78,7 @@ if _ARC4_NATIVE_ERROR:
     )
 
 import httpx
+from mijiaAPI import __version__ as mijia_version
 from mijiaAPI import get_device_info
 from mijiaAPI import devices as mijia_devices
 
@@ -96,7 +97,7 @@ async def _fetch_spec_page(model: str) -> str:
 
     async with httpx.AsyncClient(
         follow_redirects=True,
-        headers={"User-Agent": "mijiaAPI/4.1.3"},
+        headers={"User-Agent": f"mijiaAPI/{mijia_version}"},
         timeout=SPEC_FETCH_TIMEOUT,
     ) as client:
         response = await client.get(SPEC_URL_TEMPLATE.format(model=model))
@@ -170,7 +171,7 @@ def _parse_with_pinned_upstream(
 
 
 def get_device_info_compat(model: str, cache_dir: Path) -> dict:
-    """获取页面并以最小兼容补丁交给 mijiaAPI 4.1.3 解析。"""
+    """获取页面并以最小兼容补丁交给锁定版本的 mijiaAPI 解析。"""
 
     page_text = asyncio.run(_fetch_spec_page(model))
     return _parse_with_pinned_upstream(model, cache_dir, page_text)

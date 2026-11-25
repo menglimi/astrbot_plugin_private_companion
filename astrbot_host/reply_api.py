@@ -17,7 +17,7 @@ from .management_identity import dashboard_operator
 
 
 PREFIX = "/astrbot_plugin_private_companion/reply"
-READ_ONLY_STYLE_METHODS = frozenset({"list", "list_samples", "export_pack", "preview_import"})
+READ_ONLY_STYLE_METHODS = frozenset({"list", "list_samples", "export_pack", "preview_import", "preview_dedupe"})
 
 
 class ReplyWebAPI:
@@ -45,6 +45,8 @@ class ReplyWebAPI:
                  "Decide a learned expression signal"),
                 (PREFIX + "/style/cleanup", self.style_cleanup, ["POST"],
                  "Reject pending expression candidates whose evidence is gone"),
+                (PREFIX + "/style/dedupe", self.style_dedupe, ["POST"],
+                 "Preview or consolidate duplicate expression rules"),
                 (PREFIX + "/recalls", self.recalls, ["GET"],
                  "Read this window's withdrawn messages within the configured bound"),
                 (PREFIX + "/harassment", self.harassment, ["GET"],
@@ -187,6 +189,22 @@ class ReplyWebAPI:
                             return getattr(manager, method)(
                                 operator=operator, context=session.profile.target, **arguments)
 
+                        if method == "learn":
+                            manager = ExpressionStyleManagement(session.application)
+
+                            def prepare_learn():
+                                operator = dashboard_operator(runtime, username, at=observed_at)
+                                return manager.prepare_learn(
+                                    operator=operator, context=session.profile.target, **arguments)
+
+                            prepared = await asyncio.to_thread(prepare_learn)
+                            if prepared.failure is not None:
+                                return outcome_response(prepared)
+                            payload = prepared.unwrap()
+                            if payload["launch"] is None:
+                                return outcome_response(Outcome.success(payload["result"]))
+                            result = session.application.expression_style.launch_prepared(*payload["launch"])
+                            return outcome_response(Outcome.success(result))
                         return outcome_response(await asyncio.to_thread(execute_mutation))
 
                 def execute_read():
@@ -204,7 +222,7 @@ class ReplyWebAPI:
     async def style(self):
         from .web_api import outcome_response
         query = request.query
-        if set(query.keys()) - {"state", "dimension", "limit", "after_id"} or any(
+        if set(query.keys()) - {"state", "dimension", "kind", "limit", "after_id"} or any(
                 len(query.getlist(key)) != 1 for key in query.keys()):
             return outcome_response(Outcome.failed("expression_query_invalid", "unknown or repeated query fields"))
         try:
@@ -212,8 +230,8 @@ class ReplyWebAPI:
         except (TypeError, ValueError):
             return outcome_response(Outcome.failed("expression_query_invalid", "invalid page size"))
         return await self._style(dict(state=query.get("state") or "pending",
-            dimension=query.get("dimension") or None, limit=limit,
-            after_id=query.get("after_id") or None), "list")
+            dimension=query.get("dimension") or None, kind=query.get("kind") or None,
+            limit=limit, after_id=query.get("after_id") or None), "list")
 
     async def style_command(self):
         from .web_api import outcome_response
@@ -238,6 +256,27 @@ class ReplyWebAPI:
 
     async def style_cleanup(self):
         return await self._sample_action({"operation_key"}, "cleanup_unreadable")
+
+    async def style_dedupe(self):
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > 8192 or request.query:
+                raise ValueError
+            data = json.loads(raw.decode("utf-8"), object_pairs_hook=self._unique_json_pairs,
+                              parse_constant=self._reject_nonfinite_json)
+            if type(data) is not dict or type(data.get("dry_run")) is not bool:
+                raise ValueError
+            keys = set(data)
+            if data["dry_run"]:
+                if keys != {"dry_run"}:
+                    raise ValueError
+                return await self._style({}, "preview_dedupe")
+            if keys != {"dry_run", "operation_key"}:
+                raise ValueError
+            return await self._style(data, "dedupe_rules")
+        except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("expression_command_invalid", "invalid expression dedupe action"))
 
     async def style_samples(self):
         from .web_api import outcome_response

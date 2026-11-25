@@ -2,12 +2,14 @@
 
 from dataclasses import replace
 from datetime import time
+import json
 from zoneinfo import ZoneInfo
 
 from companion_v2.configuration.models import ApplyMode, ConfigLayer, ConfigTarget
 from companion_v2.configuration.owners import OwnerSnapshot
 from companion_v2.configuration.role_settings import RoleSharedSettingsOwner
 from companion_v2.configuration.registry import FieldDefinition, ValueKind
+from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from .rest_gate import DEFAULTS as REST_GATE_DEFAULTS, LIMITS as REST_GATE_LIMITS
 from .rest_gate import validate_changes as validate_rest_changes, validate_values as validate_rest_values
 
@@ -15,14 +17,14 @@ GROUP = "role.life"
 DEFAULTS = {"enabled": False, "diary_enabled": True, "diary_time": "23:50", "timezone": "Asia/Shanghai",
             "sleep_enabled": False, "sleep_time": "00:30", "sleep_timezone": "Asia/Shanghai",
             "sleep_variation_minutes": 20, "sleep_window_minutes": 120, "sleep_minutes": 480,
-            "reading_enabled": False, "derive_enabled": True,
+            "reading_enabled": False, "reading_share_in_group": False, "derive_enabled": True,
             "diary_style_prompt": "",
             "dream_theme_candidates": "", "dream_mixed_themes_enabled": False,
             "dream_intimate_theme_enabled": False, "dream_afterglow_mode": "auto",
             **REST_GATE_DEFAULTS}
 OWNER = "role.life.settings"
 SLEEP_FIELDS = frozenset(("sleep_enabled", "sleep_time", "sleep_timezone", "sleep_variation_minutes",
-                          "sleep_window_minutes", "sleep_minutes"))
+                          "sleep_window_minutes", "sleep_minutes", "reading_share_in_group"))
 AFTERGLOW_MODES = ("auto", "轻", "标准", "明显")
 
 
@@ -102,6 +104,7 @@ class LifeConfigurationOwner(RoleSharedSettingsOwner):
 
     def read(self, target, fields):
         snapshot = super().read(target, fields)
+        snapshot = self._inherit_previous_window(target, fields, snapshot)
         timezone_id, sleep_timezone_id = GROUP + ".timezone", GROUP + ".sleep_timezone"
         if (sleep_timezone_id in snapshot.fields and snapshot.fields[sleep_timezone_id].source is None
                 and timezone_id in snapshot.fields):
@@ -111,3 +114,36 @@ class LifeConfigurationOwner(RoleSharedSettingsOwner):
                 source_revision=fallback[timezone_id].source_revision)
             snapshot = OwnerSnapshot(snapshot.revision, snapshot.dependencies, fallback, snapshot.lifecycle_token)
         return snapshot
+
+    def _inherit_previous_window(self, target, fields, snapshot):
+        """Keep an opted-in private window's routine when AstrBot rotates its conversation."""
+        enabled = snapshot.fields.get(GROUP + ".enabled")
+        scope = target.scope
+        if (target.layer is not ConfigLayer.WINDOW or scope is None or not scope.is_resolved
+                or scope.kind is not ScopeKind.PRIVATE or enabled is None or enabled.source is not None):
+            return snapshot
+        row = self.store.read_one("""SELECT t.target_json
+            FROM configuration_values v JOIN configuration_targets t USING (target_key)
+            WHERE v.field_id = ? AND json_extract(t.target_json, '$.layer') = 'window'
+              AND json_extract(t.target_json, '$.installation_id') = ?
+              AND json_extract(t.target_json, '$.role_id') = ?
+              AND json_extract(t.target_json, '$.subject_id') IS ?
+              AND json_extract(t.target_json, '$.scope.kind') = 'private'
+              AND json_extract(t.target_json, '$.scope.platform') = ?
+              AND json_extract(t.target_json, '$.scope.bot_id') = ?
+              AND json_extract(t.target_json, '$.scope.account_id') = ?
+              AND json_extract(t.target_json, '$.scope.native_scope_id') = ?
+              AND json_extract(t.target_json, '$.scope.session_id') = ?
+              AND json_extract(t.target_json, '$.scope.conversation_id') <> ?
+            ORDER BY t.updated_at DESC, t.target_key DESC LIMIT 1""",
+            (GROUP + ".enabled", target.installation_id, target.role.subject_id,
+             target.subject.subject_id if target.subject else None, scope.platform, scope.bot_id,
+             scope.account_id, scope.native_scope_id, scope.session_id, scope.conversation_id))
+        if row is None:
+            return snapshot
+        previous = replace(target, scope=ScopeRef.restore(json.loads(row["target_json"])["scope"]))
+        prior = super().read(previous, fields)
+        inherited = {key: replace(value, explicit=False) for key, value in prior.fields.items()
+                     if value.source == previous and snapshot.fields[key].source is None}
+        return replace(snapshot, fields={**snapshot.fields, **inherited},
+                       dependencies=tuple(dict.fromkeys((*snapshot.dependencies, *prior.dependencies))))

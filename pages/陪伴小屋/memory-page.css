@@ -123,9 +123,10 @@
 .mem-badge.is-warn{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
 .mem-badge.is-risk{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
 .mem-badge.is-accent{background:var(--t-accent-quiet);color:var(--t-accent-ink)}
-/* 生命周期徽章：底色用 color-mix 从当前色兑出，一套规则覆盖四种状态 */
+/* 生命周期徽章：底色用 color-mix 从当前色兑出，一套规则覆盖全部状态 */
 .mem-badge.mem-state-active,
 .mem-badge.mem-state-superseded,
+.mem-badge.mem-state-invalidated,
 .mem-badge.mem-state-retracted,
 .mem-badge.mem-state-forgotten,
 .mem-badge.mem-state-archived{
@@ -242,9 +243,10 @@
 }
 .mem-legend b{font-weight:600;font-variant-numeric:tabular-nums;color:var(--t-text)}
 
-/* 生命周期色：四档语义，四处共用（比例带、列表状态条、详情状态环、徽章） */
+/* 生命周期色：四处共用（比例带、列表状态条、详情状态环、徽章） */
 .mem-state-active{color:var(--t-ok)}
 .mem-state-superseded{color:var(--t-text-faint)}
+.mem-state-invalidated{color:var(--t-warn)}
 .mem-state-retracted{color:var(--t-risk)}
 .mem-state-forgotten{color:var(--t-line-firm)}
 .mem-state-archived{color:var(--t-warn)}

@@ -48,6 +48,19 @@ jobs:
         run: python -X utf8 -m unittest -q tests.test_astrbot_gemini_provider
       - name: Check NAI gateway accounting and retry boundaries
         run: python -X utf8 -m unittest -q tests.test_nai_gateway tests.test_nai_backend
+      - name: Check market source ZIP size
+        run: |
+          git archive --format=zip --prefix="astrbot_plugin_private_companion-${GITHUB_SHA}/" --output="$RUNNER_TEMP/companion-source.zip" HEAD
+          python -X utf8 - "$RUNNER_TEMP/companion-source.zip" <<'PY'
+          import sys
+          from pathlib import Path
+          from tools.build_v2_release import MARKET_MAX_BYTES
+
+          size = Path(sys.argv[1]).stat().st_size
+          print(f"Source ZIP size: {size:,} bytes")
+          if size > MARKET_MAX_BYTES:
+              raise SystemExit("Source ZIP exceeds AstrBot Market's 16 MiB limit")
+          PY
       - name: Build current plugin source
         run: python -X utf8 tools/build_v2_release.py --output "$RUNNER_TEMP/companion-release"
       - name: Verify assembled archive

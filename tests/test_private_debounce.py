@@ -3,7 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from companion_v2.configuration.models import ConfigurationError
@@ -21,6 +21,7 @@ class PrivateDebounceConfigurationTests(unittest.TestCase):
     def test_defaults_and_custom_values_are_effective(self):
         default = private_debounce_settings({})
         self.assertTrue(default.enabled)
+        self.assertFalse(default.semantic_enabled)
         self.assertEqual((default.min_seconds, default.max_seconds, default.total_seconds),
                          (1.5, 4.0, 8.0))
         custom = private_debounce_settings({
@@ -124,6 +125,44 @@ class PrivateDebounceStateTests(unittest.IsolatedAsyncioTestCase):
     def make_manager(self):
         return PrivateDebounce(Policy(enabled=True, min_seconds=0.05,
                                       max_seconds=0.08, total_seconds=0.2))
+
+    async def test_semantic_hold_uses_latest_input_and_obeys_total_deadline(self):
+        judged = asyncio.Event()
+        reading = [0.0]
+
+        async def score(text, remaining):
+            judged.set()
+            return 0.1
+
+        classifier = SimpleNamespace(threshold=0.8, wait_seconds=10, score=AsyncMock(side_effect=score), close=Mock())
+        manager = PrivateDebounce(Policy(min_seconds=0.05, max_seconds=0.05,
+            total_seconds=1, semantic_enabled=True), semantic=classifier, clock=lambda: reading[0])
+        self.addAsyncCleanup(manager.close)
+        first, second = object(), object()
+        original = manager.reserve("target", first, "我想问")
+        reading[0] = 0.1
+        ready = asyncio.create_task(manager.wait_for_quiet(original, first))
+        await asyncio.wait_for(judged.wait(), 2)
+        self.assertFalse(ready.done())
+        latest = manager.reserve("target", second, "明天几点出门")
+        self.assertEqual(await asyncio.wait_for(ready, 2), "superseded")
+        reading[0] = 1.0
+        self.assertEqual(await manager.wait_for_quiet(latest, second), "ready")
+        self.assertEqual(manager.combined(latest, await manager.finish(latest, second)), "我想问\n明天几点出门")
+        classifier.score.assert_awaited_once()
+
+    async def test_semantic_timeout_or_unavailable_model_falls_back(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                classifier = SimpleNamespace(threshold=0.8, wait_seconds=10, score=AsyncMock(return_value=None))
+                reading = [0.0]
+                manager = PrivateDebounce(Policy(min_seconds=0.05, max_seconds=0.05,
+                    total_seconds=1, semantic_enabled=enabled), semantic=classifier, clock=lambda: reading[0])
+                event = object()
+                reservation = manager.reserve("target", event, "问你个事")
+                reading[0] = 0.1
+                self.assertEqual(await asyncio.wait_for(manager.wait_for_quiet(reservation, event), 2), "ready")
+                self.assertEqual(classifier.score.await_count, int(enabled))
 
     async def test_later_texts_join_one_pending_turn(self):
         manager = self.make_manager()
@@ -250,6 +289,34 @@ class PrivateDebounceStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await waiter, "closed")
         self.assertTrue(manager.closed)
         self.assertIsNone(manager.reserve("target", object(), "在吗"))
+
+    async def test_trailing_single_image_coalesces_into_pending_text_and_seals(self):
+        manager = self.make_manager()
+        text_event = object()
+        image_event = object()
+        later_text_event = object()
+
+        first = manager.reserve("target", text_event, "看这个表情")
+        self.assertTrue(manager.has_pending_text("target"))
+        waiter = asyncio.create_task(manager.wait_for_quiet(first, text_event))
+        await asyncio.sleep(0)
+
+        sealed = manager.reserve("target", image_event, "", seal_media=True)
+        self.assertIs(sealed.pending, first.pending)
+        self.assertTrue(sealed.pending.sealed_media)
+        self.assertFalse(manager.has_pending_text("target"))
+
+        # First text owner is superseded cleanly; image owner becomes ready immediately.
+        self.assertEqual(await waiter, "superseded")
+        self.assertEqual(await manager.wait_for_quiet(sealed, image_event), "ready")
+
+        # Any later text message starts a fresh pending batch instead of dropping the image.
+        next_batch = manager.reserve("target", later_text_event, "下一句")
+        self.assertIsNot(next_batch.pending, sealed.pending)
+
+        merged = await manager.finish(sealed, image_event)
+        self.assertEqual([item[1] for item in merged], ["看这个表情", ""])
+        self.assertTrue(await manager.abort(next_batch, event=later_text_event))
 
 
 class PrivateDeliveryDedupTests(unittest.TestCase):

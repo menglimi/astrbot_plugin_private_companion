@@ -23,15 +23,17 @@ from companion_v2.execution.runner import CAPACITY_REFUSALS, ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
 from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.sources.privacy import redact_text
 
 from .adb import AdbClient, AdbError
-from .annotate import annotate_screen, image_size
+from .annotate import annotate_screen, image_mime_type, image_size
 from .configuration import PhoneSettings, PhoneSettingsReader, load_settings
 from .checkout import (CANCEL_COMMAND, MEITUAN_CUTLERY_SUBMIT, MEITUAN_EXPRESS_PAYMENT, QUICK_APPROVAL,
                        CheckoutDecision, checkout_boundary, checkout_frame, checkout_screenshot,
                        checkout_visible, meituan_cutlery_action, meituan_express_at, meituan_payment_result,
                        tap_position)
-from .decider import CHECKOUT_INSTRUCTION, INSTRUCTION, DecisionError, decision_prompt, parse_decision
+from .decider import (CHECKOUT_INSTRUCTION, INSTRUCTION, SCREEN_READ_INSTRUCTION,
+                      DecisionError, decision_prompt, parse_decision)
 from .prompt_image import PhonePromptImage
 from .session import LAUNCH_SETTLE_SECONDS, PhoneAction, PhoneObservation, PhoneSession, PhoneStep, parse_action
 from .skills import PhoneSkillMemory, SkillScreen, takeout_guidance
@@ -48,7 +50,15 @@ MAX_STEPS = 20
 STEP_DELAY_SECONDS = 6.0
 REPLAY_SETTLE_SECONDS = 1.5
 TASK_LIFETIME_SECONDS = 7200
+NOTICE_LIFETIME = timedelta(minutes=5)
 ROLE_INSTRUCTION = "保持原人格。这是你自己在用手机完成一件事，不是回复用户，也不对用户说话。"
+SCREEN_CAPTURE_ERRORS = {
+    "adb_screen_off": "手机处于息屏状态。请点亮后再查看。",
+    "adb_unlock_required": "手机处于锁屏状态。请解锁后再查看。",
+    "adb_no_device": "没有已授权的 ADB 手机。请在「手机使用」里检查连接。",
+    "adb_multiple_devices": "连接了多台手机。请在「手机使用」里选择要读取的设备。",
+    "adb_timeout": "手机未及时响应。请在「手机使用」里检查 ADB 连接。",
+}
 
 
 def phone_profile(provider, *, max_output_tokens=1024):
@@ -76,6 +86,8 @@ class PhoneTaskRecord:
     checkout: dict | None = None
     notice: str = ""
     resume_checkout: bool = False
+    screen_read: bool = False
+    notice_at: str = ""
 
     def document(self) -> dict:
         value = {"version": 1, "task_id": self.task_id, "context": json.loads(self.context_json),
@@ -93,15 +105,20 @@ class PhoneTaskRecord:
             value["checkout"] = self.checkout
         if self.notice:
             value["notice"] = self.notice
+        if self.notice_at:
+            value["notice_at"] = self.notice_at
         if self.resume_checkout:
             value["resume_checkout"] = True
+        if self.screen_read:
+            value["screen_read"] = True
         return value
 
     @classmethod
     def parse(cls, value: dict) -> "PhoneTaskRecord":
         required = {"version", "task_id", "context", "goal", "state", "step", "max_steps",
                     "history", "created_at", "next_at", "expires_at"}
-        optional = {"inflight_at", "outcome", "shopping", "checkout", "notice", "resume_checkout"}
+        optional = {"inflight_at", "outcome", "shopping", "checkout", "notice", "notice_at",
+                    "resume_checkout", "screen_read"}
         if type(value) is not dict or set(value) - (required | optional) or not required <= set(value):
             raise ValueError("stored phone task has an unexpected shape")
         if value["version"] != 1 or value["state"] not in ("active", "awaiting_confirmation", "done", "failed", "cancelled"):
@@ -112,7 +129,8 @@ class PhoneTaskRecord:
                    str(value["expires_at"]), str(value.get("inflight_at") or ""),
                    str(value.get("outcome") or ""), value.get("shopping") is True,
                    value.get("checkout"), str(value.get("notice") or ""),
-                   value.get("resume_checkout") is True)
+                   value.get("resume_checkout") is True, value.get("screen_read") is True,
+                   str(value.get("notice_at") or ""))
 
 
 class PhoneActionService:
@@ -199,8 +217,14 @@ class PhoneActionService:
 
     # -- creation ------------------------------------------------------
 
+    def create_screen_read(self, context: TaskContext, question: str, *, request_id: str) -> dict:
+        if not request_id:
+            raise TaskError("phone_screen_request_invalid", "a screen read needs its original message ID")
+        return self.create(context, question, max_steps=1, screen_request_id=request_id)
+
     def create(self, context: TaskContext, goal: str, *, delay_minutes: int = 0,
-               max_steps: int | None = None, shopping: bool = False, resume_checkout: bool = False) -> dict:
+               max_steps: int | None = None, shopping: bool = False, resume_checkout: bool = False,
+               screen_request_id: str = "") -> dict:
         if context.scope.kind is not ScopeKind.PRIVATE or context.audience.recipients != (context.actor.subject,):
             raise TaskError("phone_private_required", "a phone task belongs to one private window")
         goal = (goal or "").strip()
@@ -221,31 +245,37 @@ class PhoneActionService:
             # Refuse at registration instead of retrying a task whose steps can
             # never be authorized; the step still rechecks this boundary.
             require(self.tasks.check_context_access(context, action=KIND, observed_at=now))
-        identifier = "phone-" + digest([context.key, goal, stamp(now)])[:32]
+        screen_read = bool(screen_request_id)
+        identity = [context.key, "screen-read", screen_request_id] if screen_read else [context.key, goal, stamp(now)]
+        identifier = "phone-" + digest(identity)[:32]
         record = PhoneTaskRecord(
             identifier, json.dumps(json.loads(encode(context)), ensure_ascii=False, sort_keys=True),
             goal, "active", 0, steps, (), stamp(now),
             stamp(now + timedelta(minutes=int(delay_minutes))),
             stamp(now + timedelta(minutes=int(delay_minutes), seconds=TASK_LIFETIME_SECONDS)),
-            shopping=shopping or resume_checkout, resume_checkout=resume_checkout)
+            shopping=shopping or resume_checkout, resume_checkout=resume_checkout, screen_read=screen_read)
         with self.runtime.transaction():
-            records = tuple(item for item in self._records() if datetime.fromisoformat(item.expires_at) > now)
-            previous = None
-            if resume_checkout:
-                previous = next((item for item in records if item.shopping
-                                 and context.same_window(TaskContext.restore(json.loads(item.context_json)))), None)
-            if any(item.state == "active" or (item.state == "awaiting_confirmation" and item is not previous)
-                   for item in records):
-                raise TaskError("phone_busy", "the phone already has an active task or checkout")
-            if resume_checkout:
-                if previous is None or previous.state not in ("awaiting_confirmation", "failed"):
-                    raise TaskError("phone_checkout_unavailable", "没有可从当前结账页接续的手机订单。")
-                if previous.state == "awaiting_confirmation":
-                    self._save(replace(previous, state="cancelled", checkout=None, notice="",
-                                       outcome="phone_checkout_revised"))
-            self._save(record)
+            prior = self._read(identifier) if screen_read else None
+            if prior is not None:
+                record = prior
+            else:
+                records = tuple(item for item in self._records() if datetime.fromisoformat(item.expires_at) > now)
+                previous = None
+                if resume_checkout:
+                    previous = next((item for item in records if item.shopping
+                                     and context.same_window(TaskContext.restore(json.loads(item.context_json)))), None)
+                if any(item.state == "active" or (item.state == "awaiting_confirmation"
+                       and item is not previous and not screen_read) for item in records):
+                    raise TaskError("phone_busy", "the phone already has an active task or checkout")
+                if resume_checkout:
+                    if previous is None or previous.state not in ("awaiting_confirmation", "failed"):
+                        raise TaskError("phone_checkout_unavailable", "没有可从当前结账页接续的手机订单。")
+                    if previous.state == "awaiting_confirmation":
+                        self._save(replace(previous, state="cancelled", checkout=None, notice="",
+                                           outcome="phone_checkout_revised"))
+                self._save(record)
         self.notify()
-        return {"task_id": identifier, "state": "active", "goal": goal, "max_steps": steps,
+        return {"task_id": identifier, "state": record.state, "goal": record.goal, "max_steps": record.max_steps,
                 "starts_at": record.next_at}
 
     def cancel(self, task_id: str) -> bool:
@@ -303,6 +333,7 @@ class PhoneActionService:
     def delivery_content(self, request, at):
         record = self._read(request.source_ref)
         if (record is None or not record.notice or not self.available(request.context)
+                or request.logical_key != self._notice_key(record)
                 or TaskContext.restore(json.loads(record.context_json)) != request.context):
             raise TaskError("phone_notice_unavailable", "the original private phone notice is unavailable")
         if record.state == "awaiting_confirmation" and datetime.fromisoformat(record.checkout["expires_at"]) <= at:
@@ -332,7 +363,14 @@ class PhoneActionService:
         return DeliveryContent(record.notice, (image,))
 
     def _queue_notice(self, record, at):
-        if not record.notice or not record.shopping:
+        if self.app is None or not record.notice or not record.notice_at:
+            return
+        issued = datetime.fromisoformat(record.notice_at)
+        deadline = issued + NOTICE_LIFETIME
+        if at >= deadline:
+            return
+        key = self._notice_key(record)
+        if self.app.outbound.contains("outbound-" + digest([NOTICE_OWNER, key])):
             return
         context = TaskContext.restore(json.loads(record.context_json))
         try:
@@ -343,9 +381,9 @@ class PhoneActionService:
             record = replace(record, checkout=checkout)
             self._save(record)
             content = DeliveryContent(record.notice)
-        request = DeliveryRequest(NOTICE_OWNER, self._notice_key(record),
+        request = DeliveryRequest(NOTICE_OWNER, key,
                                   context, record.task_id, payload_hash(content.text, content.images),
-                                  at, at + timedelta(minutes=5))
+                                  issued, deadline)
         result = self.app.outbound.queue(request)
         if result.failure:
             logger.warning("Phone notice could not be queued: %s", result.failure.code)
@@ -362,15 +400,20 @@ class PhoneActionService:
         """Submit at most one step for each due record; never observes the phone here."""
         if self._closed or self.runner is None or self.tasks is None or self._workers:
             return 0
+        return self.launch_prepared_step(self.prepare_due_step())
+
+    def prepare_due_step(self):
         now = self.tasks.now()
-        started = 0
         for record in self._records():
             if record.state == "awaiting_confirmation":
                 if datetime.fromisoformat(record.checkout["expires_at"]) <= now:
                     self._save(replace(record, state="cancelled", checkout=None, notice="",
                                        outcome="phone_checkout_expired"))
+                else:
+                    self._queue_notice(record, now)
                 continue
             if record.state != "active":
+                self._queue_notice(record, now)
                 continue
             try:
                 due = datetime.fromisoformat(record.next_at)
@@ -380,7 +423,8 @@ class PhoneActionService:
             if now < due:
                 continue
             if now >= expires or (record.step >= record.max_steps and not record.checkout):
-                self._save(replace(record, state="failed", inflight_at="", outcome="phone_task_expired"))
+                self._finish(record, state="failed", code="phone_task_expired",
+                             notice="手机任务已超时，请核对手机上的实际进度。")
                 continue
             try:
                 context = TaskContext.restore(json.loads(record.context_json))
@@ -398,7 +442,8 @@ class PhoneActionService:
                 # A step that stayed inflight well past its own deadline never
                 # produced a receipt.  Treat it as an unknown action rather than
                 # retrying a tap whose effect nobody observed.
-                self._save(replace(record, state="failed", inflight_at="", outcome="phone_step_stalled"))
+                self._finish(record, state="failed", code="phone_step_stalled",
+                             notice="上一步手机操作的结果未确认，请查看手机上的实际进度。")
                 continue
             inflight = replace(record, inflight_at=stamp(now))
             self._save(inflight)
@@ -415,17 +460,23 @@ class PhoneActionService:
                 if error.code in CAPACITY_REFUSALS or error.code == "task_storage_full":
                     break
                 continue
-            started += 1
-            worker = asyncio.create_task(self.runner.run(spec.context, spec.task_id),
-                                         name="companion:phone:" + identifier)
-            self._workers[identifier] = worker
-            worker.add_done_callback(
-                lambda done, step=identifier: self._step_done(step, done))
-            if started >= 1:
-                break
-        if started:
-            self.notify()
-        return started
+            return spec
+        return None
+
+    def launch_prepared_step(self, spec):
+        if spec is None:
+            return 0
+        identifier = spec.task_id
+        if self._closed:
+            self.pending.pop(identifier, None)
+            return 0
+        if identifier in self._workers:
+            return 0
+        worker = asyncio.create_task(self.runner.run(spec.context, identifier), name="companion:phone:" + identifier)
+        self._workers[identifier] = worker
+        worker.add_done_callback(lambda done: self._step_done(identifier, done))
+        self.notify()
+        return 1
 
     def _step_done(self, identifier, worker) -> None:
         self._workers.pop(identifier, None)
@@ -507,24 +558,39 @@ class PhoneActionService:
                                ime_restore_seconds=settings.ime_restore_seconds)
         at = self.tasks.now()
         try:
-            observation = await asyncio.to_thread(session.observe, stored.step)
+            if stored.screen_read:
+                observation = await asyncio.to_thread(session.observe, stored.step, read_only=True)
+            else:
+                observation = await asyncio.to_thread(session.observe, stored.step)
         except AdbError as error:
-            notice = ("手机已亮屏，请在手机上解锁后重新发起任务。" if error.code == "adb_unlock_required"
-                      else "读取手机画面失败，请检查手机。")
+            if stored.screen_read:
+                notice = SCREEN_CAPTURE_ERRORS.get(error.code, "这次没能取得手机当前画面。")
+            elif error.code == "adb_screenshot_secure":
+                notice = "当前手机页面开启了隐私防截屏保护，无法读取画面。"
+            else:
+                notice = ("手机已亮屏，请在手机上解锁后重新发起任务。" if error.code == "adb_unlock_required"
+                          else "读取手机画面失败，请检查手机。")
             self._finish(stored, state="failed", code=error.code, notice=notice)
             raise TaskError(error.code, str(error)) from error
+        if stored.screen_read:
+            return await self._describe_screen(run, stored, observation, at)
         if stored.checkout:
             return await self._approved_checkout(run, stored, observation, session, settings)
         context = run.task.spec.context
         screen = SkillScreen.capture(observation)
-        stored = self._observe_previous_tap(stored, screen)
+        observed = self._observe_previous_tap(stored, screen, observation)
+        if observed is not stored:
+            self.skills.observe_tap(context, observed.history[-1], at)
+            stored = observed
+        avoided = self.skills.ineffective_targets(context, screen, at)
         if screen is not None and "tap" in settings.allowed:
-            reused = self.skills.recall(context, stored.goal, stored.shopping, screen, observation, stored.history)
+            reused = self.skills.recall(context, stored.goal, stored.shopping, screen, observation, stored.history,
+                                       avoided=avoided)
             if reused is not None:
                 return await self._execute(run, stored, observation, session, reused,
                                            skill_tap=screen.tap(observation, reused), reused=True)
         history = tuple(_history_step(item) for item in stored.history)
-        image = self._annotate(record, observation, run, at)
+        image = await asyncio.to_thread(self._prompt_image, record, observation, run, at)
         ordering = ""
         allowed = settings.allowed
         if stored.shopping and "tap" in allowed:
@@ -533,16 +599,14 @@ class PhoneActionService:
         if stored.resume_checkout:
             ordering += ("\n本单从手机当前结账页接续。先核对现有订单是否与目标相符，调整本次要求的配送、红包等选项，"
                          "完成后用 confirm_checkout 发新的确认单。当前没有这笔订单时，用 fail 请用户打开对应的结账页。")
-        request = PromptRequest(
-            BackgroundPromptTrigger(digest([run.task.task_id, "phone-step"]), run.task.spec.context.actor.principal,
-                                    run.task.spec.context.scope, at),
-            ROLE_INSTRUCTION, SealedForegroundContext((), (), ()),
+        if avoided:
+            positions = "、".join(f"({x}, {y})" for x, y in (screen.targets[target] for target in avoided[-4:]))
+            ordering += (f"\n操作经验：相同页面上点击 {positions} 曾没有产生可观察的变化。"
+                         "优先根据当前画面寻找其他入口；当前状态表明点击会生效时可以重新判断。")
+        request = self._prompt_request(run, at, image,
             INSTRUCTION + ordering +
             "\n本轮允许的动作：" + ", ".join(sorted(allowed)) +
-            "\n\n" + decision_prompt(stored.goal, observation, history),
-            run.task.spec.context.role_binding,
-            output_format="phone_action", response_format="json_object",
-            images=(image,) if image is not None else ())
+            "\n\n" + decision_prompt(stored.goal, observation, history, screenshot_attached=image is not None))
         try:
             completion = await self.gateway.generate(run, request)
         except TaskError as error:
@@ -576,19 +640,62 @@ class PhoneActionService:
         if action.kind == "done":
             step = PhoneStep(stored.step + 1, action, True, action.reason or "完成",
                              observation_sha256=observation.screenshot_sha256, started_at=started)
-            return self._commit(run, self._with_step(stored, step, state="done", notice=step.detail),
+            notice = redact_text(step.detail) if stored.shopping else f"手机任务已完成。{redact_text(step.detail)}"
+            return self._commit(run, self._with_step(stored, step, state="done", notice=notice),
                                 learn=not stored.shopping)
         if action.kind == "fail":
             step = PhoneStep(stored.step + 1, action, False, action.reason or "放弃",
                              code="phone_task_failed", observation_sha256=observation.screenshot_sha256,
                              started_at=started)
+            notice = redact_text(step.detail) if stored.shopping else f"手机任务未完成。{redact_text(step.detail)}"
             return self._commit(run, self._with_step(stored, step, state="failed",
-                outcome=step.code, notice=step.detail))
+                outcome=step.code, notice=notice))
         return await self._execute(run, stored, observation, session, action,
                                    skill_tap=screen.tap(observation, action) if screen else None)
 
     @staticmethod
-    def _observe_previous_tap(record, screen):
+    def _prompt_request(run, at, image, instruction):
+        context = run.task.spec.context
+        trigger = BackgroundPromptTrigger(digest([run.task.task_id, "phone-step"]),
+                                          context.actor.principal, context.scope, at)
+        return PromptRequest(trigger, ROLE_INSTRUCTION, SealedForegroundContext((), (), ()),
+                             instruction, context.role_binding, output_format="phone_action",
+                             response_format="json_object", images=(image,) if image is not None else ())
+
+    async def _describe_screen(self, run, record, observation, at):
+        image = await asyncio.to_thread(self._prompt_image, record, observation, run, at)
+        if image is None:
+            self._finish(record, state="failed", code="phone_screen_image_unavailable", notice="本次未取得可读取的手机截图。")
+            raise TaskError("phone_screen_image_unavailable", "the current screen image is unavailable")
+        request = self._prompt_request(run, at, image, SCREEN_READ_INSTRUCTION +
+            f"\ngoal: {record.goal}\n\nobservation:\n{observation.prompt_text(annotated=False)}")
+        try:
+            completion = await self.gateway.generate(run, request)
+        except TaskError as error:
+            if error.code in ("model_capability_mismatch", "model_provider_unavailable", "model_task_unregistered"):
+                notice = "已取得手机画面。请在「模型与连接」为手机操作配置支持图片输入的模型。"
+            elif error.code == "phone_model_rate_limited":
+                notice = "已取得手机画面，视觉模型暂时被限流。"
+            else:
+                notice = "已取得手机画面，视觉模型这次未能返回解读。"
+            self._finish(record, state="failed", code=error.code, notice=notice)
+            raise
+        try:
+            result = parse_decision(completion.draft.text if completion.draft is not None else "")
+            if result.kind not in ("done", "fail") or not result.reason:
+                raise DecisionError("phone_screen_result_invalid", "a screen read needs an answer or a reason")
+        except DecisionError as error:
+            self._finish(record, state="failed", code=error.code, notice="视觉模型未返回可用的手机画面解读。")
+            raise TaskError(error.code, str(error)) from error
+        answer = redact_text(result.reason)
+        ok = result.kind == "done"
+        step = PhoneStep(1, PhoneAction(result.kind), ok, answer, "" if ok else "phone_screen_unclear",
+                         observation.screenshot_sha256, started_at=stamp(at))
+        return self._commit(run, self._with_step(record, step, state="done" if ok else "failed",
+                                                outcome=step.code, notice=f"手机当前画面\n{answer}"))
+
+    @staticmethod
+    def _observe_previous_tap(record, screen, observation):
         if screen is None or not record.history:
             return record
         previous = record.history[-1]
@@ -597,9 +704,9 @@ class PhoneActionService:
             return record
         if tap["screen"] != screen.key:
             previous = {**previous, "skill_verified": True}
-        elif previous.get("skill_reused"):
+        elif not screen.checkout and previous.get("observation") == observation.screenshot_sha256:
             previous = {**previous, "ok": False, "code": "phone_action_ineffective",
-                        "detail": "复用这一步后页面没有变化，请按当前画面重新判断"}
+                        "detail": "点击后页面没有变化，请按当前画面重新判断"}
         else:
             return record
         return replace(record, history=(*record.history[:-1], previous))
@@ -657,6 +764,8 @@ class PhoneActionService:
 
     def _commit(self, run, record, *, began=False, learn=False):
         at = self.tasks.now()
+        if record.notice:
+            record = replace(record, notice_at=stamp(at))
         with self.runtime.transaction():
             if not began:
                 run.begin_effect()
@@ -744,24 +853,27 @@ class PhoneActionService:
         return self._commit(run, replace(record, state=state, outcome=code, notice=notice,
                                          checkout=None, inflight_at=""))
 
-    def _annotate(self, record: PhoneTaskRecord, observation: PhoneObservation, run, at):
-        """Draw grid and node boxes; never fail the step because of the annotation."""
+    def _prompt_image(self, record: PhoneTaskRecord, observation: PhoneObservation, run, at):
         if not observation.screenshot:
             return None
         try:
-            annotated = annotate_screen(observation.screenshot, observation.elements,
-                                        boxes=observation.stable)
-            width, height = image_size(annotated)
+            if record.screen_read:
+                captured = checkout_screenshot(observation.screenshot)
+                content, descriptor = captured.content, captured.descriptor
+            else:
+                content = annotate_screen(observation.screenshot, observation.elements, boxes=observation.stable)
+                width, height = image_size(content)
+                descriptor = ImageDescriptor(0, image_mime_type(content), width, height, len(content),
+                                             hashlib.sha256(content).hexdigest())
             identifier = "phone-shot-" + digest([record.task_id, observation.step])[:32]
             source = SourceRef(identifier, "device.phone", run.task.spec.context.scope,
                                VersionRef(identifier, 1), at)
-            descriptor = ImageDescriptor(0, "image/png", width, height, len(annotated),
-                                         hashlib.sha256(annotated).hexdigest())
-            image = PhonePromptImage(source, source, descriptor,
-                                     base64.b64encode(annotated).decode("ascii"))
-        except (ValueError, TypeError, TaskError):
+            image = PhonePromptImage(source, source, descriptor, base64.b64encode(content).decode("ascii"))
+        except (ImportError, OSError, ValueError, TypeError, TaskError):
             return None
-        self._store_screenshot(f"{record.task_id}-{observation.step}.png", annotated)
+        if not record.screen_read:
+            suffix = ".jpg" if descriptor.mime_type == "image/jpeg" else ".png"
+            self._store_screenshot(f"{record.task_id}-{observation.step}{suffix}", content)
         return image
 
     def _store_screenshot(self, filename: str, data: bytes) -> bool:
@@ -772,7 +884,7 @@ class PhoneActionService:
         except OSError:
             return False
         try:
-            files = sorted((*folder.glob("*.png"), *folder.glob("phone-checkout-*.jpg")),
+            files = sorted((*folder.glob("*.png"), *folder.glob("*.jpg")),
                            key=lambda path: path.stat().st_mtime, reverse=True)
             for old in files[40:]:
                 old.unlink(missing_ok=True)
@@ -781,9 +893,11 @@ class PhoneActionService:
         return True
 
     def _finish(self, record, *, state, code, notice=""):
-        finished = replace(record, state=state, inflight_at="", checkout=None, outcome=code, notice=notice)
+        at = self.tasks.now()
+        finished = replace(record, state=state, inflight_at="", checkout=None, outcome=code,
+                           notice=notice, notice_at=stamp(at) if notice else "")
         self._save(finished)
-        self._queue_notice(finished, self.tasks.now())
+        self._queue_notice(finished, at)
 
 
 def _history_step(item: dict) -> PhoneStep:

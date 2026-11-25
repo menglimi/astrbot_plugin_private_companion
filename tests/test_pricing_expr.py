@@ -15,6 +15,8 @@ from companion_v2.model_gateway.pricing_expr import (
     eval_compiled_expr,
     evaluate_tiered_expr_rule,
     expr_to_python,
+    lower_newapi_billing_expr,
+    normalize_tiered_expr_rule,
     strip_v1_prefix,
     validate_tiered_expr_rule,
 )
@@ -264,6 +266,145 @@ class PricingExprEvaluationTests(unittest.TestCase):
         bad = validate_tiered_expr_rule({"expr": "p / 0"})
         self.assertFalse(bad["valid"])
         self.assertTrue(bad["error"])
+
+    def test_newapi_tier_function_multimodal_vars_and_cny_currency(self):
+        # NewAPI tier() wrapper captures matched tier name and evaluates exact cost
+        rule = {
+            "mode": "tiered_expr",
+            "currency": "CNY",
+            "expr": 'len <= 200000 ? tier("standard", p * 2 + cr * 0.2 + c * 12) : tier("long_context", p * 4 + cr * 0.4 + c * 18)',
+        }
+        norm = normalize_tiered_expr_rule(rule)
+        self.assertEqual(norm["currency"], "CNY")
+
+        short_micro, short_tier = evaluate_tiered_expr_rule(
+            norm, other_input_tokens=100_000, cached_input_tokens=50_000, output_tokens=10_000
+        )
+        self.assertEqual(short_tier, "standard")
+        self.assertAlmostEqual(short_micro, 100_000 * 2 + 50_000 * 0.2 + 10_000 * 12, places=4)
+
+        long_micro, long_tier = evaluate_tiered_expr_rule(
+            norm, other_input_tokens=150_000, cached_input_tokens=60_000, output_tokens=10_000
+        )
+        self.assertEqual(long_tier, "long_context")
+        self.assertAlmostEqual(long_micro, 150_000 * 4 + 60_000 * 0.4 + 10_000 * 18, places=4)
+
+        # tier variable AND tier() function coexist cleanly in the same expression
+        coexist_rule = {
+            "mode": "tiered_expr",
+            "expr": 'tier == "priority" ? tier("fast", p * 4 + c * 16) : tier("std", p * 2 + c * 8)',
+        }
+        c_fast, t_fast = evaluate_tiered_expr_rule(
+            coexist_rule, other_input_tokens=1_000, output_tokens=500, service_tier="priority"
+        )
+        self.assertEqual(t_fast, "fast")
+        self.assertAlmostEqual(c_fast, 12_000.0, places=4)
+
+        # Multimodal variables ai/ao/ii/io/vi/vo default to 0 and never fail validation
+        audio_rule = {
+            "mode": "tiered_expr",
+            "currency": "CNY",
+            "expr": 'tier("standard", p * 0.5 + ai * 1 + cr * 0.05 + c * 3)',
+        }
+        audio_cost, audio_tier = evaluate_tiered_expr_rule(
+            audio_rule, other_input_tokens=1_000_000, cached_input_tokens=0, output_tokens=1_000_000
+        )
+        self.assertEqual(audio_tier, "standard")
+        self.assertAlmostEqual(audio_cost, 3_500_000.0, places=4)
+
+        # CNY validation preview divides CNY by usd_cny_rate (never multiplies!)
+        val_cny = validate_tiered_expr_rule(
+            {"expr": 'tier("standard", p * 0.75 + cr * 0.075 + c * 3.75)', "currency": "CNY"},
+            usd_cny_rate=6.68,
+            sample={"p": 1_000_000, "cr": 0, "c": 0},
+        )
+        self.assertTrue(val_cny["valid"])
+        self.assertEqual(val_cny["currency"], "CNY")
+        first = val_cny["samples"][0]
+        self.assertEqual(first["matched_tier"], "standard")
+        self.assertAlmostEqual(first["cost_cny"], 0.75, places=6)
+        self.assertAlmostEqual(first["cost_usd"], 0.75 / 6.68, places=6)
+        self.assertEqual(first["cost_microusd"], int(round((0.75 / 6.68) * 1_000_000)))
+
+        # Invalid currency and bad tier() arity are rejected cleanly
+        with self.assertRaises(PricingExprSyntaxError):
+            normalize_tiered_expr_rule({"expr": "p * 1", "currency": "EUR"})
+        with self.assertRaises(TieredExprEvaluationError):
+            evaluate_tiered_expr_rule({"expr": 'tier("only_one_arg")'}, other_input_tokens=100)
+
+    def test_lower_newapi_billing_expr_lossless_per_token_per_tier_and_complex_fallback(self):
+        # 1) Single linear tier("standard", ...) lowers losslessly to per_token
+        rule_pt, kind_pt = lower_newapi_billing_expr(
+            'tier("standard", p * 0.75 + cr * 0.075 + c * 3.75)',
+            currency="CNY",
+            unit_scale=1.0,
+        )
+        self.assertEqual(kind_pt, "per_token")
+        self.assertEqual(rule_pt["mode"], "per_token")
+        self.assertEqual(rule_pt["currency"], "CNY")
+        self.assertEqual(rule_pt["input"], 0.75)
+        self.assertEqual(rule_pt["input_cached"], 0.075)
+        self.assertIsNone(rule_pt["cache_creation"])
+        self.assertEqual(rule_pt["output"], 3.75)
+        self.assertFalse(rule_pt["free"])
+
+        # Free embedding expression lowers cleanly to free per_token
+        rule_free, kind_free = lower_newapi_billing_expr('tier("standard", p * 0)', currency="USD")
+        self.assertEqual(kind_free, "per_token")
+        self.assertTrue(rule_free["free"])
+
+        # 2) Multi-tier len <= T ? tier(...) : tier(...) lowers losslessly to per_tier
+        rule_tier, kind_tier = lower_newapi_billing_expr(
+            'len <= 32000 ? tier("0-32K", p * 0.1 + c * 1 + cr * 0.02) : '
+            'len <= 128000 ? tier("32K-128K", p * 0.2 + c * 2 + cr * 0.04) : '
+            'tier("128K+", p * 0.4 + c * 4 + cr * 0.08)',
+            currency="CNY",
+            unit_scale=1.0,
+        )
+        self.assertEqual(kind_tier, "per_tier")
+        self.assertEqual(rule_tier["currency"], "CNY")
+        self.assertEqual(rule_tier["base"], {"input": 0.1, "input_cached": 0.02, "cache_creation": None, "output": 1.0})
+        self.assertEqual([t["threshold_tokens"] for t in rule_tier["context_tiers"]], [32000, 128000])
+        self.assertEqual(rule_tier["context_tiers"][1]["output"], 4.0)
+
+        # 3) Complex expressions (cc1h / ai / strict '<') remain tiered_expr with currency & unit_scale
+        rule_cc1h, kind_cc1h = lower_newapi_billing_expr(
+            'tier("standard", p * 5 + cr * 0.5 + cc * 6.25 + cc1h * 10 + c * 25)',
+            currency="CNY",
+            unit_scale=7.3,
+        )
+        self.assertEqual(kind_cc1h, "tiered_expr")
+        self.assertEqual(rule_cc1h["currency"], "CNY")
+        cost_cc1h, matched_cc1h = evaluate_tiered_expr_rule(
+            rule_cc1h, other_input_tokens=1_000_000, cache_creation_1h_tokens=1_000_000, output_tokens=0
+        )
+        self.assertEqual(matched_cc1h, "standard")
+        self.assertAlmostEqual(cost_cc1h, (5 + 10) * 1_000_000 * 7.3, places=2)
+
+        # 4) Cross-branch inconsistent cr/cc stays tiered_expr for 100% lossless evaluation
+        mixed_cr_expr = (
+            'v1:len <= 200000 ? tier("short", p * 2 + cr * 0.2 + c * 10)'
+            ' : tier("long", p * 4 + c * 18)'
+        )
+        rule_mixed_cr, kind_mixed_cr = lower_newapi_billing_expr(mixed_cr_expr, currency="CNY")
+        self.assertEqual(kind_mixed_cr, "tiered_expr")
+        # In the >200K branch cr is omitted while global used_variables contains cr,
+        # so uncached p = 150k and cached cr = 100k contributes 0 (NOT 100k * 4!).
+        cost_mixed, tier_mixed = evaluate_tiered_expr_rule(
+            rule_mixed_cr,
+            other_input_tokens=150_000,
+            cached_input_tokens=100_000,
+            output_tokens=10_000,
+        )
+        self.assertEqual(tier_mixed, "long")
+        self.assertAlmostEqual(cost_mixed, 150_000 * 4 + 10_000 * 18, places=4)
+
+        mixed_cc_expr = (
+            'v1:len <= 200000 ? tier("short", p * 2 + c * 10)'
+            ' : tier("long", p * 4 + cc * 5 + c * 18)'
+        )
+        _rule_mixed_cc, kind_mixed_cc = lower_newapi_billing_expr(mixed_cc_expr, currency="USD")
+        self.assertEqual(kind_mixed_cc, "tiered_expr")
 
 
 if __name__ == "__main__":

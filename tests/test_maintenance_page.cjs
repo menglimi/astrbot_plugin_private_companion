@@ -51,6 +51,10 @@ function harness(responses) {
         configured: false, available: false, provider: 'newapi', provider_label: 'NewAPI',
         currency_label: '额度', state: 'not_configured',
       };
+      if (route.endsWith('/quota/upstream-logs')) {
+        const value = responses.upstreamLogs;
+        return typeof value === 'function' ? value(query || {}, requests) : value || { stations: [], items: [] };
+      }
       if (route.endsWith('/voice')) return responses.voice || {providers: []};
       if (route.endsWith('/image')) return responses.image || {actions: []};
       if (fullRoute.startsWith('/config?sections=system.prompts')) {
@@ -74,7 +78,9 @@ function harness(responses) {
       return result || {};
     },
   };
+  const navigations = [];
   const window = {
+    navigate: (...args) => navigations.push(args),
     CompanionProduct: {
       role: () => ({model_api: '/astrbot_plugin_private_companion/model',
         config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
@@ -130,7 +136,7 @@ function harness(responses) {
   vm.runInNewContext(source, {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
     Array, Set, Promise, URLSearchParams});
   return {
-    page: window.CompanionMaintenancePage, requests, root, exports: csvExports, downloads, confirmations, audioPreviews, revokedAudioUrls,
+    page: window.CompanionMaintenancePage, requests, root, exports: csvExports, downloads, confirmations, audioPreviews, revokedAudioUrls, navigations,
     advanceTimers: elapsed => {
       for (const [id, timer] of [...timers]) {
         if (timer.delay <= elapsed) { timers.delete(id); timer.callback(); }
@@ -2560,4 +2566,163 @@ test('routeError maps specific diagnostics and bridge.apiGet enforces bounded 30
   assert.match(hanging.root.innerHTML, /维护面板暂时离线/);
   assert.match(hanging.root.innerHTML, /读取超时（超过 30 秒）/);
   hanging.page.unmount();
+});
+
+test('multi-station balance card renders station name + primary badge, isolates refresh, jumps to quota, and supports aggregate mode', async () => {
+  const today = localDay();
+  const baseMaint = {
+    generated_at: today + 'T12:00:00',
+    summary: daily(today, {calls: 1, tokens: 500}),
+    totals: daily(today, {calls: 1, tokens: 500}),
+    daily: [daily(today, {calls: 1, tokens: 500})],
+    history: [daily(today, {calls: 1, tokens: 500})],
+    recent: [], budget: {},
+  };
+  const h = harness({
+    maintenance: baseMaint,
+    balance: {
+      configured: true,
+      available: true,
+      provider: 'multi_station',
+      provider_label: '多站点额度看板',
+      source_kind: 'quota_dashboard',
+      station_name: '饼干中转站',
+      awareness_mode: 'primary',
+      is_primary_explicit: true,
+      participating_count: 2,
+      currency_symbol: '¥',
+      currency_label: 'CNY',
+      amount: '63.61',
+      observed_at: new Date().toISOString(),
+      state: 'available',
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+
+  assert.match(h.root.innerHTML, /ACCOUNT BALANCE · 额度看板/);
+  assert.match(h.root.innerHTML, /饼干中转站/);
+  assert.match(h.root.innerHTML, /<span class="maint-balance-badge">主站<\/span>/);
+  assert.match(h.root.innerHTML, /¥63\.61/);
+  assert.match(h.root.innerHTML, /共监测 2 站/);
+  assert.match(h.root.innerHTML, /data-balance-open-quota data-go="manage" data-manage="models" data-manage-subtab="quota"/);
+
+  // Clicking [data-balance-refresh] triggers GET /balance WITHOUT navigating away
+  const beforeBalanceReads = h.requests.filter(([m, r]) => m === 'GET' && r.endsWith('/balance')).length;
+  h.root.click('[data-balance-refresh]');
+  await flush();
+  assert.equal(h.requests.filter(([m, r]) => m === 'GET' && r.endsWith('/balance')).length, beforeBalanceReads + 1);
+  assert.equal(h.navigations.length, 0, 'refresh button must not trigger card jump navigation');
+
+  // Clicking card body navigates directly to manage / models / quota
+  h.root.click('[data-balance-card-jump="quota"]');
+  assert.deepEqual(h.navigations, [['manage', 'models', 'quota']]);
+  h.page.unmount();
+
+  // Aggregate sum mode displays 多站点汇总余额 + 汇总 N 站 badge
+  const agg = harness({
+    maintenance: baseMaint,
+    balance: {
+      configured: true,
+      available: true,
+      provider: 'multi_station',
+      provider_label: '多站点额度看板',
+      source_kind: 'quota_dashboard',
+      station_name: '多站点汇总',
+      awareness_mode: 'aggregate_sum',
+      is_primary_explicit: false,
+      participating_count: 3,
+      currency_symbol: '¥',
+      currency_label: 'CNY',
+      amount: '188.50',
+      extra: '折合 3 站现金余额',
+      observed_at: new Date().toISOString(),
+      state: 'available',
+    },
+  });
+  agg.page.mount(agg.root);
+  await flush();
+  assert.match(agg.root.innerHTML, /多站点汇总余额/);
+  assert.match(agg.root.innerHTML, /<span class="maint-balance-badge">汇总 3 站<\/span>/);
+  assert.match(agg.root.innerHTML, /¥188\.5/);
+  assert.match(agg.root.innerHTML, /折合 3 站现金余额/);
+  agg.page.unmount();
+});
+
+test('read-only upstream reconciliation foldout stays closed on mount, lazily fetches on open, and supports token_name filter', async () => {
+  const today = localDay();
+  const h = harness({
+    maintenance: {
+      generated_at: today + 'T12:00:00',
+      summary: daily(today, {calls: 1, tokens: 500}),
+      totals: daily(today, {calls: 1, tokens: 500}),
+      daily: [daily(today, {calls: 1, tokens: 500})],
+      history: [daily(today, {calls: 1, tokens: 500})],
+      recent: [], budget: {},
+    },
+    upstreamLogs: query => ({
+      station_id: 'st-cookie',
+      station_name: '饼干中转站',
+      stations: [{id: 'st-cookie', name: '饼干中转站'}],
+      days: Number(query.days || 7),
+      token_name: query.token_name || '',
+      token_names: ['companion-main', 'other-key'],
+      display_type: 'CREDIT',
+      symbol: '🍪',
+      inferred_fiat_currency: 'CNY',
+      wallet_cost: query.token_name === 'companion-main' ? 12.5 : 30.0,
+      wallet_fiat_cost: query.token_name === 'companion-main' ? 1.25 : 3.0,
+      wallet_calls: query.token_name === 'companion-main' ? 3 : 8,
+      subscription_cost: 50.0,
+      subscription_fiat_cost: 5.0,
+      subscription_calls: 10,
+      cache_hit_rate: 62.5,
+      cache_tokens: 12500,
+      prompt_tokens: 20000,
+      observed_groups: {default: 1, vip: 0.5},
+      total_calls: query.token_name === 'companion-main' ? 13 : 18,
+      truncated: false,
+      counted_in_private_companion_budget: false,
+      items: [
+        {
+          model_name: 'claude-sonnet-4',
+          billing_source: 'subscription',
+          token_name: query.token_name || 'companion-main',
+          cache_tokens: 4000,
+          cost: 5.0,
+        },
+      ],
+    }),
+  });
+  h.page.mount(h.root);
+  await flush();
+
+  // Default collapsed -> zero upstream-logs requests on mount
+  assert.match(h.root.innerHTML, /data-upstream-reconcile>/);
+  assert.doesNotMatch(h.root.innerHTML, /data-upstream-reconcile open/);
+  assert.equal(h.requests.filter(([, r]) => r.includes('/quota/upstream-logs')).length, 0);
+
+  // Toggle open -> lazily requests /quota/upstream-logs?days=7
+  h.root.click('[data-upstream-toggle]');
+  await flush();
+  const upReqs = h.requests.filter(([, r]) => r.includes('/quota/upstream-logs'));
+  assert.equal(upReqs.length, 1);
+  assert.match(upReqs[0][1], /days=7/);
+  assert.match(h.root.innerHTML, /data-upstream-reconcile open/);
+  assert.match(h.root.innerHTML, /30 🍪/);
+  assert.match(h.root.innerHTML, /50 🍪/);
+  assert.match(h.root.innerHTML, /62\.5%/);
+  assert.match(h.root.innerHTML, /default ×1 · vip ×0\.5/);
+  assert.match(h.root.innerHTML, /订阅套餐/);
+  assert.match(h.root.innerHTML, /绝不计入角色本地账本与预算/);
+
+  // Filter by token_name -> refetches with token_name=companion-main
+  h.root.change('[data-upstream-token]', 'companion-main');
+  await flush();
+  const filteredReqs = h.requests.filter(([, r]) => r.includes('/quota/upstream-logs'));
+  assert.equal(filteredReqs.length, 2);
+  assert.match(filteredReqs[1][1], /token_name=companion-main/);
+  assert.match(h.root.innerHTML, /12\.5 🍪/);
+
+  h.page.unmount();
 });

@@ -284,7 +284,8 @@ def private_debounce_settings(values):
     try:
         return PrivateDebounceSettings.from_milliseconds(
             settings["private_debounce_enabled"], settings["private_debounce_min_ms"],
-            settings["private_debounce_max_ms"], settings["private_debounce_total_ms"])
+            settings["private_debounce_max_ms"], settings["private_debounce_total_ms"],
+            semantic_enabled=settings["private_debounce_semantic_enabled"])
     except ValueError as error:
         raise ConfigurationError("reply_configuration_invalid",
                                  "private debounce timing is invalid") from error
@@ -371,6 +372,7 @@ def validate(values):
     continuation = set(GROUP_CONTINUATION_DEFAULTS)
     private_closing = set(PRIVATE_CLOSING_DEFAULTS)
     private_debounce = set(PRIVATE_DEBOUNCE_DEFAULTS)
+    private_debounce_timing = private_debounce - {"private_debounce_semantic_enabled"}
     wakeup = set(GROUP_WAKEUP_DEFAULTS)
     safety = set(GROUP_SAFETY_DEFAULTS)
     silence = set(SILENCE_DEFAULTS)
@@ -388,7 +390,8 @@ def validate(values):
     if (not legacy_required <= provided
             or optional - voice - air - continuation - private_closing - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - tool
             or (optional & voice and not (voice - {"voice_conversion_scope"}) <= optional)
-            or any(optional & block and not block <= optional for block in (air, continuation, private_closing, private_debounce, presentation))
+            or any(optional & block and not block <= optional for block in
+                   (air, continuation, private_closing, private_debounce_timing, presentation))
             or optional & spacing not in (set(), spacing)
             or optional & forward not in (set(), forward)
             or optional & wakeup not in (set(), set(GROUP_WAKEUP_LEGACY_FIELDS),

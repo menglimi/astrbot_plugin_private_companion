@@ -52,15 +52,23 @@ def image_failure(runtime, task_id):
 
 
 class ImageModelSession:
-    """One trusted child task; neither a model argument nor a persisted callback."""
+    """Meter one image invocation inside its verified task."""
 
     def __init__(self, gateway, run, invocation):
+        proactive = False
+        if run is not None and invocation.tool_call_id == "proactive-image":
+            spec = run.task.spec
+            proactive = invocation.parent_task_id == run.task.task_id and (
+                (spec.kind == "proactive.compose" and invocation.invocation_id == "contact-" + digest(run.task.task_id))
+                or (spec.kind == "proactive.judge" and invocation.invocation_id == spec.idempotency_key)
+            )
         if (run is None or run.supervisor.runtime is not gateway.runtime
                 or run.supervisor.generation != gateway.tasks.generation
                 or run.task.spec.context != invocation.context
-                or run.task.spec.request_ref != invocation.invocation_id):
+                or not proactive and run.task.spec.request_ref != invocation.invocation_id):
             raise TaskError("image_model_task_mismatch", "image accounting requires the original child task")
         self.gateway, self.run, self.invocation = gateway, run, invocation
+        self.proactive = proactive
         self.active = True
 
     def close(self):
@@ -82,14 +90,22 @@ class ImageModelSession:
                  "cost_availability": "unavailable", "token_availability": "not_applicable"}
         with gateway.runtime.transaction() as connection:
             run.validate()
-            if connection.execute("SELECT 1 FROM model_requests WHERE task_id = ?",
-                                  (run.task.task_id,)).fetchone():
+            request = connection.execute("SELECT 1 FROM model_requests WHERE task_id = ?",
+                                         (run.task.task_id,)).fetchone()
+            if self.proactive:
+                if request is None:
+                    raise TaskError("image_model_task_mismatch", "the original contact model request is unavailable")
+                position = connection.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM model_calls WHERE task_id=?",
+                                              (run.task.task_id,)).fetchone()[0]
+            elif request is not None:
                 raise TaskError("model_request_already_started", "inspect the original image call instead of resubmitting")
-            connection.execute("INSERT INTO model_requests VALUES (?, ?, ?, ?)",
-                (run.task.task_id, invocation.arguments_hash, encode(audit), stamp(gateway.tasks.now())))
+            else:
+                position = 0
+                connection.execute("INSERT INTO model_requests VALUES (?, ?, ?, ?)",
+                    (run.task.task_id, invocation.arguments_hash, encode(audit), stamp(gateway.tasks.now())))
             # Zero is a reservation only. Actual usage stays NULL unless there
             # is positive evidence no execution occurred; no prices are guessed.
-            gateway.ledger.reserve(run, call_id=call_id, position=0, provider=binding, amount=Amount(0, 0))
+            gateway.ledger.reserve(run, call_id=call_id, position=position, provider=binding, amount=Amount(0, 0))
         dispatched = False
         started = perf_counter()
 

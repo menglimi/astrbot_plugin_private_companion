@@ -89,6 +89,25 @@ test("the group archive destination renders the relationship workspace", () => {
   assert.doesNotMatch(html, /relationshipProfileConfigWorkspace/);
 });
 
+test("expression learning exposes the group window and mounts its learning settings", () => {
+  const h = harness();
+  const privateRole = {role_id: "r", reply_api: "/astrbot_plugin_private_companion/targets/private/roles/r/reply"};
+  const groupRole = {role_id: "r", reply_api: "/astrbot_plugin_private_companion/targets/group/roles/r/reply"};
+  const owner = {target_id: "private", bot_id: "b", scope_kind: "private", roles: [privateRole]};
+  const group = {target_id: "group", bot_id: "b", scope_kind: "group", roles: [groupRole]};
+  Object.assign(h.window.CompanionProduct, {
+    targets: () => [owner, group],
+    role: () => privateRole,
+    roleTarget: () => owner,
+    roleSelection: () => ({target_id: "private", role_id: "r"}),
+    selection: () => ({target_id: "group", role_id: "r"}),
+    targetLabel: target => target.target_id,
+  });
+  h.window.navigate("manage", "learning", "expression");
+  assert.match(h.run("roleContextMarkup()"), /<option value="group" selected>/);
+  assert.match(h.run("renderLearningPage()"), /id="expressionWorkspace"/);
+});
+
 test("returning home clears configuration, diary and furniture selections", () => {
   const h = harness(), shell = h.window.CompanionShell;
   for (const destination of ["navigate('manage','models')", "navigate('life','diary','sleep')",
@@ -224,10 +243,11 @@ test("reply efficiency is a deep-linkable maintenance subpage", () => {
   assert.equal(h.window.location.hash, "#manage/maintenance");
 });
 
-test("data page exposes three deep-linkable subpages", () => {
+test("data page exposes deep-linkable subpages including performance tuning", () => {
   const h = harness();
   for (const [pane, title, workspace] of [
     ["storage", "存储位置与清理策略", "storageWorkspace"],
+    ["tuning", "性能调优", "tuningWorkspace"],
     ["backup", "备份与还原", "backupWorkspace"],
     ["migration", "旧版资料迁入", "legacyMigrationWorkspace"],
   ]) {
@@ -238,7 +258,7 @@ test("data page exposes three deep-linkable subpages", () => {
     assert.match(markup, new RegExp(`href="#manage/data/${pane}" aria-current="page"`));
     assert.match(markup, new RegExp(title));
     assert.match(markup, new RegExp(workspace));
-    assert.equal((markup.match(/href="#manage\/data\/(?:storage|backup|migration)"/g) || []).length, 3);
+    assert.equal((markup.match(/href="#manage\/data\/(?:storage|tuning|backup|migration)"/g) || []).length, 4);
     assert.doesNotMatch(markup, /各处记录的入口|data-record-grid/);
   }
   h.visit("#manage/data/records");

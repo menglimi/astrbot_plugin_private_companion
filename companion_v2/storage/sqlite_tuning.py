@@ -5,8 +5,10 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import sqlite3
 import sys
+from threading import Lock
 
 
 _GIB = 1024 * 1024 * 1024
@@ -14,11 +16,19 @@ _MIB = 1024 * 1024
 LOW_MEMORY_THRESHOLD_BYTES = int(2.5 * _GIB)
 HIGH_MEMORY_THRESHOLD_BYTES = 6 * _GIB
 ULTRA_MEMORY_THRESHOLD_BYTES = 14 * _GIB
+VALID_SYNCHRONOUS_MODES = frozenset(("NORMAL", "FULL"))
+# Linux cgroup v1 reports an effectively unlimited sentinel near 2^63 - 4096.
+_CGROUP_UNLIMITED_THRESHOLD = 1 << 60
+_CGROUP_V2_MEMORY_MAX = Path("/sys/fs/cgroup/memory.max")
+_CGROUP_V1_MEMORY_LIMIT = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+
+_ACTIVE_PROFILE_LOCK = Lock()
+_ACTIVE_PROFILE: "SqliteTuningProfile | None" = None
 
 
 @dataclass(frozen=True, slots=True)
 class SqliteTuningProfile:
-    """SQLite cache, mmap, WAL, and reader-pool limits scaled to host RAM and CPU."""
+    """SQLite cache, mmap, WAL, synchronous, and reader-pool limits."""
 
     tier: str
     reader_pool_size: int
@@ -28,9 +38,14 @@ class SqliteTuningProfile:
     sidecar_mmap_size: int
     reader_cache_size_kib: int = 0
     journal_size_limit: int = 32 * _MIB
+    synchronous: str = "NORMAL"
 
     def effective_reader_cache_size_kib(self) -> int:
         return self.reader_cache_size_kib if self.reader_cache_size_kib > 0 else self.cache_size_kib
+
+    def effective_synchronous(self) -> str:
+        mode = str(self.synchronous or "NORMAL").upper()
+        return mode if mode in VALID_SYNCHRONOUS_MODES else "NORMAL"
 
 
 _LOW_MEMORY_PROFILE = SqliteTuningProfile(
@@ -128,14 +143,71 @@ def _detect_posix_sysconf_bytes() -> int | None:
         return None
 
 
-def detect_total_memory_bytes() -> int | None:
-    """Return total host physical RAM in bytes, or None if unavailable."""
+def _read_cgroup_limit_file(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return None
+    if not raw or raw == "max" or not raw.isdigit():
+        return None
+    limit = int(raw)
+    if limit <= 0 or limit >= _CGROUP_UNLIMITED_THRESHOLD:
+        return None
+    return limit
+
+
+def detect_cgroup_memory_limit_bytes(
+    *,
+    v2_path: Path | None = None,
+    v1_path: Path | None = None,
+) -> int | None:
+    """Return Linux container cgroup memory limit in bytes, or None if unconstrained."""
+    if sys.platform == "win32" and v2_path is None and v1_path is None:
+        return None
+    for candidate in (v2_path or _CGROUP_V2_MEMORY_MAX, v1_path or _CGROUP_V1_MEMORY_LIMIT):
+        limit = _read_cgroup_limit_file(candidate)
+        if limit is not None:
+            return limit
+    return None
+
+
+def detect_host_memory_bytes() -> int | None:
+    """Return raw host physical RAM in bytes without container cgroup clamping."""
     if sys.platform == "win32":
         return _detect_windows_memory_bytes()
     total = _detect_proc_meminfo_bytes()
     if total is not None:
         return total
     return _detect_posix_sysconf_bytes()
+
+
+def detect_total_memory_bytes() -> int | None:
+    """Return effective available RAM in bytes (min of host RAM and cgroup limit)."""
+    host = detect_host_memory_bytes()
+    cgroup = detect_cgroup_memory_limit_bytes()
+    if host is not None and cgroup is not None:
+        return min(host, cgroup)
+    return cgroup if cgroup is not None else host
+
+
+def set_active_sqlite_tuning_profile(profile: SqliteTuningProfile | None) -> None:
+    """Register the active process-wide SQLite tuning profile for main & sidecar stores."""
+    global _ACTIVE_PROFILE
+    with _ACTIVE_PROFILE_LOCK:
+        _ACTIVE_PROFILE = profile
+
+
+def active_sqlite_tuning_profile() -> SqliteTuningProfile:
+    """Return the active configured SQLite profile, or auto-detect from host hardware."""
+    with _ACTIVE_PROFILE_LOCK:
+        if _ACTIVE_PROFILE is not None:
+            return _ACTIVE_PROFILE
+    return tuning_profile()
+
+
+def clear_active_sqlite_tuning_profile() -> None:
+    """Reset the active profile back to hardware auto-detection (primarily for tests)."""
+    set_active_sqlite_tuning_profile(None)
 
 
 def detect_cpu_count() -> int:
@@ -211,7 +283,7 @@ def apply_sidecar_pragmas(
     foreign_keys: bool = False,
 ) -> None:
     """Apply WAL-friendly, hardware-adaptive PRAGMAs to a sidecar SQLite connection."""
-    selected = profile or tuning_profile()
+    selected = profile or active_sqlite_tuning_profile()
     if foreign_keys:
         connection.execute("PRAGMA foreign_keys = ON")
     if busy_timeout_ms is not None:
@@ -220,7 +292,7 @@ def apply_sidecar_pragmas(
         mode = connection.execute("PRAGMA journal_mode").fetchone()
         if mode is None or str(mode[0]).lower() != "wal":
             connection.execute("PRAGMA journal_mode = WAL")
-    connection.execute("PRAGMA synchronous = NORMAL")
+    connection.execute(f"PRAGMA synchronous = {selected.effective_synchronous()}")
     connection.execute(f"PRAGMA cache_size = -{int(selected.sidecar_cache_size_kib)}")
     connection.execute(f"PRAGMA mmap_size = {int(selected.sidecar_mmap_size)}")
     connection.execute("PRAGMA temp_store = MEMORY")

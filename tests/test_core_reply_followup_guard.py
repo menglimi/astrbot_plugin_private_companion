@@ -960,8 +960,8 @@ class EndToEndPluginFollowUpTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(runner1.consumed_texts, ["顺便加上晚饭"])
-        # Captured plain-text follow-up cleaned up native turn phase and event.send wrapper.
-        self.assertIn(("p-2", "completed"), phases)
+        # Captured plain-text follow-up marks native turn as 'absorbed' and cleans event.send wrapper.
+        self.assertIn(("p-2", "absorbed"), phases)
         self.assertIs(ev_text_fu.send, ev_text_fu._original_send_ref)
         # PrivateReplyFollowUps was not clobbered by the captured plain-text event.
         active_window = plugin._private_reply_followups().active_for("private-target")
@@ -1031,10 +1031,11 @@ class EndToEndPluginFollowUpTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
         await asyncio.sleep(0)
 
-        # Captured follow-up must NOT dangle in live turns, group_admission records, or native_turns!
+        # Captured follow-up must NOT dangle in live turns, group_admission records, or native_turns,
+        # and must mark native phase as 'absorbed' so it never shadows an in-flight owner turn!
         self.assertNotIn("gc-2", admission.live)
         self.assertEqual(admission.records["gc-2"]["state"], "completed")
-        self.assertIn(("gc-2", "completed"), phases)
+        self.assertIn(("gc-2", "absorbed"), phases)
         self.assertIs(ev2.send, ev2._original_send_ref)
         self.assertIsInstance(ev2.get_extra(CORE_REPLY_TRACKING_EXTRA), dict)
         self.assertTrue(ev2.get_extra(CORE_REPLY_TRACKING_EXTRA)["completed"])
@@ -1465,7 +1466,7 @@ class EndToEndPluginFollowUpTests(unittest.IsolatedAsyncioTestCase):
         t2 = asyncio.create_task(run2())
         await asyncio.wait_for(t2, timeout=0.5)
         await asyncio.sleep(0)
-        self.assertIn(("hn-2", "completed"), phases)
+        self.assertIn(("hn-2", "absorbed"), phases)
         self.assertEqual(plugin._core_reply_followup_guard()._keys, {})
 
         release.set()

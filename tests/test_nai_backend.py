@@ -264,3 +264,52 @@ class NAIBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(reread["nai"]["available"])
         self.assertEqual(reread["revision"], saved["revision"])
         self.assertEqual(reread["settings"]["operation_routes"]["edit"], ["nai"])
+
+    async def test_confirmed_nai_preflight_refusals_surface_sanitized_note_and_mark_confirmed(self):
+        cases = (
+            (
+                {"handled": True, "image_path": "", "note": "🚫 上游返回 HTTP 400：参数错误。\n详情: invalid size https://secret.example/v1 sk-abcdef1234567890 pst-novelaiSecretToken99"},
+                "nai_request_rejected",
+                400,
+                False,
+            ),
+            (
+                {"handled": True, "image_path": "", "note": "🚫 当前模型不支持参考图编辑模式，请切换模型"},
+                "nai_request_rejected",
+                400,
+                False,
+            ),
+            (
+                {"handled": True, "image_path": "", "note": "🚫 精准参考（director）被上游拒绝：参数校验失败"},
+                "nai_request_rejected",
+                400,
+                False,
+            ),
+            (
+                {"handled": True, "image_path": "", "note": "❌ 插件未配置 image_gen_key，请先在插件管理面板填入 token。"},
+                "nai_plugin_unavailable",
+                0,
+                False,
+            ),
+            (
+                {"handled": True, "image_path": "", "note": "⏱ 生图超时。上游可能仍在生成（可能已扣费），请稍后手动重试。"},
+                "nai_generation_timed_out",
+                0,
+                True,
+            ),
+        )
+        for payload, expected_code, expected_status, expected_unconfirmed in cases:
+            with self.subTest(expected_code=expected_code, note=payload["note"][:24]):
+                self.api.generate_for_companion.side_effect = None
+                self.api.generate_for_companion.return_value = payload
+                with self.assertRaises(NativeImageError) as raised:
+                    await self.backend.execute(self.invocation(), (), self.dispatch)
+                self.assertEqual(raised.exception.code, expected_code)
+                self.assertEqual(raised.exception.unconfirmed, expected_unconfirmed)
+                diag = raised.exception.diagnostics[0]
+                self.assertEqual(diag["reason"], expected_code)
+                self.assertEqual(diag["status"], expected_status)
+                self.assertTrue(diag["detail"])
+                self.assertNotIn("secret.example", diag["detail"])
+                self.assertNotIn("sk-abcdef1234567890", diag["detail"])
+                self.assertNotIn("pst-novelaiSecretToken99", diag["detail"])

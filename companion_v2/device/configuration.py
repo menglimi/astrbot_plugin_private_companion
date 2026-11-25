@@ -12,7 +12,7 @@ saved this group keeps working, and the page writes the group from then on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -21,6 +21,8 @@ from companion_v2.configuration.models import ApplyMode, ConfigLayer, ConfigTarg
 from companion_v2.configuration.role_settings import RoleSharedSettingsOwner
 from companion_v2.configuration.registry import FieldDefinition, ValueKind
 from companion_v2.execution.models import require
+from companion_v2.foundation.refs import SubjectKind, SubjectRef
+from companion_v2.storage.codec import encode_timestamp
 
 from .adb import AdbClient, discover_adb
 
@@ -181,6 +183,57 @@ class PhoneConfigurationOwner(RoleSharedSettingsOwner):
     def is_shared(self, field):
         return field.group_id == GROUP
 
+    def merge_role_aliases(self, aliases, observed_at):
+        """Consolidate phone values for aliases verified by the host's persona map."""
+        fields = configuration_fields()
+        groups = {}
+        for (bot_id, alias), canonical in aliases.items():
+            destination = ConfigTarget(self.runtime.installation_id, ConfigLayer.ROLE,
+                SubjectRef(self.runtime.installation_id, SubjectKind.BOT, canonical), bot_id=bot_id)
+            source = replace(destination, role=replace(destination.role, subject_id=alias))
+            if source != destination:
+                groups.setdefault(destination, []).append(source.key)
+        if not groups:
+            return
+
+        timestamp = encode_timestamp(observed_at)
+        with self.store.transaction() as connection:
+            for destination, source_keys in groups.items():
+                placeholders = ",".join("?" for _ in source_keys)
+                rows = connection.execute(f"""SELECT v.target_key,v.field_id,v.value_json
+                    FROM configuration_values v JOIN configuration_targets t USING(target_key)
+                    WHERE v.target_key IN ({placeholders}) AND v.field_id LIKE ?
+                    ORDER BY t.updated_at DESC,t.target_key""", (*source_keys, GROUP + ".%")).fetchall()
+                if not rows:
+                    continue
+                current = self.read(destination, fields)
+                changes, moved = {}, {}
+                for row in rows:
+                    field_id = row["field_id"]
+                    if field_id not in current.fields:
+                        continue
+                    try:
+                        value = json.loads(row["value_json"])
+                        validate({**DEFAULTS, field_id.removeprefix(GROUP + "."): value})
+                    except (TypeError, ValueError):
+                        continue
+                    if not current.fields[field_id].explicit:
+                        changes.setdefault(field_id, value)
+                    moved.setdefault(row["target_key"], []).append(field_id)
+                if changes:
+                    self.write(destination, fields, changes=changes, reset=(),
+                               expected_revision=current.revision, observed_at=observed_at)
+                for source_key, field_ids in moved.items():
+                    connection.executemany("DELETE FROM configuration_values WHERE target_key=? AND field_id=?",
+                                           ((source_key, field_id) for field_id in field_ids))
+                    # Keep the target row when existing change receipts or other groups need it.
+                    connection.execute("""DELETE FROM configuration_targets WHERE target_key=?
+                        AND NOT EXISTS (SELECT 1 FROM configuration_values WHERE target_key=?)
+                        AND NOT EXISTS (SELECT 1 FROM configuration_changes WHERE target_key=?)""",
+                        (source_key, source_key, source_key))
+                    connection.execute("UPDATE configuration_targets SET revision=revision+1,updated_at=? WHERE target_key=?",
+                                       (timestamp, source_key))
+
     def preview_set(self, target, fields, *, changes):
         result = super().preview_set(target, fields, changes=changes)
         validate({key.removeprefix(GROUP + "."): item.value for key, item in result.items()})
@@ -207,21 +260,36 @@ class PhoneSettingsReader:
     def __init__(self, configuration, *, fallback_root: str | Path | None = None):
         self.configuration = configuration
         self.fallback_root = Path(fallback_root) if fallback_root is not None else None
+        self.role_aliases = {}
+
+    def adopt_role_aliases(self, aliases, observed_at):
+        if aliases:
+            PhoneConfigurationOwner(self.configuration.runtime).merge_role_aliases(aliases, observed_at)
+        self.role_aliases = dict(aliases)
+
+    def target_for(self, context):
+        target = target_for(context)
+        canonical = self.role_aliases.get((target.bot_id, target.role.subject_id))
+        return replace(target, role=replace(target.role, subject_id=canonical)) if canonical else target
 
     def read(self, context, at):
-        return self.read_for(context.actor, target_for(context), at)
+        return self.read_for(context.actor, self.target_for(context), at)
 
     def read_for(self, actor, target, at):
+        settings, _ = self.read_with_source(actor, target, at)
+        return settings
+
+    def read_with_source(self, actor, target, at):
         snapshot = require(self.configuration.read(actor, target=target, group_id=GROUP, observed_at=at))
-        if self.fallback_root is not None and all(
-                getattr(value, "source", None) is None for value in snapshot.values.values()):
+        if (self.fallback_root is not None and (self.fallback_root / SETTINGS_FILE).is_file()
+                and all(field.source is None for field in snapshot.fields.values())):
             try:
-                return load_settings(self.fallback_root)
+                return load_settings(self.fallback_root), SETTINGS_FILE
             except ValueError:
                 pass
-        values = {key.removeprefix(GROUP + "."): getattr(value, "value", value)
-                  for key, value in snapshot.values.items()}
-        return settings_from_values(values)
+        values = {key.removeprefix(GROUP + "."): field.value for key, field in snapshot.fields.items()}
+        source = snapshot.fields[GROUP + ".adb_path"].source
+        return settings_from_values(values), "role_config" if source is not None else "default"
 
 
 def load_settings(root: str | Path) -> PhoneSettings:

@@ -19,7 +19,7 @@ from enum import Enum
 
 V1_PLUGIN_ID = "astrbot_plugin_private_companion"
 V1_SUPPORTED_VERSION = "6.7.0"
-V1_SUPPORTED_VERSIONS = ("6.6.2", V1_SUPPORTED_VERSION)
+V1_SUPPORTED_VERSIONS = ("6.6.2", V1_SUPPORTED_VERSION, "6.7.2", "6.7.3", "6.7.4")
 
 
 class CatalogAction(str, Enum):

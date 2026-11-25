@@ -291,23 +291,27 @@ class ReferenceAssetRepository:
             "SELECT * FROM wardrobe_items WHERE owner_key = ? AND item_id = ?", (owner, item_id))
         return _item_from_row(row) if row else None
 
-    def list_items(self, owner, *, state=ReferenceState.ACTIVE, limit=None):
+    def list_items(self, owner, *, state=ReferenceState.ACTIVE, limit=None, order_by_updated=False):
         ceiling = reference_limit() if limit is None else max(1, min(int(limit), reference_limit()))
         clauses = ["owner_key = ?"]
         parameters = [owner]
         if state is not None:
             clauses.append("state = ?")
             parameters.append(ReferenceState(state).value)
+        order_clause = "updated_at DESC, item_id DESC" if order_by_updated else "created_at, item_id"
         rows = self._runtime.read_all(
             f"SELECT * FROM wardrobe_items WHERE {' AND '.join(clauses)} "
-            "ORDER BY created_at, item_id LIMIT ?", (*parameters, ceiling))
+            f"ORDER BY {order_clause} LIMIT ?", (*parameters, ceiling))
         return tuple(_item_from_row(row) for row in rows)
 
-    def count_active_items(self, owner):
+    def count_items(self, owner, *, state=ReferenceState.ACTIVE):
         row = self._runtime.read_one(
             "SELECT COUNT(*) AS n FROM wardrobe_items WHERE owner_key = ? AND state = ?",
-            (owner, ReferenceState.ACTIVE.value))
+            (owner, ReferenceState(state).value))
         return row["n"] if row else 0
+
+    def count_active_items(self, owner):
+        return self.count_items(owner, state=ReferenceState.ACTIVE)
 
     def put_item(self, owner, item, *, created_at, ignore_limit=False):
         if not ignore_limit:

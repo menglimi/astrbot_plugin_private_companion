@@ -276,17 +276,27 @@ def _issue_for_database(path: Path, relative_path: str, root: Path):
 def build_memory_database_plan(path: str | Path) -> MemoryDatabasePlan:
     candidate = Path(path).expanduser()
     try:
+        resolved_parent = candidate.parent.resolve(strict=True)
+    except FileNotFoundError:
+        return MemoryDatabasePlan(candidate, "absent", detail="未发现独立记忆库。")
+    except OSError:
+        return MemoryDatabasePlan(candidate, "unreadable", detail="独立记忆资料目录无法读取。",
+            issues=((candidate.name, "entry_unreadable"),))
+    # Allow the top-level parent mount/directory itself to traverse OS symlinks
+    # (e.g. Android/Termux /sdcard or container bind mounts) while keeping every
+    # file and subdirectory inside ``root`` strictly non-symlinked.
+    root = resolved_parent
+    candidate = root / candidate.name
+    try:
         candidate.lstat()
     except FileNotFoundError:
         return MemoryDatabasePlan(candidate, "absent", detail="未发现独立记忆库。")
     except OSError:
         return MemoryDatabasePlan(candidate, "unreadable", detail="独立记忆资料目录无法读取。",
             issues=((candidate.name, "entry_unreadable"),))
-    root = candidate.parent
     try:
-        parent_info = root.lstat()
-        if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
-                or int(getattr(parent_info, "st_file_attributes", 0)) & _REPARSE_POINT):
+        parent_info = root.stat()
+        if not stat.S_ISDIR(parent_info.st_mode):
             raise ValueError("memory_archive_source_unsafe")
 
         issues = []

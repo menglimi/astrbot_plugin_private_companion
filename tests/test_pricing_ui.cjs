@@ -311,6 +311,7 @@ function modelsHarness() {
   const localStore = makeStorage();
   const sessionStore = makeStorage();
   const scrolled = [];
+  const removedPulse = [];
   const timers = [];
   const window = {
     CompanionProduct: {
@@ -362,6 +363,10 @@ function modelsHarness() {
         return matches.map(m => ({
           dataset: {pwCard: m[1]},
           scrollIntoView: opts => scrolled.push({id: m[1], opts}),
+          classList: {
+            contains: cls => cls === "is-pulse",
+            remove: cls => { if (cls === "is-pulse") removedPulse.push(m[1]); },
+          },
         }));
       }
       return [];
@@ -383,7 +388,7 @@ function modelsHarness() {
   return {
     page: window.CompanionModelsPage,
     wb: window.CompanionPricingWorkbench,
-    root, requests, localStore, sessionStore, scrolled, timers,
+    root, requests, localStore, sessionStore, scrolled, removedPulse, timers,
   };
 }
 
@@ -731,20 +736,21 @@ test("all 5 pricing modes (per_token blank vs 0, per_tier, tiered_expr validate,
   post.resolve(sampleV2Payload({pricing_rules: post.values.changes.pricing_rules, revision: "rev-m2"}));
   await flush();
 
-  // 3. tiered_expr: currency disabled + validate endpoint strict keys (NO mode/currency!)
+  // 3. tiered_expr: currency selectable (CNY/USD) + validate endpoint sends currency (NO mode!)
   h.root.click("[data-pricing-rule-mode]", {pricingRuleMode: "relay-claude", mode: "tiered_expr"});
-  assert.match(h.root.innerHTML, /data-pricing-rule-currency="relay-claude"\s+disabled/);
+  assert.doesNotMatch(h.root.innerHTML, /data-pricing-rule-currency="relay-claude"\s+disabled/);
   assertNoNestedLabels(h.root.innerHTML, "tiered_expr");
-  h.root.input("[data-pricing-expr-field]", "v1: p * 2 + c * 10", {dataset: {pricingExprField: "expr", pid: "relay-claude"}, type: "change"});
+  h.root.input("[data-pricing-rule-currency]", "CNY", {dataset: {pricingRuleCurrency: "relay-claude"}, type: "change"});
+  h.root.input("[data-pricing-expr-field]", "v1: tier('标准', p * 0.75 + c * 3.75)", {dataset: {pricingExprField: "expr", pid: "relay-claude"}, type: "change"});
   h.root.click("[data-pricing-expr-validate]", {pricingExprValidate: "relay-claude"});
   const valReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/expr/validate");
   assert.ok(valReq);
-  assert.equal(valReq.values.expr, "v1: p * 2 + c * 10");
+  assert.equal(valReq.values.expr, "v1: tier('标准', p * 0.75 + c * 3.75)");
+  assert.equal(valReq.values.currency, "CNY");
   assert.equal("mode" in valReq.values, false, "must NOT send mode to /pricing/expr/validate");
-  assert.equal("currency" in valReq.values, false, "must NOT send currency to /pricing/expr/validate");
   valReq.resolve({
-    valid: true, error: null, used_variables: ["c", "p"], usd_cny_rate: 7.22,
-    samples: [{label: "标准短上下文", cost_usd: 0.04, cost_cny: 0.2888, matched_tier: "expr"}],
+    valid: true, error: null, currency: "CNY", used_variables: ["c", "p"], usd_cny_rate: 7.22,
+    samples: [{label: "标准短上下文", cost_usd: 0.04, cost_cny: 0.2888, matched_tier: "标准"}],
   });
   await flush();
   assert.match(h.root.innerHTML, /表达式校验通过/);
@@ -1055,7 +1061,21 @@ test("regressions: failed cluster multiplier keeps draft clean, non-per_token ba
   assert.doesNotMatch(h.root.innerHTML, /data-pricing-tier-base="input"/, "secondary model must not inherit primary model's per_tier editor");
   assert.match(h.root.innerHTML, /data-pricing-rate-field="input"/, "secondary model renders its own per_token editor");
 
-  // Regression 3: pulseTimer callback after unmount must not invoke stale render
+  // Regression 3A: mounted pulseTimer clears is-pulse IN PLACE without full render() so input focus is never stolen
+  h.root.click("[data-pricing-jump-provider]", {
+    pricingJumpProvider: "relay-custom",
+    pricingJumpCluster: "relay-src",
+    pricingJumpDeleted: "0",
+    pricingJumpModel: "my-unpriced-model",
+  });
+  const mountedPulseTimer = h.timers.filter(t => t.ms === 1600 && !t.cleared).at(-1);
+  assert.ok(mountedPulseTimer, "jump should schedule 1600ms pulse timeout");
+  const htmlBeforePulseEnd = h.root.innerHTML;
+  mountedPulseTimer.fn();
+  assert.equal(h.root.innerHTML, htmlBeforePulseEnd, "pulse end must NOT rebuild root.innerHTML / steal input focus");
+  assert.ok(h.removedPulse.includes("relay-custom"), "pulse end must remove is-pulse class in place");
+
+  // Regression 3B: pulseTimer callback after unmount must not touch DOM or invoke stale render
   h.root.click("[data-pricing-jump-provider]", {
     pricingJumpProvider: "relay-custom",
     pricingJumpCluster: "relay-src",
@@ -1063,9 +1083,415 @@ test("regressions: failed cluster multiplier keeps draft clean, non-per_token ba
     pricingJumpModel: "my-unpriced-model",
   });
   const pulseTimer = h.timers.filter(t => t.ms === 1600 && !t.cleared).at(-1);
-  assert.ok(pulseTimer, "jump should schedule 1600ms pulse timeout");
+  assert.ok(pulseTimer, "second jump should schedule 1600ms pulse timeout");
+  const removedCountBeforeUnmount = h.removedPulse.length;
   h.page.unmount();
   h.root.innerHTML = "<sentinel-unmounted />";
   pulseTimer.fn();
   assert.equal(h.root.innerHTML, "<sentinel-unmounted />", "pulse timer must not render after unmount");
+  assert.equal(h.removedPulse.length, removedCountBeforeUnmount, "pulse timer must not touch DOM after unmount");
+});
+
+test("New API gateway bar: enriched probe notice, recommended group ratio chip, custom-rules hint, group dropdown, and source currency override", async () => {
+  const h = modelsHarness();
+  const base = sampleV2Payload();
+  const payload = sampleV2Payload({
+    sources: [
+      ...base.sources.filter(s => s.source_id !== "newapi:relay-main"),
+      {
+        source_id: "newapi:relay-main",
+        kind: "newapi",
+        label: "示例公益站",
+        enabled: true,
+        status: "ok",
+        model_count: 120,
+        last_ok_at: "2026-11-24T12:00:00Z",
+        provider_id: "relay-claude",
+        currency: "USD",
+        currency_override: null,
+        auth_mode: "anonymous",
+        site_meta: {
+          system_name: "示例公益站",
+          quota_display_type: "CUSTOM",
+          custom_currency_symbol: "🍪",
+          recharge_price: 1.0,
+          group_ratio: {default: 1, gemini: 0.245, geminiultra: 0.5},
+        },
+      },
+    ],
+    clusters: base.clusters.map(c => c.cluster_id === "relay-src" ? {
+      ...c,
+      has_custom_rules: true,
+      newapi_source_id: "newapi:relay-main",
+      newapi_group_hint: {group: "gemini", ratio: 0.245, confidence: "high"},
+    } : c),
+  });
+
+  h.sessionStore.setItem("companion-models-pending-tab.v1", "pricing");
+  h.page.mount(h.root);
+  h.requests.find(r => r.route === "model/pricing").resolve(payload);
+  await flush();
+
+  // New API bar shows recommended group badge, one-click apply button, custom-rules caution, CUSTOM token hint, and currency selector
+  assert.match(h.root.innerHTML, /识别分组 · gemini \(0\.245×\)/);
+  assert.match(h.root.innerHTML, /一键应用 0\.245×/);
+  assert.match(h.root.innerHTML, /聚类倍率会同时作用于该供应商下的已自定义模型规则/);
+  assert.match(h.root.innerHTML, /该站使用自定义代币 🍪/);
+  assert.match(h.root.innerHTML, /1 单位 = ¥1/);
+  assert.match(h.root.innerHTML, /data-pricing-source-currency="newapi:relay-main"/);
+  assertNoNestedLabels(h.root.innerHTML, "newapi_bar");
+
+  // 1) Selecting a site group from dropdown fills multiplier draft input (does NOT auto-POST)
+  const postCountBefore = h.requests.filter(r => r.method === "POST").length;
+  h.root.input("[data-pricing-group-select]", "0.5", {
+    dataset: {pricingGroupSelect: "relay-src"}, type: "change",
+  });
+  assert.equal(h.requests.filter(r => r.method === "POST").length, postCountBefore);
+  assert.match(h.root.innerHTML, /data-pricing-cluster-mult-input="relay-src" value="0\.5"/);
+
+  // 2) Clicking one-click apply recommended group ratio posts cluster multiplier 0.245
+  h.root.click("[data-pricing-apply-group-mult]", {pricingApplyGroupMult: "relay-src", ratio: "0.245"});
+  const applyReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing").at(-1);
+  assert.ok(applyReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(applyReq.values.changes)), {pricing_multipliers: {"relay-src": 0.245}});
+  applyReq.resolve({
+    ...payload,
+    revision: "rev-grp",
+    pricing_multipliers: {"relay-src": 0.245},
+    clusters: payload.clusters.map(c => c.cluster_id === "relay-src" ? {...c, multiplier: 0.245, has_custom_multiplier: true} : c),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /当前倍率已匹配/);
+
+  // 3) Switching New API source currency sends POST model/pricing/sources/currency
+  h.root.input("[data-pricing-source-currency]", "CNY", {
+    dataset: {pricingSourceCurrency: "newapi:relay-main"}, type: "change",
+  });
+  const curReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/sources/currency");
+  assert.ok(curReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(curReq.values)), {
+    source_id: "newapi:relay-main",
+    currency_override: "CNY",
+    fiat_per_base_unit: null,
+    sync: true,
+    revision: "rev-grp",
+  });
+  curReq.resolve({
+    ...payload,
+    revision: "rev-cur",
+    sources: payload.sources.map(s => s.source_id === "newapi:relay-main" ? {...s, currency: "CNY", currency_override: "CNY"} : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /结算币种已切换为 人民币 CNY \(¥\)/);
+  assert.match(h.root.innerHTML, /<span class="pw-source-cur">¥<\/span>/);
+  assert.match(h.root.innerHTML, /CNY ¥/);
+
+  // 3B) Optimistic revision conflict on currency switch marks state stale consistently with applyClusterMultiplier
+  h.root.input("[data-pricing-source-currency]", "USD", {
+    dataset: {pricingSourceCurrency: "newapi:relay-main"}, type: "change",
+  });
+  const conflictCurReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(conflictCurReq);
+  conflictCurReq.reject(Object.assign(new Error("pricing_config_conflict"), {code: "pricing_config_conflict"}));
+  await flush();
+  assert.match(h.root.innerHTML, /data-pricing-save[^>]*disabled/);
+  // Clear stale flag via a successful fresh probe below (syncDataPreserveDraft clears p.stale)
+
+  // 4) Enriched New API probe notice surfaces site_name, CNY currency, recommended group, and skipped expr count
+  h.root.click("[data-pricing-detect-newapi]", {pricingDetectNewapi: "relay-claude"});
+  const detReq = h.requests.find(r => r.method === "POST" && r.route === "model/pricing/sources/detect");
+  assert.ok(detReq);
+  detReq.resolve({
+    ...payload,
+    revision: "rev-det-rich",
+    detection: {
+      ok: true,
+      source_id: "newapi:relay-main",
+      deduplicated: true,
+      models: 120,
+      needs_key: false,
+      site_name: "示例公益站",
+      currency: "CNY",
+      detected_group: "gemini",
+      detected_group_ratio: 0.245,
+      skipped_expr_count: 2,
+    },
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /探测成功：已接入 示例公益站（120 个模型 · 人民币 CNY）（已复用同域名价格源） · 推荐分组 gemini \(0\.245×\) · 跳过 2 个特殊私有公式。/);
+  h.page.unmount();
+});
+
+test("pricing-workbench.css mobile responsive contracts: smooth horizontal cand-table, <=520px full-width selects/inline fields, compact padding, and 32x32 day-pill touch target", () => {
+  const css = fs.readFileSync(path.join(PAGE_DIR, "pricing-workbench.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /\.pw-table-wrap\s*\{[^}]*overflow-x:\s*auto[^}]*overscroll-behavior-x:\s*contain/s);
+  assert.match(css, /\.pw-cand-table\s*\{[^}]*min-width:\s*520px/s);
+  assert.match(css, /\.pw-cand-table\s+\.pw-num\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(
+    css,
+    /@container\s+pricing-wb\s*\(\s*max-width:\s*520px\s*\)\s*\{[\s\S]*?\.pw-hero[\s\S]*?padding:\s*var\(--sp-3\)[\s\S]*?\.pw-inline-field\s+select,\s*\.pw-newapi-bar\s+select\s*\{[^}]*width:\s*100%[^}]*max-width:\s*none[\s\S]*?\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s,
+  );
+  assert.match(
+    css,
+    /@media\s*\(\s*max-width:\s*520px\s*\)\s*\{[\s\S]*?\.pw-hero[\s\S]*?padding:\s*var\(--sp-3\)[\s\S]*?\.pw-inline-field\s+select,\s*\.pw-newapi-bar\s+select\s*\{[^}]*width:\s*100%[^}]*max-width:\s*none[\s\S]*?\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s,
+  );
+  assert.match(css, /@media\s*\(\s*pointer:\s*coarse\s*\)\s*\{[^}]*\.pw-day-pill\s*\{[^}]*min-width:\s*32px[^}]*height:\s*32px/s);
+});
+
+test("CUSTOM New API source renders CNY dual-unit badge, toggles ¥ ↔ 🍪 in place with zero innerHTML rebuild, edits conversion rate, and handles Level 3 USD RMB hint", async () => {
+  const h = modelsHarness();
+  const base = sampleV2Payload();
+  const cookieSrc = {
+    source_id: "newapi:cookie-relay",
+    kind: "newapi",
+    label: "Cookie Relay",
+    url: "https://cookie.example.test/api/pricing",
+    enabled: true,
+    status: "ok",
+    model_count: 138,
+    currency: "CNY",
+    currency_override: "auto",
+    fiat_per_base_unit: null,
+    effective_unit_scale: 1.0,
+    auth_mode: "anonymous",
+    site_meta: {
+      schema_version: 2,
+      system_name: "Cookie Relay",
+      quota_display_type: "CUSTOM",
+      custom_currency_symbol: "🍪",
+      custom_currency_exchange_rate: 10,
+      recharge_price: 1.0,
+      site_recharge_price: 1.0,
+      currency_source: "topup_custom_cny",
+      quota_station_id: "st-cookie",
+      quota_station_name: "Cookie 站点",
+      group_ratio: {default: 1},
+    },
+  };
+  const cookieRule = {mode: "per_token", currency: "CNY", input: 0.75, input_cached: 0.0375, output: 3.75, multiplier: 1};
+  const payload = sampleV2Payload({
+    sources: [...base.sources, cookieSrc],
+    clusters: base.clusters.map(c => c.cluster_id === "relay-src" ? {
+      ...c,
+      newapi_source_id: "newapi:cookie-relay",
+      providers: c.providers.map(pr => pr.id === "relay-claude" ? {
+        ...pr,
+        effective_rule: cookieRule,
+        effective_source: "catalog_auto",
+      } : pr),
+    } : c),
+    auto_selected: {
+      ...base.auto_selected,
+      "relay-claude": {
+        "claude-sonnet-4-5": {
+          price_key: "newapi:cookie-relay:claude-sonnet-4-5",
+          source_id: "newapi:cookie-relay",
+          source_label: "Cookie Relay",
+          model_id: "claude-sonnet-4-5",
+          score: 1.0,
+          is_own_gateway: true,
+          rule: cookieRule,
+        },
+      },
+    },
+  });
+
+  h.sessionStore.setItem("companion-models-pending-tab.v1", "pricing");
+  h.page.mount(h.root);
+  h.requests.find(r => r.route === "model/pricing").resolve(payload);
+  await flush();
+
+  // Header badge shows CNY ¥ (10 🍪 = ¥1), Quota Watch linked pill, dual-unit toggle, and editable rate input
+  assert.match(h.root.innerHTML, /已接 Cookie Relay · CNY ¥（10 🍪 = ¥1）/);
+  assert.match(h.root.innerHTML, /已联动额度看板 · Cookie 站点/);
+  assert.match(h.root.innerHTML, /data-pricing-unit-view="newapi:cookie-relay" data-unit-mode="fiat"/);
+  assert.match(h.root.innerHTML, /data-pricing-unit-view="newapi:cookie-relay" data-unit-mode="native"/);
+  assert.match(h.root.innerHTML, /入 ¥0\.75 \/ 读 ¥0\.0375 \/ 出 ¥3\.75 \/M/);
+  assert.match(h.root.innerHTML, /（入 7\.5 🍪 \/ 读 0\.375 🍪 \/ 出 37\.5 🍪 \/M）/);
+  assert.match(h.root.innerHTML, /data-pricing-custom-rate-input="newapi:cookie-relay" value="10"/);
+
+  // Build live in-place DOM stubs on h.root.querySelectorAll to assert ZERO innerHTML rebuilds on unit toggle!
+  let renderWrites = 0;
+  const origDesc = Object.getOwnPropertyDescriptor(h.root, "innerHTML");
+  let backingHtml = h.root.innerHTML;
+  Object.defineProperty(h.root, "innerHTML", {
+    configurable: true,
+    get() { return backingHtml; },
+    set(v) { renderWrites += 1; backingHtml = String(v); },
+  });
+  const fiatBtnStub = {
+    dataset: {pricingUnitView: "newapi:cookie-relay", unitMode: "fiat"},
+    _classes: new Set(["on"]),
+    _attrs: {"aria-pressed": "true"},
+    classList: {toggle(c, on) { if (on) fiatBtnStub._classes.add(c); else fiatBtnStub._classes.delete(c); }},
+    setAttribute(k, v) { fiatBtnStub._attrs[k] = v; },
+  };
+  const nativeBtnStub = {
+    dataset: {pricingUnitView: "newapi:cookie-relay", unitMode: "native"},
+    _classes: new Set(),
+    _attrs: {"aria-pressed": "false"},
+    classList: {toggle(c, on) { if (on) nativeBtnStub._classes.add(c); else nativeBtnStub._classes.delete(c); }},
+    setAttribute(k, v) { nativeBtnStub._attrs[k] = v; },
+  };
+  const mainSpan = {textContent: "入 ¥0.75 / 读 ¥0.0375 / 出 ¥3.75 /M"};
+  const subSpan = {textContent: "（入 7.5 🍪 / 读 0.375 🍪 / 出 37.5 🍪 /M）"};
+  const dualElStub = {
+    dataset: {
+      pwDualSrc: "newapi:cookie-relay",
+      pwFiat: "入 ¥0.75 / 读 ¥0.0375 / 出 ¥3.75 /M",
+      pwNative: "入 7.5 🍪 / 读 0.375 🍪 / 出 37.5 🍪 /M",
+    },
+    querySelector(sel) {
+      if (sel === ".pw-dual-main") return mainSpan;
+      if (sel === ".pw-dual-sub") return subSpan;
+      return null;
+    },
+  };
+  const origQsa = h.root.querySelectorAll;
+  h.root.querySelectorAll = sel => {
+    if (sel === "[data-pricing-unit-view]") return [fiatBtnStub, nativeBtnStub];
+    if (sel === "[data-pw-dual-src]") return [dualElStub];
+    return origQsa ? origQsa.call(h.root, sel) : [];
+  };
+
+  // Toggle to 🍪 native view: 0 innerHTML rebuilds, instant in-place text & pressed state swap!
+  h.root.click("[data-pricing-unit-view]", {pricingUnitView: "newapi:cookie-relay", unitMode: "native"});
+  assert.equal(renderWrites, 0, "Dual-unit toggle must update in place without rebuilding innerHTML");
+  assert.equal(nativeBtnStub._classes.has("on"), true);
+  assert.equal(nativeBtnStub._attrs["aria-pressed"], "true");
+  assert.equal(fiatBtnStub._classes.has("on"), false);
+  assert.equal(mainSpan.textContent, "入 7.5 🍪 / 读 0.375 🍪 / 出 37.5 🍪 /M");
+  assert.equal(subSpan.textContent, "（约 入 ¥0.75 / 读 ¥0.0375 / 出 ¥3.75 /M）");
+
+  // Restore original innerHTML & querySelectorAll for subsequent rate-edit assertions
+  if (origDesc) Object.defineProperty(h.root, "innerHTML", origDesc);
+  h.root.querySelectorAll = origQsa;
+
+  // Edit conversion rate to 12.5 🍪 = ¥1 (80% cost -> fiat_per_base_unit = 10 / 12.5 = 0.8)
+  h.root.input("[data-pricing-custom-rate-input]", "12.5", {
+    dataset: {pricingCustomRateInput: "newapi:cookie-relay"}, type: "input",
+  });
+  h.root.click("[data-pricing-custom-rate-apply]", {pricingCustomRateApply: "newapi:cookie-relay"});
+  const rateReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(rateReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(rateReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "auto",
+    fiat_per_base_unit: 0.8,
+    sync: true,
+    revision: "rev-v2-init",
+  });
+  rateReq.resolve({
+    ...payload,
+    revision: "rev-rate-08",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s, fiat_per_base_unit: 0.8, effective_unit_scale: 0.8,
+    } : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /12\.5 🍪 = ¥1/);
+  assert.match(h.root.innerHTML, /data-pricing-custom-rate-reset="newapi:cookie-relay"/);
+
+  // Reset manual conversion rate posts fiat_per_base_unit: null
+  h.root.click("[data-pricing-custom-rate-reset]", {pricingCustomRateReset: "newapi:cookie-relay"});
+  const resetRateReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(resetRateReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(resetRateReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "auto",
+    fiat_per_base_unit: null,
+    sync: true,
+    revision: "rev-rate-08",
+  });
+  resetRateReq.resolve({
+    ...payload,
+    revision: "rev-rate-auto",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s,
+      currency: "USD",
+      currency_override: "auto",
+      fiat_per_base_unit: null,
+      effective_unit_scale: 1.0,
+      site_meta: {
+        schema_version: 2,
+        system_name: "中文折扣站",
+        quota_display_type: "USD",
+        recharge_price: 2.0,
+        site_recharge_price: 2.0,
+        cny_recharge_hint: {recharge_price: 2.0, suggested_currency: "CNY"},
+      },
+    } : s),
+  });
+  await flush();
+
+  // Level 3 gentle RMB recharge hint renders 1-click button and posts CNY + fiat_per_base_unit=2
+  assert.match(h.root.innerHTML, /检测到该站在线充值价为 ¥2 \/ 基准单位/);
+  assert.match(h.root.innerHTML, /data-pricing-apply-cny-hint="newapi:cookie-relay"/);
+  h.root.click("[data-pricing-apply-cny-hint]", {pricingApplyCnyHint: "newapi:cookie-relay", rechargePrice: "2"});
+  const hintReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(hintReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(hintReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "CNY",
+    fiat_per_base_unit: 2,
+    sync: true,
+    revision: "rev-rate-auto",
+  });
+  hintReq.resolve({
+    ...payload,
+    revision: "rev-hint-cny",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s,
+      currency: "CNY",
+      currency_override: "CNY",
+      fiat_per_base_unit: 2.0,
+      effective_unit_scale: 2.0,
+      site_meta: {
+        schema_version: 2,
+        system_name: "中文折扣站",
+        quota_display_type: "USD",
+        recharge_price: 2.0,
+        site_recharge_price: 2.0,
+        cny_recharge_hint: {recharge_price: 2.0, suggested_currency: "CNY"},
+      },
+    } : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /结算币种已切换为 人民币 CNY \(¥\) 并完成重新同步/);
+
+  // Switching currency dropdown back to auto explicitly clears fiat_per_base_unit=null so Level 3 USD is never stuck at 2x
+  h.root.input("[data-pricing-source-currency]", "auto", {
+    dataset: {pricingSourceCurrency: "newapi:cookie-relay"}, type: "change",
+  });
+  const revertReq = h.requests.filter(r => r.method === "POST" && r.route === "model/pricing/sources/currency").at(-1);
+  assert.ok(revertReq);
+  assert.deepEqual(JSON.parse(JSON.stringify(revertReq.values)), {
+    source_id: "newapi:cookie-relay",
+    currency_override: "auto",
+    fiat_per_base_unit: null,
+    sync: true,
+    revision: "rev-hint-cny",
+  });
+  revertReq.resolve({
+    ...payload,
+    revision: "rev-hint-auto",
+    sources: payload.sources.map(s => s.source_id === "newapi:cookie-relay" ? {
+      ...s,
+      currency: "USD",
+      currency_override: "auto",
+      fiat_per_base_unit: null,
+      effective_unit_scale: 1.0,
+      site_meta: {
+        schema_version: 2,
+        system_name: "中文折扣站",
+        quota_display_type: "USD",
+        recharge_price: 2.0,
+        site_recharge_price: 2.0,
+        cny_recharge_hint: {recharge_price: 2.0, suggested_currency: "CNY"},
+      },
+    } : s),
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /结算币种已切换为 自动识别 并完成重新同步/);
+  h.page.unmount();
 });

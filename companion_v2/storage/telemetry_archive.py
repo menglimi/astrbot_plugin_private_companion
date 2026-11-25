@@ -35,7 +35,7 @@ from companion_v2.storage.core_reply_telemetry_schema import (
 )
 from companion_v2.storage.native_dedup import resolve_context_json
 from companion_v2.storage.runtime import table_exists
-from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+from companion_v2.storage.sqlite_tuning import active_sqlite_tuning_profile, apply_sidecar_pragmas
 
 DEFAULT_TELEMETRY_TTL_DAYS = 14
 ARCHIVE_FILENAME = "telemetry-archive.sqlite3"
@@ -77,11 +77,15 @@ class TelemetryArchiveStore:
 
     BUSY_TIMEOUT_MS = 5000
 
-    def __init__(self, data_root: str | Path) -> None:
+    def __init__(self, data_root: str | Path, *, profile=None) -> None:
         self.root = Path(data_root)
         self.path = self.root / ARCHIVE_FILENAME
-        self._profile = tuning_profile()
+        self._explicit_profile = profile
         self._initialized = False
+
+    @property
+    def _profile(self):
+        return self._explicit_profile or active_sqlite_tuning_profile()
 
     def ensure_initialized(self) -> None:
         if self._initialized and self.path.exists():

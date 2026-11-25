@@ -147,7 +147,8 @@ class ConfigPortWebAPI:
         from .web_api import outcome_response
         try:
             query = request.query
-            if (set(query) != SELECTION_FIELDS or any(len(query.getlist(name)) != 1 for name in query)
+            names = set(query.keys())
+            if (names != SELECTION_FIELDS or any(len(query.getlist(name)) != 1 for name in names)
                     or query.get("window_selected") not in ("true", "false")):
                 raise TaskError("configuration_port_selection_required", "select a Bot account and role")
             selection = {name: query[name] for name in SELECTION_FIELDS}

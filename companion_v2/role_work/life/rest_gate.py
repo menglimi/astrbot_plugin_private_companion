@@ -253,6 +253,8 @@ class Settings:
     rest_backlog_max_messages: int
     sleep_timezone: str = DEFAULT_TIMEZONE
     sleep_enabled: bool = False
+    sleep_time: str = "00:30"
+    sleep_minutes: int = 480
 
     def __post_init__(self):
         for name in BOOLEAN_FIELDS:
@@ -272,10 +274,16 @@ class Settings:
         parse_windows(self.rest_reply_active_windows)
         if type(self.sleep_timezone) is not str or not self.sleep_timezone.strip():
             raise ConfigurationError("rest_gate_settings_invalid", "the sleep timezone requires an IANA name")
+        if type(self.sleep_time) is not str or not self.sleep_time.strip():
+            raise ConfigurationError("rest_gate_settings_invalid", "sleep_time requires HH:MM")
+        if type(self.sleep_minutes) is not int or not 1 <= self.sleep_minutes <= 1440:
+            raise ConfigurationError("rest_gate_settings_invalid", "sleep_minutes must be 1..1440")
 
     @classmethod
     def from_values(cls, values=None):
         values = values or {}
+        sleep_time = values.get("sleep_time")
+        sleep_minutes = values.get("sleep_minutes")
         return cls(
             enable_rest_reply_simulation=values.get(
                 "enable_rest_reply_simulation", DEFAULTS["enable_rest_reply_simulation"]),
@@ -292,9 +300,26 @@ class Settings:
                 "rest_backlog_max_messages", DEFAULTS["rest_backlog_max_messages"]),
             sleep_timezone=str(values.get("sleep_timezone") or DEFAULT_TIMEZONE),
             sleep_enabled=values.get("sleep_enabled", False),
+            sleep_time=str(sleep_time) if isinstance(sleep_time, str) and sleep_time.strip() else "00:30",
+            sleep_minutes=sleep_minutes if type(sleep_minutes) is int else 480,
         )
 
+    def uses_default_windows(self):
+        return self.rest_reply_active_windows == DEFAULTS["rest_reply_active_windows"]
+
     def windows(self):
+        # When automatic sleep is configured with a custom bedtime/duration and
+        # the rest-reply active windows remain untouched at their default, align
+        # the night rest window with the role's actual sleep schedule instead of
+        # hardcoding 23:00-08:30.
+        if (self.sleep_enabled and self.uses_default_windows()
+                and (self.sleep_time != "00:30" or self.sleep_minutes != 480)):
+            parts = self.sleep_time.split(":")
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                start_minute = (int(parts[0]) % 24) * 60 + min(59, int(parts[1]))
+                padded_start = (start_minute - 30) % (24 * 60)
+                padded_duration = min(23 * 60, max(60, self.sleep_minutes) + 60)
+                return ((padded_start, padded_start + padded_duration), (12 * 60 + 20, 13 * 60 + 40))
         return parse_windows(self.rest_reply_active_windows)
 
     def max_backlog(self):
@@ -400,7 +425,8 @@ def sleep_context(runtime, context, *, now, settings=None):
         # The durable timer has already expired; the waking owner completes it.
         return {"resting": False, "reason": "sleep_timer_due", "sleep": activity.activity_id,
                 "wake_at": wake_at, "until_seconds": 0.0}
-    if not window_active(settings.windows(), minutes=local_minutes(now, settings.sleep_timezone)):
+    if (not (settings.sleep_enabled and settings.uses_default_windows())
+            and not window_active(settings.windows(), minutes=local_minutes(now, settings.sleep_timezone))):
         return {"resting": False, "reason": "outside_active_window", "sleep": activity.activity_id,
                 "wake_at": wake_at, "until_seconds": None}
     until = None if wake_at is None else max(0.0, (wake_at - now).total_seconds())

@@ -246,21 +246,70 @@ def _local_media_path(value):
 
 
 def _animated_gif_file(path):
+    is_gif = False
+    is_webp_or_png = False
     try:
         with path.open("rb") as file:
-            if not _gif_header(file.read(6)):
-                return False
+            head = file.read(12)
+        if _gif_header(head[:6]):
+            is_gif = True
+        elif head.startswith(b"\x89PNG\r\n\x1a\n") or (len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP"):
+            is_webp_or_png = True
+        else:
+            return False
     except (OSError, ValueError):
         return False
     try:
         from PIL import Image as PILImage
 
         with PILImage.open(path) as image:
-            return image.format == "GIF" and getattr(image, "n_frames", 1) > 1
+            return bool(getattr(image, "is_animated", False) or getattr(image, "n_frames", 1) > 1)
     except Exception:
         # The header already proves GIF; without a decoder, prefer the safer
         # contact-sheet interpretation instead of silently dropping guidance.
-        return True
+        # Static PNG/WebP must not trigger animated guidance without frame proof.
+        return is_gif and not is_webp_or_png
+
+
+def _astrbot_montage_notice_state(request):
+    """Inspect AstrBot's authoritative 3x3 montage notice in ``extra_user_content_parts``.
+
+    AstrBot 4.29+ emits the image label (``[Image N: ...; animation converted to
+    a 3x3 frame montage]``) and its explanatory ``<system_notice>`` as separate
+    text parts, so both flags are evaluated across all parts.
+    """
+    montage_present = False
+    already_explained = False
+    try:
+        parts = getattr(request, "extra_user_content_parts", ()) or ()
+        for part in parts:
+            if isinstance(part, Mapping):
+                part_type = part.get("type")
+                text = part.get("text")
+            else:
+                part_type = getattr(part, "type", None)
+                text = getattr(part, "text", None)
+            if part_type != "text" or not isinstance(text, str):
+                continue
+            lower = text.lower()
+            if (
+                "3x3 frame montage" in lower
+                or "animation converted to a 3x3" in lower
+                or "animation montage" in lower
+            ):
+                montage_present = True
+            if "<system_notice>" in lower and (
+                "animation montage" in lower
+                or "3x3 frame montage" in lower
+                or "reading order" in lower
+                or "left to right" in lower
+                or "top to bottom" in lower
+                or "chronological order" in lower
+            ):
+                already_explained = True
+    except Exception:
+        return False, False
+    return montage_present, already_explained
 
 
 def _animated_gif_ref(value):
@@ -939,11 +988,19 @@ async def inject_core_reply_perception_context(event, request, *, native_context
     stt_transcribed = _apply_external_stt_to_request(event, request, parts, details)
 
     if (prepared.get("astrbot_animated_image_understanding_enabled") is True
-            and _request_has_image(request) and has_animated_gif_image(event)):
-        details["astrbot_animated_image_understanding"] = {
-            "state": "animated_gif_detected",
-            "instruction": ASTRBOT_ANIMATED_IMAGE_INSTRUCTION,
-        }
+            and _request_has_image(request)):
+        montage_present, already_explained = _astrbot_montage_notice_state(request)
+        if montage_present:
+            if not already_explained:
+                details["astrbot_animated_image_understanding"] = {
+                    "state": "astrbot_montage_detected",
+                    "instruction": ASTRBOT_ANIMATED_IMAGE_INSTRUCTION,
+                }
+        elif await asyncio.to_thread(has_animated_gif_image, event):
+            details["astrbot_animated_image_understanding"] = {
+                "state": "animated_gif_detected",
+                "instruction": ASTRBOT_ANIMATED_IMAGE_INSTRUCTION,
+            }
 
     options = prepared.get("perception_options")
     if (type(options) is tuple and len(options) == 3

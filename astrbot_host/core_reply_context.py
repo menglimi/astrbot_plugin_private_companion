@@ -15,7 +15,7 @@ from companion_v2.conversation.foreground import ContextContribution, Contributi
 from companion_v2.conversation.awareness_context import INSTRUCTION as CROSS_WINDOW_INSTRUCTION
 from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
 from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
-from companion_v2.conversation.life_context import LIFE_INSTRUCTION
+from companion_v2.conversation.life_context import LIFE_INSTRUCTION, PUBLIC_READING_INSTRUCTION
 from companion_v2.conversation.location_context import LOCATION_CONTEXT_INSTRUCTION
 from companion_v2.conversation.open_items_context import INSTRUCTION as OPEN_ITEMS_INSTRUCTION
 from companion_v2.conversation.phone_context import PHONE_CONTEXT_INSTRUCTION
@@ -609,7 +609,33 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                                      perception_settings()["calendar_timezone"])))
         captured("relationship", "相处背景", system_text("relationship", RELATIONSHIP_INSTRUCTION),
                  getattr(messages, "relationship_context", None))
-        captured("life", "角色生活", LIFE_INSTRUCTION, getattr(messages, "life_context", None))
+
+        has_local_reading = False
+
+        def private_life():
+            nonlocal has_local_reading
+            owner = getattr(messages, "life_context", None)
+            materials = _capture_materials(owner, context, at, runtime=runtime)
+            has_local_reading = any(
+                getattr(item, "purpose", None) == "role_life_activity"
+                and '"kind":"reading"' in (getattr(item, "payload", "") or "")
+                for item in _ready(materials)
+            )
+            return _material_section("角色生活", LIFE_INSTRUCTION, materials)
+
+        def private_public_reading():
+            if has_local_reading:
+                return ""
+            owner = getattr(messages, "life_context", None)
+            if owner is None or not hasattr(owner, "public_reading_contributions"):
+                return ""
+            public_items = owner.public_reading_contributions(context, at)
+            if not public_items:
+                return ""
+            return _material_section("角色近期阅读书目", PUBLIC_READING_INSTRUCTION, public_items)
+
+        optional("life", private_life)
+        optional("public_reading", private_public_reading)
         captured("growth", "角色成长", ROLE_GROWTH_INSTRUCTION,
                  getattr(messages, "role_growth_context", None))
         captured("self_review", "角色自我提醒", SELF_REVIEW_INSTRUCTION,
@@ -662,6 +688,18 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                                                owner.contributions(snapshot, context, key))
 
         optional("group_memory", group_memory)
+
+        def group_public_reading():
+            owner = getattr(messages, "life_context", None)
+            if owner is None or not hasattr(owner, "public_reading_contributions"):
+                return ""
+            return _material_section(
+                "角色近期阅读书目",
+                PUBLIC_READING_INSTRUCTION,
+                owner.public_reading_contributions(context, at),
+            )
+
+        optional("public_reading", group_public_reading)
         optional("role_state", role_state)
 
     def expression_style():

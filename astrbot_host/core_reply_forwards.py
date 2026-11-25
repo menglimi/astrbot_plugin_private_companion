@@ -1361,9 +1361,15 @@ def merge_followup_forwards(
     return merged
 
 
-def apply_debounced_private_merge(event: Any, merged_text: str, *, has_forwards: bool = False) -> bool:
-    """Apply merged plain text onto ``event`` while keeping Forward components intact."""
-    if not has_forwards:
+def apply_debounced_private_merge(
+    event: Any,
+    merged_text: str,
+    *,
+    has_forwards: bool = False,
+    preserve_components: bool = False,
+) -> bool:
+    """Apply merged plain text onto ``event`` while keeping Forward or trailing media components intact."""
+    if not has_forwards and not preserve_components:
         from .private_debounce import PrivateDebounce
         return PrivateDebounce.replace_private_plain_text(event, merged_text)
     message_obj = getattr(event, "message_obj", None)
