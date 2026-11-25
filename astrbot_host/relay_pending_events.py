@@ -10,6 +10,7 @@ from companion_v2.foundation.refs import ScopeKind
 from .private_notice import prepare_relay_transport, send_group_notice, send_private_notice
 from .relay_pending import (claim_expired, claim_group, claim_private_receipts, finish,
                             mark_waiting_permission, requeue)
+from .telegram_forward import telegram_forward_origin
 
 
 def _text(value, limit=800):
@@ -137,6 +138,9 @@ async def _ask_permission(controller, event, target, task):
 
 async def process_private_receipts(controller, event, target):
     """Handle a target member's reply and optionally ask before reporting it."""
+    if telegram_forward_origin(event) is not None:
+        # Someone else's words neither answer the question nor grant permission.
+        return
     target_user_id = str(target.participant_id)
     text = _text(getattr(event, "message_str", ""), 800)
     confirmed = any(token in text for token in ("可以", "同意", "好", "行", "转告", "带回去", "转发"))
