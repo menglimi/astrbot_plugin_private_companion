@@ -6,12 +6,15 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Face, Image, Plain
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAdapter
 from astrbot.core.platform.sources.telegram.tg_event import TelegramPlatformEvent
+from astrbot_host.core_reply_media_delivery import native_reply_messages, native_wire_message
 from companion_v2.adapters.astrbot.group import group_event_route
+from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
 from companion_v2.execution.models import TaskError
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.staging_bootstrap_support import wait_for_batch
@@ -25,7 +28,7 @@ def telegram_client(token="424242:synthetic"):
     return NS(token=token, send_chat_action=AsyncMock(), send_message=AsyncMock())
 
 
-class TelegramPrivateTextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
+class TelegramFixture(MultiFixture):
     def setUp(self):
         super().setUp()
         self.platform = TelegramPlatformAdapter.__new__(TelegramPlatformAdapter)
@@ -61,6 +64,8 @@ class TelegramPrivateTextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         event.created_at = self.clock.now().timestamp()
         return event
 
+
+class TelegramPrivateTextTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
     async def test_late_loading_keeps_identity_and_delivers_private_text(self):
         del self.native.platforms[PLATFORM_ID]
         await self.start_host()
@@ -113,3 +118,24 @@ class TelegramPrivateTextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskError) as refused:
             group_event_route(event)
         self.assertEqual(refused.exception.code, "host_route_mismatch")
+
+
+class TelegramFaceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_reply_face_is_shown_as_text(self):
+        event = self.telegram_event()
+        with patch("astrbot.core.platform.astr_message_event.Metric.upload", new_callable=AsyncMock):
+            for part in native_reply_messages(event, MessageChain(chain=[Plain(text="晚安"), Face(id=14)])):
+                await event.send(await native_wire_message(event, part))
+        # AstrBot sends MarkdownV2, so the brackets are escaped on the wire.
+        sent = [call.kwargs["text"] for call in self.platform.client.send_message.await_args_list]
+        self.assertEqual(sent, ["晚安", "\\[QQ表情 14\\]"])
+
+    async def test_reply_without_a_face_is_unchanged(self):
+        message = MessageChain(chain=[Plain(text="晚安"), Image(file="base64://AAAA")])
+        self.assertIs(await native_wire_message(self.telegram_event(), message), message)
+
+    def test_background_face_is_shown_as_text(self):
+        plan = NS(components=(NS(kind="face", value="14"),))
+        for platform_name, expected in (("telegram", Plain), ("qq_official", Face)):
+            (part,) = AstrBotPlatformSender._chain(plan, platform_name=platform_name).chain
+            self.assertIsInstance(part, expected)
