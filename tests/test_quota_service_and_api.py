@@ -920,6 +920,54 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                 self.assertAlmostEqual(resolved["observed_group_ratios"]["vip"], 0.65, places=4)
                 self.assertIsNone(svc.resolve_station_for_origin("https://unrelated.example.test"))
 
+                # 3b) Overseas Stripe CUSTOM + default RMB price=7.3 must NOT leak 7.3 as USD fiat_per_base_unit
+                def stripe_router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "system_name": "Global Stripe Relay",
+                                    "server_address": "https://stripe.example.test",
+                                    "quota_display_type": "CUSTOM",
+                                    "quota_per_unit": 500000,
+                                    "custom_currency_symbol": "★",
+                                    "custom_currency_exchange_rate": 10,
+                                    "usd_exchange_rate": 7.3,
+                                    "price": 7.3,
+                                },
+                            },
+                        )
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(200, {"success": True, "data": {"id": 99, "quota": 5_000_000, "used_quota": 0, "group": "pro"}})
+                    if url.endswith("/api/user/topup/info"):
+                        return _FakeResponse(
+                            200,
+                            {"success": True, "data": {"price": 7.3, "enable_stripe_topup": True, "pay_methods": [{"type": "stripe"}]}},
+                        )
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                svc._session_factory = _mock_factory(stripe_router)[0]
+                _, _, tok_stripe = svc.store.read()
+                svc.store.upsert_station(
+                    tok_stripe,
+                    {
+                        "id": "stripe-usd",
+                        "name": "Global Stripe Relay",
+                        "adapter_id": "newapi",
+                        "base_url": "https://stripe.example.test",
+                        "auth_token": "tok-stripe",
+                    },
+                )
+                await svc.refresh_station("stripe-usd")
+                resolved_stripe = svc.resolve_station_for_origin("https://stripe.example.test/v1")
+                self.assertIsNotNone(resolved_stripe)
+                self.assertEqual(resolved_stripe["fiat_currency"], "USD")
+                self.assertIsNone(resolved_stripe["fiat_per_base_unit"])
+
                 # 4) PricingCatalogService injection works safely both standalone & with setter
                 cat_svc = api._pricing_catalog_service(Path(tmp), ctrl.session)
                 self.assertIsNotNone(cat_svc)

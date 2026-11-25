@@ -956,6 +956,12 @@ class QuotaWatchService:
             return None
         candidates.sort(key=lambda item: item[0])
         _prio, spec, resolved_base, resolved_proxy, snap = candidates[0]
+        resolved_fiat_currency = spec.fiat_currency or (snap.inferred_fiat_currency if snap else "")
+        resolved_fiat_pbu = (
+            spec.fiat_per_base_unit
+            if spec.fiat_per_base_unit is not None
+            else (snap.site_recharge_price if (snap and resolved_fiat_currency == "CNY") else None)
+        )
         return {
             "station_id": spec.id,
             "station_name": spec.name,
@@ -969,12 +975,8 @@ class QuotaWatchService:
             "allow_http": spec.allow_http,
             "group_name": snap.group_name if snap else "",
             "observed_group_ratios": dict(self._observed_group_ratios.get(spec.id, {})),
-            "fiat_currency": spec.fiat_currency or (snap.inferred_fiat_currency if snap else ""),
-            "fiat_per_base_unit": (
-                spec.fiat_per_base_unit
-                if spec.fiat_per_base_unit is not None
-                else (snap.site_recharge_price if snap else None)
-            ),
+            "fiat_currency": resolved_fiat_currency,
+            "fiat_per_base_unit": resolved_fiat_pbu,
             "custom_currency_exchange_rate": snap.custom_exchange_rate if snap else None,
             "custom_currency_symbol": (snap.symbol if (snap and snap.display_type == "CREDIT") else ""),
         }
