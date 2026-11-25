@@ -105,7 +105,9 @@ class RoleReceiptReader:
         receipt = journal_codec.receipt_from_json(raw)
         if receipt.operation_id != operation_id:
             raise TaskError("memory_activity_receipt_changed", "journal receipt identity changed")
-        if receipt.action not in ("save", "restore"):
+        # LegacyMigrationWebAPI uses this operation prefix for archived V1
+        # journals. Importing an archive is not a new writing experience.
+        if receipt.action not in ("save", "restore") or operation_id.startswith("legacy-journal-"):
             return None
         head = receipt.head
         if head.key.owner != self.life.owner(context):
