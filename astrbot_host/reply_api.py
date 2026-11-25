@@ -181,6 +181,26 @@ class ReplyWebAPI:
                     session, runtime, observed_at = self._snapshot(
                         not_initialized_message="load an initialized V2 profile first")
                     if not read_only:
+                        if method == "learn":
+                            manager = ExpressionStyleManagement(session.application)
+                            if callable(getattr(manager, "prepare_learn", None)):
+                                def execute_prepare_learn():
+                                    operator = dashboard_operator(runtime, username, at=observed_at)
+                                    return manager.prepare_learn(
+                                        operator=operator, context=session.profile.target, **arguments)
+
+                                prepared = await asyncio.to_thread(execute_prepare_learn)
+                                if prepared.failure is not None:
+                                    return outcome_response(prepared)
+                                payload = prepared.unwrap()
+                                if payload["launch"] is None:
+                                    return outcome_response(Outcome.success(payload["result"]))
+                                launched = session.application.expression_style.launch_prepared(*payload["launch"])
+                                return outcome_response(Outcome.success(launched))
+                            operator = await asyncio.to_thread(dashboard_operator, runtime, username, at=observed_at)
+                            return outcome_response(manager.learn(
+                                operator=operator, context=session.profile.target, **arguments))
+
                         def execute_mutation():
                             operator = dashboard_operator(runtime, username, at=observed_at)
                             manager = ExpressionStyleManagement(session.application)

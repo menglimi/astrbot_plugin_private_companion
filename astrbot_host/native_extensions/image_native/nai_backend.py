@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,6 +11,12 @@ from .owner import checked
 from .types import BackendResult, NativeImageError, inspect_image
 
 PLUGIN_NAME = "astrbot_plugin_nai_image"
+_NAI_HTTP_STATUS_RE = re.compile(r"\bHTTP\s+(\d{3})\b|\bhttp_(\d{3})\b", re.IGNORECASE)
+_NAI_SECRET_RE = re.compile(
+    r"(?:Bearer\s+[A-Za-z0-9._~+/=-]{6,}|(?:sk|pk|pst|key|token)[_-][A-Za-z0-9._-]{8,}|https?://\S+)",
+    re.IGNORECASE,
+)
+_NAI_NOTE_PREFIXES = ("🚫", "❌", "⏱", "📭", "🖼", "💥", "🔥", "⚠️", "❓", "NAI ", "提示词为空", "图片已生成但保存失败")
 
 
 class NAIImageBackend:
@@ -141,8 +148,12 @@ class NAIImageBackend:
             raise NativeImageError("nai_plugin_unavailable", unconfirmed=False,
                                    diagnostics=self._diagnostic("nai_plugin_unavailable", confirmed=True))
         if not isinstance(result, dict) or result.get("handled") is not True or not result.get("image_path"):
-            raise NativeImageError("nai_generation_unconfirmed", diagnostics=self._diagnostic(
-                "nai_generation_unconfirmed"))
+            code, status, detail, confirmed = self._classify_failure(result)
+            raise NativeImageError(
+                code,
+                unconfirmed=not confirmed,
+                diagnostics=self._diagnostic(code, confirmed=confirmed, status=status, detail=detail),
+            )
         path = Path(result["image_path"])
         if not path.is_file() or not 0 < path.stat().st_size <= 50 * 1024 * 1024:
             raise NativeImageError("nai_output_unavailable", diagnostics=self._diagnostic("nai_output_unavailable"))
@@ -152,6 +163,51 @@ class NAIImageBackend:
                                                        "response_received": True})
 
     @staticmethod
-    def _diagnostic(code, *, confirmed=False):
-        return ({"endpoint_id": "nai", "status": 0, "reason": code, "detail": "",
+    def _sanitize_note(note):
+        if not isinstance(note, str):
+            return ""
+        cleaned = _NAI_SECRET_RE.sub("[redacted]", note)
+        cleaned = " ".join(cleaned.split()).strip()
+        return cleaned[:200]
+
+    @classmethod
+    def _classify_failure(cls, result):
+        """Map structured NAI refusal notes while keeping opaque plugin text sealed."""
+        if not isinstance(result, dict):
+            return "nai_generation_unconfirmed", 0, "", False
+        raw_reason = str(result.get("reason") or "").strip()
+        raw_note = str(result.get("note") or "").strip()
+        recognized = bool(raw_reason) or raw_note.startswith(_NAI_NOTE_PREFIXES)
+        if not recognized:
+            return "nai_generation_unconfirmed", 0, "", False
+        detail = cls._sanitize_note(raw_note)
+        status_match = _NAI_HTTP_STATUS_RE.search(f"{raw_reason} {raw_note}")
+        status = int(status_match.group(1) or status_match.group(2)) if status_match else 0
+
+        if raw_reason in {"no_token", "no_session", "openai_not_configured"} or (
+            raw_note.startswith("❌") and any(k in raw_note for k in ("未配置", "未初始化"))
+        ):
+            return "nai_plugin_unavailable", 0, detail, True
+
+        if raw_reason == "timeout" or raw_note.startswith("⏱"):
+            return "nai_generation_timed_out", status, detail, False
+
+        # Definitive pre-billing rejections: empty prompt, missing reference,
+        # unsupported reference/director mode, or confirmed HTTP 400/422 refusal.
+        if (
+            raw_reason == "no_reference_image"
+            or raw_reason.startswith(("reference_model_unsupported", "director_ref_rejected", "http_400", "http_422"))
+            or "提示词为空，未发起生图" in raw_note
+            or "需要输入一张源图片" in raw_note
+            or "精准参考（director）被上游拒绝" in raw_note
+            or ("参考" in raw_note and "不支持" in raw_note and raw_note.startswith("🚫"))
+            or (status in (400, 422) and raw_note.startswith("🚫"))
+        ):
+            return "nai_request_rejected", status or 400, detail, True
+
+        return "nai_generation_unconfirmed", status, detail, False
+
+    @staticmethod
+    def _diagnostic(code, *, confirmed=False, status=0, detail=""):
+        return ({"endpoint_id": "nai", "status": status, "reason": code, "detail": detail,
                  "scope": "endpoint" if confirmed else "unconfirmed", "retry_after": ""},)
