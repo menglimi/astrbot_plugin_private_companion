@@ -246,7 +246,9 @@ def infer_newapi_fiat_conversion(
             if non_usd_symbol or _has_cjk(sys_name):
                 inferred_cur = "CNY"
 
-    effective_pbu = override_pbu if override_pbu is not None else (site_price if inferred_cur else None)
+    # NewAPI's status/topup `price` field is historically RMB per base unit (default 7.3).
+    # Never apply it automatically as a USD rate on overseas Stripe/Creem CUSTOM stations.
+    effective_pbu = override_pbu if override_pbu is not None else (site_price if inferred_cur == "CNY" else None)
     return inferred_cur, site_price, effective_pbu
 
 
@@ -265,7 +267,11 @@ def _format_newapi_custom_extra(
     parts: list[str] = []
     unit_label = params.symbol or "积分"
     fiat_sym = normalize_currency_symbol(inferred_fiat_currency) if inferred_fiat_currency in ("CNY", "USD") else "¥"
-    pbu = effective_fiat_pbu if (effective_fiat_pbu is not None and effective_fiat_pbu > 0) else params.site_price
+    pbu = (
+        effective_fiat_pbu
+        if (effective_fiat_pbu is not None and effective_fiat_pbu > 0)
+        else (params.site_price if inferred_fiat_currency == "CNY" else None)
+    )
 
     if params.custom_rate is not None and params.custom_rate > 0:
         if pbu is not None and pbu > 0:

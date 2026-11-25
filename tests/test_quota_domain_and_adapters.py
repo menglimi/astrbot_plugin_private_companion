@@ -1248,6 +1248,81 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertEqual(logs_res["rows"][1]["billing_source"], "wallet")
             self.assertAlmostEqual(logs_res["rows"][1]["group_ratio"], 0.65, places=4)
 
+            # 5) Overseas Stripe CUSTOM station with default RMB price=7.3 must NOT apply 7.3x as USD rate
+            f_stripe, _ = _mock_factory({
+                ("GET", "https://stripe-custom.example.test/api/status"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "system_name": "Global Relay",
+                            "server_address": "https://stripe-custom.example.test",
+                            "quota_display_type": "CUSTOM",
+                            "quota_per_unit": 500000,
+                            "custom_currency_symbol": "★",
+                            "custom_currency_exchange_rate": 10,
+                            "usd_exchange_rate": 7.3,
+                            "price": 7.3,
+                        },
+                    },
+                ),
+                ("GET", "https://stripe-custom.example.test/api/user/self"): _FakeResponse(
+                    200,
+                    {"success": True, "data": {"quota": 5_000_000, "used_quota": 1_000_000, "group": "default"}},
+                ),
+                ("GET", "https://stripe-custom.example.test/api/log/self?p=1&page_size=1&type=2"): _FakeResponse(
+                    200, {"success": True, "data": {"items": []}}
+                ),
+                ("GET", "https://stripe-custom.example.test/api/user/topup/info"): _FakeResponse(
+                    200,
+                    {
+                        "success": True,
+                        "data": {
+                            "price": 7.3,
+                            "enable_stripe_topup": True,
+                            "pay_methods": [{"type": "stripe", "name": "Stripe"}],
+                        },
+                    },
+                ),
+                ("GET", "https://stripe-custom.example.test/api/subscription/self"): _FakeResponse(
+                    404, {"success": False}
+                ),
+            })
+            spec_stripe = QuotaStationSpec(
+                id="stripe-custom",
+                name="Global Relay",
+                adapter_id="newapi",
+                base_url="https://stripe-custom.example.test",
+            )
+            snap_stripe = await adapter.probe(
+                spec_stripe,
+                AdapterProbeContext(base_url=spec_stripe.base_url, auth_token="tok-stripe", now=lambda: now_dt, session_factory=f_stripe),
+            )
+            self.assertTrue(snap_stripe.ok)
+            self.assertEqual(snap_stripe.display_type, "CREDIT")
+            self.assertEqual(snap_stripe.inferred_fiat_currency, "USD")
+            self.assertAlmostEqual(snap_stripe.remaining, 100.0, places=4)
+            self.assertIsNone(snap_stripe.fiat_remaining, "Default RMB price=7.3 must never inflate USD CUSTOM balance 7.3x")
+            self.assertIsNone(snap_stripe.fiat_used)
+            self.assertIsNone(snap_stripe.fiat_total)
+            self.assertNotIn("$73", snap_stripe.extra)
+            self.assertNotIn("参考充值约", snap_stripe.extra)
+
+            # Explicit user fiat_per_base_unit override on USD CUSTOM station still works deterministically
+            snap_stripe_manual = await adapter.probe(
+                spec_stripe,
+                AdapterProbeContext(
+                    base_url=spec_stripe.base_url,
+                    auth_token="tok-stripe",
+                    fiat_currency="USD",
+                    fiat_per_base_unit=1.0,
+                    now=lambda: now_dt,
+                    session_factory=f_stripe,
+                ),
+            )
+            self.assertAlmostEqual(snap_stripe_manual.fiat_remaining, 10.0, places=4)
+            self.assertIn("10 ★ = $1", snap_stripe_manual.extra)
+
         asyncio.run(run())
 
 
