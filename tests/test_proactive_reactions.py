@@ -112,6 +112,39 @@ class ProactiveReactionTests(NativeImageFixture, ContactFixture, unittest.Isolat
         self.assertEqual(app.record_receipt(self.receipt(envelope)).unwrap(), "delivered")
         self.assertEqual(self.uses(), 1)
 
+    async def test_reaction_can_share_the_text_message(self):
+        app = await self.enabled_reactions()
+        self.semantic.store.configure({"reactions_delivery_mode": "same_message"}, 1)
+        self.import_reaction()
+        self.choose_reaction()
+
+        task = (await self.contact(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+
+        envelope, = self.sent
+        self.assertIsInstance(envelope, ImageDeliveryEnvelope)
+        self.assertEqual(envelope.text, "我在这里。")
+        self.assertEqual(self.uses(), 1)
+
+    async def test_reaction_before_text_still_delivers_text_during_reaction_cooldown(self):
+        app = await self.enabled_reactions()
+        self.semantic.store.configure({"reactions_delivery_mode": "separate_before",
+                                       "reactions_cooldown_seconds": 3600}, 1)
+        self.import_reaction()
+        self.choose_reaction()
+
+        task = (await self.contact(app)).unwrap().task
+        await self.until(lambda: len(self.sent) == 2)
+        await self.delivery_state(app, task.task_id, "delivered")
+
+        envelope, text = self.sent
+        self.assertIsInstance(envelope, ImageDeliveryEnvelope)
+        self.assertNotIsInstance(text, ImageDeliveryEnvelope)
+        self.assertEqual((envelope.text, text.text), ("", "我在这里。"))
+        self.assertEqual(self.uses(), 1)
+        history = app.background_history.recent(self.contact_context()).unwrap()
+        self.assertEqual([part["text"] for part in history], ["", "我在这里。"])
+
     async def test_new_image_uses_the_generation_route_only_after_persona_approval(self):
         registry = self.create_image_port(self.root.parent / "proactive-image-native", self.clock.now)
         context = self.contact_context()
@@ -299,6 +332,7 @@ class ProactiveReactionTests(NativeImageFixture, ContactFixture, unittest.Isolat
         from companion_v2.configuration.registry import FieldRegistry
         from companion_v2.model_gateway.routing import configuration_fields as model_fields
         from companion_v2.proactive.service import persona_judge_profile
+        from tests.test_proactive_contacts import ProactiveContactTests
 
         self.sender = replace(self.sender, supports_images=True)
         self.profiles += (persona_judge_profile("primary", max_output_tokens=100),)
@@ -309,6 +343,10 @@ class ProactiveReactionTests(NativeImageFixture, ContactFixture, unittest.Isolat
         app = host.application
         self.settings(app, {"enabled": True, "enable_llm_proactive_persona_judge": True,
                             "proactive_persona_judge_threshold": 60}).unwrap()
+        ProactiveContactTests.presentation_settings(self, app, {
+            "enabled": True, "llm_controlled": True, "rules_enabled": False,
+            "part_gap_mode": "fixed", "part_gap_ms": 0,
+        }).unwrap()
         self.semantic.store.configure({"reactions_proactive_enabled": True,
                                        "reactions_trigger_probability": 1.0,
                                        "reactions_cooldown_seconds": 0}, 0)
@@ -326,11 +364,12 @@ class ProactiveReactionTests(NativeImageFixture, ContactFixture, unittest.Isolat
             observed_at=self.clock.now()).unwrap()
         original = picture()
         item = self.import_reaction(original, label="安慰")
+        texts = ("我在这里。", "陪你一会儿。")
 
         async def respond(envelope):
             if "主动消息复核" in envelope.task_prompt or "点评一条已写好的主动消息" in envelope.task_prompt or "score" in envelope.original.instruction:
                 return answered('{"decision":"send","score":92,"reason":"语气自然"}')
-            return answered(json.dumps({"decision": "send", "text": "我在这里陪你。",
+            return answered(json.dumps({"decision": "send", "text": "<<PRIVATE_COMPANION_SPLIT>>".join(texts),
                                         "reaction_intent": "安慰"}, ensure_ascii=False))
         self.model_behavior = respond
 
@@ -346,17 +385,23 @@ class ProactiveReactionTests(NativeImageFixture, ContactFixture, unittest.Isolat
             role_instruction="原角色", selection_seed="judged-reaction",
             administrator_test=True, diagnostic_source_backed=True,
             diagnostic_origin=diagnostic_origin)).unwrap().task
-        row = await self.delivery_state(app, task.task_id, "delivered")
         await self.until(lambda: self.uses() == 1)
-        envelope = self.sent[0]
+        row = await self.delivery_state(app, task.task_id, "delivered")
+        first, last, envelope = self.sent
+        self.assertEqual((first.text, last.text), texts)
+        self.assertNotIsInstance(first, ImageDeliveryEnvelope)
+        self.assertNotIsInstance(last, ImageDeliveryEnvelope)
         self.assertIsInstance(envelope, ImageDeliveryEnvelope)
+        self.assertEqual(envelope.text, "")
         self.assertEqual(envelope.images[0].descriptor.content_hash, item["id"])
         contact = self.runtime.read_one("SELECT * FROM proactive_contacts WHERE task_id=?", (task.task_id,))
         record = json.loads(contact["record_json"])
         self.assertEqual(record["judge"]["decision"], "send")
         self.assertNotIn("pending_reaction_intent", record)
-        self.assertEqual(record["reaction"]["manifest"], image_manifest(envelope.images[0]))
-        self.assertEqual(contact["payload_hash"], row["payload_hash"])
+        manifest = image_manifest(envelope.images[0])
+        self.assertEqual(record["reaction"]["manifest"], manifest)
+        self.assertEqual(contact["payload_hash"], manifest_hash("".join(texts), (manifest,)))
+        self.assertEqual(row["payload_hash"], manifest_hash("", (manifest,)))
         observation = app.proactive.observe(context, task.task_id).unwrap()
         self.assertEqual(observation["stage_metrics"]["media"]["reaction"], "attached")
         self.assertEqual(observation["stage_metrics"]["media"]["voice"], "not_selected")

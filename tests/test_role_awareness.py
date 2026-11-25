@@ -119,9 +119,9 @@ class RoleAwarenessTests(unittest.TestCase):
             self.service.record_input(connection, ctx or self.group, at, text, key, source=source,
                                       peer_count=peer_count, quote_sender_ids=quote_sender_ids)
 
-    def record_private(self, text="先别告诉群里", at=NOW, key="private-1", ctx=None):
+    def record_private(self, text="先别告诉群里", at=NOW, key="private-1", ctx=None, source=None):
         with self.runtime.transaction() as connection:
-            self.service.record_input(connection, ctx or self.private, at, text, key)
+            self.service.record_input(connection, ctx or self.private, at, text, key, source=source)
 
     def test_private_turn_sees_same_persons_public_group_activity(self):
         self.record_group(peer_count=3)
@@ -179,6 +179,38 @@ class RoleAwarenessTests(unittest.TestCase):
         row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
                                     (PREFIX + owner_key(self.private),))
         self.assertNotIn("先别告诉群里", row["value"])
+
+    def test_window_transition_projects_only_a_boolean_for_the_same_person_and_route(self):
+        self.record_private()
+        at = NOW + timedelta(minutes=1)
+        messages = type("Messages", (), {"cross_window_context": self.prompt})()
+        section = _cross_window_section(messages, self.group, at, "换个说法也能接话", input_at=at).render()
+        self.assertEqual(json.loads(section.split("\n")[-1])[0]["content"], {"recent_window_transition": True})
+        self.assertNotIn("先别告诉群里", section)
+        self.assertIsNone(self.service.snapshot(self.other, at, input_at=at))
+        self.assertIsNone(self.service.snapshot(context(GROUP_B), at, input_at=at))
+
+        self.record_group(at=at)
+        following = at + timedelta(seconds=1)
+        self.assertIsNone(self.service.snapshot(self.group, following, input_at=following))
+        private = self.service.snapshot(self.private, following, input_at=following)
+        self.assertIs(private["recent_window_transition"], True)
+
+    def test_window_transition_respects_input_time_expiry_and_source_withdrawal(self):
+        source = SourceRef("private-source", "conversation.native_input", PRIVATE,
+                           VersionRef("private-source", 1), NOW)
+        self.service.source_validator = FakeSourceValidator()
+        self.record_private(source=source)
+        at = NOW + timedelta(minutes=31)
+        self.assertIsNone(self.service.snapshot(self.group, at, input_at=NOW - timedelta(seconds=1)))
+        self.assertIsNone(self.service.snapshot(self.group, at, input_at=at))
+        input_at = NOW + timedelta(seconds=30)
+        self.assertEqual(self.service.snapshot(self.group, at, input_at=input_at), {"recent_window_transition": True})
+        self.service.source_validator.current = False
+        self.assertIsNone(self.service.snapshot(self.group, at, input_at=input_at))
+        self.service.source_validator.current = True
+        self.acquaintance.settings = FakeSettings(**{"person.cross_window_continuity_enabled": False})
+        self.assertIsNone(self.service.snapshot(self.group, at, input_at=input_at))
 
     def test_other_subject_and_other_role_do_not_share_presence(self):
         self.record_group()

@@ -291,11 +291,11 @@ def _legacy_memory_materials(memory, context, native_input, at, timezone_name):
     return tuple(materials)
 
 
-def _cross_window_section(messages, context, at, current_text=""):
+def _cross_window_section(messages, context, at, current_text="", *, input_at=None):
     owner = getattr(messages, "cross_window_context", None)
     if owner is None:
         return ""
-    material = owner.contribution(context, at, current_text=current_text)
+    material = owner.contribution(context, at, current_text=current_text, input_at=input_at)
     if material is None:
         return ""
     return _material_section("跨窗口在场", CROSS_WINDOW_INSTRUCTION, (material,))
@@ -427,7 +427,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
 
     optional("account_links", account_link_context)
     optional("cross_window", lambda: _cross_window_section(
-        messages, context, at, getattr(native_input, "text", "")))
+        messages, context, at, getattr(native_input, "text", ""), input_at=_input_received_at(native_input, at)))
     optional("knowledge_reference", lambda: _material_section("角色知识资料", system_text("knowledge", KNOWLEDGE_INSTRUCTION),
         _knowledge_materials(messages, context, native_input, at,
                              official_hits=official_knowledge_hits,

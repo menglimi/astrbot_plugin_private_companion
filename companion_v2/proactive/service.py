@@ -1449,20 +1449,7 @@ class ProactiveContacts:
                                     "the authorized image changed or could not be sealed for delivery")
                 voice, poke = self._expression_plans(job.context, preferences, body, decision_data, self.tasks.now(),
                                                      policy=job.voice_policy)
-                attachment = generated or reaction
-                payload_hash = manifest_hash(body or "", (attachment["manifest"],) if attachment else ())
-                part_documents = []
-                if body is not None:
-                    if not segments:
-                        segments = (body,)
-                    for text in segments:
-                        part_documents.append({"text": text, "payload_hash": manifest_hash(text, ())})
-                    # 表情图默认单独成条：正文保持纯文字，图片作为最后一段发出，
-                    # 不再和收尾那句挤在同一个气泡里。
-                    if attachment is not None:
-                        part_documents.append({
-                            "text": "", "payload_hash": manifest_hash("", (attachment["manifest"],))})
-                document["parts"] = part_documents
+                payload_hash = self._seal_parts(document, body, segments, generated=generated, reaction=reaction)
                 if body is not None:
                     if deferred_reaction_intent is not None:
                         document["pending_reaction_intent"] = deferred_reaction_intent
@@ -1473,10 +1460,6 @@ class ProactiveContacts:
                         document["pending_expression_review"] = deferred_expression_review
                     if judge_task is not None:
                         document["judge_rewrite_guard"] = {"statements": statements, "suffix": suffix}
-                if reaction is not None:
-                    document["reaction"] = reaction
-                if generated is not None:
-                    document["generated_image"] = generated
                 if generation is not None:
                     document["image_generation"] = generation
                 if voice is not None:
@@ -1545,6 +1528,35 @@ class ProactiveContacts:
             return None
         return body, segments
 
+    def _seal_parts(self, document, body, segments, *, generated, reaction):
+        if body is None:
+            document["parts"] = []
+            return manifest_hash("")
+        texts = list(segments or (body,))
+        manifests, image_sequence = (), None
+        attachment = generated if generated is not None else reaction
+        if attachment is not None:
+            if generated is not None:
+                document["generated_image"] = generated
+                mode = "separate_after"
+            else:
+                document["reaction"] = reaction
+                mode = self.semantics.store.settings()["reactions_delivery_mode"]
+            manifests = (attachment["manifest"],)
+            if mode != "same_message" and len(texts) == 64:
+                texts[-2:] = [texts[-2] + texts[-1]]
+            if mode == "separate_before":
+                texts.insert(0, "")
+                image_sequence = 0
+            else:
+                if mode == "separate_after":
+                    texts.append("")
+                image_sequence = len(texts) - 1
+            document["image_sequence"] = image_sequence
+        document["parts"] = [{"text": text, "payload_hash": manifest_hash(
+            text, manifests if sequence == image_sequence else ())} for sequence, text in enumerate(texts)]
+        return manifest_hash(body, manifests)
+
     def _part_documents(self, row, data):
         attachment = data.get("generated_image") or data.get("reaction")
         manifest = attachment.get("manifest") if isinstance(attachment, dict) else None
@@ -1557,8 +1569,11 @@ class ProactiveContacts:
                        for part in parts)
                 or "".join(part["text"] for part in parts) != row["body"]):
             raise TaskError("contact_draft_unavailable", "original segmented contact text changed")
+        image_sequence = data.get("image_sequence", len(parts) - 1)
+        if manifest is not None and (type(image_sequence) is not int or not 0 <= image_sequence < len(parts)):
+            raise TaskError("contact_draft_unavailable", "original contact image part changed")
         for index, part in enumerate(parts):
-            images = (manifest,) if manifest is not None and index == len(parts) - 1 else ()
+            images = (manifest,) if manifest is not None and index == image_sequence else ()
             if manifest_hash(part["text"], images) != part["payload_hash"]:
                 raise TaskError("contact_draft_unavailable", "original contact part hash changed")
         return tuple(parts)
@@ -1978,22 +1993,10 @@ class ProactiveContacts:
                 if post_review_dedup_reason is not None:
                     document["dedup_reason"] = post_review_dedup_reason
             final_body = body_text
-            if send and generated is not None:
-                document["generated_image"] = generated
-                payload_hash = manifest_hash(body_text, (generated["manifest"],))
-                document["parts"] = [
-                    *(document.get("parts") or [{"text": body_text, "payload_hash": manifest_hash(body_text)}]),
-                    {"text": "", "payload_hash": manifest_hash("", (generated["manifest"],))},
-                ]
-            elif reaction is not None:
-                payload_hash = manifest_hash(body_text, (reaction["manifest"],))
-                parts = document.get("parts") or [{"text": body_text, "payload_hash": payload_hash}]
-                part_documents = []
-                for index, part in enumerate(parts):
-                    images = (reaction["manifest"],) if index == len(parts) - 1 else ()
-                    part_documents.append({"text": part["text"], "payload_hash": manifest_hash(part["text"], images)})
-                document["parts"] = part_documents
-                document["reaction"] = reaction
+            if send and (generated is not None or reaction is not None):
+                original_parts = self._part_documents({"body": body_text, "payload_hash": payload_hash}, document)
+                segments = tuple(part["text"] for part in original_parts)
+                payload_hash = self._seal_parts(document, body_text, segments, generated=generated, reaction=reaction)
             if generation is not None:
                 document["image_generation"] = generation
             document["decision"] = "send" if send else "skip"
@@ -2127,42 +2130,34 @@ class ProactiveContacts:
                 administrator_test=administrator_test):
             raise TaskError("contact_duplicate", "another confirmed or unresolved contact already uses this text")
         part_text = parts[request.sequence]["text"]
-        last_index = len(parts) - 1
+        image_sequence = data.get("image_sequence", len(parts) - 1)
+        last_text_sequence = len(parts) - 1
+        if not parts[last_text_sequence]["text"].strip():
+            last_text_sequence -= 1
+        if request.sequence != last_text_sequence:
+            voice = poke = None
         generated = data.get("generated_image")
-        if generated is not None:
-            if request.sequence == last_index:
-                outfit_event = (data.get("automatic_origin") or {}).get("outfit_event")
-                image = (self.schedule.outfit_events.image(request.context, outfit_event, at) if outfit_event
-                         else self.images.read(request.context, generated))
-                if image_manifest(image) != generated["manifest"]:
-                    raise TaskError("contact_image_changed", "the original proactive image changed before delivery")
-                return DeliveryContent(part_text, (image,))
-            if request.sequence == last_index - 1 and (voice is not None or poke is not None):
-                return DeliveryContent(part_text, (), voice=voice, poke=poke)
-            return part_text
+        if generated is not None and request.sequence == image_sequence:
+            outfit_event = (data.get("automatic_origin") or {}).get("outfit_event")
+            image = (self.schedule.outfit_events.image(request.context, outfit_event, at) if outfit_event
+                     else self.images.read(request.context, generated))
+            if image_manifest(image) != generated["manifest"]:
+                raise TaskError("contact_image_changed", "the original proactive image changed before delivery")
+            return DeliveryContent(part_text, (image,))
         reaction = data.get("reaction")
-        # 新草稿把表情图作为独立的空文本段放在最后；旧草稿仍把图挂在最后一段文字上，
-        # 因此两种封存记录都要能按原样投递。
-        legacy_attachment = reaction is not None and bool(parts[last_index]["text"].strip())
-        image_part = reaction is not None and not legacy_attachment and request.sequence == last_index
-        if reaction is None:
-            if request.sequence != last_index or (voice is None and poke is None):
-                return part_text
-            return DeliveryContent(part_text, (), voice=voice, poke=poke)
-        if not self._reaction_available(request.context, row["contact_id"],
-                diagnostic=data.get("diagnostic_image") is True):
-            raise TaskError("reaction_unavailable", "selected proactive reaction is no longer allowed")
-        image = self.semantics.reactions.contact_image(request.context, row["contact_id"], reaction,
-            datetime.fromisoformat(reaction["issued_at"]), evidence=tuple(source_from_document(ref) for ref in data["sources"]))
-        if image_manifest(image) != reaction["manifest"]:
-            raise TaskError("reaction_changed", "selected proactive reaction no longer matches its original")
-        if legacy_attachment:
-            if request.sequence != last_index:
-                return part_text
-            return DeliveryContent(part_text, (image,), voice=voice, poke=poke)
-        if image_part:
-            return DeliveryContent("", (image,))
-        if request.sequence == last_index - 1 and (voice is not None or poke is not None):
+        # A confirmed reaction may start its cooldown before the text parts are sent.
+        if reaction is not None and request.sequence <= image_sequence:
+            if not self._reaction_available(request.context, row["contact_id"],
+                    diagnostic=data.get("diagnostic_image") is True):
+                raise TaskError("reaction_unavailable", "selected proactive reaction is no longer allowed")
+            image = self.semantics.reactions.contact_image(request.context, row["contact_id"], reaction,
+                datetime.fromisoformat(reaction["issued_at"]),
+                evidence=tuple(source_from_document(ref) for ref in data["sources"]))
+            if image_manifest(image) != reaction["manifest"]:
+                raise TaskError("reaction_changed", "selected proactive reaction no longer matches its original")
+            if request.sequence == image_sequence:
+                return DeliveryContent(part_text, (image,), voice=voice, poke=poke)
+        if voice is not None or poke is not None:
             return DeliveryContent(part_text, (), voice=voice, poke=poke)
         return part_text
 
@@ -2244,7 +2239,8 @@ class ProactiveContacts:
         # a past receipt. Revoked evidence and its historical ancestry still apply.
         history = data.get("history")
         attachment = data.get("generated_image") or data.get("reaction")
-        manifests = ((attachment["manifest"],) if attachment and request.sequence == len(parts) - 1 else ())
+        image_sequence = data.get("image_sequence", len(parts) - 1)
+        manifests = (attachment["manifest"],) if attachment and request.sequence == image_sequence else ()
         return HistoricalText(parts[request.sequence]["text"], tuple(history["references"]) if history else (), manifests)
 
     @property

@@ -6,8 +6,8 @@ projects a small metadata view back into the current prompt.  The two audiences
 are deliberately asymmetric:
 
 * a private turn may see the current person's own recent public group wording;
-* a group turn may see only that the current speaker is also a private contact,
-  never the private content or its timing.
+* a group turn gets a familiarity signal and a coarse window transition hint
+  for the current speaker's private activity.
 """
 
 from __future__ import annotations
@@ -136,13 +136,14 @@ class RoleAwareness:
             connection, context, normalize_utc(at, field="awareness time"),
             text=text, event_key=event_key)
 
-    def snapshot(self, context, at, *, current_text=""):
+    def snapshot(self, context, at, *, current_text="", input_at=None):
         at = normalize_utc(at, field="awareness time")
         values = self._values(context)
         awareness_enabled = self._enabled(context, values)
         document = self.store.read(context)
         if document is None or not valid_document(document):
             return None
+        transitioned = awareness_enabled and self._recent_window_transition(document, context, at, input_at, values)
         if context.scope.kind is ScopeKind.PRIVATE:
             together = self._recent_together_activity(document, context, at)
             if not awareness_enabled:
@@ -156,8 +157,6 @@ class RoleAwareness:
             peer_replies, peer_repliers = self._peer_replies(
                 document, context, at, minutes=peer_reply_minutes)
             continuity = self._continuity(document, context, at, current_text, values)
-            if not recent and not together and not attention and not peer_replies and continuity is None:
-                return None
             payload = {}
             if recent:
                 payload["recent_group_activity"] = recent
@@ -171,13 +170,17 @@ class RoleAwareness:
                 payload["peer_repliers"] = peer_repliers
             if continuity is not None:
                 payload["continuity"] = continuity
-            return payload
+            if transitioned:
+                payload["recent_window_transition"] = True
+            return payload or None
         if not awareness_enabled:
             return None
         if context.scope.kind is ScopeKind.GROUP:
             payload = {}
             if self._private_contact(context, at, values):
                 payload["private_contact"] = True
+            if transitioned:
+                payload["recent_window_transition"] = True
             if values.get("person.cross_window_cross_group_enabled", True) is not False:
                 cross_group = self._recent_cross_group_activity(
                     document, context, at,
@@ -204,6 +207,24 @@ class RoleAwareness:
             return self.source_validator.validate_reference(reference, observed_at=at).is_success
         except Exception:
             return False
+
+    def _recent_window_transition(self, document, context, at, input_at, values):
+        if (input_at is None or context.scope.kind not in (ScopeKind.PRIVATE, ScopeKind.GROUP)
+                or values.get("person.cross_window_continuity_enabled", True) is False
+                or (context.scope.kind is ScopeKind.GROUP
+                    and values.get("person.cross_window_group_identity_enabled", True) is False)):
+            return False
+        before = min(at, normalize_utc(input_at, field="awareness input time"))
+        minutes = self._integer(values, "person.cross_window_continuity_minutes", 30, 5, 180)
+        cutoff = before - timedelta(minutes=minutes)
+        subject = context.actor.subject.subject_id
+        for item in reversed(document["events"]):
+            if (item["kind"] != "spoke" or item["subject"] != subject or not self._same_route(item, context)):
+                continue
+            when = _when(item["at"])
+            if when is not None and cutoff <= when < before:
+                return item["window"] != context.scope.kind.value and self._source_current(item, at)
+        return False
 
     def _continuity(self, document, context, at, current_text, values):
         """Match a private follow-up to the same person's recent group question.

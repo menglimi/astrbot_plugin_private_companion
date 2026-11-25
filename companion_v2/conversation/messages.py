@@ -837,7 +837,7 @@ class ConversationMessages:
                     and context.scope.kind in (ScopeKind.PRIVATE, ScopeKind.GROUP)):
                 try:
                     saved["cross_window"] = self.cross_window_context.capture(
-                        context, self.tasks.now(), current_text=current_text)
+                        context, self.tasks.now(), current_text=current_text, input_at=events[0].received_at)
                 except Exception as error:
                     logger.warning("V2 cross-window snapshot failed: %s", type(error).__name__)
             profile_snapshot = self.role_profile_context.capture(context, self.tasks.now())

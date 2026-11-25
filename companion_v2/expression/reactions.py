@@ -553,7 +553,7 @@ class ReactionLibrary:
             return False
         parts = data.get("parts") or [{"text": contact["body"], "payload_hash": contact["payload_hash"]}]
         if (not isinstance(parts, list) or not parts or request.part_count != len(parts)
-                or request.sequence != len(parts) - 1):
+                or request.sequence != data.get("image_sequence", len(parts) - 1)):
             return False
         manifest = reaction.get("manifest")
         if (request.owner != "proactive.contact" or request.logical_key != contact["contact_id"]
@@ -561,7 +561,7 @@ class ReactionLibrary:
                 or manifest.get("source", {}).get("owner") != "conversation.image"
                 or manifest.get("descriptor", {}).get("content_hash") != reaction.get("id")
                 or manifest_hash(contact["body"], (manifest,)) != contact["payload_hash"]
-                or manifest_hash(parts[-1]["text"], (manifest,)) != row["payload_hash"]
+                or manifest_hash(parts[request.sequence]["text"], (manifest,)) != row["payload_hash"]
                 or request.payload_hash != row["payload_hash"]):
             raise TaskError("reaction_usage_manifest_changed", "confirmed proactive image manifest changed")
         catalog_owner = self.service.ensure_reaction_catalog(request.context)
