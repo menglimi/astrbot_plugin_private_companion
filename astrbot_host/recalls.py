@@ -4,8 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 
+from companion_v2.adapters.astrbot.connections import NativeAccountConnections, NativeConnectionLease
 from companion_v2.adapters.astrbot.native import (
-    account_number, event_account_id, event_peer_id, native_client_connected,
+    account_number, event_account_id, event_native_client, event_peer_id, native_client_connected,
     platform_client_matches,
 )
 from companion_v2.conversation.quotes.models import message_number
@@ -93,6 +94,8 @@ class NativeNoticeRoute:
     group_id: str = ""
     platform: object | None = None
     platform_name: str = ""
+    connection_lease: NativeConnectionLease | None = None
+    connections: NativeAccountConnections | None = None
 
 
 def _lark_private_message_route(controller, event):
@@ -135,12 +138,60 @@ def _lark_private_message_route(controller, event):
                              native_session.session_id, client, platform=platform, platform_name="lark")
 
 
+def telegram_private_message_route(controller, event, *, configured_peer):
+    """Resolve an original private update against the current configured bot."""
+    session = controller.session
+    if (session is None or controller._terminated or session.application.state != "running"
+            or not isinstance(event, controller.native_types.event)):
+        return None
+    message, meta, native_session = event.message_obj, event.platform_meta, event.session
+    original = getattr(getattr(message, "raw_message", None), "message", None)
+    chat = getattr(original, "chat", None)
+    raw_sender = getattr(original, "from_user", None)
+    try:
+        sender = event_peer_id(event)
+        login = event_account_id(event)
+    except ValueError:
+        return None
+    if (meta.name != "telegram" or getattr(chat, "type", None) != "private"
+            or type(getattr(chat, "id", None)) is not int or str(chat.id) != sender
+            or type(getattr(raw_sender, "id", None)) is not int or str(raw_sender.id) != sender
+            or type(getattr(original, "message_id", None)) is not int or str(original.message_id) != message.message_id
+            or getattr(message.type, "value", None) != "FriendMessage" or message.group_id
+            or message.session_id != sender or getattr(native_session.message_type, "value", None) != "FriendMessage"
+            or native_session.platform_id != meta.id or native_session.platform_name != meta.id
+            or native_session.session_id != sender or event.unified_msg_origin != f"{meta.id}:FriendMessage:{sender}"):
+        return None
+    bridge = session.bridge
+    account = bridge.accounts.get((meta.id, login))
+    if account is None:
+        return None
+    settings = controller.settings
+    if hasattr(settings, "private_target"):
+        target = settings.private_target(meta.id, login, sender)
+        configured = target is not None
+        if configured and target.bot_id != account.bot_id:
+            return None
+    else:
+        configured = (meta.id, login, sender) == (settings.platform_id, settings.account_id, settings.participant_id)
+    if configured != configured_peer:
+        return None
+    lease = bridge.connections.acquire(account)
+    if lease.platform.meta().name != "telegram" or event_native_client(lease.platform, event) is not lease.client:
+        return None
+    return NativeNoticeRoute(ScopeKind.PRIVATE, meta.id, account.bot_id, login, sender, sender,
+                             native_session.session_id, lease.client, platform=lease.platform,
+                             platform_name="telegram", connection_lease=lease, connections=bridge.connections)
+
+
 def authenticate_notice_route(controller, event, kind, *, expected_post="notice"):
     session = controller.session
     if (session is None or controller._terminated or session.application.state != "running"
             or not isinstance(event, controller.native_types.event)):
         return None
     message, meta, native_session = event.message_obj, event.platform_meta, event.session
+    if meta.name == "telegram" and kind is ScopeKind.PRIVATE and expected_post == "message":
+        return telegram_private_message_route(controller, event, configured_peer=True)
     if meta.name == "lark" and kind is ScopeKind.PRIVATE and expected_post == "message":
         return _lark_private_message_route(controller, event)
     if not has_post_type(event, expected_post):
