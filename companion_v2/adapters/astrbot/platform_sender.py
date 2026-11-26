@@ -30,6 +30,29 @@ from companion_v2.foundation.refs import ScopeKind
 logger = logging.getLogger(__name__)
 
 
+def _telegram_refusal(error, chain):
+    """Name a refusal that proves nothing was sent, or ``None`` when unsure."""
+    # AstrBot reports no progress between Bot API calls. Earlier components or
+    # text chunks may already be visible when a later call is refused.
+    from astrbot.core.platform.sources.telegram.tg_event import TelegramPlatformEvent
+    from telegram.error import BadRequest, Forbidden, InvalidToken, RetryAfter
+
+    if len(chain.chain) != 1:
+        return None
+    component = chain.chain[0]
+    if isinstance(component, Plain) and len(component.text) > TelegramPlatformEvent.MAX_MESSAGE_LENGTH:
+        return None
+    if isinstance(error, Forbidden):
+        return "telegram_bot_blocked" if "bot was blocked" in error.message.lower() else "telegram_forbidden"
+    if isinstance(error, BadRequest):
+        return "telegram_chat_not_found" if error.message.lower() == "chat not found" else "telegram_bad_request"
+    if isinstance(error, InvalidToken):
+        return "telegram_invalid_token"
+    if isinstance(error, RetryAfter):
+        return "telegram_rate_limited"
+    return None
+
+
 class AstrBotPlatformSender:
     """Send through AstrBot's public session transport for one admitted route."""
 
@@ -233,6 +256,12 @@ class AstrBotPlatformSender:
             try:
                 await platform.send_by_session(session, chain)
             except Exception as error:
+                try:
+                    reason = _telegram_refusal(error, chain) if platform.meta().name == "telegram" else None
+                except Exception:  # noqa: BLE001 - dispatch already started
+                    reason = None
+                if reason:
+                    return not_sent(reason)
                 logger.warning("V2 platform delivery outcome unknown part=%s error_type=%s",
                                envelope.part_id, type(error).__name__)
                 return self._receipt(envelope, "unknown")
