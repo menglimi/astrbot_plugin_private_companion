@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,9 @@ from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.identity_policy.personas import (ConversationRoute, PersonaBinding, PersonaDirectory,
                                                    PersonaSelector, SelectorKind)
 from companion_v2.qzone import feed as F, policy as Y, protocol as P
-from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, package_descriptor, tool_descriptors
+from companion_v2.qzone.capability import (
+    CAPABILITIES, EXTENSION, PUBLISH_ACTION, package_descriptor, tool_descriptors,
+)
 from companion_v2.qzone.topics import SCENES, TOPIC_SPECS, QzoneTopic, parse_decision
 from companion_v2.qzone.topic_prompt import parse_output
 from companion_v2.qzone.configuration import (GROUP, QzoneConfigurationOwner, QzoneSettings,
@@ -584,6 +587,34 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(revoked["installed"])
         with self.assertRaises(TaskError):
             asyncio.run(self.service.scan(self.context, scope="own"))
+
+    def test_rotated_conversation_can_be_reauthorized_from_its_own_status(self):
+        self.configure(True, key="authorize-original")
+        scope = replace(self.scope, conversation_id="new-conversation")
+        PersonaDirectory(self.runtime).register_route(
+            ConversationRoute(scope, user=self.context.actor.subject), observed_at=NOW,
+        )
+        context = replace(
+            self.context, role_binding=RoleBinding(scope, self.role, 1),
+            audience=AudienceRef(scope, (self.context.actor.subject,)),
+        )
+        access = QzoneAccess(self.application, context, service=self.service)
+
+        status = access.status(self.operator, NOW)
+        self.assertEqual(status["reason"], "qzone_conversation_changed")
+        self.assertFalse(status["consented"][PUBLISH_ACTION])
+        with self.assertRaises(TaskError) as caught:
+            self.service.require_publish_authorization(context)
+        self.assertEqual(caught.exception.code, "qzone_conversation_changed")
+        self.assertEqual(self.transport.sent, [])
+
+        result = access.configure(self.operator, {
+            "operation_key": "authorize-current", "edit_token": status["edit_token"], "enabled": True,
+        }, NOW)["status"]
+        self.assertTrue(result["consented"][PUBLISH_ACTION])
+        self.assertTrue(result["publish_granted"])
+        self.assertEqual(result["reason"], "")
+        self.service.require_publish_authorization(context)
 
     def test_a_stale_edit_token_is_refused(self):
         status = self.access.status(self.operator, NOW)

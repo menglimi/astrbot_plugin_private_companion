@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -590,6 +591,20 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             denied = await publisher.tick(now=at)
             self.assertEqual(denied, {"reason": "qzone_unauthorized"})
             self.assertEqual(chat.await_count, 0)
+            self.assertEqual(app.qzone.state(context).last_action_at, {})
+
+            previous_scope = replace(context.scope, conversation_id="previous-conversation")
+            app.qzone.capabilities.set_authorization(
+                extension_id=EXTENSION, capability_id=PUBLISH_ACTION,
+                subject=context.actor.subject, scope=previous_scope,
+                state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=at,
+            ).unwrap()
+            with self.assertLogs("astrbot_host.qzone_life_publish", level="INFO") as logs:
+                rotated = await publisher.tick(now=at)
+            self.assertEqual(rotated, {"reason": "qzone_conversation_changed"})
+            self.assertIn("qzone_conversation_changed", logs.output[-1])
+            self.assertEqual(chat.await_count, 0)
+            self.assertEqual(transport.sent, [])
             self.assertEqual(app.qzone.state(context).last_action_at, {})
 
             _configure_qzone_role(self.controller, context, at, consent=True, op_prefix="multi-regrant")

@@ -337,6 +337,35 @@ test("已安装但尚未授权时显示授权入口，并阻止读取和发布�
   assert.match(page.run("qzoneGate('feed').reason"), /尚未授权/);
 });
 
+test("对话变化时显示为当前对话重新授权的入口", async () => {
+  const page = loadPage();
+  page.status.reason = "qzone_conversation_changed";
+  await enterActionPage(page);
+
+  const body = page.document.getElementById("actionQzoneBody").innerHTML;
+  assert.match(body, /授权属于此私聊的另一个对话/);
+  assert.match(body, /为当前对话重新授权/);
+  assert.equal(page.run("qzoneGate('publish').ok"), false);
+});
+
+test("仅缺少发布身份授权时仍可读取，并可重新授权", async () => {
+  const page = loadPage();
+  Object.assign(page.status, {
+    reason: "qzone_grant_missing", invoke_granted: true, publish_granted: false,
+    consented: {
+      "qzone.feed.read": true, "qzone.post.like": true,
+      "qzone.post.comment": true, "qzone.post.publish": true,
+    },
+  });
+  await enterActionPage(page);
+
+  const body = page.document.getElementById("actionQzoneBody").innerHTML;
+  assert.match(body, /缺少发布授权/);
+  assert.match(body, /data-qzone-action="authorize"/);
+  assert.equal(page.run("qzoneGate('feed').ok"), true);
+  assert.equal(page.run("qzoneGate('publish').ok"), false);
+});
+
 function assertSingleEditorOnCurrentHost(page) {
   const host = page.host();
   assert.ok(host, "当前应当有 QQ 空间配置挂载点");
@@ -581,6 +610,7 @@ test("本人动态回读评论详情并渲染返回评论，不发送公开动�
 test("带图发布保留选择顺序，纯图片可提交，结果未知不会丢草稿或自动重发", async () => {
   const page=loadPage();
   page.status.invoke_granted=true;
+  page.status.publish_granted=true;
   page.status.consented={'qzone.post.publish':true};
   page.status.catalogue={topics:[{id:'casual',label:'随笔',scenes:['conversation']}],scenes:{}};
   await enterActionPage(page);

@@ -25,12 +25,10 @@ import json
 import logging
 import random
 
-from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.execution.models import TaskError, stamp
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeRef
 from companion_v2.qzone import life_publish
-from companion_v2.qzone.capability import (EXTENSION as QZONE_EXTENSION,
-                                          PUBLISH_ACTION as QZONE_PUBLISH_ACTION)
+from companion_v2.qzone.capability import PUBLISH_CONVERSATION_CHANGED
 from companion_v2.qzone.service import owner_key
 
 logger = logging.getLogger(__name__)
@@ -54,6 +52,7 @@ _REASON_PRIORITY = {
     "draft_failed": 2,
     "draft_unavailable": 2,
     "qzone_unauthorized": 3,
+    PUBLISH_CONVERSATION_CHANGED: 3,
     "qzone_settings_unavailable": 3,
     "daily_limit": 4,
     "retry_wait": 4,
@@ -144,7 +143,7 @@ class QzoneLifePublisher:
         live_for_owner = [item for item in self._target_contexts(session, at) if owner_key(item) == owner]
         if not live_for_owner:
             return {"reason": "qzone_unavailable"}
-        context, authorized = self._select_contexts_by_owner(service, live_for_owner)[0]
+        context, authorization_reason = self._select_contexts_by_owner(service, live_for_owner)[0]
         try:
             settings = application.qzone_settings.read(context, at)
         except Exception:  # noqa: BLE001 - an unreadable Zone config is a no-op, not a crash
@@ -153,8 +152,8 @@ class QzoneLifePublisher:
         decision = life_publish.decide(settings, state, now=at)
         if not decision.due:
             return {"reason": decision.reason}
-        if authorized is False:
-            return {"reason": "qzone_unauthorized"}
+        if authorization_reason:
+            return {"reason": authorization_reason}
         if not life_publish.should_attempt(settings, self.draw()):
             return {"reason": "probability_miss"}
         # Record the attempt before the model call and clear any expired short
@@ -183,16 +182,18 @@ class QzoneLifePublisher:
             return {"reason": "host_not_running"}
         if not self._is_context_active(context, self._target_contexts(session, at)):
             return {"reason": "qzone_unavailable"}
-        if self._is_publish_authorized(service, context) is False:
-            return {"reason": "qzone_unauthorized"}
+        authorization_reason = self._publish_authorization_reason(service, context)
+        if authorization_reason:
+            return {"reason": authorization_reason}
         op_key = life_publish.operation_key(owner, decision.day, at)
         images, source_refs = await self._prepare_images(application, context, plan, at=at, operation_key=op_key)
         if self._closed or getattr(application, "state", "") != "running":
             return {"reason": "host_not_running"}
         if not self._is_context_active(context, self._target_contexts(session, at)):
             return {"reason": "qzone_unavailable"}
-        if self._is_publish_authorized(service, context) is False:
-            return {"reason": "qzone_unauthorized"}
+        authorization_reason = self._publish_authorization_reason(service, context)
+        if authorization_reason:
+            return {"reason": authorization_reason}
         try:
             result = await service.publish(
                 context, text=plan.text, topic=life_publish.TOPIC.value,
@@ -313,10 +314,10 @@ class QzoneLifePublisher:
         selected = {}
         for context in contexts:
             key = owner_key(context)
-            authorized = cls._is_publish_authorized(service, context)
+            authorization_reason = cls._publish_authorization_reason(service, context)
             previous = selected.get(key)
-            if previous is None or (previous[1] is False and authorized is not False):
-                selected[key] = (context, authorized)
+            if previous is None or (previous[1] and not authorization_reason):
+                selected[key] = (context, authorization_reason)
         return tuple(selected.values())
 
     @staticmethod
@@ -327,34 +328,14 @@ class QzoneLifePublisher:
         return any(candidate == context for candidate in live_contexts)
 
     @staticmethod
-    def _is_publish_authorized(service, context):
-        capabilities = getattr(service, "capabilities", None)
-        if capabilities is None:
-            return None
-        require_role = getattr(capabilities, "require_role_enabled", None)
-        authorize = getattr(capabilities, "authorize", None)
-        if not callable(require_role) or not callable(authorize):
-            return None
-        installation = getattr(capabilities, "installation", None)
-        if callable(installation):
-            installed = installation(extension_id=QZONE_EXTENSION)
-            selected = installed.unwrap() if getattr(installed, "is_success", False) else None
-            if selected is None or getattr(selected, "desired_state", None) is not CapabilityDesiredState.ACTIVE:
-                return False
-        role_ok = require_role(
-            extension_id=QZONE_EXTENSION,
-            role=context.role_binding.role,
-            bot_id=context.scope.bot_id,
-        )
-        if not getattr(role_ok, "is_success", False):
-            return False
-        auth_ok = authorize(
-            extension_id=QZONE_EXTENSION,
-            capability_id=QZONE_PUBLISH_ACTION,
-            subject=context.actor.subject,
-            scope=context.scope,
-        )
-        return bool(getattr(auth_ok, "is_success", False))
+    def _publish_authorization_reason(service, context):
+        try:
+            service.require_publish_authorization(context)
+        except TaskError as error:
+            if error.code == PUBLISH_CONVERSATION_CHANGED:
+                return error.code
+            return "qzone_unauthorized"
+        return ""
 
     @staticmethod
     def _schedule_retry(service, context, state, at, settings, *, unknown=False, defer_interval=False):

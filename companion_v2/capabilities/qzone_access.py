@@ -17,8 +17,10 @@ from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
-from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, PUBLISH_ACTION
-from companion_v2.qzone.capability import package_descriptor
+from companion_v2.qzone.capability import (
+    CAPABILITIES, EXTENSION, PUBLISH_ACTION, PUBLISH_CONVERSATION_CHANGED,
+    has_publish_consent_in_other_conversation, package_descriptor,
+)
 from companion_v2.qzone.topics import SCENES, TOPIC_SPECS, allowed_scenes
 from companion_v2.storage.codec import scope_values
 from companion_v2.storage.models import OperationState
@@ -145,6 +147,8 @@ class QzoneAccess:
                       "qzone_package_changed" if not same else
                       "qzone_not_active" if not active else
                       "qzone_role_disabled" if not role_enabled else
+                      PUBLISH_CONVERSATION_CHANGED if consents[PUBLISH_ACTION] is None
+                      and has_publish_consent_in_other_conversation(self.repository, self.context) else
                       "qzone_consent_missing" if not any(consented.values()) else
                       "qzone_grant_missing" if not (granted and publish_granted) else "")
             runtime = self.service.status(self.context, at) if self.service is not None else {}

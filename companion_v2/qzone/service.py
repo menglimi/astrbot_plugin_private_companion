@@ -23,7 +23,8 @@ from companion_v2.qzone import feed as feed_reader
 from companion_v2.qzone import protocol as P
 from companion_v2.qzone.media import DEFAULT_MEDIA_BUDGET_SECONDS, DEFAULT_MEDIA_CONCURRENCY
 from companion_v2.qzone.capability import (COMMENT_ACTION, EXTENSION, LIKE_ACTION, MAX_REFERENCES_PER_SCOPE,
-    PUBLISH_ACTION, READ_ACTION, REFERENCE_TTL_MINUTES, package_descriptor)
+    PUBLISH_ACTION, PUBLISH_CONVERSATION_CHANGED, READ_ACTION, REFERENCE_TTL_MINUTES,
+    has_publish_consent_in_other_conversation, package_descriptor)
 from companion_v2.qzone.policy import (QzoneRuntimeStore, action_reason, block_reason, clear_failure,
     note_action, note_failure, note_publish, publish_reason)
 from companion_v2.qzone.references import COMMENT, LIKE, QzoneReferenceStore
@@ -298,6 +299,19 @@ class QzoneService:
                                                       bot_id=context.scope.bot_id))
         require(self.capabilities.authorize(extension_id=EXTENSION, capability_id=capability,
                                            subject=context.actor.subject, scope=context.scope))
+
+    def require_publish_authorization(self, context):
+        """Check the active window before preparing or submitting a public post."""
+        try:
+            self._require_capability(context, PUBLISH_ACTION)
+        except TaskError as error:
+            if (error.code == "capability_consent_missing"
+                    and has_publish_consent_in_other_conversation(self.capabilities, context)):
+                raise TaskError(
+                    PUBLISH_CONVERSATION_CHANGED,
+                    "QQ 空间授权属于此私聊的另一个对话，请为当前对话授权",
+                ) from error
+            raise
 
     def _success(self, context, at):
         self._update_state(context, clear_failure, at=at)
@@ -598,7 +612,7 @@ class QzoneService:
         """
         at = self.now()
         settings = self._settings_gate(context, at)
-        self._require_capability(context, PUBLISH_ACTION)
+        self.require_publish_authorization(context)
         images = image_batch(images)
         body = "" if images and isinstance(text, str) and not text.strip() else P.clean_text(
             text, limit=P.MAX_PUBLISH_CHARS, field="说说正文")

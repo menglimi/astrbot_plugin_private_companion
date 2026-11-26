@@ -11,7 +11,7 @@
   "files": {
     "README.md": "0ef284ac92d44c21301cf0becdbf68ccf0af00ce0ca001cd5ae10e1ec4074796",
     "action-page.css": "2003a75251495ecd7b68fa5abb39ebe134a590d8156075e07c47ece9bd86b321",
-    "app.js": "cd161bb6917925eaa119d0d4c0cae65d897276e51be552da8b6b93706ca7e05b",
+    "app.js": "a3e60ff897e2312bbbcd6db11d1c8af5bc7a582462925aa6bfe751a922d1e7e3",
     "appearance-page.css": "1649df6c2972f49a5a6cabd7bb0f32634c685a20ffdd92caaf6a73adb0daf2d6",
     "appearance-page.js": "90790f4ab5b56b35bc3b027bab071ba7e3dc9119265d83a0cf06950dd179fc98",
     "assets/LUCIDE-LICENSE.txt": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
@@ -92,7 +92,7 @@
     "host-options.css": "0c2d8dda4205fccdfa74ffd21300d7efae43d6155ae8e972060df3ababbe222e",
     "huawei-health-page.js": "919a5131378256b3685bcb7d0007a97b077828c4fdf9c5aee4313b0e0920625c",
     "image-materials-page.js": "c12e6082b534f8f01baeb31839379ce568379657609055dc8884881918e1a74b",
-    "index.html": "b021447c953c7ff9be973d85b70e8ed020d952939626b68512e1df94456039e4",
+    "index.html": "6a52718a7930b80caa70c19f0239d5d5132114ab23fe9db802709e439b8f2c86",
     "learning-hub.css": "9ad4574ee4a99fac7a47df01153b95ae18ab705bb5860e0b101a68cda170975b",
     "learning-overview.js": "7c441e151df043c0e637d7bc46dc9da2cec66d681ee2166fd75b46f8bc9b30a7",
     "learning-page.css": "3c3b99634ccc7e29c02c640df2f5d39075ddf3cdc53916d456940c76a3ae318d",

@@ -7,7 +7,9 @@ per-conversation consent are recorded separately, and a real call re-checks all
 of them plus the host credential and generation.
 """
 
-from companion_v2.capabilities.models import CapabilityPackageDescriptor, FurnitureDescriptor
+from companion_v2.capabilities.models import (
+    CapabilityAuthorizationState, CapabilityPackageDescriptor, FurnitureDescriptor,
+)
 from companion_v2.conversation.external_tools import ExtensionToolDescriptor
 from companion_v2.execution.models import ProviderBinding, SideEffect, encode
 from companion_v2.model_gateway.models import ToolSpec
@@ -28,6 +30,7 @@ READ_ACTION = "qzone.feed.read"
 LIKE_ACTION = "qzone.post.like"
 COMMENT_ACTION = "qzone.post.comment"
 PUBLISH_ACTION = "qzone.post.publish"
+PUBLISH_CONVERSATION_CHANGED = "qzone_conversation_changed"
 ALBUM_LIST_ACTION = "qzone.album.list"
 
 CAPABILITIES = (READ_ACTION, LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION)
@@ -53,6 +56,17 @@ def package_descriptor():
     return CapabilityPackageDescriptor(extension_id=EXTENSION, package_id=PACKAGE_ID,
         publisher_id=PUBLISHER_ID, package_version=PACKAGE_VERSION, artifact_hash=ARTIFACT_HASH,
         capabilities=CAPABILITIES, dataset_owners=(DATASET_OWNER,), furniture=FURNITURE)
+
+
+def has_publish_consent_in_other_conversation(repository, context):
+    """Recognize a prior choice on the same private route for diagnostics."""
+    previous = repository.latest_route_authorization(
+        extension_id=EXTENSION, capability_id=PUBLISH_ACTION,
+        subject=context.actor.subject, scope=context.scope,
+    )
+    return (previous is not None
+            and previous.state is CapabilityAuthorizationState.ACTIVE
+            and previous.scope != context.scope)
 
 
 def _binding(action):

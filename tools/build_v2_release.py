@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
-VERSION = "7.3.4"
+VERSION = "7.3.5"
 RELEASE_SCHEMA = "companion.v2.release.v2"
 MARKET_MAX_BYTES = 16 * 1024 * 1024
 NATIVE_EXTENSION_FILES = {

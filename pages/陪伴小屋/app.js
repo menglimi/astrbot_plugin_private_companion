@@ -2724,7 +2724,8 @@ const QZONE_CREDENTIAL_SOURCES={runtime:'取自当前 Bot 登录',manual:'取自
 const QZONE_CREDENTIAL_FAILED_STATES=['failed','manual_failed'];
 const QZONE_STATUS_REASONS={qzone_not_installed:'还没有安装',qzone_package_changed:'安装的不是内置的那个版本',
   qzone_not_active:'安装被暂停或丢弃了',qzone_role_disabled:'当前角色没有启用',
-  qzone_consent_missing:'还没有授权任何能力',qzone_grant_missing:'缺少身份授权'};
+  qzone_consent_missing:'还没有授权任何能力',qzone_grant_missing:'缺少身份授权',
+  qzone_conversation_changed:'QQ 空间发布授权属于此私聊的另一个对话'};
 /* 本地结果状态。done/replayed/already/used 都是「这一类动作已经做过了」——
  * 后端在动态引用上记了账，同一个引用再点一次必然被拒，所以按钮要停在那里，
  * 而不是让用户点出一个注定失败的请求。 */
@@ -2741,6 +2742,7 @@ const QZONE_ERRORS={
   qzone_not_active:'这个扩展已被暂停或丢弃，请先在能力目录里恢复。',
   qzone_role_disabled:'当前角色没有启用 QQ 空间。',
   qzone_consent_missing:'这个对象还没有授权任何 QQ 空间能力。',
+  qzone_conversation_changed:'QQ 空间发布授权属于此私聊的另一个对话，请为当前对话授权。',
   qzone_grant_missing:'当前对象缺少 QQ 空间的身份授权。',
   qzone_access_changed:'安装设置已经变化，已重新读取，请再操作一次。',
   capability_operation_unresolved:'上一次安装操作的结果还没有确认，请先核对当前状态。',
@@ -2821,7 +2823,8 @@ function qzoneUsable(status){
 }
 function qzoneCapabilityGranted(status,capability){
   const consented=status?.consented&&typeof status.consented==='object'?status.consented:{};
-  return status?.invoke_granted===true&&consented[capability]===true;
+  return status?.invoke_granted===true&&consented[capability]===true
+    &&(capability!=='qzone.post.publish'||status.publish_granted===true);
 }
 function qzoneAuthorizationComplete(status){
   return QZONE_CAPABILITIES.every(([capability])=>qzoneCapabilityGranted(status,capability));
@@ -2954,8 +2957,11 @@ function qzoneGate(kind){
   if(!status)return {ok:false,reason:'还没有读到 QQ 空间的当前状态。'};
   const capability={feed:'qzone.feed.read',like:'qzone.post.like',
     comment:'qzone.post.comment',publish:'qzone.post.publish'}[kind];
-  if(capability&&!qzoneCapabilityGranted(status,capability))
-    return {ok:false,reason:'当前私聊目标尚未授权这项 QQ 空间能力，请先授权。'};
+  if(capability&&!qzoneCapabilityGranted(status,capability)){
+    const conversationChanged=status.reason==='qzone_conversation_changed';
+    return {ok:false,reason:conversationChanged?QZONE_ERRORS.qzone_conversation_changed
+      :'当前私聊目标尚未授权这项 QQ 空间能力，请先授权。'};
+  }
   const runtime=status.runtime&&typeof status.runtime==='object'?status.runtime:null;
   const settings=runtime?.settings&&typeof runtime.settings==='object'?runtime.settings:{};
   if(!Object.keys(settings).length){
@@ -3319,8 +3325,7 @@ function qzoneCredentialMarkup(credential){
   </div>`;
 }
 function qzoneConsentMarkup(status){
-  const consented=status.consented&&typeof status.consented==='object'?status.consented:{};
-  const granted=QZONE_CAPABILITIES.filter(([id])=>consented[id]===true);
+  const granted=QZONE_CAPABILITIES.filter(([id])=>qzoneCapabilityGranted(status,id));
   const flags=[['已安装',status.installed===true],['包版本一致',status.active===true],
     ['角色已启用',status.role_enabled===true],['身份授权',status.invoke_granted===true]];
   return `<div class="action-qzone-status-row">
@@ -3383,11 +3388,13 @@ function qzoneStateText(status){
   if(status.invoke_granted!==true)return '缺少身份授权';
   const consented=status.consented&&typeof status.consented==='object'?status.consented:{};
   if(!QZONE_CAPABILITIES.some(([id])=>consented[id]===true))return '尚未授权能力';
+  if(consented['qzone.post.publish']===true&&status.publish_granted!==true)return '缺少发布授权';
   return '已启用';
 }
 function qzoneStatusMarkup(status,full){
   const blocked=typeof qzoneStatus()?.runtime?.blocked_reason==='string'&&qzoneStatus().runtime.blocked_reason.trim();
-  const tone=status.installed!==true?'is-off':qzoneUsable(status)&&!blocked?'is-ok':'is-warn';
+  const tone=status.installed!==true?'is-off':qzoneUsable(status)&&qzoneAuthorizationComplete(status)&&!blocked
+    ?'is-ok':'is-warn';
   const reason=QZONE_STATUS_REASONS[status.reason]||'';
   return `<div class="action-qzone-status">
     <p class="action-qzone-state"><span class="action-qzone-chip ${tone}">${escapeHTML(qzoneStateText(status))}</span>`
@@ -3412,11 +3419,13 @@ function qzoneInstallMarkup(installed){
     </div>
   </div>`;
 }
-function qzoneAuthorizationMarkup(){
+function qzoneAuthorizationMarkup(status){
+  const reauthorize=status.reason==='qzone_conversation_changed'||status.reason==='qzone_grant_missing';
+  const label=reauthorize?'为当前对话重新授权':'授权四项能力';
   return `<div class="action-qzone-empty">
-    <p class="action-qzone-empty-copy">${I('shield-check')}<span>当前私聊目标尚未授权 QQ 空间能力。授权会开放读取动态、点赞、回复和发说说；公开动作仍受下方开关控制。</span></p>
+    <p class="action-qzone-empty-copy">${I('shield-check')}<span>为当前对话授权后可读取动态、点赞、回复和发说说。公开动作仍受下方开关控制。</span></p>
     <div class="action-qzone-row">
-      <button class="button small primary" type="button" data-qzone-action="authorize" ${qzoneState.busy?'disabled':''}>${I('shield-check')}<span>${qzoneActing('authorize')?'正在授权…':'授权四项能力'}</span></button>
+      <button class="button small primary" type="button" data-qzone-action="authorize" ${qzoneState.busy?'disabled':''}>${I('shield-check')}<span>${qzoneActing('authorize')?'正在授权…':label}</span></button>
     </div>
   </div>`;
 }
@@ -3715,7 +3724,7 @@ function qzoneBody(){
   return `${qzoneNoticeMarkup()}
     ${qzoneBlockedMarkup()}
     ${qzoneStatusMarkup(status,usable||installed)}
-    ${usable?(qzoneAuthorizationComplete(status)?'':qzoneAuthorizationMarkup()):qzoneInstallMarkup(installed)}
+    ${usable?(qzoneAuthorizationComplete(status)?'':qzoneAuthorizationMarkup(status)):qzoneInstallMarkup(installed)}
     ${installed?qzoneSuggestionBlockMarkup():''}
     ${installed?qzoneConfigMarkup():''}
     ${usable?qzoneFeedBlockMarkup(qzoneGate('feed'),qzoneGate('like'),qzoneGate('comment')):''}
