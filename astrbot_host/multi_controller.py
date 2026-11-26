@@ -649,7 +649,8 @@ class AstrBotMultiController:
 
     def handles_binding(self, event):
         from .recalls import is_notice_event
-        return (not is_notice_event(event) and is_private_message(event)
+        from .telegram_forward import telegram_forward_origin
+        return (not is_notice_event(event) and is_private_message(event) and telegram_forward_origin(event) is None
                 and parse_bind_command(message_text(event)).kind != "ignore")
 
     async def receive_binding(self, event):

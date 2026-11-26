@@ -132,6 +132,7 @@ from companion_v2.conversation.private_reply_context import merged_input_sequenc
 from .astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
 from .astrbot_host.recalls import is_notice_event
 from .astrbot_host.stranger_notice import refuse_stranger
+from .astrbot_host.telegram_forward import label_telegram_forward
 
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
@@ -1225,6 +1226,8 @@ class PrivateCompanionV2StagingPlugin(Star):
                 # 名单在决策页管理；命中后本条不再进入模型或记忆。
                 suppress_default_reply(event)
                 return
+        if channel == "private":
+            label_telegram_forward(event)
         if channel == "private" and getattr(target, "participant_id", None):
             processor = getattr(self.staging, "process_private_relay_receipts", None)
             if callable(processor):
