@@ -9,10 +9,12 @@ import asyncio
 import wave
 import time
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
 from telegram import Chat, Message, Update, User
-from astrbot.core.message.components import Face, Image, Plain
+from astrbot.core.message.components import Face, Image, Plain, Reply
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAdapter
@@ -35,6 +37,10 @@ from astrbot_host.relay_pending import add_task, claim_private_receipts
 from astrbot_host.telegram_forward import label_telegram_forward
 from companion_v2.conversation.media.output_settings import is_rule_image_request
 from astrbot_host.display_names import event_person_names
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot_host.core_reply_media import _quoted_images, frozen_image_locators
+from astrbot_host.media import load_native_image
+from tests.test_conversation_images import image_bytes
 
 
 PLATFORM_ID = "tg-main"
@@ -633,3 +639,43 @@ class TelegramForwardTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
         (merged,) = [item for item in prepared if item]
         self.assertEqual(merged["native_input"].text,
                          "[以下消息转自：Ada]\n天气转凉\n[以上消息转自他人]\n你怎么看")
+
+
+class TelegramQuotedImageTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
+    def quoting(self, sender, chain):
+        event = self.telegram_event()
+        event.message_obj.message.insert(0, Reply(id="7", sender_id=sender, chain=chain, time=1700000000))
+        return event
+
+    async def resolve(self, event):
+        await self.start_host()
+        plan = await self.controller.prepare_core_reply_context(event)
+        (quote,) = frozen_image_locators(event)
+        return await _quoted_images(quote, plan.unwrap().context, AsyncMock())
+
+    async def test_quoted_photo_is_read_from_the_update_itself(self):
+        source = image_bytes()
+        for sender, recorded in ((USER_ID, USER_ID), ("424242", PLATFORM_ID)):
+            with self.subTest(sender=sender), TemporaryDirectory(dir=get_astrbot_temp_path()) as temp:
+                path = Path(temp, "photo.png")
+                path.write_bytes(source)
+                images, attribution = await self.resolve(self.quoting(sender, [Image(file=str(path))]))
+                self.assertEqual((await load_native_image(images[0])).content, source)
+                self.assertEqual(attribution["original_sender"], recorded)
+                self.assertIsNone(attribution["sent_at_unix"])
+
+    async def test_quoted_file_outside_the_host_cache_is_not_read(self):
+        with TemporaryDirectory() as temp:
+            path = Path(temp, "photo.png")
+            path.write_bytes(image_bytes())
+            images, _ = await self.resolve(self.quoting(USER_ID, [Image(file=str(path))]))
+            with self.assertRaises(TaskError):
+                await load_native_image(images[0])
+
+    async def test_quote_from_someone_else_is_refused(self):
+        with self.assertRaises(TaskError) as refused:
+            await self.resolve(self.quoting("987654321", [Image(file="base64://AAAA")]))
+        self.assertEqual(refused.exception.code, "host_quote_scope_mismatch")
+
+    def test_quoted_text_has_no_image_to_look_up(self):
+        self.assertEqual(frozen_image_locators(self.quoting(USER_ID, [Plain(text="早安")])), ())
