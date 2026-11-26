@@ -16,12 +16,15 @@ from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAd
 from astrbot.core.platform.sources.telegram.tg_event import TelegramPlatformEvent
 from astrbot_host.recalls import authenticate_notice_route
 from companion_v2.adapters.astrbot.group import group_event_route
-from companion_v2.execution.models import TaskError
+from companion_v2.execution.models import ProviderBinding, TaskError, digest
 from companion_v2.foundation.refs import ScopeKind
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.test_main_no_reply import ENTRY
 from tests.staging_bootstrap_support import wait_for_batch
 from telegram.error import NetworkError, RetryAfter
+from companion_v2.adapters.astrbot.native import native_client_connected
+from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
+from companion_v2.delivery.models import DeliveryEnvelope
 
 
 PLATFORM_ID = "tg-main"
@@ -371,3 +374,42 @@ class TelegramPresenceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await port.online_status(self.context, "online"))["code"], "presence_unsupported")
         self.assertEqual((await port.custom_status(self.context, "休息"))["code"], "presence_unsupported")
         self.action.assert_not_awaited()
+
+
+class TelegramConnectionTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.platform.application.updater = NS(running=True)
+        await self.start_host()
+        self.context, _ = await self.controller.session.synchronize(self.controller.settings.target("tg-owner"))
+        self.binding = ProviderBinding("message.delivery", "synthetic-sender", "1", digest("synthetic"))
+        self.sender = AstrBotPlatformSender(self.controller.session.bridge, binding=self.binding,
+            version="4.29.4", reverse_api_type=object, authorize=lambda: None)
+
+    async def send(self, text="你好"):
+        envelope = DeliveryEnvelope("part-tg", "op-tg", self.context, 1, text, digest(text),
+                                    self.binding, before_dispatch=lambda: True)
+        return await self.sender.send(envelope)
+
+    async def test_connection_tracks_polling_shutdown_and_rebuild(self):
+        for started, running, polling, terminating, expected in (
+            (True, True, True, False, True),
+            (True, True, False, False, False),
+            (True, True, True, True, False),
+            (False, True, True, False, False),
+            (True, False, True, False, False),
+            (True, True, True, False, True),
+        ):
+            with self.subTest(started=started, running=running, polling=polling, terminating=terminating):
+                self.platform._application_started, self.platform._terminating = started, terminating
+                self.platform.application.running, self.platform.application.updater.running = running, polling
+                self.assertEqual(native_client_connected(self.platform, PLATFORM_ID), expected)
+
+    async def test_background_send_waits_for_polling(self):
+        self.platform.application.updater.running = False
+        receipt = await self.send()
+        self.assertEqual((receipt.status, receipt.failure_code), ("not_sent", "host_account_offline"))
+        self.platform.client.send_message.assert_not_awaited()
+        self.platform.application.updater.running = True
+        with patch("astrbot.core.platform.platform.Metric.upload", new_callable=AsyncMock):
+            self.assertEqual((await self.send()).status, "delivered")
+        self.platform.client.send_message.assert_awaited_once()
