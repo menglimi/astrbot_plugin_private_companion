@@ -165,20 +165,28 @@ class QzoneLifePublisher:
         attempt = replace(state, last_action_at=attempt_actions)
         service.store.write(owner, attempt, at=at)
         try:
-            text = await self._draft(
-                session, context, settings, at,
+            plan = await self._draft_plan(
+                session, application, context, settings, at,
                 recent_publish_texts=state.recent_publish_texts,
             )
         except Exception as error:  # noqa: BLE001 - no draft means no public post
             logger.warning("[CompanionV2] 生活说说草稿生成失败 error_type=%s", type(error).__name__)
             self._schedule_retry(service, context, attempt, at, settings)
             return {"reason": "draft_failed"}
-        if not text:
+        if not plan or not plan.text:
             self._schedule_retry(service, context, attempt, at, settings)
             return {"reason": "draft_unavailable"}
         # Re-verify the exact drafted context is still active and authorized
-        # right before publishing so mid-draft revocations or persona switches
-        # never publish with stale consent or retired role context.
+        # right before resolving/generating images or publishing so mid-draft
+        # revocations or persona switches never act with stale consent.
+        if self._closed or getattr(application, "state", "") != "running":
+            return {"reason": "host_not_running"}
+        if not self._is_context_active(context, self._target_contexts(session, at)):
+            return {"reason": "qzone_unavailable"}
+        if self._is_publish_authorized(service, context) is False:
+            return {"reason": "qzone_unauthorized"}
+        op_key = life_publish.operation_key(owner, decision.day, at)
+        images, source_refs = await self._prepare_images(application, context, plan, at=at, operation_key=op_key)
         if self._closed or getattr(application, "state", "") != "running":
             return {"reason": "host_not_running"}
         if not self._is_context_active(context, self._target_contexts(session, at)):
@@ -187,9 +195,9 @@ class QzoneLifePublisher:
             return {"reason": "qzone_unauthorized"}
         try:
             result = await service.publish(
-                context, text=text, topic=life_publish.TOPIC.value,
+                context, text=plan.text, topic=life_publish.TOPIC.value,
                 scene=life_publish.SCENE.value, confidence=0.82, topic_confirmed=True,
-                operation_key=life_publish.operation_key(owner, decision.day, at))
+                source_refs=source_refs, images=images, operation_key=op_key)
         except Exception as error:  # noqa: BLE001 - publish reports its own codes; log and space the retry
             code = getattr(error, "code", "qzone_publish_failed")
             reason_text = str(error) if isinstance(error, TaskError) and code == "qzone_action_blocked" else ""
@@ -205,9 +213,12 @@ class QzoneLifePublisher:
                 defer_interval=code not in _SHORT_RETRY_PUBLISH_CODES,
             )
             return {"reason": "publish_failed", "code": code}
-        logger.info("[CompanionV2] 生活说说已发布 status=%s", result.get("status"))
-        return {"reason": "published", "status": result.get("status"),
-                "operation_id": result.get("operation_id")}
+        logger.info("[CompanionV2] 生活说说已发布 status=%s image_count=%s", result.get("status"), len(images))
+        reply = {"reason": "published", "status": result.get("status"),
+                 "operation_id": result.get("operation_id")}
+        if images:
+            reply["image_count"] = len(images)
+        return reply
 
     # ---- target resolution ---------------------------------------------
 
@@ -364,9 +375,16 @@ class QzoneLifePublisher:
         actions[life_publish.RETRY_KEY] = stamp(at + timedelta(minutes=minutes))
         service.store.write(owner_key(context), replace(current, last_action_at=actions), at=at)
 
-    # ---- drafting ------------------------------------------------------
+    # ---- drafting & images ---------------------------------------------
 
     async def _draft(self, session, context, settings, at, *, recent_publish_texts=()):
+        plan = await self._draft_plan(
+            session, session.application, context, settings, at,
+            recent_publish_texts=recent_publish_texts,
+        )
+        return plan.text
+
+    async def _draft_plan(self, session, application, context, settings, at, *, recent_publish_texts=()):
         from companion_v2.role_work.journal.models import JournalKind
 
         controller = self.controller
@@ -375,17 +393,59 @@ class QzoneLifePublisher:
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             raise RuntimeError("text provider unavailable")
         profile = self._profile(session, context)
-        diary = self._latest_diary(session, context, at, JournalKind)
+        diaries = self._recent_diaries(session, context, at, JournalKind)
+        activities = self._recent_activities(session, context, at)
+        schedules = self._recent_schedules(session, context, at)
+        album_candidates = self._album_candidates(session, context, at)
+        life_images = getattr(application, "qzone_life_images", None)
+        can_generate = bool(life_images is not None and life_images.available(context, at))
         request = life_publish.build_request(
-            profile, diary, now=at,
+            profile, diaries, now=at,
             style=settings.get("life_publish_style_prompt", ""),
             recent_publish_texts=recent_publish_texts,
+            activities=activities,
+            schedules=schedules,
+            album_candidates=album_candidates,
+            can_generate_image=can_generate,
         )
+        max_tokens = 700 if (can_generate or album_candidates) else 400
         response = await asyncio.wait_for(
             provider.text_chat(prompt=request["prompt"], system_prompt=request["system"],
-                               contexts=[], max_tokens=400),
+                               contexts=[], max_tokens=max_tokens),
             timeout=DRAFT_TIMEOUT_SECONDS)
-        return life_publish.parse_draft(getattr(response, "completion_text", response))
+        return life_publish.parse_plan(
+            getattr(response, "completion_text", response),
+            allowed_album_ids=[item["image_id"] for item in album_candidates],
+            allow_generate=can_generate,
+        )
+
+    @staticmethod
+    async def _prepare_images(application, context, plan, *, at, operation_key):
+        life_images = getattr(application, "qzone_life_images", None)
+        if plan.image_source == "album" and plan.album_image_id:
+            try:
+                from companion_v2.qzone.images import album_images
+                images, _ = album_images(application, context, at, [plan.album_image_id])
+                refs = tuple(image.source_id for image in images if image.source_id)
+                return images, refs
+            except Exception as error:  # noqa: BLE001 - fall back to generation or text-only
+                logger.warning("[CompanionV2] 生活说说相册配图读取失败 error_type=%s", type(error).__name__)
+                if not (plan.image_prompt and life_images is not None
+                        and life_images.available(context, at, include_character=plan.include_character)):
+                    return (), ()
+        if plan.image_source in ("generate", "album") and plan.image_prompt and life_images is not None:
+            try:
+                generated = await life_images.generate(
+                    context,
+                    plan.image_prompt,
+                    operation_key=operation_key,
+                    include_character=plan.include_character,
+                )
+                if generated is not None:
+                    return (generated,), ()
+            except Exception as error:  # noqa: BLE001 - image failure never aborts text post
+                logger.warning("[CompanionV2] 生活说说生图失败 error_type=%s", type(error).__name__)
+        return (), ()
 
     @staticmethod
     def _provider_id(controller, session):
@@ -408,7 +468,8 @@ class QzoneLifePublisher:
             return {}
 
     @staticmethod
-    def _latest_diary(session, context, at, journal_kind):
+    def _recent_diaries(session, context, at, journal_kind, *, limit=3):
+        entries = []
         try:
             owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
                                  context.role_binding.role.subject_id)
@@ -426,10 +487,85 @@ class QzoneLifePublisher:
                     continue
                 body = entry.draft.body.strip()
                 if body:
-                    return body
+                    entries.append({"local_date": head.key.local_date, "body": body})
+                    if len(entries) >= limit:
+                        break
         except Exception:  # noqa: BLE001 - no diary is a valid drafting context
-            return ""
-        return ""
+            return ()
+        return tuple(entries)
+
+    @staticmethod
+    def _recent_activities(session, context, at, *, limit=6):
+        try:
+            role_life = getattr(session.application, "role_life", None)
+            if role_life is None:
+                return ()
+            owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
+                                 context.role_binding.role.subject_id)
+            activities = role_life.context_activities(owner, context.scope, observed_at=at, limit=limit)
+            items = []
+            for activity in activities:
+                if activity.owner != owner or activity.scope != context.scope:
+                    continue
+                observed = activity.updated_at or activity.started_at
+                if observed is not None and observed > at:
+                    continue
+                if activity.work is not None and activity.work.context_key != context.key:
+                    continue
+                entry = {
+                    "state": activity.state.value,
+                    "description": activity.description,
+                    "checkpoint": activity.checkpoint,
+                    "updated_at": observed.isoformat() if observed is not None else "",
+                }
+                if activity.reading is not None and activity.reading.reflection:
+                    entry["reflection"] = activity.reading.reflection
+                items.append(entry)
+            return tuple(items)
+        except Exception:  # noqa: BLE001 - optional life context
+            return ()
+
+    @staticmethod
+    def _recent_schedules(session, context, at, *, limit=6):
+        try:
+            calendar = getattr(session.application, "calendar", None)
+            if calendar is None:
+                return ()
+            page = calendar.occurrences(
+                context,
+                start=at - timedelta(hours=24),
+                end=at + timedelta(hours=24),
+                kinds=("role_plan",),
+            )
+            items = []
+            for item in page.get("items") or ():
+                if item.get("kind") != "role_plan" or item.get("state") == "cancelled":
+                    continue
+                items.append({
+                    "state": item.get("state", ""),
+                    "title": item.get("title", ""),
+                    "detail": item.get("detail", ""),
+                    "start": item.get("start", ""),
+                    "end": item.get("end", ""),
+                })
+                if len(items) >= limit:
+                    break
+            return tuple(items)
+        except Exception:  # noqa: BLE001 - missing calendar access degrades gracefully
+            return ()
+
+    @staticmethod
+    def _album_candidates(session, context, at, *, limit=8):
+        try:
+            from companion_v2.qzone.images import list_album_candidates
+            return tuple(list_album_candidates(session.application, context, at, limit=limit))
+        except Exception:  # noqa: BLE001 - optional album listing
+            return ()
+
+    @staticmethod
+    def _latest_diary(session, context, at, journal_kind):
+        entries = QzoneLifePublisher._recent_diaries(session, context, at, journal_kind, limit=1)
+        return entries[0]["body"] if entries else ""
 
 
 __all__ = ["CHECK_SECONDS", "QzoneLifePublisher"]

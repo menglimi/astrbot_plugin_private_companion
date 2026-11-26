@@ -13,8 +13,10 @@ from PIL import Image
 from astrbot_host.qzone_api import QzoneWebAPI
 from astrbot_host.qzone_client import QzoneHttpClient
 from companion_v2.execution.models import TaskError
+from companion_v2.foundation.outcome import Outcome
 from companion_v2.qzone import feed as F, protocol as P, policy as Y
-from companion_v2.qzone.images import PublishImage, image_batch, album_images, candidate_image
+from companion_v2.qzone.images import (PublishImage, image_batch, album_images, candidate_image,
+                                       list_album_candidates)
 from companion_v2.qzone.service import owner_key
 from companion_v2.qzone.transport import TransportOutcome
 from tests.test_qzone_extension import QzoneServiceFixture, FakeTransport, NOW, PUBLISH, COOKIE
@@ -242,6 +244,104 @@ class ImageServiceTests(QzoneServiceFixture):
         self.assertTrue(result["receipt"]["images_verified"])
         sent = [r for r in self.transport.sent if r.description == "image.upload"]
         self.assertEqual([base64.b64decode(r.data["picfile"]) for r in sent], [album.content, local.content])
+
+    def test_outfit_album_image_resolution_and_list_album_candidates(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from companion_v2.conversation.media.generated import GeneratedAlbumImage
+        from companion_v2.conversation.media.models import ImageDescriptor
+        from companion_v2.references.daily_outfit import PREFIX as OUTFIT_PREFIX, daily_outfit_image_id
+        from companion_v2.references.service import owner_key as ref_owner_key
+        from companion_v2.storage.generated_album import ALBUM_HIDDEN_KEY_PREFIX
+        from companion_v2.storage.image_payloads import store_image
+        from companion_v2.storage.runtime import StorageRuntime
+
+        outfit_img = picture("green")
+        gen_visible = picture("navy")
+        gen_hidden = picture("red")
+        with TemporaryDirectory(prefix="qzone-album-test-") as tmp:
+            runtime = StorageRuntime.open(data_root=Path(tmp), installation_id=self.context.scope.installation_id)
+            try:
+                owner = ref_owner_key(self.context)
+                marker = store_image(runtime.data_root, outfit_img.content, mime_type="image/png").decode("ascii")
+                outfit_id = daily_outfit_image_id(owner, "2026-10-02", outfit_img.content_hash)
+                hidden_id = "generated-image:inv-hidden:0"
+                visible_id = "generated-image:inv-visible:0"
+                with runtime.transaction() as conn:
+                    conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES (?, ?)",
+                        (
+                            f"{OUTFIT_PREFIX}{owner}:2026-10-02",
+                            json.dumps({
+                                "task_id": "outfit-task-1",
+                                "photo": {
+                                    "marker": marker,
+                                    "content_hash": outfit_img.content_hash,
+                                    "created_at": "2026-10-02T08:00:00+00:00",
+                                    "mime_type": "image/png",
+                                    "width": outfit_img.width,
+                                    "height": outfit_img.height,
+                                    "size_bytes": len(outfit_img.content),
+                                    "weather": {"condition": "晴", "temperature_c": 22},
+                                    "activities": ["散步", "咖啡店看书"],
+                                },
+                            }),
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES (?, ?)",
+                        (ALBUM_HIDDEN_KEY_PREFIX + self.context.key, json.dumps([hidden_id])),
+                    )
+
+                gen_items = [
+                    GeneratedAlbumImage(
+                        visible_id,
+                        "2026-10-02T09:00:00+00:00",
+                        "image.generate",
+                        ImageDescriptor(0, "image/png", gen_visible.width, gen_visible.height,
+                                        len(gen_visible.content), gen_visible.content_hash),
+                        gen_visible.content,
+                    ),
+                    GeneratedAlbumImage(
+                        hidden_id,
+                        "2026-10-02T10:00:00+00:00",
+                        "image.generate",
+                        ImageDescriptor(0, "image/png", gen_hidden.width, gen_hidden.height,
+                                        len(gen_hidden.content), gen_hidden.content_hash),
+                        gen_hidden.content,
+                    ),
+                ]
+                generated_service = SimpleNamespace(
+                    album_page=lambda ctx, at, limit=24, cursor=None: {"items": gen_items, "next_cursor": None},
+                    album_prompt_excerpt=lambda ctx, at, image_id: "雨后街角咖啡馆窗景" if image_id == visible_id else "",
+                )
+                identity = SimpleNamespace(authorize=lambda *args, **kwargs: Outcome.success(True))
+                app = SimpleNamespace(
+                    runtime=runtime,
+                    tasks=SimpleNamespace(identity=identity),
+                    messages=SimpleNamespace(generated_images=generated_service),
+                )
+
+                resolved, candidates = album_images(app, self.context, NOW, [outfit_id])
+                self.assertEqual(len(resolved), 1)
+                self.assertEqual(resolved[0].content, outfit_img.content)
+                self.assertEqual(resolved[0].source_id, outfit_id)
+                self.assertEqual(candidates, (outfit_id,))
+
+                listed = list_album_candidates(app, self.context, NOW, limit=10)
+                self.assertEqual([item["image_id"] for item in listed], [visible_id, outfit_id])
+                self.assertEqual(listed[0]["summary"], "雨后街角咖啡馆窗景")
+                self.assertIn("2026-10-02 每日穿搭", listed[1]["summary"])
+                self.assertIn("散步", listed[1]["summary"])
+
+                app.tasks.identity = SimpleNamespace(
+                    authorize=lambda *args, **kwargs: Outcome.failed("authorization_revoked", "revoked")
+                )
+                with self.assertRaises(TaskError) as denied:
+                    album_images(app, self.context, NOW, [outfit_id])
+                self.assertEqual(denied.exception.code, "authorization_revoked")
+            finally:
+                runtime.close()
 
 
 if __name__ == "__main__":

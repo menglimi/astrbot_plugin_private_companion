@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import json
 
 from companion_v2.execution.models import digest, normalize_utc
 
@@ -39,6 +40,9 @@ MAX_DIARY_CHARS = 800
 MAX_STYLE_CHARS = 512
 MAX_RECENT_POSTS = 5
 MAX_RECENT_POST_CHARS = 120
+MAX_LIFE_ITEMS = 6
+MAX_ALBUM_CANDIDATES = 8
+MAX_IMAGE_PROMPT_CHARS = 1000
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,16 @@ class Decision:
     due: bool
     reason: str
     day: str
+
+
+@dataclass(frozen=True)
+class LifeDraft:
+    text: str
+    event_summary: str = ""
+    image_source: str = "none"
+    album_image_id: str = ""
+    image_prompt: str = ""
+    include_character: bool = False
 
 
 def _moment(value):
@@ -148,8 +162,99 @@ def _recent_posts_block(recent_publish_texts):
     return "\n".join(snippets)
 
 
-def build_request(profile, diary, *, now, style="", recent_publish_texts=()):
-    """The drafting prompt: pure text in, pure text out."""
+def _diary_block(diary):
+    if not diary:
+        return ""
+    if isinstance(diary, str):
+        return _clean(diary, MAX_DIARY_CHARS)
+    if isinstance(diary, (list, tuple)):
+        lines = []
+        used = 0
+        for item in diary[:3]:
+            if isinstance(item, dict):
+                day = _clean(item.get("local_date"), 20)
+                body = _clean(item.get("body"), 400)
+                line = f"[{day}] {body}".strip() if day and body else body
+            else:
+                line = _clean(item, 400)
+            if not line:
+                continue
+            if used + len(line) > MAX_DIARY_CHARS:
+                remain = MAX_DIARY_CHARS - used
+                if remain > 20:
+                    lines.append(line[:remain])
+                break
+            lines.append(line)
+            used += len(line)
+        return "\n".join(lines)
+    return _clean(diary, MAX_DIARY_CHARS)
+
+
+def _activities_block(activities):
+    if not activities or isinstance(activities, (str, bytes)):
+        return ""
+    lines = []
+    for item in tuple(activities)[:MAX_LIFE_ITEMS]:
+        if isinstance(item, dict):
+            state = _clean(item.get("state"), 24)
+            desc = _clean(item.get("description"), 140)
+            checkpoint = _clean(item.get("checkpoint"), 100)
+            reflection = _clean(item.get("reflection"), 120)
+            parts = [f"[{state}]" if state else "", desc]
+            if checkpoint:
+                parts.append(f"进度：{checkpoint}")
+            if reflection:
+                parts.append(f"感想：{reflection}")
+            line = " ".join(part for part in parts if part)
+        else:
+            line = _clean(item, 180)
+        if line:
+            lines.append(f"- {line}")
+    return "\n".join(lines)
+
+
+def _schedules_block(schedules):
+    if not schedules or isinstance(schedules, (str, bytes)):
+        return ""
+    lines = []
+    for item in tuple(schedules)[:MAX_LIFE_ITEMS]:
+        if isinstance(item, dict):
+            start = _clean(item.get("start"), 32)
+            end = _clean(item.get("end"), 32)
+            title = _clean(item.get("title"), 100)
+            detail = _clean(item.get("detail"), 120)
+            state = _clean(item.get("state"), 24)
+            window = f"{start}~{end}" if start and end else start
+            parts = [f"[{state}]" if state else "", window, title]
+            if detail:
+                parts.append(f"({detail})")
+            line = " ".join(part for part in parts if part)
+        else:
+            line = _clean(item, 180)
+        if line:
+            lines.append(f"- {line}")
+    return "\n".join(lines)
+
+
+def _album_block(album_candidates):
+    if not album_candidates or isinstance(album_candidates, (str, bytes)):
+        return ""
+    lines = []
+    for item in tuple(album_candidates)[:MAX_ALBUM_CANDIDATES]:
+        if not isinstance(item, dict):
+            continue
+        image_id = _clean(item.get("image_id"), 180)
+        if not image_id:
+            continue
+        created = _clean(item.get("created_at"), 32)
+        summary = _clean(item.get("summary"), 120)
+        lines.append(f"- image_id={image_id} | 时间={created} | 说明={summary or '相册图片'}")
+    return "\n".join(lines)
+
+
+def build_request(profile, diary, *, now, style="", recent_publish_texts=(),
+                  activities=(), schedules=(), album_candidates=(), can_generate_image=False):
+    """Build the life-publish drafting prompt (plain text or event-matched image+text plan)."""
     at = normalize_utc(now, field="qzone life publish clock")
     system = ("你就是这个人，用自己的口吻写 QQ 空间说说。只写你真实经历过或正在经历的"
               "日常、感受和观察，不编造没有发生的事，不提 AI、模型、插件或提示词，"
@@ -158,18 +263,48 @@ def build_request(profile, diary, *, now, style="", recent_publish_texts=()):
     fragments = []
     if facts:
         fragments.append("角色资料：" + facts)
-    memory = _clean(diary, MAX_DIARY_CHARS)
+    memory = _diary_block(diary)
     if memory:
-        fragments.append("最近日记（仅作生活素材，不要照抄，也不要提到日记本身）：" + memory)
+        fragments.append("最近日记（仅作生活素材，不要照抄，也不要提到日记本身）：\n" + memory)
+    activity_block = _activities_block(activities)
+    if activity_block:
+        fragments.append("最近生活活动（completed/active 为真实经历或正在进行；planned/paused/cancelled 未完成，不要写成已完成）：\n" + activity_block)
+    schedule_block = _schedules_block(schedules)
+    if schedule_block:
+        fragments.append("角色近期日程安排（参考时间与事件；尚未到时间或未发生的计划不要写成已经经历过）：\n" + schedule_block)
     recent_block = _recent_posts_block(recent_publish_texts)
     if recent_block:
         fragments.append("最近已经发过的说说（请避开重复的话题、句式和用词，写点新的日常）：\n" + recent_block)
+    album_block = _album_block(album_candidates)
+    if album_block:
+        fragments.append("当前角色相册可用图片（只有和选定事件贴合时才选用，不要硬凑）：\n" + album_block)
     fragments.append("现在是 " + at.astimezone().strftime("%Y-%m-%d %H:%M"))
     extra = _clean(style, MAX_STYLE_CHARS)
     if extra:
         fragments.append("表达风格参考（只影响语气和用词，不改变事实）：" + extra)
-    fragments.append("写一条 60 到 150 字的空间说说，第一人称，具体、有生活感。"
-                     "只输出正文本身，不要标题、引号、Markdown、话题标签或解释。")
+    if can_generate_image or album_block:
+        sources = []
+        if can_generate_image:
+            sources.append("generate（为同一个事件生成一张同场景配图）")
+        if album_block:
+            sources.append("album（从上面相册挑一张与同一个事件贴合的既有图片）")
+        sources.append("none（不配图，仅发纯文字）")
+        fragments.append(
+            "请先从上面的日记、生活活动或日程中挑一个具体且真实发生/正在经历的时刻，"
+            "围绕这【同一个事件】写出 60 到 150 字的第一人称空间说说正文，并决定是否配图（"
+            + "、".join(sources) + "），确保文案与配图画面一致。\n"
+            "只输出一个 JSON 对象，不要 Markdown 代码块或额外解释，字段固定为：\n"
+            '{"event_summary":"不超过60字的事件概要","text":"60到150字的空间说说正文",'
+            '"image_source":"' + ("generate|album|none" if (can_generate_image and album_block)
+                                  else "generate|none" if can_generate_image else "album|none") + '",'
+            '"album_image_id":"选用 album 时填上面的 image_id，否则留空",'
+            '"image_prompt":"选用 generate 时填同场景画面描述（不含文字水印或隐私信息），否则留空",'
+            '"include_character":false}\n'
+            "注意：只有角色本人需要出现在画面里（如散步、读书、自拍）时 include_character 才填 true，纯景物或静物填 false。"
+        )
+    else:
+        fragments.append("写一条 60 到 150 字的空间说说，第一人称，具体、有生活感。"
+                         "只输出正文本身，不要标题、引号、Markdown、话题标签或解释。")
     return {"system": system, "prompt": "\n\n".join(fragments)}
 
 
@@ -190,6 +325,50 @@ def parse_draft(text):
     return value
 
 
-__all__ = ["ATTEMPT_KEY", "Decision", "KIND", "MAX_TEXT_CHARS", "SCENE", "TOPIC",
-           "build_request", "decide", "operation_key", "parse_draft", "profile_line",
+def _strip_json_fences(raw):
+    value = str(raw or "").strip()
+    if value.startswith("```"):
+        value = value.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return value
+
+
+def parse_plan(raw, *, allowed_album_ids=(), allow_generate=False):
+    """Parse structured image+text JSON draft, falling back cleanly to plain text."""
+    stripped = _strip_json_fences(raw)
+    try:
+        data = json.loads(stripped)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict) and "text" in data:
+        text = parse_draft(data.get("text"))
+        event_summary = _clean(data.get("event_summary"), 200)
+        image_source = str(data.get("image_source") or "none").strip().lower()
+        album_image_id = str(data.get("album_image_id") or "").strip()
+        image_prompt = _clean(data.get("image_prompt"), MAX_IMAGE_PROMPT_CHARS)
+        include_character = data.get("include_character") is True
+        allowed = {str(item).strip() for item in (allowed_album_ids or ()) if str(item).strip()}
+        if image_source == "album" and album_image_id in allowed:
+            return LifeDraft(
+                text=text,
+                event_summary=event_summary,
+                image_source="album",
+                album_image_id=album_image_id,
+                image_prompt=image_prompt,
+                include_character=include_character,
+            )
+        if image_source in ("album", "generate") and allow_generate and image_prompt:
+            return LifeDraft(
+                text=text,
+                event_summary=event_summary,
+                image_source="generate",
+                album_image_id="",
+                image_prompt=image_prompt,
+                include_character=include_character,
+            )
+        return LifeDraft(text=text, event_summary=event_summary)
+    return LifeDraft(text=parse_draft(raw))
+
+
+__all__ = ["ATTEMPT_KEY", "Decision", "KIND", "LifeDraft", "MAX_TEXT_CHARS", "SCENE", "TOPIC",
+           "build_request", "decide", "operation_key", "parse_draft", "parse_plan", "profile_line",
            "should_attempt"]

@@ -278,7 +278,8 @@ def publish_reason(state, settings, *, text, at, day, topic=None, scene=None,
 
 
 def note_publish(state, *, text, at, day, topic=None, media_key=""):
-    recent = state.recent_publish_texts if media_key else tuple([*state.recent_publish_texts, str(text)[:400]])[-RECENT_PUBLISH_TEXTS:]
+    recent = (tuple([*state.recent_publish_texts, str(text)[:400]])[-RECENT_PUBLISH_TEXTS:]
+              if str(text or "").strip() else state.recent_publish_texts)
     count = state.publish_count + 1 if state.publish_day == day else 1
     changes = dict(recent_publish_texts=recent, publish_day=day, publish_count=count,
                    last_action_at={**state.last_action_at, "publish": stamp(at)})

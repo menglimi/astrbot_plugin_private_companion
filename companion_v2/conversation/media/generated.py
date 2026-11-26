@@ -352,6 +352,50 @@ class GeneratedImages:
                                            base64.b64decode(image.data_base64, validate=True))
         raise TaskError("generated_image_missing", "the selected album image is no longer available")
 
+    def album_prompt_excerpt(self, context, at, image_id, *, max_chars=120):
+        """Return a bounded, whitespace-collapsed prompt summary for one album image."""
+        if type(image_id) is not str or not image_id.startswith("generated-image:"):
+            return ""
+        try:
+            _, invocation_id, _ = image_id.split(":", 2)
+        except ValueError:
+            return ""
+        if not invocation_id or len(invocation_id) > 128:
+            return ""
+        try:
+            self.messages.authorize(context, at)
+        except TaskError:
+            return ""
+        raw_args = ""
+        row = self.runtime.read_one(
+            """SELECT i.arguments_json FROM extension_tool_invocations i
+               JOIN conversation_batches b ON b.batch_id = i.batch_id
+               WHERE i.invocation_id = ? AND b.origin_key = ?""",
+            (invocation_id, context.key),
+        )
+        if row is not None and row["arguments_json"]:
+            raw_args = row["arguments_json"]
+        else:
+            from .native_generated_album import _operation_or_none, _origin_keys
+            operation = _operation_or_none(self.runtime, invocation_id)
+            if operation is not None and operation.get("origin_key") in _origin_keys(self, context):
+                raw_args = operation.get("arguments_json") or ""
+        if not raw_args:
+            return ""
+        try:
+            arguments = json.loads(raw_args)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(arguments, dict):
+            return ""
+        prompt = arguments.get("prompt")
+        if type(prompt) is not str:
+            return ""
+        cleaned = " ".join(prompt.split())
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max(1, max_chars - 1)].rstrip() + "…"
+
     def _inputs(self, batch, context, at):
         from companion_v2.conversation.messages import event_from_document
         saved = json.loads(batch["contributions_json"])

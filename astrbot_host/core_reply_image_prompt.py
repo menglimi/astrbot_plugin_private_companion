@@ -272,6 +272,12 @@ def inject_core_image_prompt(session, request, offered, values):
     instruction = "\n".join(part for part in (
         prompt_instruction(values),
         "本轮图片工具：\n" + descriptions, _DELIVERY) if part)
+    if any(item.spec.action == "qzone.post.publish" for item in offered):
+        instruction += (
+            "\n如果是为 QQ 空间说说配图，请把生图/改图工具返回的 artifact_id（imgart_*）"
+            "填入 companion_v2_qzone_post_publish 的 image_ids 一并上传发布，不必先用 send_message_to_user 发送；"
+            "只有发布回执 verified=true 且 images_verified=true 才能说图文已发到空间。"
+        )
     if reference_limit is not None:
         instruction += f"\n当前生图改图路线最多接收 {reference_limit} 张参考图。"
         if reference_limit == 1:

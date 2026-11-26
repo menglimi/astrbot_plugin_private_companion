@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,13 +21,16 @@ from tests.test_qzone_extension import FakeTransport
 from astrbot_host.management_identity import dashboard_operator
 from astrbot_host.persona_workshop_api import _session_provider_id, current_role_profile
 from astrbot_host.qzone_life_publish import QzoneLifePublisher
+from companion_v2.agenda.models import Schedule
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
 from companion_v2.capabilities import CapabilityAuthorizationState
-from companion_v2.execution.models import TaskError
+from companion_v2.execution.models import TaskError, encode
 from companion_v2.foundation.refs import (OperationRef, RoleOwnerRef, ScopeKind, ScopeRef,
                                           SubjectKind, SubjectRef, VersionRef)
+from companion_v2.identity_policy.models import AuthorizationTier, GrantState
+from companion_v2.identity_policy.repository import PersistentIdentityDirectory
 from companion_v2.qzone import life_publish
-from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, package_descriptor
+from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, PUBLISH_ACTION, package_descriptor
 from companion_v2.qzone.configuration import (GROUP as QZONE_GROUP, OWNER as QZONE_OWNER,
                                             target_for as qzone_target_for)
 from companion_v2.qzone.policy import QzoneRuntimeState, note_publish, publish_reason
@@ -36,6 +40,7 @@ from companion_v2.role_profile.configuration import (GROUP as ROLE_PROFILE_GROUP
                                                  OWNER as ROLE_PROFILE_OWNER,
                                                  target_for as role_profile_target_for)
 from companion_v2.role_work.journal import JournalContext, JournalDraft, JournalKey, JournalKind
+from companion_v2.role_work.models import RoleActivity, RoleActivityState
 
 
 NOW = datetime(2026, 11, 9, 4, 0, tzinfo=timezone.utc)  # 12:00 Asia/Shanghai
@@ -158,6 +163,58 @@ class KeyAndDraftTests(unittest.TestCase):
         for line in bullet_lines:
             self.assertLessEqual(len(line) - 2, life_publish.MAX_RECENT_POST_CHARS)
 
+    def test_request_and_parse_plan_support_activities_schedules_album_and_generation(self):
+        request = life_publish.build_request(
+            {"name": "星缘"},
+            [{"local_date": "2026-11-09", "body": "雨停后沿着河边散步。"}],
+            now=NOW,
+            activities=[{"state": "completed", "description": "傍晚散步", "checkpoint": "走到南桥"}],
+            schedules=[{"state": "accepted", "start": "2026-11-09T10:00", "end": "2026-11-09T11:00",
+                        "title": "街角买花", "detail": "路过花店"}],
+            album_candidates=[{"image_id": "generated-image:inv-1:0", "created_at": "2026-11-09T09:00:00+00:00",
+                               "summary": "清晨窗边的茶杯"}],
+            can_generate_image=True,
+        )
+        self.assertIn("傍晚散步", request["prompt"])
+        self.assertIn("街角买花", request["prompt"])
+        self.assertIn("generated-image:inv-1:0", request["prompt"])
+        self.assertIn("image_source", request["prompt"])
+
+        gen_plan = life_publish.parse_plan(
+            '```json\n{"event_summary":"雨后散步","text":"雨停后沿着河边走了一段，晚风把树叶吹得很轻。",'
+            '"image_source":"generate","album_image_id":"","image_prompt":"雨后湿润的河边小路与路灯","include_character":true}\n```',
+            allowed_album_ids=["generated-image:inv-1:0"],
+            allow_generate=True,
+        )
+        self.assertEqual(gen_plan.image_source, "generate")
+        self.assertTrue(gen_plan.include_character)
+        self.assertIn("河边小路", gen_plan.image_prompt)
+
+        album_plan = life_publish.parse_plan(
+            '{"event_summary":"清晨喝茶","text":"早上靠窗泡了杯热茶，晒了会儿太阳。",'
+            '"image_source":"album","album_image_id":"generated-image:inv-1:0","image_prompt":""}',
+            allowed_album_ids=["generated-image:inv-1:0"],
+            allow_generate=True,
+        )
+        self.assertEqual(album_plan.image_source, "album")
+        self.assertEqual(album_plan.album_image_id, "generated-image:inv-1:0")
+
+        forged_album = life_publish.parse_plan(
+            '{"text":"雨停后沿着河边走了一段，晚风把树叶吹得很轻。",'
+            '"image_source":"album","album_image_id":"forged-id","image_prompt":"雨后街景"}',
+            allowed_album_ids=["generated-image:inv-1:0"],
+            allow_generate=True,
+        )
+        self.assertEqual(forged_album.image_source, "generate")
+
+        fallback_plain = life_publish.parse_plan(
+            "只是普通的纯文字说说。",
+            allowed_album_ids=["generated-image:inv-1:0"],
+            allow_generate=True,
+        )
+        self.assertEqual(fallback_plain.text, "只是普通的纯文字说说。")
+        self.assertEqual(fallback_plain.image_source, "none")
+
 
 class SimilarityPolicyTests(unittest.TestCase):
     def _policy_settings(self):
@@ -247,6 +304,26 @@ def _configure_qzone_role(controller, context, at, *, enable_role=True, consent=
                 subject=context.actor.subject, scope=context.scope,
                 state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=at,
             ).unwrap()
+    identities = PersistentIdentityDirectory(controller.runtime)
+    binding = next((item for item in identities.snapshot().bindings
+                    if item.binding_id == context.actor.binding_id), None)
+    if consent and binding is not None:
+        for capability in ("extension.tool.invoke", *CAPABILITIES):
+            if identities.authorize(context.actor, scope=context.scope,
+                                    capability=capability, observed_at=at).is_success:
+                continue
+            identities.issue_grant(
+                grant_id=f"qzone-test:{op_prefix}:{identities.revision}:{capability}",
+                subject=context.actor.subject, scope=context.scope, capability=capability,
+                tier=AuthorizationTier.STANDARD, valid_from=at, expires_at=binding.expires_at,
+                expected_revision=identities.revision,
+            )
+    elif not consent:
+        owned = {*CAPABILITIES, "extension.tool.invoke"}
+        for grant in identities.snapshot().grants:
+            if (grant.subject == context.actor.subject and grant.scope == context.scope
+                    and grant.capability in owned and grant.state is GrantState.ACTIVE):
+                identities.revoke_grant(grant.grant_id, revoked_at=at, expected_revision=identities.revision)
     _patch_role_config(
         application, operator, qzone_target_for(context), QZONE_GROUP, QZONE_OWNER,
         {
@@ -790,6 +867,217 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transient, {"reason": "publish_failed", "code": "qzone_operation_failed"})
         self.assertIn(life_publish.RETRY_KEY, app.qzone.state(context).last_action_at)
         self.assertEqual(await publisher.tick(now=later_12h + timedelta(minutes=10)), {"reason": "retry_wait"})
+
+    async def test_multi_host_life_publish_reads_activities_schedules_and_generates_scene_image(self):
+        import json
+        from companion_v2.foundation.refs import SourceRef
+        from companion_v2.qzone.images import PublishImage
+        from companion_v2.sources.models import SourceRecord
+        from tests.test_qzone_images import ImageTransport, picture
+
+        scene_text = "雨停后沿着老街散步，石板路上还映着暖黄的路灯光。"
+        transport = ImageTransport(photos=1, text=scene_text, psc=True)
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        target = session.settings.target("first")
+        context, _ = await session.synchronize(target)
+        at = self.clock.now()
+        _configure_qzone_role(self.controller, context, at, op_prefix="life-img-gen")
+        _save_role_profile_and_diary(
+            self.controller, context, at,
+            name="星缘", personality="安静温和",
+            diary_body="傍晚雨停后出门走了走。", op_prefix="life-img-gen",
+        )
+        owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
+                             context.role_binding.role.subject_id)
+        app.role_life.add_activity(
+            RoleActivity(
+                activity_id="act-walk-1",
+                role_id=context.role_binding.role.subject_id,
+                scope=context.scope,
+                started_at=at - timedelta(minutes=30),
+                updated_at=at - timedelta(minutes=20),
+                state=RoleActivityState.COMPLETED,
+                description="雨停后出门散步",
+                checkpoint="走过南街口",
+            )
+        )
+        src_ref = SourceRef("cal-src-1", "conversation.user", context.scope, VersionRef("cal-src-1", 1), at)
+        app.messages.sources.publish(
+            SourceRecord(src_ref, context.audience, "h" * 64, "傍晚散步计划"),
+            observed_at=at,
+        ).unwrap()
+        app.calendar.command(
+            context, identifier="plan-walk-1", action="create", expected_revision=0,
+            operation_key="cal-plan-1",
+            data={"kind": "role_plan", "title": "傍晚河边散步", "detail": "雨停了去吹吹风",
+                  "schedule": json.loads(encode(Schedule(at - timedelta(hours=1), "Asia/Shanghai"))),
+                  "duration_minutes": 45, "presence": "散步中"},
+            sources=(src_ref,),
+        )
+        app.calendar.command(
+            context, identifier="user-private-1", action="create", expected_revision=0,
+            operation_key="cal-user-1",
+            data={"kind": "user_report", "title": "私密用户医院复查", "detail": "绝不可进公开说说",
+                  "schedule": json.loads(encode(Schedule(at - timedelta(hours=1), "Asia/Shanghai"))),
+                  "duration_minutes": 30, "presence": ""},
+            sources=(src_ref,),
+        )
+
+        generated_img = picture("blue")
+
+        async def _fake_generate_role_image(run, prompt, identity, *, invocation_id, call_id, on_dispatch=None):
+            run.begin_effect()
+            return NS(
+                state="succeeded", effect="committed", operation_id="life-img-op-1",
+                receipt_ref="life-img-rcpt-1",
+                images=(NS(content=generated_img.content,
+                           descriptor=NS(mime_type=generated_img.mime_type)),),
+            )
+
+        fake_port = NS(
+            role_image_route=lambda ctx, identity=None: NS(descriptor=NS(tool=NS(action="image.generate"))),
+            generate_role_image=AsyncMock(side_effect=_fake_generate_role_image),
+        )
+        app.qzone_life_images.port = fake_port
+
+        reply_json = json.dumps({
+            "event_summary": "雨停后出门散步",
+            "text": scene_text,
+            "image_source": "generate",
+            "album_image_id": "",
+            "image_prompt": "傍晚雨停后的安静老街，湿润石板路倒映暖黄色路灯",
+            "include_character": False,
+        }, ensure_ascii=False)
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(return_value=NS(completion_text=reply_json))) as chat:
+            result = await publisher.tick(now=at)
+
+        self.assertEqual(result["reason"], "published", result)
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["image_count"], 1)
+        prompt = chat.await_args.kwargs["prompt"]
+        self.assertIn("雨停后出门散步", prompt)
+        self.assertIn("傍晚河边散步", prompt)
+        self.assertNotIn("私密用户医院复查", prompt)
+        fake_port.generate_role_image.assert_awaited_once()
+        self.assertEqual([req.description for req in transport.sent],
+                         ["image.upload", "post.publish", "feed.list"])
+        self.assertEqual(app.messages.image_quota._used(context, "proactive", at), 1)
+
+    async def test_multi_host_life_publish_selects_album_image_and_degrades_on_gen_failure(self):
+        import json
+        from companion_v2.references.daily_outfit import PREFIX as OUTFIT_PREFIX, daily_outfit_image_id
+        from companion_v2.storage.image_payloads import store_image
+        from tests.test_qzone_images import ImageTransport, picture
+
+        outfit_img = picture("green")
+        caption = "早上换上浅绿针织衫出门买了花，阳光落在窗边。"
+        transport = ImageTransport(photos=1, text=caption, psc=True)
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        context, _ = await session.synchronize(session.settings.target("first"))
+        at = self.clock.now()
+        _configure_qzone_role(self.controller, context, at, op_prefix="life-album")
+        owner = app.references.owner(context)
+        marker = store_image(app.runtime.data_root, outfit_img.content, mime_type="image/png").decode("ascii")
+        outfit_id = daily_outfit_image_id(owner, "2026-11-09", outfit_img.content_hash)
+        with self.controller.runtime.transaction() as conn:
+            conn.execute(
+                "INSERT INTO runtime_metadata(key, value) VALUES (?, ?)",
+                (
+                    f"{OUTFIT_PREFIX}{owner}:2026-11-09",
+                    json.dumps({
+                        "task_id": "outfit-life-1",
+                        "photo": {
+                            "marker": marker,
+                            "content_hash": outfit_img.content_hash,
+                            "created_at": at.isoformat(),
+                            "mime_type": "image/png",
+                            "width": outfit_img.width,
+                            "height": outfit_img.height,
+                            "size_bytes": len(outfit_img.content),
+                            "activities": ["清晨买花"],
+                        },
+                    }),
+                ),
+            )
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        album_json = json.dumps({
+            "event_summary": "清晨买花",
+            "text": caption,
+            "image_source": "album",
+            "album_image_id": outfit_id,
+            "image_prompt": "",
+        }, ensure_ascii=False)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(return_value=NS(completion_text=album_json))) as chat:
+            res_album = await publisher.tick(now=at)
+        self.assertEqual(res_album["reason"], "published", res_album)
+        self.assertEqual(res_album["image_count"], 1)
+        self.assertIn(outfit_id, chat.await_args.kwargs["prompt"])
+        self.assertEqual([req.description for req in transport.sent], ["image.upload", "post.publish", "feed.list"])
+
+        # When generation fails, life publish degrades cleanly to text-only.
+        self.clock.advance(timedelta(hours=8))
+        later = self.clock.now()
+        transport.sent.clear()
+        fallback_caption = "夜里窗外起风了，泡了杯热牛奶翻完最后几页书。"
+        transport.body = fallback_caption
+        transport.photos = 0
+        app.qzone_life_images.port = NS(
+            role_image_route=lambda ctx, identity=None: NS(descriptor=NS(tool=NS(action="image.generate"))),
+            generate_role_image=AsyncMock(return_value=NS(
+                state="failed", effect="not_committed", receipt_ref="fail-rcpt", images=(),
+            )),
+        )
+        gen_fail_json = json.dumps({
+            "event_summary": "夜里看书",
+            "text": fallback_caption,
+            "image_source": "generate",
+            "album_image_id": "",
+            "image_prompt": "书桌上的热牛奶和摊开的书",
+        }, ensure_ascii=False)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(return_value=NS(completion_text=gen_fail_json))):
+            res_text = await publisher.tick(now=later)
+        self.assertEqual(res_text["reason"], "published", res_text)
+        self.assertNotIn("image_count", res_text)
+        self.assertEqual([req.description for req in transport.sent], ["post.publish", "feed.list"])
+
+    async def test_mid_draft_consent_revocation_skips_image_generation(self):
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        ctx_a, _ = await session.synchronize(session.settings.target("first"))
+        at = self.clock.now()
+        _configure_qzone_role(self.controller, ctx_a, at, consent=True, op_prefix="mid-revoke-img-init")
+
+        fake_port = NS(
+            role_image_route=lambda ctx, identity=None: NS(descriptor=NS(tool=NS(action="image.generate"))),
+            generate_role_image=AsyncMock(),
+        )
+        app.qzone_life_images.port = fake_port
+
+        async def revoke_during_draft(*, prompt, system_prompt, contexts, max_tokens):
+            _configure_qzone_role(self.controller, ctx_a, at, consent=False, op_prefix="mid-revoke-img-now")
+            return NS(completion_text=json.dumps({
+                "event_summary": "雨后散步",
+                "text": "雨刚停下来，沿着河边走了几步。",
+                "image_source": "generate",
+                "album_image_id": "",
+                "image_prompt": "雨后河边",
+            }, ensure_ascii=False))
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(side_effect=revoke_during_draft)):
+            revoked = await publisher.tick(now=at)
+        self.assertEqual(revoked, {"reason": "qzone_unauthorized"})
+        fake_port.generate_role_image.assert_not_awaited()
+        self.assertEqual(transport.sent, [])
+        self.assertEqual(app.qzone.state(ctx_a).publish_count, 0)
 
 
 if __name__ == "__main__":

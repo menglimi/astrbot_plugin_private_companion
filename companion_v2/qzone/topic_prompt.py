@@ -31,6 +31,9 @@ def _catalog() -> str:
 
 CONVERSATION_GUIDANCE = """【QQ 空间发布：主题与场景目录】
 要发空间时（调用 qzone.post.publish），先按下面的目录选定主题与场景，再写正文。
+选题可来自角色最近的日程、活动、日记，或当前会话中允许公开的内容；需要配图文说说时，围绕同一个事件写角色口吻的感受并准备同场景配图，避免文案和图片各说各的。
+基于聊天内容生成时，提炼感受，默认省略对方身份、私聊原话及其他敏感细节。
+配图可先调用 qzone.album.list 从角色相册挑图，或先调用生图/改图工具生成场景图，再把拿到的真实 image_id 或 artifact_id（imgart_*）填入 image_ids 一并发布；不要编造图片标识。
 主题（topic 只能取其一）：
 """ + "\n".join(
     f"- {item.topic.value}（{item.label}）：{item.guidance}"

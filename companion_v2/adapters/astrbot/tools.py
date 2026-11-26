@@ -18,7 +18,14 @@ from companion_v2.conversation.tool_failures import retry_disposition_for
 from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.identity_policy.models import _opaque
 from companion_v2.sources.models import SourceRecord
-from companion_v2.qzone.capability import COMMENT_ACTION, LIKE_ACTION, PUBLISH_ACTION, READ_ACTION, tool_descriptors
+from companion_v2.qzone.capability import (
+    ALBUM_LIST_ACTION,
+    COMMENT_ACTION,
+    LIKE_ACTION,
+    PUBLISH_ACTION,
+    READ_ACTION,
+    tool_descriptors,
+)
 
 
 @dataclass(frozen=True)
@@ -93,7 +100,7 @@ class CompositeAstrBotToolPort:
 class QzoneToolPort:
     """Adapt the included QQ Zone service to the supervised model tool contract."""
 
-    _ACTIONS = frozenset((READ_ACTION, LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION))
+    _ACTIONS = frozenset((READ_ACTION, LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION, ALBUM_LIST_ACTION))
 
     def __init__(self, transport):
         if transport is None:
@@ -158,13 +165,21 @@ class QzoneToolPort:
             elif action == COMMENT_ACTION:
                 result = await service.comment(invocation.context, post_ref=arguments["post_ref"],
                                                text=arguments["text"], operation_key=operation_key)
+            elif action == ALBUM_LIST_ACTION:
+                from companion_v2.qzone.images import list_album_candidates
+                at = service.now()
+                service._settings_gate(invocation.context, at)
+                service._require_capability(invocation.context, PUBLISH_ACTION)
+                items = list_album_candidates(self.application, invocation.context, at,
+                                              limit=arguments.get("limit", 8))
+                result = {"count": len(items), "items": items}
             elif action == PUBLISH_ACTION:
                 # The model proposes the topic; whether that proposal may go out
                 # without a human is decided by the configured gates, so it never
                 # confirms itself here.
                 from companion_v2.qzone.images import album_images
                 images, _ = album_images(self.application, invocation.context, service.now(),
-                                          arguments.get("image_ids", ()))
+                                          arguments.get("image_ids") or ())
                 source_refs = list(arguments.get("source_refs", ()))
                 source_refs.extend(image.source_id for image in images if image.source_id)
                 result = await service.publish(invocation.context, text=arguments["text"],

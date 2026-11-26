@@ -1033,6 +1033,10 @@ def inject_core_reply_tools(event, req, *, application, provision_image_access: 
             from companion_v2.conversation.diagnostic_tools import DIAGNOSTIC_INSTRUCTION
             if DIAGNOSTIC_INSTRUCTION not in req.system_prompt:
                 req.system_prompt += "\n\n" + DIAGNOSTIC_INSTRUCTION
+        if any(item.spec.action == "qzone.post.publish" for item in offered):
+            from companion_v2.qzone.topic_prompt import CONVERSATION_GUIDANCE as QZONE_CONVERSATION_GUIDANCE
+            if QZONE_CONVERSATION_GUIDANCE not in req.system_prompt:
+                req.system_prompt += "\n\n" + QZONE_CONVERSATION_GUIDANCE
     elif getattr(req, "func_tool", None) is not None:
         req.func_tool = ToolSet(tools=sorted(existing, key=lambda tool: tool.name))
     mounted_tools = getattr(getattr(req, "func_tool", None), "tools", ())
