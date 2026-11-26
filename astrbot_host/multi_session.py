@@ -21,7 +21,7 @@ from companion_v2.adapters.astrbot.group import NativeGroupBridge, _is_sticker_s
 from companion_v2.adapters.astrbot.onebot import OneBotPrivateSender
 from companion_v2.adapters.astrbot.onebot_group import OneBotGroupSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
-from companion_v2.adapters.astrbot.presence import OneBotPresencePort
+from companion_v2.adapters.astrbot.presence import native_presence_port
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES
 from companion_v2.configuration.store import open_configuration_store
 from companion_v2.adapters.astrbot.provider_catalog import (TextProviderSettings, assemble_providers,
@@ -398,7 +398,7 @@ class MultiPresence:
 
     def port(self, context):
         session = self.session
-        return OneBotPresencePort(session.bridge, reverse_api_type=session.types.reverse_api,
+        return native_presence_port(session.bridge, context.scope, reverse_api_type=session.types.reverse_api,
             authorize=lambda: session.authorize(context), now=session.now)
 
     async def typing(self, context, **kwargs):

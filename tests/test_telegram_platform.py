@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+import asyncio
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
 from telegram import Chat, Message, Update, User
@@ -20,6 +21,7 @@ from companion_v2.foundation.refs import ScopeKind
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.test_main_no_reply import ENTRY
 from tests.staging_bootstrap_support import wait_for_batch
+from telegram.error import NetworkError, RetryAfter
 
 
 PLATFORM_ID = "tg-main"
@@ -283,3 +285,89 @@ class TelegramPrivateCommandTests(TelegramFixture, unittest.IsolatedAsyncioTestC
         self.assertIsNone(token)
         self.assertTrue(actions.answer_checkout.call_args.kwargs["approve"])
         self.assertEqual(self.sent_text(), "收到确认，我会先核对手机上的订单。")
+
+
+class TelegramPresenceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.app = await self.start_host()
+        self.context, _ = await self.controller.session.synchronize(self.controller.settings.target("tg-owner"))
+        self.action = self.platform.client.send_chat_action
+        self.action.return_value = True
+        self.presence = self.app.presence
+
+    def enable_typing(self, interval=1):
+        from astrbot_host.management_identity import dashboard_operator
+        from companion_v2.role_work.state.management import StateManagement
+        manager = StateManagement(self.app, self.context)
+        operator = dashboard_operator(self.app.runtime, "synthetic", at=self.clock.now())
+        status = manager.status(operator).unwrap()
+        manager.command(operator, dict(action="configure", operation_key="typing-on",
+            edit_token=status["edit_token"], role_edit_token=status["role_edit_token"],
+            changes={"typing_enabled": True, "typing_refresh_seconds": interval})).unwrap()
+
+    async def test_long_reply_renews_typing_until_it_finishes(self):
+        self.enable_typing(interval=10)
+        renewed = asyncio.Event()
+
+        async def typing(**kwargs):
+            if self.action.await_count >= 2:
+                renewed.set()
+            return True
+
+        self.action.side_effect = typing
+        self.presence.begin_native_reply(self.context, "long-reply")
+        worker = self.presence.typing[self.presence.route(self.context)][2]
+        try:
+            await asyncio.wait_for(renewed.wait(), 8)
+        finally:
+            self.presence.finish_native_reply(self.context, "long-reply")
+        self.action.assert_awaited_with(chat_id=int(USER_ID), action="typing")
+        await asyncio.wait_for(asyncio.gather(worker, return_exceptions=True), 3)
+        sent = self.action.await_count
+        self.presence.advance()
+        self.assertEqual((self.presence.typing, self.action.await_count), ({}, sent))
+
+    async def test_setting_off_does_not_start_typing(self):
+        self.presence.begin_native_reply(self.context, "disabled")
+        self.assertIsNotNone(self.presence.active_turn(self.context))
+        self.assertFalse(self.presence.typing)
+        self.presence.finish_native_reply(self.context, "disabled")
+        self.action.assert_not_awaited()
+
+    async def test_disconnect_and_revoked_grant_prevent_typing(self):
+        self.enable_typing()
+        port = self.presence.port
+        self.assertEqual((await port.typing(self.context))["state"], "accepted")
+        self.action.reset_mock()
+        self.platform.application.running = False
+        self.assertEqual((await port.typing(self.context))["state"], "not_started")
+        self.platform.application.running = True
+        identities = self.controller.session.bridge.identities
+        grant = next(item for item in identities.grants_for_subject(self.context.actor.subject)
+                     if item.capability == "platform.typing")
+        identities.revoke_grant(grant.grant_id, revoked_at=self.clock.now(), expected_revision=identities.revision)
+        self.assertEqual((await port.typing(self.context))["state"], "not_started")
+        self.action.assert_not_awaited()
+
+    async def test_failed_typing_ends_for_this_reply_only(self):
+        self.enable_typing()
+        route = "typing:" + self.presence.route(self.context)
+        for number, (error, state) in enumerate(((RetryAfter(1), "failed"), (NetworkError("lost"), "unknown"))):
+            with self.subTest(state=state):
+                self.action.reset_mock(side_effect=True)
+                self.action.side_effect = error
+                turn = f"reply-{number}"
+                self.presence.begin_native_reply(self.context, turn)
+                worker = self.presence.typing[self.presence.route(self.context)][2]
+                await asyncio.wait_for(worker, 3)
+                self.presence.advance()
+                self.assertEqual(self.presence.results_for(self.context)[route]["state"], state)
+                self.assertIsNotNone(self.presence.active_turn(self.context))
+                self.action.assert_awaited_once()
+                self.presence.finish_native_reply(self.context, turn)
+
+    async def test_account_status_is_unsupported(self):
+        port = self.presence.port
+        self.assertEqual((await port.online_status(self.context, "online"))["code"], "presence_unsupported")
+        self.assertEqual((await port.custom_status(self.context, "休息"))["code"], "presence_unsupported")
+        self.action.assert_not_awaited()
