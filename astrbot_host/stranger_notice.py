@@ -25,10 +25,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from companion_v2.adapters.astrbot.native import account_number
-from companion_v2.execution.models import encode, stamp
+from companion_v2.execution.models import TaskError, encode, stamp
 from companion_v2.foundation.refs import ScopeKind
 
 from .private_notice import private_notice_allowed, send_private_notice
+from .recalls import telegram_private_message_route
 
 
 UPSERT = """INSERT INTO memory_views VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
@@ -68,6 +69,11 @@ def stranger_route(controller, event):
     """认证"这是本插件某个账号收到的一条私聊"；不是就返回 ``None``。"""
     raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
     meta = getattr(event, "platform_meta", None)
+    if getattr(meta, "name", None) == "telegram":
+        try:
+            return telegram_private_message_route(controller, event, configured_peer=False)
+        except TaskError:
+            return None
     if not isinstance(raw, Mapping) or meta is None:
         return None
     if raw.get("post_type") != "message" or raw.get("message_type") != "private":
