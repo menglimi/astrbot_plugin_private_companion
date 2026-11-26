@@ -34,7 +34,7 @@ function harness(persons) {
       : selector === ".self-relationship-actions>span" ? status : null; }};
   const product = {
     role: () => behavior.role ? ({role_id: behavior.role}) : null, roleTarget: () => ({bot_id: behavior.bot}),
-    roleLabel: () => "澄汐", platformLabel: () => "QQ · OneBot",
+    roleLabel: () => "澄汐", platformLabel: item => ({"qq-main": "QQ · OneBot", telegram: "Telegram"})[item.platform_name || item.platform_id],
     acquaintanceDirectory: async () => behavior.directory ? behavior.directory() : ({persons}), errorLabel: () => "读取失败。",
     request: async (method, route, body) => {
       calls.push({method, route, body});
@@ -64,6 +64,13 @@ function harness(persons) {
   vm.runInNewContext(source, {window, document, Promise, Date, Math, JSON, Object, String, Map, Set, Array, Error});
   return {root, calls, confirms, behavior, listeners, editor: window.CompanionSelfRelationship, saveButton, status, contactStatus, mount: window.CompanionSelfRelationship.mount};
 }
+
+test("Telegram 核心用户按通道类型显示平台", async () => {
+  const h = harness([person("core-1", {platform: "default", platform_name: "telegram"})]);
+  h.mount(h.root);
+  await settle();
+  assert.match(h.root.innerHTML, /平台：Telegram；/);
+});
 
 const settle = async () => { for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve)); };
 

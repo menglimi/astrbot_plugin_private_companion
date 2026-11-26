@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import asyncio
 import wave
 import time
+import json
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
 from telegram import Chat, Message, Update, User
@@ -33,6 +34,7 @@ from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from astrbot_host.relay_pending import add_task, claim_private_receipts
 from astrbot_host.telegram_forward import label_telegram_forward
 from companion_v2.conversation.media.output_settings import is_rule_image_request
+from astrbot_host.display_names import event_person_names
 
 
 PLATFORM_ID = "tg-main"
@@ -138,6 +140,51 @@ class TelegramPrivateTextTests(TelegramFixture, unittest.IsolatedAsyncioTestCase
         with self.assertRaises(TaskError) as refused:
             group_event_route(event)
         self.assertEqual(refused.exception.code, "host_route_mismatch")
+
+    def named_event(self, first, last=None, username=None, *, sender=USER_ID):
+        event = self.telegram_event()
+        event.message_obj.sender.nickname = "Unknown"
+        sent = datetime.now(timezone.utc)
+        chat = Chat(int(USER_ID), "private")
+        quoted = Message(1, date=sent, chat=chat, from_user=User(int(USER_ID), "被引用", False), text="旧消息")
+        event.message_obj.raw_message = Update(42, message=Message(
+            42, date=sent, chat=chat, reply_to_message=quoted, text="@other",
+            from_user=User(int(sender), first, False, last_name=last, username=username)))
+        return event
+
+    def test_names_come_only_from_the_original_message_sender(self):
+        for first, last, username, sender, expected in (
+            ("小", "林", "handle", USER_ID, "小 林"),
+            ("小林", None, "handle", USER_ID, "小林"),
+            ("", None, "handle", USER_ID, "handle"),
+            ("", None, None, USER_ID, ""),
+            ("Unknown", None, "Unknown", USER_ID, ""),
+            ("Unknown", "Artist", None, USER_ID, "Unknown Artist"),
+            ("其他人", None, "other", "5123456789013", ""),
+        ):
+            with self.subTest(expected=expected, sender=sender):
+                event = self.named_event(first, last, username, sender=sender)
+                self.assertEqual(event_person_names(event), (expected, ""))
+
+    async def test_session_directory_ignores_unknown_and_keeps_the_observed_name(self):
+        directory = self.controller.session_topology
+        for first, expected in (("", ""), ("小林", "小林"), ("", "小林")):
+            await directory.observe(self.named_event(first))
+            rows = json.loads(directory.path.read_text(encoding="utf-8"))
+            self.assertEqual([row.get("display_name", "") for row in rows.values()], [expected])
+
+    async def test_directory_reads_old_observations_without_the_placeholder(self):
+        directory = self.controller.session_topology
+        event = self.named_event("小林")
+        await directory.observe(event)
+        rows = json.loads(directory.path.read_text(encoding="utf-8"))
+        stored = next(iter(rows.values()))
+        for name, expected in (("Unknown", ""), ("Unknown Artist", "Unknown Artist")):
+            stored["display_name"] = name
+            directory.path.write_text(json.dumps(rows), encoding="utf-8")
+            windows = await directory.inventory()
+            self.assertEqual([row.get("display_name", "") for row in windows
+                              if row.get("unified_msg_origin") == event.unified_msg_origin], [expected])
 
 
 class TelegramPrivateCommandTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):

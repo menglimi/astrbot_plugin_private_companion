@@ -559,6 +559,7 @@ class MultiPageTests(PageRequests, MultiFixture, unittest.IsolatedAsyncioTestCas
         with patch.object(self.controller.session_topology, "inventory", AsyncMock(return_value=native)), \
                 patch("astrbot_host.acquaintance_api.request", NS(username="admin", query={})), \
                 patch("astrbot_host.acquaintance_api.display_names", return_value=NS(
+                    with_platform_family=lambda rows, key: rows,
                     persons=AsyncMock(side_effect=lambda rows: rows), targets=AsyncMock(side_effect=lambda rows: rows))):
             result = await api.directory()
             self.assertEqual(result["status"], "ok", result)

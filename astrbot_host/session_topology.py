@@ -26,7 +26,7 @@ from companion_v2.execution.models import TaskError, digest
 from .identity_derivation import derive_bot_id, derive_role_id, role_display_name
 from .native import SESSION_SETTINGS_LOOKUP_BUDGET_SECONDS, load_session_settings
 from .multi_settings import find_persona_mapping
-from .display_names import event_person_names, platform_label
+from .display_names import configured_platform_families, event_person_names, platform_label, telegram_placeholder
 
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ class SessionTopology:
                 aliases[(row["platform_id"], row["account_id"])] = row["bot_id"]
                 rows.append(row)
         result = {}
-        platform_names = {}
+        platform_names = configured_platform_families(self.controller.context)
 
         def remember(platform_id, account_id, bot_id=None, *, platform_name=""):
             platform_id, account_id = str(platform_id or "").strip(), str(account_id or "").strip()
@@ -538,7 +538,8 @@ class SessionTopology:
                 row["group_name"] = group_name
         else:
             nickname, _ = event_person_names(event)
-            nickname = nickname or platform_label(getattr(getattr(message, "sender", None), "nickname", None), peer)
+            if not nickname and meta.name != "telegram":
+                nickname = platform_label(getattr(getattr(message, "sender", None), "nickname", None), peer)
             if nickname:
                 row["display_name"] = nickname
         async with self._write_lock:
@@ -613,11 +614,14 @@ class SessionTopology:
             accounts = [row for row in accounts if (row["platform_id"], row["account_id"]) in routes]
         platforms = {row["platform_id"] for row in accounts}
         native, issues = await self._native_sessions(platforms, scope_kind=scope_kind)
+        telegram_instances = {row["platform_id"] for row in accounts if row.get("platform_name") == "telegram"}
         observed = {}
         for row in self._observed().values():
             umo = row.get("unified_msg_origin")
             route = self.route(umo)
             if route and route[0] in platforms and (scope_kind is None or route[1] == scope_kind):
+                if route[0] in telegram_instances and route[1] == "private" and telegram_placeholder(row.get("display_name")):
+                    row.pop("display_name")
                 observed.setdefault(umo, []).append(row)
                 native.setdefault(umo, {"unified_msg_origin": umo,
                                        "conversation_id": row.get("conversation_id")})

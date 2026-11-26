@@ -1990,3 +1990,48 @@ test("成员重新读取保留未保存的目录昵称与身份选择",async()=>
   assert.equal(findInput(h.element("person-detail"),"目录显示名称").value,"尚未保存");
   assert.equal(h.element("person-detail").querySelectorAll(".member-tier-card").find(card=>card.dataset.tier==="important").getAttribute("aria-checked"),"true");
 });
+
+test("Telegram identity cards and member details identify numeric accounts by platform", async () => {
+  const h = harness({persons:[person("12345", "测试成员", {platform:"default", platform_name:"telegram", account_id:"6789"})]});
+  const detail = await open(h, "测试成员");
+  for (const node of [h.card("测试成员"), detail]) {
+    assert.match(flat(node), /Telegram 12345/);
+    assert.doesNotMatch(flat(node), /QQ (12345|6789)/);
+  }
+});
+
+test("QQ Official and Lark people keep an account label for opaque IDs", async () => {
+  for (const platform_name of ["qq_official", "lark"]) {
+    const h = harness({persons: [person("opaque-id", "测试成员", {platform: "default", platform_name})]});
+    await open(h, "测试成员");
+    assert.match(flat(h.card("测试成员")), /账号 opaque-id/);
+  }
+});
+
+test("Telegram route selector retains the adapter family for both roles", async () => {
+  const route = {platform: "default", platform_name: "telegram", account_id: "6789", persona_ids: ["璃"]};
+  const h = harness({persons: ["role-a", "role-b"].map(role_id =>
+    person("12345", "测试成员", {...route, role_id}))});
+  await open(h, "测试成员");
+  const selector = findInput(h.element("person-detail"), "选择角色与账号");
+  assert.equal(selector.children.length, 3);
+  for (const option of selector.children.slice(1)) assert.match(flat(option), /Telegram 6789/);
+});
+
+test("offline account-link preview opens its member editor", t => {
+  const {execFileSync, spawnSync} = require("node:child_process");
+  const {tmpdir} = require("node:os");
+  const dir = fs.mkdtempSync(path.join(tmpdir(), "account-link-preview-"));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const file = path.join(dir, "preview.html");
+  const python = [process.env.DSH_PYTHON, "python3", "python", "py"].filter(Boolean)
+    .find(name => spawnSync(name, ["-X", "utf8", "-c", "pass"]).status === 0);
+  execFileSync(python, ["-X", "utf8", path.resolve(__dirname, "../tools/build_account_link_preview.py"), file]);
+  const panel = element("div");
+  const document = {createElement: element, getElementById: () => panel, body: element("body")};
+  const context = vm.createContext({window: {document}, document, setTimeout, clearTimeout, queueMicrotask});
+  for (const [, script] of fs.readFileSync(file, "utf8").matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+    vm.runInContext(script, context);
+  }
+  assert.match(flat(panel), /示例 QQ 账号/);
+});

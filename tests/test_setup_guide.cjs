@@ -57,6 +57,7 @@ function harness({status, responses = {}, targets = [], refreshedTargets = targe
       if (method === 'GET' && route === 'setup/proactive-test/status') return Promise.resolve(currentStatus);
       return Promise.resolve({});
     },
+    platformLabel: item => ({default: 'QQ · OneBot', telegram: 'Telegram'})[item.platform_name || item.platform_id],
     targets: () => currentTargets,
     accounts: () => accounts,
     personas: () => personas,
@@ -657,6 +658,12 @@ test('binding diagnostics show readable labels instead of raw internal details',
   assert.match(page.html, /QQ · OneBot/);
   assert.match(page.html, /默认人格/);
   assert.doesNotMatch(page.html, /default|internal-bot|internal-subject|\[%None\]/);
+  page.updateStatus({step: 'binding', binding: {pending: true, platform_id: 'default', platform_name: 'telegram',
+    account_id: '6789', participant_id: '12345'}, ready: false});
+  page.click('refresh');
+  await settle();
+  assert.match(page.html, /<dd>Telegram<\/dd>/);
+  assert.doesNotMatch(page.html, /QQ|OneBot/);
 });
 
 test('setup uses loaded providers directly for task routing', async () => {

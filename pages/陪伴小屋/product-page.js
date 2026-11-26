@@ -1035,8 +1035,13 @@ window.CompanionProduct = (() => {
   const subjectLabel = item => item?.display_name || nativeId(item?.group_id || item?.participant_id) || "当前聊天对象";
   const platformLabel = item => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）",lark:"飞书机器人",telegram:"Telegram",discord:"Discord",slack:"Slack",kook:"KOOK",dingtalk:"钉钉",line:"LINE",satori:"Satori",mattermost:"Mattermost",misskey:"Misskey",webchat:"WebChat",wecom:"企业微信",wecom_ai_bot:"企业微信 AI 机器人",weixin_oc:"微信开放平台",weixin_official_account:"微信公众号"})[item?.platform_name || item?.platform_id] || "当前平台";
   const accountLabel = item => {
-    const id = nativeId(item.account_id);
-    return item.account_name ? item.account_name + (id ? `（${id}）` : "") : id ? `QQ ${id}` : "当前账号";
+    const platform = platformLabel(item);
+    const id = platform === "Telegram" ? String(item.account_id || "") : nativeId(item.account_id);
+    if (item.account_name) return item.account_name + (id ? `（${id}）` : "");
+    if (!id) return "当前账号";
+    if (platform.startsWith("QQ")) return `QQ ${id}`;
+    const prefix = platform === "当前平台" ? "账号" : platform;
+    return `${prefix} ${id}`;
   };
   function readableLabel(value, fallback) {
     const text = typeof value === "string" ? value.trim() : "";
