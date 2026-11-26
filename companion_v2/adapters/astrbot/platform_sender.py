@@ -104,7 +104,7 @@ class AstrBotPlatformSender:
             elif component.kind == "at":
                 chain.append(At(qq=str(component.value)))
             elif component.kind == "face":
-                chain.append(Plain(text=f"[QQ表情 {component.value}]") if platform_name == "wechat_native"
+                chain.append(Plain(text=f"[QQ表情 {component.value}]") if platform_name in ("wechat_native", "telegram")
                              else Face(id=int(component.value)))
             else:
                 raise ValueError("component kind is unsupported by the AstrBot session transport")

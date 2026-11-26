@@ -10,7 +10,7 @@ import wave
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
 from telegram import Chat, Message, Update, User
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Face, Image, Plain
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAdapter
@@ -26,6 +26,8 @@ from telegram.error import BadRequest, Forbidden, InvalidToken, NetworkError, Re
 from companion_v2.adapters.astrbot.native import native_client_connected
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
 from companion_v2.delivery.models import DeliveryEnvelope
+from astrbot.core.message.message_event_result import MessageChain
+from astrbot_host.core_reply_media_delivery import native_reply_messages, native_wire_message
 
 
 PLATFORM_ID = "tg-main"
@@ -472,3 +474,24 @@ class TelegramDeliveryTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((receipt.status, receipt.failure_code), ("unknown", None))
         self.platform.client.send_voice.assert_awaited_once()
         self.platform.client.send_message.assert_awaited_once()
+
+
+class TelegramFaceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_reply_face_is_shown_as_text(self):
+        event = self.telegram_event()
+        with patch("astrbot.core.platform.astr_message_event.Metric.upload", new_callable=AsyncMock):
+            for part in native_reply_messages(event, MessageChain(chain=[Plain(text="晚安"), Face(id=14)])):
+                await event.send(await native_wire_message(event, part))
+        # AstrBot sends MarkdownV2, so the brackets are escaped on the wire.
+        sent = [call.kwargs["text"] for call in self.platform.client.send_message.await_args_list]
+        self.assertEqual(sent, ["晚安", "\\[QQ表情 14\\]"])
+
+    async def test_reply_without_a_face_is_unchanged(self):
+        message = MessageChain(chain=[Plain(text="晚安"), Image(file="base64://AAAA")])
+        self.assertIs(await native_wire_message(self.telegram_event(), message), message)
+
+    def test_background_face_is_shown_as_text(self):
+        plan = NS(components=(NS(kind="face", value="14"),))
+        for platform_name, expected in (("telegram", Plain), ("qq_official", Face)):
+            (part,) = AstrBotPlatformSender._chain(plan, platform_name=platform_name).chain
+            self.assertIsInstance(part, expected)
