@@ -178,12 +178,14 @@ class ImageQuotaGate:
             AND i.state = 'succeeded' AND i.created_at >= ?
             AND {' AND '.join(predicates)}""", tuple(parameters))
         if scope == "proactive":
+            from companion_v2.qzone.life_images import KIND as QZONE_LIFE_IMAGE_KIND
             from companion_v2.references.daily_outfit import KIND as OUTFIT_KIND
             outfits = self.runtime.read_one("""SELECT COUNT(*) FROM execution_tasks
-                WHERE kind=? AND state='succeeded' AND created_at>=?
+                WHERE kind IN (?, ?) AND state='succeeded' AND created_at>=?
                 AND json_extract(record_json, '$.spec.context.role_binding.scope.bot_id')=?
                 AND json_extract(record_json, '$.spec.context.role_binding.role.subject_id')=?""",
-                (OUTFIT_KIND, cutoff, context.scope.bot_id, context.role_binding.role.subject_id))
+                (OUTFIT_KIND, QZONE_LIFE_IMAGE_KIND, cutoff, context.scope.bot_id,
+                 context.role_binding.role.subject_id))
             return row[0] + outfits[0] + self._proactive_message_budget(context, at)[2]
         # Native operations have their own real child task. They share the role,
         # requester and local-day limits with legacy user image requests, but are

@@ -475,6 +475,8 @@ class NativeExtensionRegistry(AstrBotToolPort):
         self.application, self.runtime = application, runtime
         if getattr(application, "daily_outfit", None) is not None:
             application.daily_outfit.port = self
+        if getattr(application, "qzone_life_images", None) is not None:
+            application.qzone_life_images.port = self
         proactive_images = getattr(getattr(application, "proactive", None), "images", None)
         if proactive_images is not None:
             proactive_images.port = self

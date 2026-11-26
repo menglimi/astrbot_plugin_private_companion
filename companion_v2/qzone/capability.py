@@ -28,9 +28,10 @@ READ_ACTION = "qzone.feed.read"
 LIKE_ACTION = "qzone.post.like"
 COMMENT_ACTION = "qzone.post.comment"
 PUBLISH_ACTION = "qzone.post.publish"
+ALBUM_LIST_ACTION = "qzone.album.list"
 
 CAPABILITIES = (READ_ACTION, LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION)
-ACTIONS = CAPABILITIES
+ACTIONS = (READ_ACTION, LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION, ALBUM_LIST_ACTION)
 PUBLIC_ACTIONS = (LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION)
 
 # A scanned post stays actionable only inside the conversation that scanned it
@@ -76,9 +77,12 @@ def _topic_catalogue():
     lines.append("confidence 是你对这次主题判断的把握（0 到 1）。"
                  "材料不足、无法去掉私密细节或事实不确定时不要调用本工具。"
                  "求助类可以带一个待确认的日程提案，但不能声称已经修改日程。")
-    lines.append("配图请用当前相册真实返回的 image_id 填入 image_ids；不要编造图片标识，"
-                 "source_refs 只是文字材料来源，不会自动变成配图。只有回执 verified=true "
-                 "且 images_verified=true 才能说配图已发布；accepted 或结果未知时先读空间核对，不要重发。")
+    lines.append("配图请用当前相册真实返回的 image_id（可先调用 qzone.album.list 查看，含生成图和每日穿搭），"
+                 "或先调用生图/改图工具生成同场景图片并把返回的 artifact_id（imgart_*）填入 image_ids；"
+                 "文案与配图要围绕同一个事件，不要编造图片标识，source_refs 只是文字材料来源，不会自动变成配图。"
+                 "基于聊天内容发说说时，提炼感受，默认省略对方身份、私聊原话及其他敏感细节。"
+                 "只有回执 verified=true 且 images_verified=true 才能说配图已发布；"
+                 "accepted 或结果未知时先读空间核对，不要重发。")
     return "\n".join(lines)
 
 
@@ -129,14 +133,26 @@ def tool_descriptors():
                      "source_refs": {"type": "array", "items": {"type": "string"},
                                      "description": "本次正文实际用到的材料引用（来自材料清单里的 handle）。"},
                      "image_ids": {"type": "array", "items": {"type": "string"},
-                                   "description": "选自当前角色相册的真实 image_id；会实际上传并附到说说，最多 9 张。"},
+                                   "description": "选自当前角色相册的真实 image_id（可通过 qzone.album.list 获取）或本轮生图返回的 artifact_id（imgart_*）；会实际上传并附到说说，最多 9 张。"},
                      "agenda_proposal": _agenda_proposal_schema()},
                     ("text", "topic", "scene", "confidence")),
             SideEffect.EXTERNAL_NETWORK, 300),
+        ExtensionToolDescriptor(
+            tool=ToolSpec(
+                ALBUM_LIST_ACTION,
+                "查看当前角色相册里近期可用的图片清单（含生成图和每日穿搭），返回真实 image_id 与摘要，供 qzone.post.publish 的 image_ids 配图使用。",
+                _schema({"limit": {"type": "integer", "description": "最多返回多少张近期相册图片，默认 8，上限 24。"}}),
+            ),
+            package=package_descriptor(),
+            binding=_binding(PUBLISH_ACTION),
+            source_owner=DATASET_OWNER,
+            side_effect=SideEffect.NONE,
+            timeout_seconds=15,
+        ),
     )
 
 
-__all__ = ["ACTIONS", "ARTIFACT_HASH", "CAPABILITIES", "COMMENT_ACTION", "DATASET_OWNER", "EXTENSION",
-           "FURNITURE", "GENERATION", "LIKE_ACTION", "MAX_REFERENCES_PER_SCOPE", "PACKAGE_ID",
+__all__ = ["ACTIONS", "ALBUM_LIST_ACTION", "ARTIFACT_HASH", "CAPABILITIES", "COMMENT_ACTION", "DATASET_OWNER",
+           "EXTENSION", "FURNITURE", "GENERATION", "LIKE_ACTION", "MAX_REFERENCES_PER_SCOPE", "PACKAGE_ID",
            "PACKAGE_VERSION", "PROVIDER", "PUBLIC_ACTIONS", "PUBLISHER_ID", "PUBLISH_ACTION",
            "READ_ACTION", "REFERENCE_TTL_MINUTES", "package_descriptor", "tool_descriptors"]

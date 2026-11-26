@@ -7,15 +7,22 @@ from unittest.mock import AsyncMock, patch
 from companion_v2.adapters.astrbot.tools import QzoneToolPort
 from companion_v2.conversation.external_tools import ExternalToolInvocation
 from companion_v2.execution.models import TaskError
-from companion_v2.qzone.capability import PUBLISH_ACTION, READ_ACTION, tool_descriptors
+from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef, SubjectKind, SubjectRef
+from companion_v2.qzone.capability import ALBUM_LIST_ACTION, PUBLISH_ACTION, READ_ACTION, tool_descriptors
 
 
 NOW = datetime(2026, 11, 16, 0, 0, tzinfo=timezone.utc)
 
 
-def invocation_for(action, arguments):
+def invocation_for(action, arguments, *, scope=None):
     descriptor = next(item for item in tool_descriptors() if item.tool.action == action)
-    context = SimpleNamespace(key="origin-qzone", scope=SimpleNamespace())
+    resolved_scope = scope or ScopeRef("inst-qzone", "qq", ScopeKind.PRIVATE, "200", bot_id="bot-a",
+                                       account_id="100", conversation_id="conv-qzone", session_id="200")
+    context = SimpleNamespace(
+        key="origin-qzone",
+        scope=resolved_scope,
+        audience=AudienceRef(resolved_scope, (SubjectRef("inst-qzone", SubjectKind.HUMAN, "user-1"),)),
+    )
     return ExternalToolInvocation(
         invocation_id="invocation-qzone",
         parent_task_id="task-qzone",
@@ -115,6 +122,60 @@ class QzoneToolPortFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((response.state, response.effect, response.error_code),
                          ("failed", "none", "qzone_auth_blocked"))
         self.assertIsNotNone(response.receipt_ref)
+
+    async def test_album_list_returns_visible_candidates_and_enforces_capability(self):
+        service = SimpleNamespace(
+            now=lambda: NOW,
+            _settings_gate=lambda context, at: {"enabled": True},
+            _require_capability=lambda context, capability: None,
+        )
+        application = SimpleNamespace(qzone=service)
+        port = QzoneToolPort(object())
+        port.application = application
+        invocation = invocation_for(ALBUM_LIST_ACTION, {"limit": 5})
+        items = [{"image_id": "generated-image:inv-1:0", "created_at": "2026-11-16T00:00:00+00:00",
+                  "action": "image.generate", "width": 64, "height": 64, "mime_type": "image/png",
+                  "summary": "雨后街角"}]
+
+        with patch("companion_v2.qzone.images.list_album_candidates", return_value=items) as list_mock:
+            response = await port.invoke("qzone:" + ALBUM_LIST_ACTION, invocation)
+
+        list_mock.assert_called_once_with(application, invocation.context, NOW, limit=5)
+        self.assertEqual((response.state, response.effect), ("succeeded", "none"))
+        self.assertEqual(json.loads(response.source.payload), {"count": 1, "items": items})
+
+        service._require_capability = lambda context, capability: (_ for _ in ()).throw(
+            TaskError("capability_consent_revoked", "permission revoked")
+        )
+        denied = await port.invoke("qzone:" + ALBUM_LIST_ACTION, invocation)
+        self.assertEqual((denied.state, denied.effect, denied.error_code),
+                         ("failed", "none", "capability_consent_revoked"))
+
+    async def test_publish_passes_resolved_outfit_album_image_and_source_ref(self):
+        from companion_v2.qzone.images import PublishImage
+        service = SimpleNamespace(now=lambda: NOW)
+        service.publish = AsyncMock(return_value={
+            "status": "done", "verified": True, "images_verified": True,
+            "operation_id": "op-1", "receipt_ref": "op-1",
+        })
+        application = SimpleNamespace(qzone=service)
+        port = QzoneToolPort(object())
+        port.application = application
+        outfit_id = "wardrobe-outfit:12345678:2026-11-16:abcdef12"
+        image = PublishImage(b"fake-png-bytes", "image/png", 16, 16, "a" * 64, source_id=outfit_id)
+        invocation = invocation_for(
+            PUBLISH_ACTION,
+            {"text": "换了一身秋装出门", "topic": "life_documentary", "scene": "role_activity",
+             "confidence": 0.9, "image_ids": [outfit_id]},
+        )
+
+        with patch("companion_v2.qzone.images.album_images", return_value=((image,), (outfit_id,))):
+            response = await port.invoke("qzone:" + PUBLISH_ACTION, invocation)
+
+        self.assertEqual((response.state, response.effect), ("succeeded", "committed"))
+        kwargs = service.publish.await_args.kwargs
+        self.assertEqual(kwargs["images"], (image,))
+        self.assertEqual(kwargs["source_refs"], [outfit_id])
 
 
 if __name__ == "__main__":

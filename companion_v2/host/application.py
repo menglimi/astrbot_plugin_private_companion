@@ -125,6 +125,7 @@ from companion_v2.references.wardrobe import (WardrobeConfigurationOwner, Wardro
     configuration_fields as wardrobe_configuration_fields)
 from companion_v2.qzone.configuration import (QzoneConfigurationOwner, QzoneSettings,
     configuration_fields as qzone_configuration_fields)
+from companion_v2.qzone.life_images import QzoneLifeImageGenerator
 from companion_v2.device.configuration import (PhoneConfigurationOwner, PhoneSettingsReader,
     configuration_fields as phone_configuration_fields)
 from companion_v2.qzone.service import QzoneService
@@ -363,6 +364,7 @@ class CompanionApplication:
         self.state_maintenance = StateMaintenance(runtime)
         self.calendar_planning = CalendarPlanning(runtime, weather_port=weather_port)
         self.daily_outfit = DailyOutfitPhotos(runtime, weather_port)
+        self.qzone_life_images = QzoneLifeImageGenerator(runtime)
         self.growth_progress = GrowthProgressService(runtime)
         self.self_review = SelfReviewService(runtime)
         self.expression_style = ExpressionStyleService(runtime)
@@ -399,7 +401,7 @@ class CompanionApplication:
                 side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding, timeout_seconds=30,
                 max_attempts=1, concurrency=self.worker_limit), lambda spec, at: self.delivery.validate(spec, at)),
         ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + self.screen_interpretation.registrations + self.screen_peek.registrations + self.phone_actions.registrations + self.authoring.registrations + (external.registrations if external is not None else ())
-        registrations += self.expression_draft_review.registrations + self.daily_outfit.registrations
+        registrations += self.expression_draft_review.registrations + self.daily_outfit.registrations + self.qzone_life_images.registrations
         self.tasks = TaskSupervisor(runtime, registrations, limits=limits, now=self.now)
         # Reference material shares this runtime and the supervisor that owns it, so
         # it is constructed here rather than with the other settings readers above.
@@ -524,6 +526,7 @@ class CompanionApplication:
         self.state_maintenance.attach(self)
         self.calendar_planning.attach(self)
         self.daily_outfit.attach(self)
+        self.qzone_life_images.attach(self)
         self.growth_progress.attach(self)
         self.self_review.attach(self)
         self.expression_style.attach(self)
@@ -1302,6 +1305,7 @@ class CompanionApplication:
             self.state_maintenance.cancel_running()
             self.calendar_planning.cancel_running()
             self.daily_outfit.cancel_running()
+            self.qzone_life_images.cancel_running()
             self.growth_progress.cancel_running()
             self.self_review.cancel_running()
             self.expression_style.cancel_running()
@@ -1324,6 +1328,7 @@ class CompanionApplication:
         return ((self.semantics.active_handles if self.semantics else ()) + self.runner.active_handles + self.journal_writer.active_handles + self.memory_reflection.active_handles
                 + self.role_reader.active_handles + self.life_runtime.active_handles
                 + self.state_maintenance.active_handles + self.calendar_planning.active_handles + self.daily_outfit.active_handles
+                + self.qzone_life_images.active_handles
                 + self.growth_progress.active_handles
                 + self.self_review.active_handles
                 + self.expression_style.active_handles
@@ -1378,6 +1383,7 @@ class CompanionApplication:
             await self.state_maintenance.close()
             await self.calendar_planning.close()
             await self.daily_outfit.close()
+            await self.qzone_life_images.close()
             await self.growth_progress.close()
             await self.self_review.close()
             await self.expression_style.close()
