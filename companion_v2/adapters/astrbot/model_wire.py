@@ -19,7 +19,9 @@ from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.prompt_composer import compose_prompt
 from companion_v2.conversation.media.animation import PromptAnimation
+from companion_v2.conversation.media.generated import OWNER as GENERATED_IMAGE_OWNER, _GeneratedPromptImage
 from companion_v2.conversation.media.reply import ImageReplyDraft, INSTRUCTION as REPLY_IMAGE_INSTRUCTION
+from companion_v2.conversation.media.screen import ScreenPromptImage
 
 
 REPLY_CONTRACT_EXAMPLE = (
@@ -208,9 +210,28 @@ def build_wire(envelope, *, model_name=""):
     omitted_image_count = 0
     if request.images:
         content = [{"type": "text", "text": messages[-1]["content"]}]
+        current_turn_parent_ids = set()
+        current_event_source = getattr(getattr(request, "event", None), "source", None)
+        current_parent_source_id = getattr(current_event_source, "source_id", None)
+        if isinstance(current_parent_source_id, str) and current_parent_source_id:
+            current_turn_parent_ids.add(current_parent_source_id)
+        for material in request.context.materials:
+            if material.source is not None and (
+                material.purpose == "current_source" or material.purpose.startswith("merged_input:")
+            ):
+                current_turn_parent_ids.add(material.source.source_id)
+
+        user_input_sources = frozenset(request.user_input_image_sources)
         rendered_items = []
-        for original in request.images:
+        for group_id, original in enumerate(request.images):
             material_only = request.output_format == "phone_action" and isinstance(original, PhonePromptImage)
+            is_current_turn_item = (
+                material_only
+                or original.parent.source_id in current_turn_parent_ids
+                or original.source in user_input_sources
+                or isinstance(original, (_GeneratedPromptImage, ScreenPromptImage))
+                or original.parent.owner in (GENERATED_IMAGE_OWNER, "screen")
+            )
             for ordinal, image in enumerate(original.rendered_images):
                 handle = "e_" + digest(image.source)
                 if evidence.get(handle) != image.source and not material_only:
@@ -218,24 +239,24 @@ def build_wire(envelope, *, model_name=""):
                 raw_bytes = rendered_image_bytes(image)
                 rendered_items.append((
                     len(rendered_items),
+                    group_id,
                     original,
                     ordinal,
                     image,
                     handle,
                     material_only,
+                    is_current_turn_item,
                     raw_bytes,
                 ))
-        current_event_source = getattr(getattr(request, "event", None), "source", None)
-        current_parent_source_id = getattr(current_event_source, "source_id", None)
         kept_indices = select_inline_image_indices(
             tuple(
-                (index, original.parent.source_id, raw_bytes, material_only)
-                for index, original, _ordinal, _image, _handle, material_only, raw_bytes in rendered_items
+                (index, original.parent.source_id, raw_bytes, is_current_turn_item, group_id)
+                for index, group_id, original, _ordinal, _image, _handle, _material_only, is_current_turn_item, raw_bytes in rendered_items
             ),
             image_budget_policy,
-            current_parent_source_id=current_parent_source_id,
+            current_parent_source_ids=current_turn_parent_ids or None,
         )
-        for index, original, ordinal, image, handle, material_only, raw_bytes in rendered_items:
+        for index, _group_id, original, ordinal, image, handle, material_only, _is_current, raw_bytes in rendered_items:
             metadata = ({"image_material": "device_screenshot"}
                         if material_only else {"image_evidence": handle})
             metadata.update({
@@ -243,7 +264,7 @@ def build_wire(envelope, *, model_name=""):
                 "component_position": image.descriptor.position,
                 "coverage": "one_static_image",
             })
-            if original.source in request.user_input_image_sources:
+            if original.source in user_input_sources:
                 metadata["image_origin"] = "user_input"
             if reply_images:
                 metadata["sendable_image"] = "e_" + digest(original.source)
@@ -271,8 +292,11 @@ def build_wire(envelope, *, model_name=""):
                     "original_width": image.descriptor.width,
                     "original_height": image.descriptor.height,
                     "original_bytes": raw_bytes,
-                    "inspect_hint": "该历史图片已按多模态预算降级为轻量元数据占位；如需核查原图细节，请调用 media_inspect 工具。",
                 })
+                if not material_only and "image_evidence" in metadata:
+                    omitted_metadata["inspect_hint"] = (
+                        "该历史图片已按多模态预算降级为轻量元数据占位；如需核查原图细节，请调用 media_inspect 工具。"
+                    )
                 content.append({"type": "text", "text": encode_prompt(omitted_metadata)})
         messages[-1]["content"] = content
     if request.audios:

@@ -25,7 +25,10 @@ from astrbot_host.native_extensions.image_native.types import ImageInvocation, N
 from companion_v2.adapters.astrbot.model_wire import build_wire
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.conversation.foreground import PromptMaterial
+from companion_v2.conversation.media.generated import OWNER as GENERATED_IMAGE_OWNER, _GeneratedPromptImage
 from companion_v2.conversation.media.models import ImageDescriptor, PromptImage
+from companion_v2.conversation.media.screen import ScreenPromptImage
+from companion_v2.device.prompt_image import PhonePromptImage
 from companion_v2.conversation.media.output_settings import (
     DEFAULTS,
     GROUP as OUTPUT_GROUP,
@@ -376,6 +379,64 @@ class NativeAdapterAndNAIContractTests(unittest.IsolatedAsyncioTestCase):
             )
             local.return_value.execute.assert_awaited_once()
 
+    async def test_nai_preserves_unconfirmed_for_partial_billing_or_explicit_non_retryable_and_legacy_401(self):
+        unconfirmed_cases = (
+            (
+                {"handled": True, "image_path": "", "reason": "http_503", "http_status": 503,
+                 "retryable": False, "note": "🔥 多图参考编码中断（可能已计费），请勿重复重试"},
+                503,
+            ),
+            (
+                {"handled": True, "image_path": "", "reason": "http_429", "http_status": 429,
+                 "note": "⚠️ 参考图处理触发限流，前面步骤可能已扣费"},
+                429,
+            ),
+            (
+                {"handled": True, "image_path": "", "reason": "http_503", "http_status": 503,
+                 "retryable": False, "note": "🔥 上游返回 HTTP 503"},
+                503,
+            ),
+            (
+                {"handled": True, "image_path": "", "reason": "rate_limited", "http_status": 429,
+                 "retryable": False, "note": "⚠️ 触发限流 HTTP 429"},
+                429,
+            ),
+        )
+        for payload, expected_status in unconfirmed_cases:
+            with self.subTest(reason=payload["reason"], status=expected_status, note=payload["note"][:20]):
+                self.api.generate_for_companion.side_effect = None
+                self.api.generate_for_companion.return_value = payload
+                with self.assertRaises(NativeImageError) as raised:
+                    await self.backend.execute(
+                        ImageInvocation("scope", "req-unconf", "inv-unconf", "origin", "generate", "sky"),
+                        (),
+                        self._dispatch,
+                    )
+                self.assertEqual(raised.exception.code, "nai_generation_unconfirmed")
+                self.assertTrue(raised.exception.unconfirmed)
+                diag = raised.exception.diagnostics[0]
+                self.assertEqual(diag["status"], expected_status)
+                self.assertIs(diag.get("retryable"), False)
+
+        # Legacy NAI payloads without integer http_status carrying reason="http_401"/"http_403".
+        for legacy_reason, expected_status in (("http_401", 401), ("http_403", 403)):
+            with self.subTest(legacy_reason=legacy_reason):
+                self.api.generate_for_companion.side_effect = None
+                self.api.generate_for_companion.return_value = {
+                    "handled": True, "image_path": "", "reason": legacy_reason,
+                    "note": f"❌ 上游拒绝 {legacy_reason}",
+                }
+                with self.assertRaises(NativeImageError) as raised:
+                    await self.backend.execute(
+                        ImageInvocation("scope", "req-legacy", "inv-legacy", "origin", "generate", "sky"),
+                        (),
+                        self._dispatch,
+                    )
+                self.assertEqual(raised.exception.code, "nai_plugin_unavailable")
+                self.assertFalse(raised.exception.unconfirmed)
+                self.assertEqual(raised.exception.diagnostics[0]["status"], expected_status)
+                self.assertIs(raised.exception.diagnostics[0]["retryable"], False)
+
     def test_timeout_and_upstream_failure_guidance_stops_waiting_deadlock(self):
         unknown_hint = failure_guidance("nai_generation_timed_out", "unknown", action="image.generate")
         self.assertIn("尚未确认", unknown_hint["reason"])
@@ -696,6 +757,21 @@ class ImageHistoryBudgetAndEstimateTests(NativeFixture, unittest.IsolatedAsyncio
             select_inline_image_indices(entries, ImageHistoryBudgetPolicy(max_inline_images=0)),
             frozenset(),
         )
+        # Atomic group preservation: a 3-frame historical animation does not get sliced
+        # into a partial tail when only 2 inline slots remain; an older 1-frame image fits.
+        grouped_entries = (
+            (0, "turn-1", 50_000, False, "static-old"),
+            (1, "turn-2", 50_000, False, "anim-old"),
+            (2, "turn-2", 50_000, False, "anim-old"),
+            (3, "turn-2", 50_000, False, "anim-old"),
+            (4, "turn-3", 50_000, True, "current-0"),
+            (5, "turn-3", 50_000, True, "current-1"),
+        )
+        anim_policy = ImageHistoryBudgetPolicy(max_inline_images=4, max_inline_bytes=1_000_000, keep_latest_turn_images=True)
+        self.assertEqual(
+            select_inline_image_indices(grouped_entries, anim_policy, current_parent_source_id="turn-3"),
+            frozenset({0, 4, 5}),
+        )
 
     async def test_build_wire_degrades_older_images_to_metadata_placeholders_while_keeping_evidence(self):
         envelope = await self.envelope()
@@ -716,7 +792,7 @@ class ImageHistoryBudgetAndEstimateTests(NativeFixture, unittest.IsolatedAsyncio
                 materials=self._image_materials(envelope.original.context.materials, (img_old_1, img_old_2, img_new)),
             ),
             images=(img_old_1, img_old_2, img_new),
-            user_input_image_sources=(img_old_1.source, img_old_2.source, img_new.source),
+            user_input_image_sources=(img_new.source,),
             reply_images=True,
         )
         policy = ImageHistoryBudgetPolicy(
@@ -809,7 +885,7 @@ class ImageHistoryBudgetAndEstimateTests(NativeFixture, unittest.IsolatedAsyncio
                 materials=self._image_materials(envelope.original.context.materials, (img_old, img_new)),
             ),
             images=(img_old, img_new),
-            user_input_image_sources=(img_old.source, img_new.source),
+            user_input_image_sources=(img_new.source,),
         )
         observed_policies = []
         original_reserve = self.native_model.reserve
@@ -850,6 +926,123 @@ class ImageHistoryBudgetAndEstimateTests(NativeFixture, unittest.IsolatedAsyncio
         fits, _ceiling = gateway.estimate(NS(task=NS(task_id="t1", spec=NS(kind="conversation.reply"))), request)
         self.assertTrue(fits)
         self.assertEqual(observed_policies, [tight_policy])
+
+    async def test_build_wire_preserves_merged_inputs_generated_images_and_screen_captures_in_current_turn(self):
+        envelope = await self.envelope()
+        scope = envelope.original.event.scope
+        current_parent = envelope.original.event.source
+
+        # Older historical image that should degrade when budget is saturated.
+        old_png = noisy_png_bytes(120, 120, seed=11)
+        img_old = self._make_prompt_image(scope, "hist-old-1", "msg-hist-old", old_png, position=0)
+
+        # Debounced merged input messages (4 current-turn images across primary + merged_input + quote).
+        merged_parent = SourceRef("msg-merged-2", "conversation.message", scope, VersionRef("msg-merged-2", 1), NOW)
+        quote_parent = SourceRef("msg-quoted-1", "conversation.quotes", scope, VersionRef("msg-quoted-1", 1), NOW)
+        p0 = noisy_png_bytes(40, 40, seed=21)
+        p1 = noisy_png_bytes(40, 40, seed=22)
+        p2 = noisy_png_bytes(40, 40, seed=23)
+        p3 = noisy_png_bytes(40, 40, seed=24)
+        img_c0 = self._make_prompt_image(scope, "cur-0", current_parent, p0, position=0)
+        img_c1 = self._make_prompt_image(scope, "cur-1", current_parent, p1, position=1)
+        img_c2 = self._make_prompt_image(scope, "cur-merged-2", merged_parent, p2, position=0)
+        img_c3 = self._make_prompt_image(scope, "cur-quoted-3", quote_parent, p3, position=0)
+
+        # Freshly generated image in this turn (_GeneratedPromptImage).
+        gen_png = noisy_png_bytes(45, 45, seed=25)
+        gen_parent = SourceRef("gen-op-1", GENERATED_IMAGE_OWNER, scope, VersionRef("gen-op-1", 1), NOW)
+        gen_source = SourceRef("gen-img-1", "conversation.image", scope, VersionRef("gen-img-1", 1), NOW)
+        gen_desc = ImageDescriptor(0, "image/png", 45, 45, len(gen_png), hashlib.sha256(gen_png).hexdigest())
+        img_gen = _GeneratedPromptImage(
+            source=gen_source,
+            parent=gen_parent,
+            descriptor=gen_desc,
+            data_base64=base64.b64encode(gen_png).decode("ascii"),
+            manifest_payload="{}",
+            metadata_payload="{}",
+            first_in_manifest=True,
+        )
+
+        # Live screen capture in this turn (ScreenPromptImage).
+        scr_png = noisy_png_bytes(45, 45, seed=26)
+        scr_parent = SourceRef("scr-cap-1", "screen", scope, VersionRef("scr-cap-1", 1), NOW)
+        scr_source = SourceRef("scr-img-1", "screen", scope, VersionRef("scr-img-1", 1), NOW)
+        scr_desc = ImageDescriptor(0, "image/png", 45, 45, len(scr_png), hashlib.sha256(scr_png).hexdigest())
+        img_scr = ScreenPromptImage(
+            source=scr_source,
+            parent=scr_parent,
+            descriptor=scr_desc,
+            data_base64=base64.b64encode(scr_png).decode("ascii"),
+            capture_payload="{}",
+        )
+
+        all_images = (img_old, img_c0, img_c1, img_c2, img_c3, img_gen, img_scr)
+        extra_materials = (
+            PromptMaterial("conversation.message", "merged_input:msg-merged-2", "second msg", source=merged_parent),
+            PromptMaterial("conversation.quotes", "quoted_message:msg-quoted-1", "quoted msg", source=quote_parent),
+            PromptMaterial(GENERATED_IMAGE_OWNER, "generated_image:gen-op-1", "generated", source=gen_parent),
+            PromptMaterial("screen", "screen_capture:scr-cap-1", "screen", source=scr_parent),
+        )
+        base_materials = (*envelope.original.context.materials, *extra_materials)
+        request = replace(
+            envelope.original,
+            context=replace(
+                envelope.original.context,
+                materials=self._image_materials(base_materials, all_images),
+            ),
+            images=all_images,
+            user_input_image_sources=(img_c0.source, img_c1.source, img_c2.source, img_c3.source),
+        )
+        # Default policy (max_inline_images=4) is already saturated by the 4 user attachments;
+        # merged_input, quoted, generated, and screen images must ALL stay inline while img_old degrades.
+        wire = build_wire(replace(envelope, original=request, image_history_budget=ImageHistoryBudgetPolicy(max_inline_images=4)))
+        self.assertEqual(wire.image_count, 6)
+        self.assertEqual(wire.omitted_image_count, 1)
+        wire_blob = json.dumps(wire.messages, ensure_ascii=False)
+        for kept_img in (img_c0, img_c1, img_c2, img_c3, img_gen, img_scr):
+            self.assertIn(kept_img.data_base64, wire_blob)
+        self.assertNotIn(img_old.data_base64, wire_blob)
+
+    async def test_material_only_omitted_image_never_emits_media_inspect_hint(self):
+        envelope = await self.envelope()
+        scope = envelope.original.event.scope
+        phone_png = noisy_png_bytes(40, 40, seed=31)
+        phone_desc = ImageDescriptor(0, "image/png", 40, 40, len(phone_png), hashlib.sha256(phone_png).hexdigest())
+        phone_src = SourceRef("phone-src-1", "device.phone", scope, VersionRef("phone-src-1", 1), NOW)
+        phone_parent = SourceRef("phone-parent-1", "device.phone", scope, VersionRef("phone-parent-1", 1), NOW)
+        phone_img = PhonePromptImage(
+            source=phone_src,
+            parent=phone_parent,
+            descriptor=phone_desc,
+            data_base64=base64.b64encode(phone_png).decode("ascii"),
+        )
+        # PhonePromptImage bypasses standard PromptRequest image validation only under phone_action.
+        fake_request = NS(
+            output_format="phone_action",
+            reply_actions=("text",),
+            reply_images=False,
+            native_video_input=False,
+            context=NS(materials=(), deferred=(), unavailable=()),
+            role_instruction="role",
+            instruction="inst",
+            user_instruction="",
+            streaming_mode="buffered",
+            images=(phone_img,),
+            user_input_image_sources=(),
+            audios=(),
+            videos=(),
+            event=NS(source=None),
+        )
+        wire = build_wire(
+            replace(envelope, original=fake_request, tools=(), tool_history=(),
+                    image_history_budget=ImageHistoryBudgetPolicy(max_inline_images=0)),
+        )
+        self.assertEqual(wire.image_count, 0)
+        self.assertEqual(wire.omitted_image_count, 1)
+        omitted_part = json.loads(wire.messages[-1]["content"][-1]["text"])
+        self.assertEqual(omitted_part["image_material"], "device_screenshot")
+        self.assertTrue(omitted_part["omitted_from_inline_media"])
+        self.assertNotIn("inspect_hint", omitted_part)
 
 
 if __name__ == "__main__":

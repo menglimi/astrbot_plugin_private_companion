@@ -17,6 +17,7 @@ _NAI_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _NAI_NOTE_PREFIXES = ("🚫", "❌", "⏱", "📭", "🖼", "💥", "🔥", "⚠️", "❓", "NAI ", "提示词为空", "图片已生成但保存失败")
+_MAYBE_BILLED_MARKERS = ("可能计费", "可能已计费", "可能已扣费")
 _SUBJECT_MODES = frozenset(("character", "scene_only", "edit_preserve"))
 
 
@@ -221,15 +222,26 @@ class NAIImageBackend:
             int(status_match.group(1) or status_match.group(2)) if status_match else 0
         )
 
-        if raw_reason in {"no_token", "no_session", "openai_not_configured", "openai_key_missing"} or (
-            raw_note.startswith("❌") and any(k in raw_note for k in ("未配置", "未初始化"))
-        ) or explicit_status in (401, 403):
-            return "nai_plugin_unavailable", explicit_status, detail, True, False
+        if (
+            raw_reason in {"no_token", "no_session", "openai_not_configured", "openai_key_missing"}
+            or (raw_note.startswith("❌") and any(k in raw_note for k in ("未配置", "未初始化")))
+            or explicit_status in (401, 403)
+            or raw_reason.startswith(("http_401", "http_403"))
+        ):
+            return "nai_plugin_unavailable", status, detail, True, False
 
         if raw_reason == "timeout" or raw_note.startswith("⏱"):
             return "nai_generation_timed_out", status, detail, False, explicit_retryable
 
-        if status == 429 or raw_reason in {"rate_limited", "http_429"} or raw_reason.startswith("http_429"):
+        # Partial-billing guard (e.g., multi-reference Vibe encoding that may
+        # already have billed earlier steps before a 429/503 failure): never
+        # classify as confirmed-unbilled or retryable.
+        if any(marker in raw_note for marker in _MAYBE_BILLED_MARKERS):
+            return "nai_generation_unconfirmed", status, detail, False, False
+
+        if explicit_retryable is not False and (
+            status == 429 or raw_reason in {"rate_limited", "http_429"} or raw_reason.startswith("http_429")
+        ):
             return "backend_rate_limited", 429, detail, True, True
 
         # Definitive pre-billing rejections: empty prompt, missing reference,
@@ -249,8 +261,9 @@ class NAIImageBackend:
         # failures, or explicit retryable=True non-timeout errors): NAI finished
         # a synchronous exchange with a definite failure rather than timing out,
         # so nothing was committed and the turn can end cleanly instead of
-        # locking in an unconfirmed wait state.
-        if (
+        # locking in an unconfirmed wait state.  Respect explicit retryable=False
+        # (for example partially-billed failures) by leaving them unconfirmed.
+        if explicit_retryable is not False and (
             status in (502, 503, 504)
             or raw_reason in {
                 "upstream_unavailable", "bad_gateway", "service_unavailable",
