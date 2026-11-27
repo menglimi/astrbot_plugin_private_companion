@@ -700,14 +700,36 @@ class NativeExtensionRegistry(AstrBotToolPort):
                 return self._preflight_failure(invocation, error.code, prefix="astrbot.camera-preflight.")
         request = invocation_request(invocation)
         if action in IMAGE_ACTIONS and self.runtime is not None:
-            from companion_v2.conversation.media.output_settings import effective_settings, apply_prompts
+            from companion_v2.conversation.media.output_settings import (
+                apply_prompts,
+                effective_settings,
+                resolve_image_subject_intent,
+            )
             preferences = effective_settings(self.runtime, invocation.context)
-            prompts = apply_prompts(request["arguments"], action, preferences)
-            request["image_prompt"] = {"positive":prompts["prompt"], "negative":prompts["negative_prompt"]}
-            nai_prompts = apply_prompts(request["arguments"], action,
-                                       {**preferences, "style": "custom", "style_prompt": ""})
+            effective_roles = ()
+            if reference_lease is not None:
+                effective_roles = reference_lease.selected_roles()
+            elif action == "image.edit" and str(request["arguments"].get("artifact_id") or "").strip():
+                effective_roles = ("edit_source",)
+            intent = resolve_image_subject_intent(
+                request["arguments"], action, preferences, reference_roles=effective_roles,
+            )
+            prompts = apply_prompts(
+                request["arguments"], action, preferences, reference_roles=effective_roles,
+            )
+            request["image_prompt"] = {"positive": prompts["prompt"], "negative": prompts["negative_prompt"]}
+            nai_prompts = apply_prompts(
+                request["arguments"], action,
+                {**preferences, "style": "custom", "style_prompt": ""},
+                reference_roles=effective_roles,
+            )
             request["nai_prompt"] = {"positive": nai_prompts["prompt"],
                                     "negative": request["arguments"].get("negative_prompt", "")}
+            request["image_intent"] = {
+                "subject_mode": intent["subject_mode"],
+                "preserve_source_style": intent["preserve_source_style"],
+                "allow_fallback_references": intent["allow_fallback_references"],
+            }
         if invocation.descriptor.tool.action == TOGETHER_CREATE_ACTION:
             if self.persona_guard is None:
                 raise TaskError("native_persona_guard_missing", "room creation requires a verified host persona")

@@ -371,6 +371,8 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assert_no_reply_work(event)
 
     async def test_native_artifact_id_still_resolves_after_more_than_one_page_of_new_images(self):
+        self.configure_images(ImageOutputConfigurationOwner(self.runtime), output_fields(),
+                              {OUTPUT_GROUP + ".max_calls_per_turn": -1})
         event, request = self.prepare("native-image-artifact-retention")
         first = await self.call(event, request, "image.generate", {"prompt": "第一张"}, "retention-000")
         first_result = self.result(first, "red")

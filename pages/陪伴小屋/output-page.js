@@ -40,6 +40,7 @@ window.CompanionOutputPage=(()=>{
     nai_generation_failed:"NAI 调用未取得可确认结果，未重复生成",
     nai_generation_unconfirmed:"NAI 未返回可确认的图片，未重复生成",
     nai_request_rejected:"NAI 拒绝了本次生图参数或参考图模式（未扣费），请检查 NAI 插件模型与参考图设置",
+    nai_upstream_unavailable:"NAI 生图上游服务暂时不可用（如网关 502/503/504 故障），未生成图片，可稍后重试",
     nai_generation_interrupted:"NAI 调用已中断，结果未知，未重复生成",
     nai_output_unavailable:"NAI 返回的图片暂不可读取"};
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",observationSeq=0,observationRefreshedAt="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;

@@ -858,6 +858,11 @@ class CoreReplyToolSession:
             denial_reason = _GROUP_ADMIN_DENIAL_REASONS.get(error.code)
             if denial_reason:
                 payload["reason"] = denial_reason
+            else:
+                from companion_v2.conversation.tool_failures import failure_guidance
+                guidance = failure_guidance(error.code, "failed", action=action)
+                if guidance:
+                    payload.update(guidance)
             return encode(payload)
         except (ValueError, ValidationError):
             return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",

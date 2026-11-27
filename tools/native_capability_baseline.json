@@ -1,10 +1,10 @@
 {
   "schema": "companion.native-capability-baseline.v1",
-  "package_version": "7.3.5",
+  "package_version": "7.3.6",
   "artifact_hashes": {
     "content": "667caad4526e0a4f8e0ccbae4887e2325bf0dfd4fe755475353cd69588e2ad06",
     "game": "ed1ed83df2da727a80afe904aae9c67851f25f9ba840677fb7558fa1aec3a111",
-    "image": "1fa356717cf158ba73c91fcca44a20dd2da3257532a253642a566f254d27da82",
+    "image": "cf01f4de29bd8424bcc4a1ad5c711310be698b2b60eef375577c474dc2f760dd",
     "live": "223ff54b48dab26232027e4763c2a6999a944e254e48f0cb215d2ce235238c92",
     "reality": "b5b108962cd88d31a2eea4aeaaad107cf2d7b5998739406e52e6e576d943f37d",
     "screen": "a94791807019e0b2ac94b085361b8ca85965c8cda9a9d4af0ca18500ef8804fd",

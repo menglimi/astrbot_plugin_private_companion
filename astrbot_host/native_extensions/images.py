@@ -357,6 +357,22 @@ class ImageReferenceLease:
             return None
         return role
 
+    def selected_roles(self):
+        """Return the ordered reference roles that this lease will bind to the provider."""
+        action = self.invocation.descriptor.tool.action
+        if action == "image.mask_edit":
+            return ("edit_source", "edit_mask")
+        if action != "image.edit":
+            return ()
+        arguments = json.loads(self.invocation.arguments_json)
+        inbound = tuple(item for item in self._tickets if "roles" not in item)
+        saved = {item["reference_id"]: item for item in self._tickets if "roles" in item}
+        try:
+            selected = select_edit_tickets(arguments, inbound, saved)
+            return tuple(edit_role(arguments, selected, ticket) for ticket in selected)
+        except ReferenceSelectionError:
+            return ()
+
     def _recheck(self, ticket, at):
         messages, context = self.messages, self.invocation.context
         registered = ticket.get("registered_asset")
