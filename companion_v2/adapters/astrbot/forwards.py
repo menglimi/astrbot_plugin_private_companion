@@ -12,7 +12,7 @@ from companion_v2.conversation.quotes.models import message_number
 from companion_v2.execution.models import TaskError, digest
 
 from .native import account_number
-from .history import extract_history_messages
+from .history import fetch_onebot_history_record, parse_signed_int
 from .quotes import image_locator
 
 
@@ -236,17 +236,40 @@ async def read_private_forwards(locators, *, message_id, client, scope, reverse_
         # distinguish multiple cards in one message. Read this exact outer
         # message from the pinned peer, with all forward contents expanded.
         sequence = message_number(message_id, error_code="host_forward_invalid")
-        raw = await api.call_action("get_friend_msg_history", self_id=scope.account_id,
-            user_id=scope.native_scope_id, message_seq=sequence, count=1,
-            reverse_order=False, parse_mult_msg=True)
-        current()
-        records = extract_history_messages(raw)
-        if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+        peer_int = parse_signed_int(scope.native_scope_id)
+        msg_int = parse_signed_int(sequence)
+        primary_params = {
+            "self_id": scope.account_id,
+            "user_id": scope.native_scope_id,
+            "message_seq": sequence,
+            "count": 1,
+            "reverse_order": False,
+            "parse_mult_msg": True,
+        }
+        fallback_params = {
+            "self_id": scope.account_id,
+            "user_id": peer_int if peer_int is not None else scope.native_scope_id,
+            "message_id": msg_int if msg_int is not None else sequence,
+            "count": 1,
+            "reverse_order": False,
+        }
+
+        async def _call_history(action, params):
+            return await api.call_action(action, **params)
+
+        outer, _records = await fetch_onebot_history_record(
+            _call_history,
+            "get_friend_msg_history",
+            expected_message_id=sequence,
+            primary_params=primary_params,
+            fallback_params=fallback_params,
+            after_call=current,
+        )
+        if not isinstance(outer, dict):
             raise TaskError("host_forward_unavailable", "history did not return the original outer message")
-        outer = records[0]
         if (outer.get("message_type") != "private" or outer.get("sub_type", "friend") != "friend"
                 or outer.get("group_id") not in (None, "", 0, "0")
-                or account_number(outer.get("self_id")) != scope.account_id
+                or (outer.get("self_id") is not None and account_number(outer["self_id"]) != scope.account_id)
                 or message_number(outer.get("message_id"), error_code="host_forward_scope_mismatch") != sequence
                 or account_number(outer.get("sender", {}).get("user_id")) != scope.native_scope_id
                 or (outer.get("user_id") is not None and account_number(outer["user_id"]) != scope.native_scope_id)):

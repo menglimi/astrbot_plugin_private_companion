@@ -476,7 +476,13 @@ async def _try_fetch_multi_card_history(
         return None
     message_obj = getattr(event, "message_obj", None)
     msg_id_str = _event_message_id(event)
-    if not msg_id_str.isdigit():
+    msg_id_int = None
+    try:
+        from companion_v2.adapters.astrbot.history import fetch_onebot_history_record, parse_signed_int
+        msg_id_int = parse_signed_int(msg_id_str)
+    except Exception:
+        return None
+    if msg_id_int is None or msg_id_int == 0:
         return None
     msg_type = getattr(getattr(message_obj, "type", None), "value",
                        getattr(message_obj, "type", None))
@@ -485,38 +491,62 @@ async def _try_fetch_multi_card_history(
     user_id = getattr(sender, "user_id", None)
     if msg_type == "FriendMessage" and user_id is not None:
         action = "get_friend_msg_history"
-        params = {
-            "user_id": int(str(user_id)) if str(user_id).isdigit() else str(user_id),
-            "message_seq": int(msg_id_str),
+        peer_id = int(str(user_id)) if str(user_id).isdigit() else str(user_id)
+        primary_params = {
+            "user_id": peer_id,
+            "message_seq": msg_id_int,
             "count": 1,
             "reverse_order": False,
             "parse_mult_msg": True,
+        }
+        fallback_params = {
+            "user_id": peer_id,
+            "message_id": msg_id_int,
+            "count": 1,
+            "reverse_order": False,
         }
     elif msg_type == "GroupMessage" and group_id is not None:
         action = "get_group_msg_history"
-        params = {
-            "group_id": int(str(group_id)) if str(group_id).isdigit() else str(group_id),
-            "message_seq": int(msg_id_str),
+        peer_group = int(str(group_id)) if str(group_id).isdigit() else str(group_id)
+        primary_params = {
+            "group_id": peer_group,
+            "message_seq": msg_id_int,
             "count": 1,
             "reverse_order": False,
             "parse_mult_msg": True,
         }
+        fallback_params = {
+            "group_id": peer_group,
+            "message_id": msg_id_int,
+            "count": 1,
+            "reverse_order": False,
+        }
     else:
         return None
+
+    async def _invoke(act, params):
+        rem = deadline - clock()
+        if rem <= 0.05:
+            return None
+        return await asyncio.wait_for(
+            call_action(act, **params),
+            timeout=min(fetch_timeout, rem),
+        )
+
     try:
-        raw = await asyncio.wait_for(
-            call_action(action, **params),
-            timeout=min(fetch_timeout, remaining),
+        outer, _records = await fetch_onebot_history_record(
+            _invoke,
+            action,
+            expected_message_id=msg_id_str,
+            primary_params=primary_params,
+            fallback_params=fallback_params,
         )
     except asyncio.CancelledError:
         raise
     except Exception:
         return None
-    data = raw.get("data") if isinstance(raw, Mapping) and isinstance(raw.get("data"), (Mapping, list)) else raw
-    records = data.get("messages") if isinstance(data, Mapping) else data
-    if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], Mapping):
+    if not isinstance(outer, Mapping):
         return None
-    outer = records[0]
     if str(outer.get("message_id", "")).strip() != msg_id_str:
         return None
     parts = outer.get("message")
