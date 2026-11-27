@@ -14186,11 +14186,15 @@ body.room-editing .product-scope{display:none}
 .phone-usage-page .wb-card-head { display: none; }
 .phone-usage-page .wb-card-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); padding: 0; }
 .phone-usage-page .wb-group { margin: 0; padding: 0; border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-raised); box-shadow: var(--t-shadow); overflow: hidden; }
-.phone-usage-page .wb-group + .wb-group { margin-top: 0; padding-top: 0; border-top: 1px solid var(--t-line); }
-.phone-usage-page .wb-group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); margin: 0; padding: var(--sp-3) var(--sp-4) 0; color: var(--t-text-strong); font-size: var(--fs-body); font-weight: 600; }
+.phone-usage-page .wb-group + .wb-group,
+.phone-usage-page .wb-card:not(.wb-journal):not(.wb-policy) .wb-group + .wb-group { margin-top: 0; }
+.phone-usage-page .wb-group:not(:has(> .wb-group-header)) + .wb-group:not(:has(> .wb-group-header)) { padding-top: 0; border-top: 1px solid var(--t-line); }
+.phone-usage-page .wb-group > .wb-group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); margin: 0; padding: var(--sp-3) var(--sp-4) 0; color: var(--t-text-strong); font-size: var(--fs-body); font-weight: 600; }
+.phone-usage-page .wb-group > .wb-group-header .wb-group-head { margin: 0; padding: 0; }
 .phone-usage-page .wb-group > .wb-help { margin: 0; padding: var(--sp-1) var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--t-line); color: var(--t-text-faint); font-size: var(--fs-micro); line-height: 1.55; }
 .phone-group-count { display: inline-flex; align-items: center; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--t-line); border-radius: var(--r-pill); background: var(--t-surface-soft); color: var(--t-text-soft); font-size: var(--fs-micro); font-weight: 500; line-height: 1.25; white-space: nowrap; flex: none; }
 .phone-usage-page .wb-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+.phone-usage-page .wb-group:has(> .wb-group-header) > .wb-fields { padding: 0; }
 .phone-usage-page .wb-field { display: grid; grid-template-columns: 4px minmax(0, 1fr); align-items: start; gap: var(--sp-2) var(--sp-3); margin: 0; padding: var(--sp-3); border: 1px solid var(--t-line); border-radius: var(--r-sm); background: var(--t-surface-soft); box-sizing: border-box; }
 .phone-usage-page .wb-field:where(:has(>.wb-field-side:not(:empty))) { grid-template-columns: 4px minmax(0, 1fr); }
 .phone-usage-page .wb-field > .wb-field-side { grid-column: 2; justify-self: start; padding-top: 0; }
@@ -14221,6 +14225,7 @@ body.room-editing .product-scope{display:none}
 .phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-field-error { grid-column: 1 / -1; grid-row: 3; }
 /* 「操作授权与访问范围」：允许的动作与允许使用的对象在桌面端并排等高，彻底消除空白空洞。 */
 .phone-usage-page [data-wb-group="scope"] .wb-field:has(textarea) { grid-column: auto; }
+.phone-usage-page [data-wb-group="scope"] .wb-field.is-span-full { grid-column: auto; }
 .phone-usage-page [data-wb-row="allowed_actions"] > .wb-field-main > .wb-control { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); align-content: start; }
 .phone-usage-page [data-wb-row="allowed_subjects"] > .wb-field-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; align-content: stretch; height: 100%; }
 .phone-usage-page [data-wb-row="allowed_subjects"] > .wb-field-main > .wb-control { display: grid; grid-template-columns: minmax(0, 1fr); align-self: stretch; height: 100%; }
@@ -14826,9 +14831,10 @@ body.room-editing .product-scope{display:none}
   .phone-setup-usb, .phone-setup-wireless { padding: var(--sp-3); }
   .phone-setup-modes button { min-height: 44px; }
   .phone-advanced > summary { padding: var(--sp-3); }
-  .phone-usage-page .wb-group-head { padding: var(--sp-3) var(--sp-3) 0; }
+  .phone-usage-page .wb-group > .wb-group-head { padding: var(--sp-3) var(--sp-3) 0; }
   .phone-usage-page .wb-group > .wb-help { padding: var(--sp-1) var(--sp-3) var(--sp-3); }
   .phone-usage-page .wb-fields { grid-template-columns: minmax(0, 1fr); padding: var(--sp-3); }
+  .phone-usage-page .wb-group:has(> .wb-group-header) > .wb-fields { padding: 0; }
   .phone-action-chip { min-height: 40px; }
   .phone-usage-page .wb-actions { padding: var(--sp-3); }
   .native-management-qr { flex-direction: column; align-items: flex-start; }

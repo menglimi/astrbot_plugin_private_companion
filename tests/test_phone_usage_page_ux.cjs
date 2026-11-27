@@ -419,3 +419,46 @@ test("MutationObserver 生命周期回归：防重入断连、unmount 清理、r
   const appSource = readPage("app.js");
   assert.match(appSource, /const\s+phoneSetup\s*=\s*window\.CompanionPhoneSetup\?\.mount\(setup,\s*\{editor,\s*adbRoot\}\);\s*if\s*\(phoneSetup\)\s*configEditorMounts\.push\(phoneSetup\);/);
 });
+
+test("双态兼容回归：共享工作台自带 .wb-group-header 与兄弟 .wb-group-count 时不重复插入徽标且零双层内边距", () => {
+  const window = {CompanionProduct: {request: async () => ({}), errorLabel: c => c}};
+  const document = {createElement: makeMiniElement};
+  const sandbox = vm.createContext({
+    window, document, console, Array, Object, String, Boolean, Promise,
+    FormData: class {},
+    crypto: {randomUUID: () => "op-compat-1"},
+  });
+  vm.runInContext(readPage("phone-setup.js"), sandbox);
+  const PhoneSetup = sandbox.window.CompanionPhoneSetup;
+
+  const adbRoot = makeMiniElement("section");
+  const group = makeMiniElement("section");
+  group.className = "wb-group";
+  const header = makeMiniElement("header");
+  header.className = "wb-group-header";
+  const copy = makeMiniElement("div");
+  copy.className = "wb-group-copy";
+  const head = makeMiniElement("h4");
+  head.className = "wb-group-head";
+  head.textContent = "连接与设备";
+  copy.append(head);
+  const siblingCount = makeMiniElement("span");
+  siblingCount.className = "wb-group-count";
+  siblingCount.textContent = "4 项";
+  header.append(copy, siblingCount);
+
+  const field = makeMiniElement("div");
+  field.className = "wb-field";
+  group.append(header, field);
+  adbRoot.append(group);
+
+  PhoneSetup.enhanceAdvancedWorkspace(adbRoot);
+  const allCounts = group.querySelectorAll(".phone-group-count, .wb-group-count");
+  assert.equal(allCounts.length, 1, "存在兄弟 .wb-group-count 时不得重复插入 .phone-group-count");
+  assert.equal(allCounts[0], siblingCount);
+
+  const css = readPage("native-extension-panel.css");
+  assert.match(css, /\.phone-usage-page\s+\.wb-group\s*>\s*\.wb-group-head\s*\{/);
+  assert.match(css, /\.phone-usage-page\s+\.wb-group\s*>\s*\.wb-group-header\s+\.wb-group-head\s*\{\s*margin:\s*0;\s*padding:\s*0;\s*\}/);
+  assert.match(css, /\.phone-usage-page\s+\.wb-group:has\(>\s*\.wb-group-header\)\s*>\s*\.wb-fields\s*\{\s*padding:\s*0;\s*\}/);
+});

@@ -247,7 +247,7 @@ window.CompanionPhoneSetup = (() => {
     if (typeof document?.createElement === "function") {
       adbRoot.querySelectorAll(".wb-group").forEach(group => {
         const head = group.querySelector(".wb-group-head");
-        if (!head || head.querySelector(".phone-group-count, .wb-group-count")) return;
+        if (!head || group.querySelector(".phone-group-count, .wb-group-count")) return;
         const count = group.querySelectorAll(".wb-field:not([hidden])").length;
         if (!count) return;
         const pill = document.createElement("span");
