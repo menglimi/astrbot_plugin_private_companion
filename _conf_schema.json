@@ -1155,6 +1155,6 @@
         "default": 1500
       }
     },
-    "hint": "在 AstrBot 的 Python 环境安装 onnxruntime 和 tokenizers，填写模型目录并重载插件，再到陪伴小屋「私聊节奏 · 连续输入」开启本地模型判断。"
+    "hint": "仅在陪伴小屋「私聊节奏 · 连续输入 → 语义补话判断」选择「本地 ONNX 小模型」时需要配置：在 AstrBot 的 Python 环境安装 onnxruntime 和 tokenizers，填写模型目录并重载插件。若选择「复用 Laya 决策模型」，则无需配置此处。"
   }
 }

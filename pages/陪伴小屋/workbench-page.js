@@ -1131,6 +1131,11 @@ window.CompanionWorkbench = (() => {
        （见 wireFieldDescriptions）。只写 aria-invalid 不告诉读屏「为什么无效」。 */
     const helpId = `${state.instanceId}-help-${name}`;
     const errorId = `${state.instanceId}-error-${name}`;
+    const fieldNoteMarkup = (item, value, state) => {
+      if (typeof item.note !== "function") return "";
+      const html = item.note(value, state) || "";
+      return `<div class="wb-field-note" data-wb-field-note="${e(item.name)}">${html}</div>`;
+    };
     if (container.presentation === "policy") {
       const writeLayer = item.writeLayer || container.writeLayer;
       const overridden = provenance.explicit === true && provenance.layer === writeLayer
@@ -1142,6 +1147,7 @@ window.CompanionWorkbench = (() => {
         + `<div class="wb-field-main"><div class="wb-field-head"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>${policyReset}</div>`
         + (item.help ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
         + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
+        + fieldNoteMarkup(item, value, state)
         + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div></div>`;
     }
     return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
@@ -1149,6 +1155,7 @@ window.CompanionWorkbench = (() => {
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
       + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
+      + fieldNoteMarkup(item, value, state)
       + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div>`
       + `<div class="wb-field-side">${reset}</div></div>`;
   }
@@ -1314,7 +1321,7 @@ window.CompanionWorkbench = (() => {
   function create(spec) {
     const {
       group, title, note = "", labels = {}, helps = {}, choices = {}, sections = null,
-      catalogs = {}, rows = {}, inputs = {}, suggestions = {}, segmentedChoices = [],
+      catalogs = {}, fieldNotes = {}, rows = {}, inputs = {}, suggestions = {}, segmentedChoices = [],
       visibility = {}, listFields = {}, chipOptions = {}, navigationLimit = 8,
       presentation = "", sectionTabPrefix = "", initialSection = null,
       mount: mountPoint, endpoint, order = null, pollMs = 0, query = null,
@@ -1480,6 +1487,7 @@ window.CompanionWorkbench = (() => {
         fields[name].writeLayer = definitions[name].write_layer || "";
         /* 目录型控件（选项来自读取结果，如 TTS 扩展）与多行文本框行数。 */
         if (typeof catalogs[name] === "function") fields[name].catalog = catalogs[name];
+        if (typeof fieldNotes[name] === "function") fields[name].note = fieldNotes[name];
         if (rows[name]) fields[name].rows = rows[name];
         /* 控件类型：默认按 kind 决定，`inputs` 覆盖成 time / line。
            time 值仍是字符串（'23:50'），所以 kind 保持 text，只换控件。 */
@@ -2075,6 +2083,13 @@ window.CompanionWorkbench = (() => {
       }
       const toggle = el.closest(".wb-switch")?.querySelector(".wb-switch-state");
       if (toggle) toggle.textContent = raw ? "已开启" : "已关闭";
+      if (row && typeof item.note === "function") {
+        const noteSlot = row.querySelector?.("[data-wb-field-note]");
+        if (noteSlot) {
+          noteSlot.innerHTML = item.note(raw, state) || "";
+          window.lucide?.createIcons?.({nodes: noteSlot.querySelectorAll?.("[data-lucide]")});
+        }
+      }
       /* 已经被标红的字段：改对了就立刻撤掉标记，改得还不合法就把提示换成
          当前这句（例如字数从 340 降到 330，提示要跟着变），
          没标红的字段不在输入过程中突然变红——边打字边报错很吵。 */

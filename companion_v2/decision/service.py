@@ -248,6 +248,19 @@ def _ledger_mode(mode):
     return "remote" if mode == "workers_ai" else mode
 
 
+_LEDGER_ALLOWED_SOURCES = frozenset({"conversation", "dashboard_preview", "probe", "role_intervention"})
+
+
+def _ledger_source(source):
+    """Map newer logical sources onto an allowed CHECK value without rebuilding the table.
+
+    The exact logical source (for example ``private_debounce``) is stored inside
+    ``processing_json.logical_source`` and restored when materializing events so
+    existing SQLite databases record every call without a table migration.
+    """
+    return source if source in _LEDGER_ALLOWED_SOURCES else "conversation"
+
+
 _SELECT_EVENT_COLUMNS = """SELECT event_id, origin_key, batch_id, source, status, mode, reason_code,
         reason, elapsed_ms, decision_json, enabled_fields_json, request_json, response_json,
         processing_json, observed_at
@@ -338,7 +351,7 @@ def _public_scope_info(scope_meta: dict | None, *, request_doc=None, source=None
     if not kind:
         if source == "probe":
             kind = "test"
-        elif source == "role_intervention":
+        elif source in ("role_intervention", "private_debounce"):
             kind = "private"
     info = {}
     if kind:
@@ -519,6 +532,41 @@ class LayaDecisionService:
         self._record(values, "ok", elapsed_ms, decision=result, trace=_intervention_trace(client))
         return {"status": "ok", **result, "mode": values["mode"], "elapsed_ms": elapsed_ms}
 
+    async def classify_turn_completeness(self, facts: dict, *,
+                                         timeout_seconds: float | None = None) -> dict:
+        """Run a single-head turn_state Laya check for private continuous-input debounce."""
+        values = self.store.raw()
+        if not values["enabled"]:
+            self._record(values, "skipped", 0, reason_code="laya_disabled")
+            return {"status": "skipped", "reason": "laya_disabled"}
+        started = perf_counter()
+        client = None
+        try:
+            client = self._client(values)
+            if timeout_seconds is not None:
+                choice = await client.classify_turn_completeness(facts, timeout_seconds=timeout_seconds)
+            else:
+                choice = await client.classify_turn_completeness(facts)
+        except LayaClientError as error:
+            if error.code in {"laya_initializing", "laya_gpu_unavailable"}:
+                self._record(values, "skipped", round((perf_counter() - started) * 1000),
+                    reason_code=error.code, reason=error.reason, trace=_intervention_trace(client))
+                return {"status": "skipped", "reason": error.code}
+            self._record(values, "failed", round((perf_counter() - started) * 1000),
+                reason_code=error.code,
+                reason=_safe_log_reason(error.code, error.reason, api_key=str(values.get("api_key") or "")),
+                trace=_intervention_trace(client))
+            raise
+        except Exception as error:
+            self._record(values, "failed", round((perf_counter() - started) * 1000),
+                reason_code=type(error).__name__, reason=_safe_log_reason(type(error).__name__, str(error)),
+                trace=_intervention_trace(client))
+            raise
+        elapsed_ms = round((perf_counter() - started) * 1000)
+        result = {"turn_state": choice}
+        self._record(values, "ok", elapsed_ms, decision=result, trace=_intervention_trace(client))
+        return {"status": "ok", **result, "mode": values["mode"], "elapsed_ms": elapsed_ms}
+
     def _observations_available(self) -> bool:
         try:
             from companion_v2.storage.runtime import table_exists
@@ -592,6 +640,11 @@ class LayaDecisionService:
                 except (TypeError, ValueError):
                     item[target] = None if target in {"decision", "request", "response"} else {}
             proc_scope = self._processing_scope(item.get("processing"))
+            processing_doc = item.get("processing")
+            if (isinstance(processing_doc, dict)
+                    and isinstance(processing_doc.get("logical_source"), str)
+                    and processing_doc["logical_source"].strip()):
+                item["source"] = processing_doc["logical_source"].strip()
             obs_scope = (by_batch.get(item.get("batch_id"))
                          or by_origin.get(origin_key)
                          or (self._scope_meta if origin_key == self.origin_key else None))
@@ -758,6 +811,8 @@ class LayaDecisionService:
             trace = trace if isinstance(trace, dict) else {}
             processing = dict(trace.get("processing") or {})
             processing.update({"status": status, "reason_code": reason_code})
+            if self.source and self.source not in _LEDGER_ALLOWED_SOURCES:
+                processing["logical_source"] = str(self.source)[:64]
             if self._scope_meta and "scope" not in processing:
                 processing["scope"] = dict(self._scope_meta)
             scope_key = None
@@ -779,7 +834,8 @@ class LayaDecisionService:
                      decision_json, enabled_fields_json, request_json, response_json, processing_json,
                      observed_at, scope_key)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (event_id, self.origin_key, self.event_ref, self.source, status, _ledger_mode(values["mode"]),
+                    (event_id, self.origin_key, self.event_ref, _ledger_source(self.source), status,
+                     _ledger_mode(values["mode"]),
                      str(reason_code)[:96] if reason_code else None, str(safe_reason)[:1000] if safe_reason else None,
                      elapsed_ms, decision_json, enabled_fields_json, request_json, response_json, processing_json,
                      datetime.now(timezone.utc).isoformat(), scope_key))

@@ -45,7 +45,8 @@ const DEFAULTS = {
   group_air_guard_polite_loop_limit: 2,
   private_closing_guard_enabled: true, private_closing_guard_window_seconds: 1800,
   private_closing_guard_prompt_enabled: true,
-  private_debounce_enabled: true, private_debounce_min_ms: 1500,
+  private_debounce_enabled: true, private_debounce_semantic_enabled: false,
+  private_debounce_semantic_mode: 'off', private_debounce_min_ms: 1500,
   private_debounce_max_ms: 4000, private_debounce_total_ms: 8000,
   group_conversation_followup_enabled: true, group_conversation_followup_seconds: 120,
   group_conversation_followup_max_turns: 3,
@@ -128,7 +129,8 @@ const FIELDS = Object.fromEntries(Object.entries(DEFAULTS).map(([name, value]) =
     'prompt_style_mode',
     'private_closing_guard_enabled', 'private_closing_guard_window_seconds',
     'private_closing_guard_prompt_enabled', 'recall_silence_enabled',
-    'private_debounce_enabled', 'private_debounce_min_ms', 'private_debounce_max_ms',
+    'private_debounce_enabled', 'private_debounce_semantic_enabled',
+    'private_debounce_semantic_mode', 'private_debounce_min_ms', 'private_debounce_max_ms',
     'private_debounce_total_ms',
     ...Object.keys(DEFAULTS).filter(name => name.startsWith('group_wakeup_') && !GROUP_SCOPE_FIELDS.has(name)),
   ]);
@@ -154,6 +156,10 @@ function status(changes = {}, token = TOKEN) {
       [name, {layer: 'window', explicit: true, revision: 1}])),
     fields: FIELDS, recent: [], participation_recent: [], participation_limit: 80,
     tts: {state: 'ready', providers: [{id: 'tts-a', model: 's2.1-pro-free', voice: '示例音色甲'}, {id: 'tts-b'}]},
+    private_debounce_semantic_status: {
+      onnx: {ready: false, reason: 'model_dir_missing'},
+      laya: {ready: true, mode: 'remote', model: 'laya-test-model', reason: 'ready'},
+    },
   };
 }
 
@@ -837,7 +843,8 @@ test('reply expression, perception, and decision settings partition every field 
   const exposed = [...expression, ...perception, ...decision];
   assert.equal(exposed.length, new Set(exposed).size, 'a setting must not be duplicated across modules');
   assert.deepEqual([...exposed].sort(), Object.keys(DEFAULTS)
-    .filter(name => name !== 'rules_enabled' && name !== 'file_understanding_formats').sort());
+    .filter(name => name !== 'rules_enabled' && name !== 'file_understanding_formats'
+      && name !== 'private_debounce_semantic_enabled').sort());
   assert.deepEqual(plain(perceptionState.groups.map(group => group.id)),
     ['media_permissions', 'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards']);
   assert.deepEqual(perception, ['image_understanding_private_enabled', 'image_understanding_group_enabled',
@@ -1499,3 +1506,88 @@ test('switching between text, voice and platform dynamically toggles navigationL
   direct.page.unmount();
 });
 
+test('private debounce semantic mode renders 3 choices, clear copy, live readiness badges, and legacy fallback', async () => {
+  const h = harness();
+  h.page.mount(h.root, {view: 'decision'});
+  await drains();
+  h.requests[0].resolve(status());
+  await drains();
+  assert.equal(h.page.selectSection('private_debounce'), true);
+
+  const html = h.slots.settings.innerHTML;
+  assert.match(html, /语义补话判断/);
+  assert.match(html, /关闭（仅按静默时间）/);
+  assert.match(html, /复用 Laya 决策模型/);
+  assert.match(html, /本地 ONNX 小模型/);
+  assert.match(html, /单轮总上限/);
+  assert.match(html, /data-wb-field-note="private_debounce_semantic_mode"/);
+  assert.match(html, /仅按上方最短 \/ 最长静默时间等待/);
+
+  /* Readiness meta helper reflects every backend state accurately. */
+  const readyPayload = status();
+  assert.equal(h.page.debounceSemanticStatusMeta('laya', readyPayload).tone, 'ok');
+  assert.match(h.page.debounceSemanticStatusMeta('laya', readyPayload).text, /Laya 已就绪（remote · laya-test-model）/);
+  assert.equal(h.page.debounceSemanticStatusMeta('onnx', readyPayload).tone, 'warn');
+  assert.match(h.page.debounceSemanticStatusMeta('onnx', readyPayload).text, /未配置本地 ONNX 目录/);
+
+  const unreadyPayload = {
+    ...readyPayload,
+    private_debounce_semantic_status: {
+      onnx: {ready: true, reason: 'ready'},
+      laya: {ready: false, mode: 'remote', model: 'laya-test-model', reason: 'disabled'},
+    },
+  };
+  assert.equal(h.page.debounceSemanticStatusMeta('laya', unreadyPayload).tone, 'warn');
+  assert.match(h.page.debounceSemanticStatusMeta('laya', unreadyPayload).text, /Laya 尚未启用/);
+  assert.equal(h.page.debounceSemanticStatusMeta('onnx', unreadyPayload).tone, 'ok');
+  assert.match(h.page.debounceSemanticStatusMeta('onnx', unreadyPayload).text, /本地 ONNX 模型已就绪/);
+
+  /* Switching the dropdown updates draft and note slot live without repainting. */
+  const noteSlot = {innerHTML: '', querySelectorAll: () => []};
+  const fakeRow = {
+    classList: {toggle() {}, contains: () => false},
+    querySelector: selector => selector === '[data-wb-field-note]' ? noteSlot : null,
+  };
+  const fakeSelect = {
+    tagName: 'SELECT',
+    value: 'laya',
+    dataset: {wbField: 'private_debounce_semantic_mode'},
+    closest: selector => selector === '.wb-field' ? fakeRow : null,
+  };
+  h.listeners['settings:change']({target: fakeSelect});
+  assert.equal(live(h).state.draft.private_debounce_semantic_mode, 'laya');
+  assert.match(noteSlot.innerHTML, /Laya 已就绪（remote · laya-test-model）/);
+  assert.match(noteSlot.innerHTML, /data-tone="ok"/);
+
+  fakeSelect.value = 'onnx';
+  h.listeners['settings:change']({target: fakeSelect});
+  assert.equal(live(h).state.draft.private_debounce_semantic_mode, 'onnx');
+  assert.match(noteSlot.innerHTML, /未配置本地 ONNX 目录/);
+  assert.match(noteSlot.innerHTML, /data-tone="warn"/);
+
+  /* Saving sends the new semantic mode cleanly. */
+  live(h).state.draft.private_debounce_semantic_mode = 'laya';
+  const saving = live(h).save(false);
+  await drains();
+  assert.deepEqual(plain(h.requests[1].body.changes), {private_debounce_semantic_mode: 'laya'});
+  h.requests[1].resolve({
+    result: {operation_id: 'debounce-laya-save', replayed: false},
+    status: status({private_debounce_semantic_mode: 'laya'}, 'f'.repeat(64)),
+  });
+  await saving;
+  await drains();
+  assert.match(h.slots.settings.innerHTML, /Laya 已就绪（remote · laya-test-model）/);
+  h.page.unmount();
+
+  /* Legacy payload carrying only private_debounce_semantic_enabled derives mode cleanly. */
+  const legacy = harness();
+  legacy.page.mount(legacy.root, {view: 'decision'});
+  await drains();
+  const oldStatus = status();
+  delete oldStatus.settings.private_debounce_semantic_mode;
+  oldStatus.settings.private_debounce_semantic_enabled = true;
+  legacy.requests[0].resolve(oldStatus);
+  await drains();
+  assert.equal(live(legacy).state.draft.private_debounce_semantic_mode, 'onnx');
+  legacy.page.unmount();
+});

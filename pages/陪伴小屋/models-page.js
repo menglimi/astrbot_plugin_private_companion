@@ -2085,7 +2085,9 @@ window.CompanionModelsPage = (() => {
     if (l.logsError) return '<p class="model-laya-history-empty">近期记录暂不可用；Laya 配置仍可查看和保存。</p>';
     if (l.logsUnavailable) return '<p class="model-laya-history-empty">当前群聊的近期决策记录暂不能按会话汇总；全局 Laya 配置仍可在此管理。</p>';
     if (!events.length) return '<p class="model-laya-history-empty">暂无 Laya 调用记录。</p>';
-    const labels = {ok: "成功", skipped: "跳过", failed: "失败"}, sources = {conversation: "实际对话", dashboard_preview: "页面预览", probe: "连接测试"};
+    const labels = {ok: "成功", skipped: "跳过", failed: "失败"},
+      sources = {conversation: "实际对话", dashboard_preview: "页面预览", probe: "连接测试",
+        role_intervention: "角色维护路由", private_debounce: "私聊补话判断"};
     const diagnostic = (label, value, empty) => `<div><small>${label}</small><code>${value == null ? empty : esc(JSON.stringify(value, null, 2))}</code></div>`;
     return `<ol class="model-laya-history">${events.map(event => {
       const detail = event.decision ? JSON.stringify(event.decision, null, 2) : event.reason || event.reason_code || "无附加信息";
@@ -2101,9 +2103,14 @@ window.CompanionModelsPage = (() => {
       const scopeLabel = layaScopeLabel(event);
       const metaParts = [scopeLabel, scopeLabel === sourceLabel ? "" : sourceLabel, event.mode].filter(Boolean);
       const action = event.decision && typeof event.decision === "object" && event.decision.action ? String(event.decision.action) : "";
+      const turnState = !action && event.decision && typeof event.decision === "object" && event.decision.turn_state ? String(event.decision.turn_state) : "";
       const conf = event.processing?.action_confidence;
       const confText = typeof conf === "number" && Number.isFinite(conf) ? ` (${(conf * 100).toFixed(1)}%)` : "";
-      const actionTag = action ? ` <span class="model-tag ${action === "silent" ? "n" : action === "wait" ? "a" : "g"}">action=${esc(action)}${esc(confText)}</span>` : "";
+      const actionTag = action
+        ? ` <span class="model-tag ${action === "silent" ? "n" : action === "wait" ? "a" : "g"}">action=${esc(action)}${esc(confText)}</span>`
+        : turnState
+          ? ` <span class="model-tag ${turnState === "unfinished" ? "a" : turnState === "complete" ? "g" : "n"}">turn_state=${esc(turnState)}</span>`
+          : "";
       return `<li data-state="${esc(event.status)}"><details><summary><span><strong>${esc(labels[event.status] || event.status)}${actionTag}</strong><small>${esc(time)} · ${esc(metaParts.join(" · "))}</small></span><b>${event.elapsed_ms == null ? "—" : esc(event.elapsed_ms) + " ms"}</b></summary><div><small>${esc(event.reason_code || "分类结果")}</small>${enabledMarkup}<code>${esc(detail)}</code>${diagnostics}</div></details></li>`;
     }).join("")}</ol>`; }
   function layaContextMarkup() { const product = window.CompanionProduct, currentTarget = product?.target?.();

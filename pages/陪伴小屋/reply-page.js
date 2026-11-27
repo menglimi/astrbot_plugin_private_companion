@@ -16,6 +16,11 @@ window.CompanionReplyPage = (() => {
   const choices = {
     group_tool_profile: {full: "完整工具", standard: "常用工具", lean: "精简工具"},
     private_tool_profile: {full: "完整工具", lean: "精简工具", custom: "按组自选", none: "关闭陪伴工具"},
+    private_debounce_semantic_mode: {
+      off: "关闭（仅按静默时间）",
+      laya: "复用 Laya 决策模型",
+      onnx: "本地 ONNX 小模型",
+    },
       streaming_mode: {buffered: "收齐后分段发送", incremental: "边生成边分段发送"},
       rule_mode: {words: "词列表", regex: "正则表达式", sentences: "按句子", paragraphs: "按段落"},
       part_gap_mode: {fixed: "固定", random: "随机", log: "按文本长度"},
@@ -101,7 +106,8 @@ window.CompanionReplyPage = (() => {
       private_closing_guard_window_seconds: "收尾判断窗口（秒）",
       private_closing_guard_prompt_enabled: "同时提示模型自然收尾",
       private_debounce_enabled: "启用私聊连续输入防抖",
-      private_debounce_semantic_enabled: "使用本地模型判断是否说完",
+      private_debounce_semantic_mode: "语义补话判断",
+      private_debounce_semantic_enabled: "本地 ONNX 补话判断（旧开关）",
       private_debounce_min_ms: "最短静默（毫秒）",
       private_debounce_max_ms: "最长静默（毫秒）",
       private_debounce_total_ms: "单轮总上限（毫秒）",
@@ -276,10 +282,11 @@ window.CompanionReplyPage = (() => {
       private_closing_guard_window_seconds: "只在这个时间窗口内判断收尾；超过窗口后仍按普通消息回复。范围 60–7200 秒。",
       private_closing_guard_prompt_enabled: "未触发静默时，把收尾语境作为本轮提示，提醒模型不要另起话题、追问或再补一条同义道别。",
       private_debounce_enabled: "仅纯文本私聊生效：第一条消息立即开始准备，短线补充并入同一轮，只触发一次模型请求。图片、语音、视频、文件、引用和命令立即处理。",
-      private_debounce_semantic_enabled: "需要在 AstrBot 插件配置中设置本地 ONNX 模型目录。等待补话仍受单轮总上限限制。",
+      private_debounce_semantic_mode: "对方把一句话拆成几条连发时，由模型判断“还没说完”并多等几秒收齐再回复。「复用 Laya 决策模型」直接使用「模型与连接 → Laya」里已配好的决策模型，无需额外部署；「本地 ONNX 小模型」独立于 Laya 运行，需在 AstrBot 插件配置「私聊语义防抖」填写模型目录并安装依赖。延长等待仍受「单轮总上限」限制（默认 8 秒，想多等请同步调大）。",
+      private_debounce_semantic_enabled: "旧版布尔兼容项；请优先通过「语义补话判断」选择关闭、复用 Laya 或本地 ONNX 模型。",
       private_debounce_min_ms: "长消息靠近这个下限；与最长静默相同时使用固定等待，推荐从 1500 毫秒起调整。",
       private_debounce_max_ms: "短消息靠近这个上限；实际窗口还受单轮总上限约束，默认 4000 毫秒。",
-      private_debounce_total_ms: "从第一条消息开始计算，达到该时间后不再等待新消息；默认 8000 毫秒，不能小于最长静默。",
+      private_debounce_total_ms: "从第一条消息开始计算，达到该时间后不再等待新消息；默认 8000 毫秒，不能小于最长静默。开启语义补话判断时，延长等待也不会超过这个总上限。",
       group_conversation_followup_enabled: "开启后，可由决策模型判断是否回应上一轮互动后的非点名发言；关闭后仅按独立唤醒策略参与。",
       group_conversation_followup_seconds: "距上次实际回复多久内可以续接，默认 120 秒。等待补充或选择旁听不会延长已回复链的有效时间。",
       group_conversation_followup_max_turns: "默认最多自动续接 3 轮，最初唤醒的回复不计入。按宿主发送调用正常返回的回复事件计数，分段与工具循环只算一轮；等待、旁听、失败或结果未知不消耗轮数。到限后停止自动续接及弱触发，明确 @、引用或直呼可重新开启；仅调整窗口时不影响其他群。",
@@ -362,7 +369,7 @@ window.CompanionReplyPage = (() => {
                 "group_conversation_followup_max_turns"]},
       {id: "private_debounce", title: "私聊节奏 · 连续输入", help: "第一条消息到达即开始准备，后续文本并入同一轮；总等待不超过配置上限。",
        fields: ["private_debounce_enabled", "private_debounce_min_ms", "private_debounce_max_ms",
-                "private_debounce_total_ms", "private_debounce_semantic_enabled"]},
+                "private_debounce_total_ms", "private_debounce_semantic_mode"]},
       {id: "silence_policy", title: "沉默策略", help: "统一管理哪些情况允许自动沉默；具体窗口与阈值仍在下方各分区调整。忙碌与休息闸门使用下方独立设置，它们只延期、不取消。Laya 的 wait/silent 与未点名群聊旁听仍由决策和群聊参与设置控制。",
        fields: ["recall_silence_enabled", "private_closing_guard_enabled", "group_air_guard_enabled"]},
       {id: "group_air_guard", title: "空气护栏 · 细则", help: "",
@@ -464,7 +471,7 @@ window.CompanionReplyPage = (() => {
       private_closing_guard_window_seconds: {private_closing_guard_enabled: true},
       private_closing_guard_prompt_enabled: {private_closing_guard_enabled: true},
       private_debounce_min_ms: {private_debounce_enabled: true},
-      private_debounce_semantic_enabled: {private_debounce_enabled: true},
+      private_debounce_semantic_mode: {private_debounce_enabled: true},
       private_debounce_max_ms: {private_debounce_enabled: true},
       private_debounce_total_ms: {private_debounce_enabled: true},
     },
@@ -927,11 +934,69 @@ window.CompanionReplyPage = (() => {
     } finally { clearTimeout(timer); }
   }
 
-  /* 旧版整段清理迁成三项全选；其余单值保持原样，避免无改动也变脏。 */
+  /* 旧版整段清理迁成三项全选；旧版私聊语义防抖布尔值同步推导三档模式，避免无改动也变脏。 */
   function normalizeReplyDraft(draft) {
     if (draft?.content_cleanup_scope === "all") {
       draft.content_cleanup_scope = "leading、middle、trailing";
     }
+    if (draft && !Object.hasOwn(draft, "private_debounce_semantic_mode")
+        && Object.hasOwn(draft, "private_debounce_semantic_enabled")) {
+      draft.private_debounce_semantic_mode = draft.private_debounce_semantic_enabled ? "onnx" : "off";
+    }
+  }
+
+  /* 语义补话判断的只读就绪徽标：按当前草稿选项与后端探测状态即时反馈是否真正生效。 */
+  function debounceSemanticStatusMeta(mode, statusPayload) {
+    const resolved = ["off", "laya", "onnx"].includes(mode) ? mode : "off";
+    const info = statusPayload?.private_debounce_semantic_status || {};
+    if (resolved === "laya") {
+      const laya = info.laya || {};
+      if (laya.ready === true) {
+        const detail = [laya.mode, laya.model].filter(Boolean).join(" · ");
+        return {
+          tone: "ok", iconName: "check-circle-2",
+          text: detail ? `Laya 已就绪（${detail}）` : "Laya 已就绪",
+        };
+      }
+      const layaReasons = {
+        disabled: "Laya 尚未启用（当前回退纯计时，请先在「模型与连接 → Laya」开启）",
+        endpoint_missing: "Laya 服务地址未填写（当前回退纯计时）",
+        package_missing: "本机未安装 Laya 依赖（当前回退纯计时）",
+        gpu_unavailable: "当前 PyTorch 不支持 CUDA，本地 Laya 未就绪（当前回退纯计时）",
+        model_missing: "本地 Laya 模型权重尚未就绪（当前回退纯计时）",
+      };
+      return {
+        tone: "warn", iconName: "triangle-alert",
+        text: layaReasons[laya.reason] || "Laya 尚未就绪（当前回退纯计时）",
+      };
+    }
+    if (resolved === "onnx") {
+      const onnx = info.onnx || {};
+      if (onnx.ready === true) {
+        return {tone: "ok", iconName: "check-circle-2", text: "本地 ONNX 模型已就绪"};
+      }
+      if (onnx.reason === "loading") {
+        return {tone: "muted", iconName: "loader-circle", text: "本地 ONNX 模型正在加载，就绪前按计时等待"};
+      }
+      const onnxReasons = {
+        model_dir_missing: "未配置本地 ONNX 目录（当前未生效，回退纯计时）",
+        dependencies_missing: "缺少 onnxruntime 或 tokenizers 依赖（当前未生效，回退纯计时）",
+        model_files_missing: "ONNX 目录缺少 model.onnx 或 tokenizer.json（当前未生效，回退纯计时）",
+        config_invalid: "本地 ONNX 配置路径或参数无效（当前未生效，回退纯计时）",
+        load_failed: "本地 ONNX 模型加载失败（当前未生效，回退纯计时）",
+      };
+      return {
+        tone: "warn", iconName: "triangle-alert",
+        text: onnxReasons[onnx.reason] || "未配置本地 ONNX 目录/依赖（当前未生效，回退纯计时）",
+      };
+    }
+    return {tone: "muted", iconName: "clock-3", text: "仅按上方最短 / 最长静默时间等待"};
+  }
+
+  function debounceSemanticBadgeMarkup(mode, statusPayload) {
+    const meta = debounceSemanticStatusMeta(mode, statusPayload);
+    return `<span class="reply-debounce-badge is-${e(meta.tone)}" data-reply-debounce-badge data-tone="${e(meta.tone)}" role="status" aria-live="polite">`
+      + `${icon(meta.iconName)}<span>${e(meta.text)}</span></span>`;
   }
 
   /* 读取由工作台负责；这里只订阅它的结果，用来渲染预览与保存摘要。 */
@@ -1743,6 +1808,10 @@ window.CompanionReplyPage = (() => {
       endpoint: PREFIX + route,
       resetKey: "reset_to_inherit",
       normalizeDraft: normalizeReplyDraft,
+      fieldNotes: {
+        private_debounce_semantic_mode: (value, wbState) =>
+          debounceSemanticBadgeMarkup(value, wbState?.status || state.status),
+      },
       /* TTS 扩展目录要等读取之后才知道，所以选项由函数现取。 */
       catalogs: {
         voice_provider_id: () => providerOptions("跟随 AstrBot"),
@@ -1790,7 +1859,7 @@ window.CompanionReplyPage = (() => {
   }
 
   return {mount, unmount, choices, selectSection, setExpressionModule, setPerceptionModule, setDecisionView,
-    searchEntries,
+    searchEntries, debounceSemanticStatusMeta, debounceSemanticBadgeMarkup,
     get state() { return {instance, example: state.example, imageCount: state.imageCount,
       status: state.status, preview: state.preview, notice: state.notice, bad: state.bad}; }};
 })();

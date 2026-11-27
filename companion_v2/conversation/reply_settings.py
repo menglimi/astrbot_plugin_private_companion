@@ -19,6 +19,7 @@ from .private_closing import Settings as PrivateClosingSettings
 from .private_debounce import DEFAULTS as PRIVATE_DEBOUNCE_DEFAULTS
 from .private_debounce import LIMITS as PRIVATE_DEBOUNCE_LIMITS
 from .private_debounce import Policy as PrivateDebounceSettings
+from .private_debounce import SEMANTIC_MODES as PRIVATE_DEBOUNCE_SEMANTIC_MODES
 from .text_processing import TEXT_DEFAULTS, text_policy
 from .voice_reply import VoiceReplyPolicy
 from .media.understanding import (
@@ -279,6 +280,14 @@ def private_debounce_settings(values):
     if type(settings["private_debounce_enabled"]) is not bool:
         raise ConfigurationError("reply_configuration_invalid",
                                  "private debounce enabled must be boolean")
+    if type(settings["private_debounce_semantic_enabled"]) is not bool:
+        raise ConfigurationError("reply_configuration_invalid",
+                                 "private debounce semantic switch must be boolean")
+    has_mode = "private_debounce_semantic_mode" in values
+    semantic_mode = values["private_debounce_semantic_mode"] if has_mode else None
+    if has_mode and (type(semantic_mode) is not str or semantic_mode not in PRIVATE_DEBOUNCE_SEMANTIC_MODES):
+        raise ConfigurationError("reply_configuration_invalid",
+                                 "private debounce semantic mode is invalid")
     for key, (minimum, maximum) in PRIVATE_DEBOUNCE_LIMITS.items():
         if type(settings[key]) is not int or not minimum <= settings[key] <= maximum:
             raise ConfigurationError("reply_configuration_invalid",
@@ -287,7 +296,8 @@ def private_debounce_settings(values):
         return PrivateDebounceSettings.from_milliseconds(
             settings["private_debounce_enabled"], settings["private_debounce_min_ms"],
             settings["private_debounce_max_ms"], settings["private_debounce_total_ms"],
-            semantic_enabled=settings["private_debounce_semantic_enabled"])
+            semantic_enabled=settings["private_debounce_semantic_enabled"],
+            semantic_mode=semantic_mode)
     except ValueError as error:
         raise ConfigurationError("reply_configuration_invalid",
                                  "private debounce timing is invalid") from error
@@ -374,7 +384,10 @@ def validate(values):
     continuation = set(GROUP_CONTINUATION_DEFAULTS)
     private_closing = set(PRIVATE_CLOSING_DEFAULTS)
     private_debounce = set(PRIVATE_DEBOUNCE_DEFAULTS)
-    private_debounce_timing = private_debounce - {"private_debounce_semantic_enabled"}
+    private_debounce_timing = private_debounce - {
+        "private_debounce_semantic_enabled",
+        "private_debounce_semantic_mode",
+    }
     wakeup = set(GROUP_WAKEUP_DEFAULTS)
     safety = set(GROUP_SAFETY_DEFAULTS)
     silence = set(SILENCE_DEFAULTS)
@@ -665,12 +678,40 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
                     groups_key: replace(groups, value="\n".join(selected),
                         source=legacy.source, explicit=legacy.explicit,
                         source_revision=legacy.source_revision)})
+        debounce_legacy_key = GROUP + ".private_debounce_semantic_enabled"
+        debounce_mode_key = GROUP + ".private_debounce_semantic_mode"
+        debounce_legacy = snapshot.fields.get(debounce_legacy_key)
+        debounce_mode = snapshot.fields.get(debounce_mode_key)
+        if (debounce_legacy is not None and debounce_mode is not None
+                and debounce_legacy.source is not None
+                and (debounce_mode.source is None
+                     or (debounce_legacy.explicit and not debounce_mode.explicit))):
+            derived_mode = "onnx" if debounce_legacy.value else "off"
+            snapshot = replace(snapshot, fields={**snapshot.fields,
+                debounce_mode_key: replace(debounce_mode, value=derived_mode,
+                    source=debounce_legacy.source, explicit=debounce_legacy.explicit,
+                    source_revision=debounce_legacy.source_revision)})
         from companion_v2.relationships.account_link_settings import overlay_snapshot
         return overlay_snapshot(self.runtime, target, fields, snapshot)
 
+    @staticmethod
+    def _normalize_semantic_debounce_changes(normalized):
+        debounce_legacy_key = GROUP + ".private_debounce_semantic_enabled"
+        debounce_mode_key = GROUP + ".private_debounce_semantic_mode"
+        if debounce_mode_key in normalized:
+            mode_value = normalized[debounce_mode_key]
+            if (debounce_legacy_key not in normalized
+                    and type(mode_value) is str and mode_value in PRIVATE_DEBOUNCE_SEMANTIC_MODES):
+                normalized[debounce_legacy_key] = mode_value == "onnx"
+        elif debounce_legacy_key in normalized:
+            legacy_value = normalized[debounce_legacy_key]
+            if type(legacy_value) is bool:
+                normalized[debounce_mode_key] = "onnx" if legacy_value else "off"
+        return normalized
+
     def preview_set(self, target, fields, *, changes):
         target = self._stable_group_target(target)
-        normalized = dict(changes)
+        normalized = self._normalize_semantic_debounce_changes(dict(changes))
         if RULES_FIELD in normalized:
             normalized[RULES_FIELD] = True
         result = super().preview_set(target, fields, changes=normalized)
@@ -679,13 +720,20 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
         target = self._stable_group_target(target)
-        normalized = dict(changes)
+        normalized = self._normalize_semantic_debounce_changes(dict(changes))
         if RULES_FIELD in normalized:
             normalized[RULES_FIELD] = True
+        reset_fields = list(reset)
+        debounce_legacy_key = GROUP + ".private_debounce_semantic_enabled"
+        debounce_mode_key = GROUP + ".private_debounce_semantic_mode"
+        if debounce_mode_key in reset_fields and debounce_legacy_key not in reset_fields:
+            reset_fields.append(debounce_legacy_key)
+        elif debounce_legacy_key in reset_fields and debounce_mode_key not in reset_fields:
+            reset_fields.append(debounce_mode_key)
         with self.store.transaction():
-            result = super().write(target, fields, changes=normalized, reset=reset,
+            result = super().write(target, fields, changes=normalized, reset=reset_fields,
                 expected_revision=expected_revision, observed_at=observed_at)
-            self._clear_legacy_group_values(target, reset)
+            self._clear_legacy_group_values(target, reset_fields)
             validate({key.removeprefix(GROUP + "."): item.value for key, item in self.read(target, fields).fields.items()})
             return result
 

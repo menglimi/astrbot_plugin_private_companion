@@ -6113,6 +6113,18 @@ body.state-connected{min-width:320px}
   color:var(--t-text-faint);font-size:var(--fs-micro)}
 .reply-preview-chat>header strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
 
+/* 私聊语义补话判断实时就绪徽标：全量走主题语义令牌，窄屏平滑折行零溢出。 */
+.wb-field-note{margin-top:var(--sp-2);min-width:0;max-width:100%}
+.wb-field-note:empty{display:none}
+.reply-debounce-badge{display:inline-flex;align-items:flex-start;gap:var(--sp-1);max-width:100%;min-width:0;
+  padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);
+  background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.5;
+  overflow-wrap:anywhere}
+.reply-debounce-badge svg{flex:none;width:1em;height:1em;margin-top:.2em}
+.reply-debounce-badge.is-ok{border-color:var(--t-ok-quiet);background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.reply-debounce-badge.is-warn{border-color:var(--t-warn-quiet);background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.reply-debounce-badge.is-muted{border-color:var(--t-line);background:var(--t-surface-soft);color:var(--t-text-soft)}
+
 /* expression-config.css */
 .expression-page{display:grid;gap:var(--sp-4);min-width:0}
 .expression-module-nav{position:sticky;top:var(--sp-2);z-index:6;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:2px;min-width:0;padding:2px 2px 0;border-bottom:1px solid var(--t-line);background:color-mix(in srgb,var(--t-surface) 96%,transparent);backdrop-filter:blur(12px)}
