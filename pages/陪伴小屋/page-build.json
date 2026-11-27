@@ -11,7 +11,7 @@
   "files": {
     "README.md": "0ef284ac92d44c21301cf0becdbf68ccf0af00ce0ca001cd5ae10e1ec4074796",
     "action-page.css": "2003a75251495ecd7b68fa5abb39ebe134a590d8156075e07c47ece9bd86b321",
-    "app.js": "ad7ac18e3d5f4c64deeae30d9cc192fd73d58380f46463c88718a941ca3ed6a4",
+    "app.js": "ccc902d3592ff91fb93f95ad87931b7dda44a04320391e3e32dfa7c49db6e179",
     "appearance-page.css": "1649df6c2972f49a5a6cabd7bb0f32634c685a20ffdd92caaf6a73adb0daf2d6",
     "appearance-page.js": "90790f4ab5b56b35bc3b027bab071ba7e3dc9119265d83a0cf06950dd179fc98",
     "assets/LUCIDE-LICENSE.txt": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
@@ -127,7 +127,7 @@
     "perception-subpages.css": "22d5145300427485d02ab7d9c00a4c7bf4f0097b22c5fe38e4966a81cfe7b915",
     "performance-gate.js": "9d7a172c2e5d7a82f5f46669f2642cb1dcf283f687b0a2be1a152c9634b61970",
     "persona-designer-memory.js": "972c2ec820bfddf8a233b187d9c1741bbae6e417d93c3501aa1f48dfe8c59500",
-    "phone-setup.js": "649db14f84b2cb51c412e14bfe226b212df63794a571601d44aed6aca95d6fc8",
+    "phone-setup.js": "70c91be0b312f0c09a422e473a995665b3c19b1297ec659110723c0fb90102ed",
     "preview.html": "8c55fcfe19afba410ca96a464c31fc3245cf676656c06a5cc572d7ed4e16c00c",
     "pricing-workbench.css": "30af0a936bf7a7f4ac6d71c5634c458ab085eb1fe9ae7ebe98f1c3185c7e134a",
     "pricing-workbench.js": "3a72b358906dd151bb91ab910ac945173bdee391d4d31249e54de782a1c5b20a",

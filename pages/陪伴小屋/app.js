@@ -4698,7 +4698,8 @@ function renderConfigEditors(){
       'device.phone':{navigationLimit:0,onStatus:status=>setup?.phoneSetup?.syncStatus(status)}
     });
     if(editor)configEditorMounts.push(editor);
-    window.CompanionPhoneSetup?.mount(setup,{editor,adbRoot});
+    const phoneSetup=window.CompanionPhoneSetup?.mount(setup,{editor,adbRoot});
+    if(phoneSetup)configEditorMounts.push(phoneSetup);
   }
    /* proactive.contact（160 项、四层）同样长期是「编辑器与声明都在、却没有挂载点」
       的缺口——它连编辑器与声明都没有。主动联系页保留完整直接配置；感知页按来源

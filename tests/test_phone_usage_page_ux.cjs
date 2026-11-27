@@ -326,12 +326,14 @@ test("可视化动作选择器 DOM 双向同步：点击胶囊更新文本框并
   assert.equal(doneBtn.getAttribute("aria-pressed"), "true");
 });
 
-test("MutationObserver 防重入回归：自身挂载动作选择器与同步计数不会触发无限观测循环", () => {
+test("MutationObserver 生命周期回归：防重入断连、unmount 清理、rebind 重建与游离节点自断连", () => {
   const events = [];
+  const observers = [];
   class FakeMutationObserver {
     constructor(cb) {
       this.cb = cb;
       this.connected = false;
+      observers.push(this);
     }
     observe(target) {
       this.connected = true;
@@ -374,14 +376,46 @@ test("MutationObserver 防重入回归：自身挂载动作选择器与同步计
   const origQ = setupRoot.querySelector;
   setupRoot.querySelector = sel => origQ(sel) || {hidden: true, textContent: "", classList: makeMiniElement("div").classList, replaceChildren() {}, append() {}};
   vm.runInContext(readPage("phone-setup.js"), sandbox);
+  const editor = {state: {instances: [{state: {status: {settings: {enabled: true}}}}]}};
   const setup = sandbox.window.CompanionPhoneSetup.mount(setupRoot, {
     configApi: "/astrbot_plugin_private_companion/targets/t1/roles/r1/config",
-    editor: {state: {instances: [{state: {status: {settings: {enabled: true}}}}]}},
+    editor,
     adbRoot,
   });
-  // Calling enhance() disconnects observer before DOM updates and re-observes cleanly after.
+
+  // 1. Calling enhance() disconnects observer before DOM updates and re-observes cleanly after.
   events.length = 0;
   setup.enhance();
   assert.deepEqual(events, [["disconnect"], ["observe", "SECTION"]]);
   assert.equal(control.querySelectorAll("[data-phone-action-picker]").length, 1);
+
+  // 2. unmount() disconnects the observer cleanly.
+  assert.equal(observers.at(-1).connected, true);
+  events.length = 0;
+  setup.unmount();
+  assert.deepEqual(events, [["disconnect"]]);
+  assert.equal(observers.at(-1).connected, false);
+
+  // 3. Re-mounting / rebinding on the same root rebuilds a fresh observer cleanly.
+  events.length = 0;
+  const rebound = sandbox.window.CompanionPhoneSetup.mount(setupRoot, {
+    configApi: "/astrbot_plugin_private_companion/targets/t2/roles/r2/config",
+    editor,
+    adbRoot,
+  });
+  assert.equal(rebound, setup);
+  assert.equal(observers.length, 2);
+  assert.equal(observers.at(-1).connected, true);
+  assert.deepEqual(events, [["disconnect"], ["observe", "SECTION"]]);
+
+  // 4. Detached root (isConnected === false) auto-disconnects on callback without re-observing.
+  events.length = 0;
+  setupRoot.isConnected = false;
+  observers.at(-1).cb();
+  assert.deepEqual(events, [["disconnect"]]);
+  assert.equal(observers.at(-1).connected, false);
+
+  // 5. app.js registers CompanionPhoneSetup.mount() into configEditorMounts for unmountConfigEditors().
+  const appSource = readPage("app.js");
+  assert.match(appSource, /const\s+phoneSetup\s*=\s*window\.CompanionPhoneSetup\?\.mount\(setup,\s*\{editor,\s*adbRoot\}\);\s*if\s*\(phoneSetup\)\s*configEditorMounts\.push\(phoneSetup\);/);
 });

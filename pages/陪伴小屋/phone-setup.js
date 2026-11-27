@@ -345,7 +345,19 @@ window.CompanionPhoneSetup = (() => {
     root.innerHTML = markup();
     const results = one("[data-phone-results]"), noticeNode = one("[data-phone-notice]");
 
+    function unmount() {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      observedRoot = null;
+    }
+
     function runEnhance() {
+      if (root.isConnected === false) {
+        unmount();
+        return;
+      }
       const target = binding.adbRoot || root.parentElement?.querySelector?.("#phoneAdbWorkspace") || null;
       if (!target || enhancing) return;
       enhancing = true;
@@ -354,13 +366,17 @@ window.CompanionPhoneSetup = (() => {
         enhanceAdvancedWorkspace(target);
       } finally {
         enhancing = false;
-        if (observer && observedRoot === target) {
+        if (observer && observedRoot === target && root.isConnected !== false) {
           observer.observe(target, {childList:true, subtree:true});
         }
       }
     }
 
     function watchAdvanced() {
+      if (root.isConnected === false) {
+        unmount();
+        return;
+      }
       const target = binding.adbRoot || root.parentElement?.querySelector?.("#phoneAdbWorkspace") || null;
       if (target === observedRoot) { runEnhance(); return; }
       if (observer) { observer.disconnect(); observer = null; }
@@ -534,7 +550,7 @@ window.CompanionPhoneSetup = (() => {
     });
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
     syncStatus();
-    root.phoneSetup = {syncStatus, rebind, enhance: runEnhance, get endpoint() { return binding.endpoint; }};
+    root.phoneSetup = {syncStatus, rebind, enhance: runEnhance, unmount, get endpoint() { return binding.endpoint; }};
     return root.phoneSetup;
   }
   return {
