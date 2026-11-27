@@ -235,3 +235,208 @@ test("模型与连接顶栏锚定在首行并均衡分组，Laya 页面分组对
 
   window.CompanionModelsPage.unmount();
 });
+
+test("Laya 下半区采用双栏调试日志工作台 + 可折叠部署抽屉，清洗 Windows \\\\?\\ 前缀并修正标签对齐", async () => {
+  const requests = [];
+  const store = new Map();
+  const copied = [];
+  const window = {
+    CompanionProduct: {
+      hosted: () => true,
+      role: () => ({model_api: "/astrbot_plugin_private_companion/model"}),
+      identity: () => ({installation_id: "inst-laya-2", operator_id: "operator"}),
+      bridgeNow: () => window.AstrBotPluginPage,
+      bridgeFor: () => ({then: resolve => resolve(window.AstrBotPluginPage)}),
+    },
+    AstrBotPluginPage: {
+      apiGet: (route, params) => new Promise((resolve, reject) => requests.push({method: "GET", route, params, resolve, reject})),
+      apiPost: (route, values) => new Promise((resolve, reject) => requests.push({method: "POST", route, values, resolve, reject})),
+    },
+    sessionStorage: {
+      getItem: k => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, v),
+      removeItem: k => store.delete(k),
+    },
+    crypto: {randomUUID: () => "id-" + requests.length},
+  };
+  const navigator = {
+    clipboard: {writeText: async text => { copied.push(text); }},
+  };
+  vm.runInNewContext(readPage("workbench-page.js"), {window, setTimeout, clearTimeout});
+  vm.runInNewContext(readPage("models-page.js"), {window, navigator, crypto: window.crypto, AbortController, setTimeout, clearTimeout});
+
+  const handlers = {};
+  const node = {
+    isConnected: true,
+    innerHTML: "",
+    addEventListener(type, fn) { handlers[type] = fn; },
+    removeEventListener(type) { delete handlers[type]; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    fire(type, selector, dataset) {
+      handlers[type]({
+        type,
+        target: {
+          type: dataset?.inputType || "text",
+          dataset: dataset || {},
+          value: dataset?.value,
+          checked: dataset?.checked,
+          valueAsNumber: dataset?.valueAsNumber,
+          matches: s => s === selector,
+          closest: s => (s === selector ? {dataset} : null),
+        },
+      });
+    },
+  };
+
+  window.CompanionModelsPage.mount(node);
+  requests[0].resolve({tasks: [], providers: [], host_state: "running"});
+  await flush();
+
+  node.fire("click", "[data-model-tab]", {modelTab: "laya"});
+  requests.find(r => r.route === "model/laya").resolve({
+    enabled: true,
+    mode: "remote",
+    request_format: "native",
+    endpoint: "https://laya.example.test/v1/systemone",
+    api_key_set: true,
+    proxy: "",
+    remote_model: "multilingual",
+    default_model: "multilingual",
+    timeout_seconds: 12,
+    followup_confidence_threshold: 45,
+    package_installed: false,
+    python_executable: "\\\\?\\D:\\AstrBot\\backend\\python\\python.exe",
+    model_cache_path: "\\\\?\\D:\\cache\\huggingface\\hub",
+    install_command: "& '\\\\?\\D:\\AstrBot\\backend\\python\\python.exe' -m pip install --no-deps 'laya==0.4.0'",
+    remote_install_command: "& '\\\\?\\D:\\AstrBot\\backend\\python\\python.exe' -m pip install 'fastapi>=0.110.0'",
+    remote_start_command: "$env:LAYA_DEFAULT_MODEL='multilingual'; & '\\\\?\\D:\\AstrBot\\backend\\python\\python.exe' -m laya.serve",
+    decision_fields: {reply_style: true},
+    revision: "rev-2",
+  });
+  requests.find(r => r.route === "model/laya/logs").resolve({events: []});
+  await flush();
+
+  // 双栏对称工作台（测试 + 日志）位于部署命令抽屉之前
+  const wbIdx = node.innerHTML.indexOf('class="model-laya-workbench"');
+  const deployIdx = node.innerHTML.indexOf("model-laya-deploy-card");
+  assert.ok(wbIdx >= 0 && deployIdx > wbIdx, "调试测试与调用日志双栏工作台应位于部署抽屉上方");
+  assert.match(node.innerHTML, /class="model-card model-laya-test-card"/);
+  assert.match(node.innerHTML, /class="model-card model-laya-logs-card"/);
+
+  // 远程模式下部署抽屉默认收起，点击可平滑展开
+  assert.match(node.innerHTML, /data-laya-deploy-toggle aria-expanded="false"/);
+  assert.match(node.innerHTML, /展开查看 3 条命令/);
+  assert.match(node.innerHTML, /class="model-laya-deploy-grid is-two-col"/);
+  node.fire("click", "[data-laya-deploy-toggle]", {});
+  assert.match(node.innerHTML, /data-laya-deploy-toggle aria-expanded="true"/);
+  assert.match(node.innerHTML, /class="model-card model-laya-deploy-card is-open"/);
+
+  // 页面渲染和剪贴板复制均彻底去除 Windows \\?\ 扩展路径前缀
+  assert.doesNotMatch(node.innerHTML, /\\\\\?\\/, "渲染文本中不应残留 \\\\?\\ 前缀");
+  assert.match(node.innerHTML, /D:\\AstrBot\\backend\\python\\python\.exe/);
+  assert.match(node.innerHTML, /D:\\cache\\huggingface\\hub/);
+  node.fire("click", "[data-laya-copy]", {layaCopy: "remote_start_command"});
+  await flush();
+  assert.equal(copied.length, 1);
+  assert.ok(!copied[0].includes("\\\\?\\"), "复制到剪贴板的命令不应包含 \\\\?\\ 前缀");
+  assert.match(copied[0], /D:\\AstrBot\\backend\\python\\python\.exe/);
+
+  // 切换至本地模式且未安装时，清空显式开关后默认展开以便即时引导安装
+  node.fire("click", "[data-laya-deploy-toggle]", {});
+  assert.match(node.innerHTML, /data-laya-deploy-toggle aria-expanded="false"/);
+
+  // 校验 CSS 契约：标签行高 28px 消除 4.8px 偏移、全宽部署抽屉与双栏工作台、现代后台任务预算卡片
+  const modelsCss = readPage("models-page.css");
+  assert.match(modelsCss, /\.model-laya-label\{[^}]*min-height:28px/);
+  assert.match(modelsCss, /\.model-laya-label \.model-pill\{[^}]*padding:1px var\(--sp-2\)/);
+  assert.match(modelsCss, /\.model-laya-workbench\{[^}]*grid-template-columns:minmax\(0,1fr\) minmax\(0,1\.15fr\)/);
+  assert.match(modelsCss, /\.model-laya-deploy-shell\{[^}]*grid-template-rows:0fr/);
+  assert.match(modelsCss, /\.model-laya-codebox\{/);
+
+  const selfCss = readPage("self-page.css");
+  assert.match(selfCss, /\.models-budget-section\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(selfCss, /\.models-budget-section \.wb-fields\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(selfCss, /\.models-budget-status\[data-budget-status="on"\]\{/);
+
+  const appJs = readPage("app.js");
+  assert.match(appJs, /class="models-budget-head"/);
+  assert.match(appJs, /data-budget-status="off"/);
+
+  window.CompanionModelsPage.unmount();
+});
+
+test("配置工作台将超大数字上限人性化格式化（如 0 – 1 万亿）且保留小中范围原貌", async () => {
+  const requests = [];
+  const window = {
+    addEventListener() {},
+    removeEventListener() {},
+    CompanionProduct: {
+      hosted: () => true,
+      role: () => ({config_api: "/astrbot_plugin_private_companion/config"}),
+      bridgeNow: () => window.AstrBotPluginPage,
+      bridgeFor: () => ({then: resolve => resolve(window.AstrBotPluginPage)}),
+    },
+    AstrBotPluginPage: {
+      apiGet: (route, params) => new Promise((resolve, reject) => requests.push({method: "GET", route, params, resolve, reject})),
+      apiPost: (route, values) => new Promise((resolve, reject) => requests.push({method: "POST", route, values, resolve, reject})),
+    },
+  };
+  const document = {
+    hidden: false,
+    body: {appendChild() {}},
+    createElement: () => ({style: {}, setAttribute() {}, remove() {}, addEventListener() {}, querySelectorAll: () => []}),
+  };
+  vm.runInNewContext(readPage("workbench-page.js"), {window, document, setTimeout, clearTimeout});
+
+  const node = {
+    isConnected: true,
+    innerHTML: "",
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+  const wb = window.CompanionWorkbench.create({
+    group: "budget",
+    requestSection: "budget",
+    endpoint: "/astrbot_plugin_private_companion/config",
+    mount: () => node,
+    title: "每日 Token 软限额",
+    order: ["enable_daily_token_soft_limit", "daily_token_soft_limit", "small_window"],
+    labels: {
+      enable_daily_token_soft_limit: "启用每日软限额",
+      daily_token_soft_limit: "每日软限额（token）",
+      small_window: "常规上限",
+    },
+  });
+  wb.mount();
+  await flush();
+  assert.ok(requests.length >= 1, "工作台挂载后应请求配置接口");
+  requests[0].resolve({
+    section: "budget",
+    group_id: "budget",
+    scope: "role",
+    edit_token: "a".repeat(64),
+    revision: 1,
+    configuration_token: "configuration",
+    settings: {enable_daily_token_soft_limit: false, daily_token_soft_limit: 500000, small_window: 3600},
+    provenance: {
+      enable_daily_token_soft_limit: {layer: "role", explicit: true, revision: 1},
+      daily_token_soft_limit: {layer: "role", explicit: true, revision: 1},
+      small_window: {layer: "role", explicit: true, revision: 1},
+    },
+    layers: ["installation", "role"],
+    fields: {
+      enable_daily_token_soft_limit: {kind: "boolean", default: false, apply_mode: "immediate", editable_layers: ["installation", "role"]},
+      daily_token_soft_limit: {kind: "integer", default: 500000, minimum: 0, maximum: 1000000000000, apply_mode: "immediate", editable_layers: ["installation", "role"]},
+      small_window: {kind: "integer", default: 3600, minimum: 0, maximum: 86400, apply_mode: "immediate", editable_layers: ["installation", "role"]},
+    },
+  });
+  await flush();
+
+  assert.match(node.innerHTML, /<span class="wb-range" title="允许范围：0 – 1,000,000,000,000">0 – 1 万亿<\/span>/);
+  assert.match(node.innerHTML, /min="0" max="1000000000000"/, "原生输入框仍保留精确数字校验上下界");
+  assert.match(node.innerHTML, /<span class="wb-range">0 – 86400<\/span>/, "常规数字范围保持原样");
+  wb.unmount();
+});

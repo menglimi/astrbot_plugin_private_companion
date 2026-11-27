@@ -2057,7 +2057,88 @@ window.CompanionModelsPage = (() => {
   function layaSelect(l, key, label, hint, options, extraClass = "") { const value = l.draft?.[key] || "", disabled = l.loading || l.busy;
     const cls = `model-fd model-laya-fd${extraClass ? " " + extraClass : ""}`;
     return `<label class="${cls}"><span class="model-laya-label"><span>${label}</span></span><div class="model-laya-control"><select data-laya-field="${key}" ${disabled ? "disabled" : ""}>${options.map(([id, name]) => `<option value="${id}" ${value === id ? "selected" : ""}>${name}</option>`).join("")}</select></div>${hint ? `<small class="model-laya-help">${hint}</small>` : ""}</label>`; }
-  async function layaCopyInstall(s, field) { const command = s.laya.data?.[field || "install_command"] || ""; if (!command) return;
+  function layaSanitizeCommand(value) {
+    return String(value ?? "").replace(/\\\\\?\\UNC\\/g, "\\\\").replace(/\\\\\?\\/g, "");
+  }
+  function layaDeployExpanded(l, mode) {
+    if (typeof l.deployOpen === "boolean") return l.deployOpen;
+    return mode === "local" && !l.data?.package_installed;
+  }
+  function layaCommandBox(title, subtitle, field, command, buttonLabel, disabled) {
+    const clean = layaSanitizeCommand(command || "");
+    return `<div class="model-laya-codebox"><div class="model-laya-codehead"><span class="model-laya-codetitle"><strong>${title}</strong>${subtitle ? `<small>${subtitle}</small>` : ""}</span><button type="button" class="button small model-laya-copybtn" data-laya-copy="${field}" ${disabled ? "disabled" : ""}>${buttonLabel}</button></div><pre class="model-laya-code"><code>${esc(clean)}</code></pre></div>`;
+  }
+  function layaDeployDrawer(l, mode, disabled) {
+    const open = layaDeployExpanded(l, mode);
+    const pythonPath = layaSanitizeCommand(l.data.python_executable || "未知");
+    const cachePath = layaSanitizeCommand(l.data.model_cache_path || "由 Hugging Face 默认配置决定");
+    let eyebrow = "官方依赖与权重缓存", title = "本地安装命令与环境路径", summary = "Python 环境与权重缓存 · 首次本地推理自动拉取权重", countText = "1 条命令", body = "";
+    if (mode === "workers_ai") {
+      eyebrow = "外部判断服务";
+      title = "Cloudflare Workers AI";
+      summary = "请求体外壳、模型标识与每日免费神经元额度说明";
+      countText = "接口说明";
+      body = `<p class="model-note">Cloudflare Workers AI 把模型判断放在 <code>/ai/run</code>：模型名写在请求体里，<code>state</code> 与 <code>questions</code> 需要嵌进 <code>input</code> 对象，而不是与 <code>model</code> 平级。插件会按这个外壳发送，并把返回的 <code>result</code> 解包成同一份 <code>answers</code> 决策合同；判断失败只影响本轮判断，不会阻塞正常回复。</p>
+        <div class="model-laya-envbar">
+          <div class="model-state">判断模型：<code>${esc(l.data.default_model || "@cf/cloudflare/clef")}</code> · 请求路径：<code>/ai/run</code> · 请求体：<code>{"model": ..., "input": {"state": ..., "questions": ...}}</code></div>
+          <div class="model-state"><code>@cf/cloudflare/clef</code> 与 <code>clef-flash</code> 使用 Workers AI 每日免费神经元额度；<code>typesafe/jev-1.14.0</code> 等第三方模型不共享该额度，额度不足时 Cloudflare 返回 402，原因显示在上方运行记录里。</div>
+        </div>`;
+    } else if (mode === "jev") {
+      eyebrow = "第三方中转";
+      title = "OpenAI 兼容网关";
+      summary = "chat/completions 合同封装口径与官方 SystemOne 区分";
+      countText = "接口说明";
+      body = `<p class="model-note">这种接入方式把判断请求包进一次 OpenAI 兼容的 <code>chat/completions</code> 调用，只适用于只提供该接口的第三方中转：模型按 state 与分类问题返回每个分类的概率，answers 沿用同一份决策合同。官方 TypeSafe Jev 不提供 <code>chat/completions</code>，请使用「远程 HTTP 服务」并填写 <code>/v1/systemone</code> 地址。判断失败只影响本轮判断，不会阻塞正常回复，也不需要本地 Python 包或权重缓存。</p>
+        <div class="model-laya-envbar">
+          <div class="model-state">判断模型：<code>${esc(l.data.default_model || "jev-latest")}</code> · 请求路径：<code>/v1/chat/completions</code> · 决策合同：<code>state + questions → answers</code></div>
+          <div class="model-state">官方 TypeSafe Jev 走 SystemOne，不使用此接入方式。密钥只保存在插件数据目录的决策配置里，不写入调用日志；失败原因显示在上方运行记录。</div>
+        </div>`;
+    } else if (mode === "remote") {
+      eyebrow = "官方依赖与远程部署";
+      title = "本地安装与远程服务端部署命令";
+      summary = "Python 环境与权重缓存 · 自建 SystemOne 服务端部署参考";
+      countText = "3 条命令";
+      body = `<div class="model-laya-deploy-grid is-two-col">
+          <div class="model-laya-deploy-col">
+            <p class="model-note">插件发行包不包含 Laya 包或检查点权重。若需在本机调试，可将命令复制到 AstrBot 所在环境执行；本地首次推理会由官方 Router 自动从 Hugging Face 下载所选检查点。</p>
+            ${layaCommandBox("本机 Python 环境安装", "不覆盖已有 CUDA 版 PyTorch", "install_command", l.data.install_command, "复制安装命令", disabled)}
+          </div>
+          <div class="model-laya-deploy-col">
+            <p class="model-note">远程服务端使用 Laya 官方 SystemOne 接口，地址以 <code>/v1/systemone</code> 结尾；服务端需单独部署，以下命令以本机 AstrBot Python 为示例。</p>
+            ${layaCommandBox("远程服务端依赖安装", "含 FastAPI 与 Uvicorn 运行时", "remote_install_command", l.data.remote_install_command, "复制服务端安装命令", disabled)}
+            ${layaCommandBox("启动 SystemOne 服务", "默认加载 multilingual 检查点", "remote_start_command", l.data.remote_start_command, "复制服务启动命令", disabled)}
+          </div>
+        </div>
+        <div class="model-laya-envbar">
+          <div class="model-state">Python：<code>${esc(pythonPath)}</code> · 权重缓存：<code>${esc(cachePath)}</code></div>
+          <div class="model-state">上游源码与版本：<a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noreferrer">NandhaKishorM/laya</a> · <a href="https://huggingface.co/convaiinnovations/laya-multilingual" target="_blank" rel="noreferrer">Multilingual 权重</a></div>
+        </div>`;
+    } else {
+      body = `<div class="model-laya-deploy-grid">
+          <div class="model-laya-deploy-col">
+            <p class="model-note">插件发行包不包含 Laya 包或检查点权重。将下方命令复制到 AstrBot 所在环境执行；本地首次推理会由官方 Router 自动从 Hugging Face 下载所选检查点。</p>
+            ${layaCommandBox("安装 Laya Python 包", "仅安装运行时依赖，保留现有 PyTorch", "install_command", l.data.install_command, "复制安装命令", disabled)}
+          </div>
+        </div>
+        <div class="model-laya-envbar">
+          <div class="model-state">Python：<code>${esc(pythonPath)}</code> · 权重缓存：<code>${esc(cachePath)}</code></div>
+          <div class="model-state">上游源码与版本：<a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noreferrer">NandhaKishorM/laya</a> · <a href="https://huggingface.co/convaiinnovations/laya-multilingual" target="_blank" rel="noreferrer">Multilingual 权重</a></div>
+        </div>`;
+    }
+    const stateLabel = open ? "收起" : `展开查看 ${countText}`;
+    return `<section class="model-card model-laya-deploy-card${open ? " is-open" : ""}" aria-label="${esc(title)}">
+      <button type="button" class="model-laya-deploy-toggle" data-laya-deploy-toggle aria-expanded="${open ? "true" : "false"}">
+        <span class="model-laya-deploy-copy">
+          <span class="model-eb">${eyebrow}</span>
+          <h3>${title}</h3>
+          <small>${summary}</small>
+        </span>
+        <span class="model-laya-deploy-state"><span>${stateLabel}</span><i class="model-laya-deploy-chev" aria-hidden="true">▾</i></span>
+      </button>
+      <div class="model-laya-deploy-shell"${open ? "" : ' inert aria-hidden="true"'}><div class="model-laya-deploy-inner"><div class="model-laya-deploy-body">${body}</div></div></div>
+    </section>`;
+  }
+  async function layaCopyInstall(s, field) { const command = layaSanitizeCommand(s.laya.data?.[field || "install_command"] || ""); if (!command) return;
     try { await navigator.clipboard.writeText(command); s.laya.notice = field === "torch_install_command" ? "已复制 CUDA 版 PyTorch 安装命令；请按驱动确认 cu128 是否兼容，安装后重启 AstrBot。" : field === "remote_start_command" ? "已复制 Laya 服务启动命令。" : field === "remote_install_command" ? "已复制远程 Laya 服务依赖安装命令。" : "已复制当前 AstrBot Python 环境的安装命令。安装后重启 AstrBot，再刷新状态。"; s.laya.bad = false; }
     catch { s.laya.notice = "无法访问剪贴板，请选中并复制下方命令。"; s.laya.bad = false; } render(); }
   function layaResult(result) { if (!result) return ""; if (result.status === "testing") return '<div class="model-notice">正在等待 Laya…</div>'; if (result.status === "skipped") return `<div class="model-notice">本次未调用 Laya：${esc(result.reason || "程序规则已处理")}</div>`;
@@ -2191,7 +2272,7 @@ window.CompanionModelsPage = (() => {
         <div class="model-kpis model-laya-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(esc(modeKpi), "接入模式", gpuUnavailable ? "r" : "")}${kpi(esc(activeModelKpi), activeModelLabel)}${kpi(esc(perfKpi.value), perfKpi.label, perfKpi.tone)}</div>
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「OpenAI 兼容网关」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
-          ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
+          ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(layaSanitizeCommand(l.data.torch_install_command))}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
         <section class="model-laya-section" aria-label="服务连接">
           <header class="model-laya-section-head">
             <div><h4>服务连接</h4><span>选择接入协议并填写端点、鉴权与判断模型</span></div>
@@ -2216,20 +2297,19 @@ window.CompanionModelsPage = (() => {
         <div class="model-editor-actions"><button type="button" class="button primary" data-laya-save ${!dirty || disabled || l.stale ? "disabled" : ""}>保存 Laya 配置</button><button type="button" class="button" data-laya-test ${disabled || gpuUnavailable ? "disabled" : ""}>${mode === "local" && installed && !l.data.model_cache_ready ? "下载并验证模型" : "测试 Laya 调用"}</button></div>
         ${l.stale ? '<div class="model-alert">配置已在别处变化，请刷新后核对。</div>' : ""}${l.notice ? `<div class="model-notice${l.bad ? " error" : ""}">${esc(l.notice)}</div>` : ""}${l.test ? layaResult(l.test) : ""}
       </div>
-      ${mode === "workers_ai" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">外部判断服务</span><h3>Cloudflare Workers AI</h3></div></div><p class="model-note">Cloudflare Workers AI 把模型判断放在 <code>/ai/run</code>：模型名写在请求体里，<code>state</code> 与 <code>questions</code> 需要嵌进 <code>input</code> 对象，而不是与 <code>model</code> 平级。插件会按这个外壳发送，并把返回的 <code>result</code> 解包成同一份 <code>answers</code> 决策合同；判断失败只影响本轮判断，不会阻塞正常回复。</p>
-        <div class="model-state">判断模型：<code>${esc(l.data.default_model || "@cf/cloudflare/clef")}</code> · 请求路径：<code>/ai/run</code> · 请求体：<code>{"model": ..., "input": {"state": ..., "questions": ...}}</code></div>
-        <div class="model-state"><code>@cf/cloudflare/clef</code> 与 <code>clef-flash</code> 使用 Workers AI 每日免费神经元额度；<code>typesafe/jev-1.14.0</code> 等第三方模型不共享该额度，额度不足时 Cloudflare 返回 402，原因显示在下方运行记录里。</div>
-      </div>` : ""}${mode === "jev" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">第三方中转</span><h3>OpenAI 兼容网关</h3></div></div><p class="model-note">这种接入方式把判断请求包进一次 OpenAI 兼容的 <code>chat/completions</code> 调用，只适用于只提供该接口的第三方中转：模型按 state 与分类问题返回每个分类的概率，answers 沿用同一份决策合同。官方 TypeSafe Jev 不提供 <code>chat/completions</code>，请使用「远程 HTTP 服务」并填写 <code>/v1/systemone</code> 地址。判断失败只影响本轮判断，不会阻塞正常回复，也不需要本地 Python 包或权重缓存。</p>
-        <div class="model-state">判断模型：<code>${esc(l.data.default_model || "jev-latest")}</code> · 请求路径：<code>/v1/chat/completions</code> · 决策合同：<code>state + questions → answers</code></div>
-        <div class="model-state">官方 TypeSafe Jev 走 SystemOne，不使用此接入方式。密钥只保存在插件数据目录的决策配置里，不写入调用日志；失败原因显示在下方运行记录。</div>
-      </div>` : mode === "workers_ai" ? "" : `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">官方依赖与权重缓存</span><h3>安装 Laya Python 包</h3></div></div><p class="model-note">插件发行包不包含 Laya 包或检查点权重。将下方命令复制到 AstrBot 所在环境执行；本地首次推理会由官方 Router 自动从 Hugging Face 下载所选检查点。</p>
-        <div class="model-laya-install"><code>${esc(l.data.install_command || "")}</code><button type="button" class="button small" data-laya-copy="install_command" ${disabled ? "disabled" : ""}>复制安装命令</button></div>
-        ${mode === "remote" ? `<p class="model-note">远程服务端使用 Laya 官方 SystemOne 接口，地址以 <code>/v1/systemone</code> 结尾；服务端需要单独部署，以下命令使用本机 AstrBot Python 作为示例。</p><div class="model-laya-install"><code>${esc(l.data.remote_install_command || "")}</code><button type="button" class="button small" data-laya-copy="remote_install_command" ${disabled ? "disabled" : ""}>复制服务端安装命令</button></div><div class="model-laya-install"><code>${esc(l.data.remote_start_command || "")}</code><button type="button" class="button small" data-laya-copy="remote_start_command" ${disabled ? "disabled" : ""}>复制服务启动命令</button></div>` : ""}
-        <div class="model-state">Python：<code>${esc(l.data.python_executable || "未知")}</code> · 权重缓存：<code>${esc(l.data.model_cache_path || "由 Hugging Face 默认配置决定")}</code></div>
-        <div class="model-state">上游源码与版本：<a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noreferrer">NandhaKishorM/laya</a> · <a href="https://huggingface.co/convaiinnovations/laya-multilingual" target="_blank" rel="noreferrer">Multilingual 权重</a></div>
-      </div>`}
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">调用预览</span><h3>测试一次语义决策</h3></div></div><label class="model-fd"><span class="model-cap">测试消息<em>只提交这段文字与固定的文本类型事实</em></span><textarea data-laya-preview rows="4" ${disabled ? "disabled" : ""}>${esc(l.previewText || "")}</textarea></label><div class="model-editor-actions"><button type="button" class="button primary" data-laya-decide ${disabled || !l.data.enabled ? "disabled" : ""}>调用 Laya</button></div>${l.preview ? layaResult(l.preview) : ""}</div>
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">${l.logsUnavailable ? "当前会话" : isGroupLaya(s) ? "本群运行记录 · 最近 50 条" : l.logsScope === "current" ? "当前会话 · 最近 50 条" : "全部来源 · 最近 50 条"}</span><h3>Laya 调用日志</h3></div>${isGroupLaya(s) ? "" : `<div class="model-st2"><div class="model-seg" role="group" aria-label="日志来源筛选"><button type="button" class="${(l.logsScope || "all") === "all" ? "on" : ""}" data-laya-logs-scope="all" aria-pressed="${(l.logsScope || "all") === "all"}" ${l.loading || l.logsLoading ? "disabled" : ""}>全部来源</button><button type="button" class="${l.logsScope === "current" ? "on" : ""}" data-laya-logs-scope="current" aria-pressed="${l.logsScope === "current"}" ${l.loading || l.logsLoading ? "disabled" : ""}>仅当前会话</button></div></div>`}</div>${layaHistoryMarkup(l)}</div>
+      <div class="model-laya-workbench">
+        <div class="model-card model-laya-test-card">
+          <div class="model-phead"><div class="model-grow"><span class="model-eb">调用预览</span><h3>测试一次语义决策</h3></div></div>
+          <label class="model-fd model-laya-preview-fd"><span class="model-cap">测试消息<em>只提交这段文字与固定的文本类型事实</em></span><textarea data-laya-preview rows="5" placeholder="输入一句群聊消息，模拟 Laya 的接话 / 等待 / 沉默判断…" ${disabled ? "disabled" : ""}>${esc(l.previewText || "")}</textarea></label>
+          <div class="model-editor-actions model-laya-test-actions"><button type="button" class="button primary" data-laya-decide ${disabled || !l.data.enabled ? "disabled" : ""}>调用 Laya</button>${!l.data.enabled ? '<span class="model-laya-disabled-hint">请先在上方开启并保存「启用 Laya」</span>' : ""}</div>
+          ${l.preview ? layaResult(l.preview) : '<div class="model-laya-preview-empty">点击「调用 Laya」后，这里会展示动作分类与置信度结果。</div>'}
+        </div>
+        <div class="model-card model-laya-logs-card">
+          <div class="model-phead"><div class="model-grow"><span class="model-eb">${l.logsUnavailable ? "当前会话" : isGroupLaya(s) ? "本群运行记录 · 最近 50 条" : l.logsScope === "current" ? "当前会话 · 最近 50 条" : "全部来源 · 最近 50 条"}</span><h3>Laya 调用日志</h3></div>${isGroupLaya(s) ? "" : `<div class="model-st2"><div class="model-seg" role="group" aria-label="日志来源筛选"><button type="button" class="${(l.logsScope || "all") === "all" ? "on" : ""}" data-laya-logs-scope="all" aria-pressed="${(l.logsScope || "all") === "all"}" ${l.loading || l.logsLoading ? "disabled" : ""}>全部来源</button><button type="button" class="${l.logsScope === "current" ? "on" : ""}" data-laya-logs-scope="current" aria-pressed="${l.logsScope === "current"}" ${l.loading || l.logsLoading ? "disabled" : ""}>仅当前会话</button></div></div>`}</div>
+          ${layaHistoryMarkup(l)}
+        </div>
+      </div>
+      ${layaDeployDrawer(l, mode, disabled)}
     </div>`; }
   function layaSyncSaveButton(l) {
     const saveBtn = root?.querySelector?.("[data-laya-save]");
@@ -2278,6 +2358,12 @@ window.CompanionModelsPage = (() => {
     if (event.type === "change") { l.bad = false; render(); } }
   function layaClick(s, event) { const t = event.target;
     if (t.closest("[data-laya-refresh]")) { layaRefresh(s); return; }
+    if (t.closest("[data-laya-deploy-toggle]")) {
+      const mode = s.laya.draft?.mode || s.laya.data?.mode || "local";
+      s.laya.deployOpen = !layaDeployExpanded(s.laya, mode);
+      render();
+      return;
+    }
     const logsScope = t.closest("[data-laya-logs-scope]"); if (logsScope) { layaSwitchLogsScope(s, logsScope.dataset.layaLogsScope); return; }
     if (t.closest("[data-laya-save]")) { layaSave(s); return; }
     const preset = t.closest("[data-laya-preset]"); if (preset) { layaApplyPreset(s, preset.dataset.layaPreset); return; }
@@ -4129,7 +4215,7 @@ window.CompanionModelsPage = (() => {
         view: "generate", config: null, configBase: null, configDraft: null, configText: null, configTextBase: null,
         configLoading: false, configSaving: false, configBad: false, configNotice: "",
       },
-      laya: { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" },
+      laya: { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "", deployOpen: null },
       search: { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" },
       pricing: pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null },
       quota: quotaWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, wizard: null },
@@ -4139,7 +4225,7 @@ window.CompanionModelsPage = (() => {
     state.globalDraft ??= null; state.globalBusy = false; state.globalNotice ||= ""; state.globalBad = Boolean(state.globalBad); state.globalRestartRequired = Boolean(state.globalRestartRequired);
     /* 展开状态按对象保存：刷新、切任务、切页回来都保持上次展开的分组，
        不再每次回到“全收起”或“全展开”。 */
-    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.pricing ||= pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null }; state.quota ||= quotaWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, wizard: null }; state.hoverProvider = "";
+    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "", deployOpen: null }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.laya.deployOpen ??= null; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.pricing ||= pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null }; state.quota ||= quotaWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, wizard: null }; state.hoverProvider = "";
     const requestedTab = typeof options.initialTab === "string" && MODEL_TABS.has(options.initialTab) ? options.initialTab : "";
     if (requestedTab) {
       state.tab = requestedTab;

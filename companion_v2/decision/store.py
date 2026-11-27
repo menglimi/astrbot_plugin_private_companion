@@ -133,8 +133,18 @@ def cached_multilingual_model() -> Path | None:
     return None
 
 
+def _clean_windows_path(value: str) -> str:
+    """Strip Windows extended-length path prefixes (\\?\\ and \\?\\UNC\\)."""
+    text = str(value)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    if text.startswith("\\\\?\\"):
+        return text[4:]
+    return text
+
+
 def _pip_command(arguments) -> str:
-    executable = str(Path(sys.executable).resolve())
+    executable = _clean_windows_path(str(Path(sys.executable).resolve()))
     if os.name == "nt":
         quote = lambda value: "'" + value.replace("'", "''") + "'"
         parts = [str(item) if str(item) in {"install", "--no-deps"} else quote(str(item))
@@ -153,7 +163,7 @@ def _install_command() -> str:
 
 
 def _remote_commands() -> tuple[str, str]:
-    executable = str(Path(sys.executable).resolve())
+    executable = _clean_windows_path(str(Path(sys.executable).resolve()))
     install = (_pip_command(["install", "--no-deps", "laya==0.4.0"]) + "; "
                + _pip_command(["install", "transformers>=4.48.0", "safetensors>=0.4.0",
                                "huggingface_hub>=0.20.0", "numpy>=1.20.0",
@@ -303,8 +313,8 @@ class LayaSettingsStore:
             "package_installed": installed,
             "package_version": version,
             "model_cache_ready": model_cache_ready,
-            "model_cache_path": str(cache_dir),
-            "python_executable": str(Path(sys.executable).resolve()),
+            "model_cache_path": _clean_windows_path(str(cache_dir)),
+            "python_executable": _clean_windows_path(str(Path(sys.executable).resolve())),
             "install_command": _install_command(),
             "remote_install_command": remote_install_command,
             "remote_start_command": remote_start_command,
