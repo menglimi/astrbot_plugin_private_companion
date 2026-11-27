@@ -326,15 +326,17 @@ class NativePerceptionAPITests(unittest.IsolatedAsyncioTestCase):
         registry = self.controller.native_extensions
         actions = {item.descriptor.tool.action for item in registry.declarations()}
         self.assertTrue({"reality.snapshot.read", "reality.camera.observe"}.issubset(actions))
-        for section in ("reality", "camera"):
-            self.assertEqual(disabled["data"][section], {
-                "state": "blocked", "reason": "capability_not_installed"})
+        self.assertEqual(disabled["data"]["reality"], {
+            "state": "blocked", "reason": "capability_not_installed"})
+        self.assertEqual(disabled["data"]["camera"], {
+            "state": "blocked", "reason": "capability_not_installed", "enabled": False})
         with patch.object(registry, "declarations", return_value=()):
             missing = await self.call(route=path)
         self.assertEqual(missing["status"], "ok", missing)
-        for section in ("reality", "camera"):
-            self.assertEqual(missing["data"][section], {
-                "state": "unavailable", "reason": "reality_provider_unavailable"})
+        self.assertEqual(missing["data"]["reality"], {
+            "state": "unavailable", "reason": "reality_provider_unavailable"})
+        self.assertEqual(missing["data"]["camera"], {
+            "state": "unavailable", "reason": "reality_provider_unavailable", "enabled": False})
         self.assertEqual(missing["data"]["screen"]["state"], "empty")
         self.assertEqual(weather.locations, [])
 
@@ -393,3 +395,50 @@ class NativePerceptionAPITests(unittest.IsolatedAsyncioTestCase):
                             and row["basis"] == "profile_role_birthday" for row in dates))
         self.assertTrue(any(row["label"] == "第一次一起看星星" and row["days_until"] == 2
                             and row["basis"] == "auto_relationship_anniversary" for row in dates))
+        # Year-round configured date metadata is always returned alongside in-window dates.
+        self.assertEqual(status["lookahead_days"], 7)
+        self.assertEqual(status["configured_count"], 2)
+        self.assertEqual(len(status["configured_items"]), 2)
+        self.assertIsNotNone(status["next_upcoming"])
+
+    async def test_camera_enabled_flag_and_year_round_configured_important_dates(self):
+        (await self.controller.initialize_profile()).unwrap()
+        (await self.controller.start()).unwrap()
+        app = self.controller.session.application
+        context = self.controller.session.profile.target
+
+        # Configure dates outside the 7-day lookahead window (NOW is 2026-09-21).
+        owner = RoleProfileConfigurationOwner(app.runtime)
+        target = role_profile_target_for(context)
+        fields = role_profile_fields()
+        snapshot = owner.read(target, fields)
+        owner.write(target, fields, changes={ROLE_PROFILE_GROUP + ".birthday": "11月15日"},
+                    reset=(), expected_revision=snapshot.revision, observed_at=support.NOW)
+        anniversaries.remember(app.runtime, context, {
+            "label": "第一次一起看雪", "reason": "用户明确纪念日。",
+            "confidence": 0.9, "evidence_handle": "s-snow",
+            "occurred_at": support.NOW.isoformat(), "month": 12, "day": 20,
+            "timezone": "Asia/Shanghai",
+        }, source_run_id="perception-year-round", at=support.NOW)
+
+        status = (await self.call())["data"]["contact"]
+        self.assertEqual(json.loads(status["dates"]), [])
+        self.assertEqual(status["lookahead_days"], 7)
+        self.assertEqual(status["configured_count"], 2)
+        self.assertEqual([item["label"] for item in status["configured_items"]],
+                         ["角色生日", "第一次一起看雪"])
+        self.assertEqual(status["next_upcoming"]["label"], "角色生日")
+        self.assertGreater(status["next_upcoming"]["days_until"], 7)
+
+        # Camera snapshot exposes enabled=False (disabled) vs enabled=True (ready/standby)
+        # when the capability access check reports invokable=True.
+        path = PREFIX + "/runtime"
+        with patch("astrbot_host.native_perception_api.RealityCameraAccess.status",
+                   return_value={"invokable": True, "reason": ""}):
+            with patch.object(NativePerceptionWebAPI, "_reality_camera_enabled", return_value=False):
+                cam_off = (await self.call(route=path))["data"]["camera"]
+            self.assertEqual(cam_off, {"state": "disabled", "reason": "camera_disabled", "enabled": False})
+
+            with patch.object(NativePerceptionWebAPI, "_reality_camera_enabled", return_value=True):
+                cam_on = (await self.call(route=path))["data"]["camera"]
+            self.assertEqual(cam_on, {"state": "ready", "reason": "no_recent_observation", "enabled": True})

@@ -199,12 +199,23 @@ test("the overview subscription publishes display fields without exposing config
   next.contact.dates = JSON.stringify([{basis:"profile_role_birthday",label:"角色生日",
     date:"2026-10-03",days_until:2,calendar:"gregorian"}]);
   next.contact.lookaheadDays = 7;
+  next.contact.lookahead_days = 7;
+  next.contact.configured_count = 2;
+  next.contact.configured_items = [
+    {label:"角色生日", date_text:"10月3日", source:"角色档案", days_until:2, calendar:"gregorian"},
+    {label:"相识纪念日", date_text:"12月20日", source:"自定义重要日期", days_until:80, calendar:"gregorian"},
+  ];
+  next.contact.next_upcoming = next.contact.configured_items[0];
   requests[0].resolve({status:"ok", data:next});
   await flush();
 
   assert.equal(snapshot.ready, true);
   assert.equal(snapshot.environment.locationName, "用户配置区域");
   assert.equal(snapshot.contact.lookaheadDays, 7);
+  assert.equal(snapshot.contact.lookahead_days, 7);
+  assert.equal(snapshot.contact.configured_count, 2);
+  assert.equal(snapshot.contact.configured_items.length, 2);
+  assert.equal(snapshot.contact.next_upcoming.label, "角色生日");
   assert.equal(snapshot.contact.balanceAwarenessEnabled, true);
   assert.equal(snapshot.contact.automaticAllowed, true);
   assert.match(snapshot.contact.dates, /角色生日/);

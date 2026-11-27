@@ -16,6 +16,7 @@ from companion_v2.execution.models import TaskContext, TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.storage.semantic import COLLECTION_FILTERS
 from .group_settings import GroupTarget
 from .management_identity import dashboard_operator
 from .media import inspect_image
@@ -239,6 +240,7 @@ class SemanticWebAPI:
                         result["catalog"][kind]["pending"] = stats[0]
                         result["catalog"][kind]["recognized"] = stats[1]
                         result["catalog"][kind]["awaiting_confirmation"] = stats[2]
+                        result["catalog"][kind]["manually_disabled"] = max(0, counts.get("0", 0) - stats[2])
             result["reaction_collection"] = (service.store.reaction_collection_summary(effective_reaction_owner)
                                              if effective_reaction_owner is not None else {"totals": {}, "recent": []})
         return result
@@ -258,7 +260,14 @@ class SemanticWebAPI:
         kind = query_map.get("kind", "reaction")
         if kind not in ("reaction", "slang"):
             raise ValueError("unknown catalog")
+        collection_filter = query_map.get("collection_filter", "all")
+        if type(collection_filter) is not str or collection_filter not in COLLECTION_FILTERS:
+            raise ValueError("invalid collection filter")
+        if kind != "reaction" and collection_filter != "all":
+            raise ValueError("collection filter requires reaction catalog")
         result.update(items=[], next_after=None)
+        if kind == "reaction":
+            result["collection_filter"] = collection_filter
         owner = reaction_owner if kind == "reaction" else (service.owner(context) if context else None)
         if owner is not None:
             if query_map.get("id"):
@@ -268,7 +277,9 @@ class SemanticWebAPI:
                     image = service.reactions.captured(item)
                     result["image_url"] = "data:" + image.descriptor.mime_type + ";base64," + base64.b64encode(image.content).decode("ascii")
             else:
-                page, next_after = service.store.list_recent_page(owner, kind, after=query_map.get("after", ""), limit=24)
+                page, next_after = service.store.list_recent_page(
+                    owner, kind, after=query_map.get("after", ""), limit=24,
+                    collection_filter=collection_filter if kind == "reaction" else "all")
                 with service.store.db() as db:
                     items = []
                     for item in page:
@@ -289,7 +300,7 @@ class SemanticWebAPI:
         try:
             username = request.username
             query = request.query
-            if set(query.keys()) - {"target_id", "role_id", "session_id", "kind", "after", "id", "global"} or any(len(query.getlist(k)) != 1 for k in query.keys()):
+            if set(query.keys()) - {"target_id", "role_id", "session_id", "kind", "after", "id", "global", "collection_filter"} or any(len(query.getlist(k)) != 1 for k in query.keys()):
                 raise ValueError("unexpected or duplicate fields")
             query_map = {key: query[key] for key in query.keys()}
             result = await asyncio.to_thread(self._get_sync, query_map, username)
@@ -321,7 +332,12 @@ class SemanticWebAPI:
         action_box[0] = action
         fields = {"configure": ("changes", "revision"), "import": ("content", "metadata"), "analyze": ("id",),
                   "edit": ("id", "kind", "revision", "values", "enabled"), "delete": ("id", "kind", "revision"),
-                  "search": ("kind", "query"), "reindex": ()}
+                  "search": ("kind", "query"), "reindex": (),
+                  "confirm_reaction": ("id", "revision"),
+                  "reject_reaction": ("id", "revision"),
+                  "batch_confirm_reactions": ("items", "ids", "all_awaiting"),
+                  "batch_reject_reactions": ("items", "ids", "all_awaiting"),
+                  "reset_collection_failures": ()}
         if action not in fields or set(data) - {"target_id", "role_id", "session_id", "global", "action", *fields[action]}:
             raise ValueError("unsupported action or fields")
         selection = {k: data[k] for k in ("target_id", "role_id", "session_id", "global") if k in data}
@@ -395,6 +411,142 @@ class SemanticWebAPI:
             db.execute("DELETE FROM vectors WHERE owner=? AND kind='slang'", (slang_owner,))
         service.gateway.clear()
 
+    def _confirm_reaction_sync(self, service, owner, data, validate):
+        item_id, revision = data.get("id"), data.get("revision")
+        if type(item_id) is not str or not 0 < len(item_id) <= 200 or type(revision) is not int:
+            raise ValueError("reaction ID and revision required")
+        validate()
+        item = service.store.get(owner, "reaction", item_id)
+        payload = dict(item["payload"])
+        if payload.get("collection_state") == "awaiting_confirmation":
+            payload["collection_state"] = "confirmed"
+        updated = service.store.put(owner, "reaction", item["id"], payload, expected=revision, enabled=True)
+        return {"item": self.public(updated), "confirmed": True}
+
+    def _reject_reaction_sync(self, service, owner, data, validate):
+        item_id, revision = data.get("id"), data.get("revision")
+        if type(item_id) is not str or not 0 < len(item_id) <= 200 or type(revision) is not int:
+            raise ValueError("reaction ID and revision required")
+        validate()
+        result = service.store.delete(owner, "reaction", item_id, expected=revision)
+        return {**result, "rejected": True, "id": item_id}
+
+    @staticmethod
+    def _parse_batch_targets(data):
+        has_items = "items" in data and data["items"] is not None
+        has_ids = "ids" in data and data["ids"] is not None
+        all_awaiting = data.get("all_awaiting") is True
+        if "all_awaiting" in data and type(data["all_awaiting"]) is not bool:
+            raise ValueError("all_awaiting must be boolean")
+        mode_count = int(has_items) + int(has_ids) + int(all_awaiting)
+        if mode_count != 1:
+            raise ValueError("specify exactly one of items, ids, or all_awaiting")
+        if all_awaiting:
+            return "all_awaiting", ()
+        if has_items:
+            raw = data["items"]
+            if type(raw) is not list or not 1 <= len(raw) <= 200:
+                raise ValueError("items must be a bounded non-empty list")
+            targets, seen = [], set()
+            for entry in raw:
+                if (type(entry) is not dict or set(entry) != {"id", "revision"}
+                        or type(entry["id"]) is not str or not 0 < len(entry["id"]) <= 200
+                        or type(entry["revision"]) is not int or entry["id"] in seen):
+                    raise ValueError("invalid batch reaction item")
+                seen.add(entry["id"])
+                targets.append((entry["id"], entry["revision"]))
+            return "items", tuple(targets)
+        raw_ids = data["ids"]
+        if type(raw_ids) is not list or not 1 <= len(raw_ids) <= 200:
+            raise ValueError("ids must be a bounded non-empty list")
+        ids, seen = [], set()
+        for item_id in raw_ids:
+            if type(item_id) is not str or not 0 < len(item_id) <= 200 or item_id in seen:
+                raise ValueError("invalid batch reaction id")
+            seen.add(item_id)
+            ids.append(item_id)
+        return "ids", tuple(ids)
+
+    def _batch_confirm_reactions_sync(self, service, owner, data, validate):
+        mode, targets = self._parse_batch_targets(data)
+        validate()
+        confirmed_ids, conflicts, missing = [], [], []
+        if mode == "all_awaiting":
+            candidates = [(item["id"], item["revision"])
+                          for item in service.store.list_awaiting_confirmation_reactions(owner)]
+        elif mode == "items":
+            candidates = list(targets)
+        else:
+            candidates = []
+            for item_id in targets:
+                try:
+                    current = service.store.get(owner, "reaction", item_id)
+                except TaskError as error:
+                    if error.code == "semantic_item_missing":
+                        missing.append(item_id)
+                        continue
+                    raise
+                candidates.append((current["id"], current["revision"]))
+        for item_id, revision in candidates:
+            try:
+                item = service.store.get(owner, "reaction", item_id)
+                payload = dict(item["payload"])
+                if payload.get("collection_state") == "awaiting_confirmation":
+                    payload["collection_state"] = "confirmed"
+                service.store.put(owner, "reaction", item["id"], payload, expected=revision, enabled=True)
+                confirmed_ids.append(item_id)
+            except TaskError as error:
+                if error.code == "semantic_conflict":
+                    conflicts.append(item_id)
+                elif error.code == "semantic_item_missing":
+                    missing.append(item_id)
+                else:
+                    raise
+        return {
+            "confirmed_ids": confirmed_ids,
+            "confirmed_count": len(confirmed_ids),
+            "conflicts": conflicts,
+            "missing": missing,
+        }
+
+    def _batch_reject_reactions_sync(self, service, owner, data, validate):
+        mode, targets = self._parse_batch_targets(data)
+        validate()
+        rejected_ids, conflicts, missing = [], [], []
+        if mode == "all_awaiting":
+            candidates = [(item["id"], item["revision"])
+                          for item in service.store.list_awaiting_confirmation_reactions(owner)]
+        elif mode == "items":
+            candidates = list(targets)
+        else:
+            candidates = []
+            for item_id in targets:
+                try:
+                    current = service.store.get(owner, "reaction", item_id)
+                except TaskError as error:
+                    if error.code == "semantic_item_missing":
+                        missing.append(item_id)
+                        continue
+                    raise
+                candidates.append((current["id"], current["revision"]))
+        for item_id, revision in candidates:
+            try:
+                service.store.delete(owner, "reaction", item_id, expected=revision)
+                rejected_ids.append(item_id)
+            except TaskError as error:
+                if error.code == "semantic_conflict":
+                    conflicts.append(item_id)
+                elif error.code == "semantic_item_missing":
+                    missing.append(item_id)
+                else:
+                    raise
+        return {
+            "rejected_ids": rejected_ids,
+            "rejected_count": len(rejected_ids),
+            "conflicts": conflicts,
+            "missing": missing,
+        }
+
     async def post(self):
         action_box = [""]
         try:
@@ -409,7 +561,16 @@ class SemanticWebAPI:
                 result = await service.configure(data["changes"], data["revision"])
                 await asyncio.to_thread(self.recheck, selection, service, context, username=username)
                 return self.response({"settings": result})
-            is_reaction_action = (action in ("import", "analyze")
+            if action == "reset_collection_failures":
+                def _reset_sync():
+                    self.recheck(selection, service, context,
+                                 reaction_owner=reaction_owner if reaction_owner is not None else None,
+                                 username=username)
+                    return service.reset_collection_failures(reaction_owner)
+                result = await asyncio.to_thread(_reset_sync)
+                return self.response(result)
+            is_reaction_action = (action in ("import", "analyze", "confirm_reaction", "reject_reaction",
+                                             "batch_confirm_reactions", "batch_reject_reactions")
                                   or (action in ("edit", "delete", "search") and data.get("kind") == "reaction"))
             if context is None and not (is_reaction_action and reaction_owner is not None):
                 settings = self.controller.settings
@@ -429,6 +590,14 @@ class SemanticWebAPI:
                 result = {"item": self.public(await service.reactions.analyze(owner, data["id"], validate))}
             elif action == "edit":
                 result = await asyncio.to_thread(self._edit_sync, service, owner, context, data)
+            elif action == "confirm_reaction":
+                result = await asyncio.to_thread(self._confirm_reaction_sync, service, owner, data, validate)
+            elif action == "reject_reaction":
+                result = await asyncio.to_thread(self._reject_reaction_sync, service, owner, data, validate)
+            elif action == "batch_confirm_reactions":
+                result = await asyncio.to_thread(self._batch_confirm_reactions_sync, service, owner, data, validate)
+            elif action == "batch_reject_reactions":
+                result = await asyncio.to_thread(self._batch_reject_reactions_sync, service, owner, data, validate)
             elif action == "search":
                 kind, text = data["kind"], data["query"]
                 if kind not in ("reaction", "slang") or type(text) is not str or not 0 < len(text.strip()) <= 2000:

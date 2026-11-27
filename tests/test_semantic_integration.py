@@ -969,3 +969,176 @@ class SemanticConversationTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         fallback = await self.semantic.memory.rerank(context, "相关经历", payload)
         self.assertEqual(fallback["items"], payload["items"])
         self.assertEqual(fallback["rerank_state"], "unavailable_kept_retrieval_order")
+
+    async def test_timeout_decoupling_vision_review_fallback_and_consecutive_timeout_warning(self):
+        from unittest.mock import patch
+
+        class RecordingPort(SemanticPort):
+            def __init__(self):
+                super().__init__()
+                self.analyze_calls = []
+                self.timeout_providers = set()
+
+            async def analyze(self, identifier, prompt, images=(), *, max_tokens=1400):
+                self.analyze_calls.append({
+                    "identifier": identifier,
+                    "max_tokens": max_tokens,
+                    "is_review": "判断候选表情是否适合" in prompt,
+                })
+                if identifier in self.timeout_providers:
+                    raise TimeoutError("vision review timed out")
+                if "判断图片是否适合作为独立的聊天表情素材" in prompt:
+                    return {"suitable": True, "name": "开心", "description": "笑脸",
+                            "visible_text": "", "tags": "开心", "emotions": "愉快", "intents": "打招呼"}
+                if "为聊天表情建立元数据" in prompt:
+                    return {"name": "开心", "description": "笑脸", "intents": "打招呼"}
+                return {"fit": True, "reason": "通过"}
+
+        host = await self.semantic_host(images=True, automatic_reactions=False)
+        recording = RecordingPort()
+        self.semantic.gateway.port = recording
+        settings = self.semantic.store.settings()
+        self.semantic.store.configure({
+            "timeout_seconds": 6,
+            "analysis_timeout_seconds": 42,
+            "analysis_provider": "main-analysis",
+            "vision_review_provider": "fast-review",
+            "vision_review_fallback_provider": "backup-review",
+            "vision_review_timeout_seconds": 14,
+            "vision_review": True,
+        }, settings["revision"])
+
+        timeouts_seen = []
+        real_wait_for = asyncio.wait_for
+
+        async def spy_wait_for(coro, timeout=None):
+            timeouts_seen.append(timeout)
+            return await real_wait_for(coro, timeout)
+
+        # collect_candidate uses analysis_provider + analysis_timeout_seconds (42), not timeout_seconds (6).
+        with patch("companion_v2.expression.reactions.asyncio.wait_for", side_effect=spy_wait_for):
+            status, item = await self.semantic.reactions.collect_candidate(
+                "decouple-owner", picture(), "private_capture", lambda: None,
+            )
+            self.assertEqual(status, "added")
+            self.assertEqual(recording.analyze_calls[-1]["identifier"], "main-analysis")
+            self.assertEqual(timeouts_seen[-1], 42)
+
+            # analyze() also uses analysis_timeout_seconds (42).
+            await self.semantic.reactions.analyze("decouple-owner", item["id"])
+            self.assertEqual(recording.analyze_calls[-1]["identifier"], "main-analysis")
+            self.assertEqual(timeouts_seen[-1], 42)
+
+            # _review() uses vision_review_provider, fails over to vision_review_fallback_provider,
+            # enforces vision_review_timeout_seconds (14), and caps max_tokens=256.
+            review_settings = SimpleNamespace(vision_verify_mode="always")
+            candidate = {"id": item["id"], "basis": "embedding"}
+            recording.timeout_providers.add("fast-review")
+            review_res = await self.semantic.reactions._review(
+                None, review_settings, candidate, item, "打招呼",
+            )
+            self.assertEqual(review_res["state"], "passed")
+            self.assertEqual(recording.analyze_calls[-2]["identifier"], "fast-review")
+            self.assertEqual(recording.analyze_calls[-2]["max_tokens"], 256)
+            self.assertEqual(recording.analyze_calls[-1]["identifier"], "backup-review")
+            self.assertEqual(recording.analyze_calls[-1]["max_tokens"], 256)
+            self.assertEqual(timeouts_seen[-2:], [14, 14])
+
+        # 3 consecutive vision review timeouts emit a structured warning.
+        recording.timeout_providers.add("backup-review")
+        with patch("companion_v2.expression.reactions.logger.warning") as warn_log:
+            for _ in range(3):
+                res = await self.semantic.reactions._review(
+                    None, review_settings, candidate, item, "打招呼",
+                )
+                self.assertEqual(res["state"], "unavailable")
+            self.assertGreaterEqual(warn_log.call_count, 1)
+            self.assertTrue(any("连续超时" in str(call.args[0]) for call in warn_log.call_args_list))
+            self.assertEqual(self.semantic.reactions._vision_review_consecutive_timeouts, 3)
+
+        # Recovery resets the consecutive timeout counter.
+        recording.timeout_providers.clear()
+        ok_res = await self.semantic.reactions._review(
+            None, review_settings, candidate, item, "打招呼",
+        )
+        self.assertEqual(ok_res["state"], "passed")
+        self.assertEqual(self.semantic.reactions._vision_review_consecutive_timeouts, 0)
+
+    async def test_reaction_collection_circuit_breaker_backoff_and_recovery(self):
+        from unittest.mock import patch
+
+        host = await self.semantic_host(images=True, automatic_reactions=False)
+        app = host.application
+        batch = host.receive(self.event("breaker-ctx")).unwrap()
+        context = self.context(app, batch)
+        settings = self.semantic.store.settings()
+        self.semantic.store.configure({
+            "reactions_collection_private_enabled": True,
+            "reactions_collection_private_probability": 1.0,
+        }, settings["revision"])
+
+        captured = picture()
+        direct_source = object()
+        prompt_image = SimpleNamespace(source=direct_source)
+        app.messages.images.read = lambda current, events, at: (prompt_image,)
+        self.semantic.reactions.capture_prompt_image = lambda image: captured
+
+        def make_request():
+            return SimpleNamespace(
+                event=SimpleNamespace(images=(captured.descriptor,)),
+                context=SimpleNamespace(materials=(SimpleNamespace(
+                    purpose="input_image:current", source=direct_source,
+                ),)),
+            )
+
+        async def always_timeout(*args, **kwargs):
+            raise TimeoutError("upstream timeout")
+
+        with patch.object(self.port, "analyze", side_effect=always_timeout), \
+             patch("companion_v2.expression.semantic_service.logger.warning") as warn_log:
+            for idx in range(5):
+                self.assertTrue(self.semantic.reaction_collection_allowed(context, f"turn-{idx}"))
+                self.semantic.schedule_reaction_collection(f"breaker-fail-{idx}", context, make_request())
+                pending = [t for k, t in self.semantic.background.items() if k.startswith("reaction-capture:")]
+                await asyncio.gather(*pending)
+            self.assertGreaterEqual(warn_log.call_count, 5)
+
+        # After 5 consecutive failures, circuit opens for 5 minutes (300s) and blocks scheduling.
+        status_open = self.semantic.status()
+        circuit = status_open["reaction_collection_circuit"]
+        self.assertTrue(circuit["open"])
+        self.assertEqual(circuit["consecutive_failures"], 5)
+        self.assertEqual(circuit["cooldown_remaining_seconds"], 300)
+        self.assertEqual(circuit["reason"], "TimeoutError")
+        self.assertFalse(self.semantic.reaction_collection_allowed(context, "turn-blocked"))
+        self.assertEqual(self.semantic.errors.get("reaction_collection"), "reaction_collection_circuit_open")
+
+        # After 300s, circuit closes again; another failure triggers exponential backoff (600s).
+        self.clock.advance(timedelta(seconds=301))
+        self.assertTrue(self.semantic.reaction_collection_allowed(context, "turn-after-300s"))
+        with patch.object(self.port, "analyze", side_effect=always_timeout):
+            self.semantic.schedule_reaction_collection("breaker-fail-6", context, make_request())
+            pending = [t for k, t in self.semantic.background.items() if k.startswith("reaction-capture:")]
+            await asyncio.gather(*pending)
+        circuit_second = self.semantic.status()["reaction_collection_circuit"]
+        self.assertTrue(circuit_second["open"])
+        self.assertEqual(circuit_second["consecutive_failures"], 6)
+        self.assertEqual(circuit_second["cooldown_remaining_seconds"], 600)
+
+        # Manual reset_collection_failures clears breaker and failed runs.
+        owner = self.semantic.ensure_reaction_catalog(context)
+        reset_result = self.semantic.reset_collection_failures(owner)
+        self.assertFalse(reset_result["circuit"]["open"])
+        self.assertEqual(reset_result["circuit"]["consecutive_failures"], 0)
+        self.assertGreaterEqual(reset_result["cleared_runs"], 6)
+        self.assertTrue(self.semantic.reaction_collection_allowed(context, "turn-after-reset"))
+        self.assertNotIn("reaction_collection", self.semantic.errors)
+
+        # Re-open breaker and verify configure() also clears it immediately.
+        self.semantic._reaction_collection_failures = 5
+        self.semantic._reaction_collection_cooldown_until = self.clock.now().timestamp() + 300
+        self.assertFalse(self.semantic.reaction_collection_allowed(context, "turn-blocked-2"))
+        cur = self.semantic.store.settings()
+        await self.semantic.configure({"analysis_timeout_seconds": 35}, cur["revision"])
+        self.assertTrue(self.semantic.reaction_collection_allowed(context, "turn-after-cfg"))
+        self.assertFalse(self.semantic.status()["reaction_collection_circuit"]["open"])
