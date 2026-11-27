@@ -58,6 +58,7 @@ from companion_v2.references.wardrobe import (
 from companion_v2.storage.generated_album import (
     ALBUM_HIDDEN_KEY_PREFIX, album_filename, hidden_album_ids, sync_generated_album_folder,
 )
+from companion_v2.storage.local_folder import clean_windows_path, open_local_folder
 from companion_v2.storage.runtime import StorageRuntime
 
 
@@ -661,20 +662,15 @@ class ReferenceMaterialManagement:
             synced = sync_generated_album_folder(root, entries, role_id=effective_role_id, owner=owner)
         except (OSError, ValueError) as error:
             raise TaskError("generated_album_folder_unavailable", "the generated album folder could not be prepared") from error
-        target = Path(synced["path"])
+        target = Path(clean_windows_path(synced["path"]) if os.name == "nt" else synced["path"])
         if not target.is_dir():
             raise TaskError("generated_album_folder_unavailable", "the generated album folder is unavailable")
         try:
-            if os.name == "nt":
-                os.startfile(str(target))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(target)])
-            else:
-                subprocess.Popen(["xdg-open", str(target)])
+            opened_path = open_local_folder(target)
         except (OSError, AttributeError, ValueError) as error:
             raise TaskError("generated_album_open_failed", "the generated album folder could not be opened") from error
         return {
-            "path": synced["path"],
+            "path": opened_path if isinstance(opened_path, str) and opened_path else str(target),
             "opened": True,
             "synced_count": synced["synced_count"],
             "total_count": synced["total_count"],
