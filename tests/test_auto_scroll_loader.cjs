@@ -1358,4 +1358,3 @@ test("Integration: pages/新的她/app.js handles dialog close race with draftRe
   dialog.close();
   assert.equal(h.activeObservers().length, 0);
 });
-
