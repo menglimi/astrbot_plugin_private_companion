@@ -193,7 +193,7 @@ button { font: inherit; cursor: pointer; border-radius: var(--r-sm); transition:
   background: var(--accent-soft); border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
 .scope {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--gap);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: var(--gap);
   margin: calc(var(--gap) + 6px) 0; padding: var(--gap) var(--pad);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
 }
@@ -720,7 +720,7 @@ footer { margin-top: calc(var(--gap) + 10px); color: var(--ink-soft); font-size:
   .scene-footer .progress-track { order: -1; flex-basis: 100%; }
   .save-panel { grid-template-columns: minmax(0, 1fr); }
   .save-panel > .button { width: 100%; }
-  .field :is(input, textarea, select), .tpl-section textarea, .pair-side textarea, .scene-card textarea { font-size: 14px; }
+  .field :is(input, textarea, select), .tpl-section textarea, .pair-side textarea, .scene-card textarea { font-size: 16px; }
   .source-opt { padding-right: 38px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -729,3 +729,8 @@ footer { margin-top: calc(var(--gap) + 10px); color: var(--ink-soft); font-size:
 
 /* 规范人格的五步操作条：滚动时保持主操作可见 */
 .seg-foot{position:sticky;bottom:0;z-index:3;padding:var(--sp-2) 0;border-top:1px solid var(--t-line);background:linear-gradient(180deg,color-mix(in srgb,var(--t-surface) 82%,transparent),var(--t-surface) 38%);backdrop-filter:blur(8px)}
+@media (max-width: 650px) {
+  #review-metrics { grid-template-columns: minmax(0, 1fr); }
+  .flow-line .seg { min-height: 44px; }
+  .seg-foot { position: static; bottom: auto; }
+}

@@ -331,8 +331,10 @@
   .lh-signal-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   .lh-signal-filter{justify-content:center;padding-inline:var(--sp-2)}
   .lh-signal-card-foot{align-items:stretch;flex-direction:column}
-  .lh-signal-actions .lh-command{width:100%}
-  #expressionWorkspace .wb-field-main{grid-template-columns:minmax(8em,1fr) minmax(85px,.8fr)}
+  .lh-signal-actions .lh-command{width:100%;min-height:44px}
+  .lh-signal-state-tab,.lh-signal-filter{min-height:44px}
+  #expressionWorkspace .wb-field-main{grid-template-columns:minmax(0,1fr)}
+  #expressionWorkspace .wb-field:has(.wb-switch) .wb-field-main{grid-template-columns:minmax(0,1fr) auto}
 }
 @media(prefers-reduced-motion:reduce){.lh-signal-card,.lh-signal-filter{transition-duration:.001ms!important}}
 

@@ -402,7 +402,11 @@
   .output-page [data-wb-card="image_review"] .wb-fields{grid-template-columns:minmax(0,1fr)}
   .output-page [data-wb-card="image_review"] .wb-field{grid-column:1/-1}
   .output-page #imageOutputWorkspace [data-wb-row="trigger_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"] .wb-field-main{grid-template-columns:minmax(0,1fr);gap:calc(var(--sp-1) * 1.25)}
+  .output-content-stats{grid-template-columns:minmax(0,1fr)}
   .output-content-stats>div{padding:calc(var(--sp-1) * 1.75)}
+  .output-derived-grid{grid-template-columns:minmax(0,1fr)}
+  .output-icon-button{min-width:44px;min-height:44px}
+  .output-album-pill{min-height:44px;padding-inline:var(--sp-3)}
   .image-materials-gallery-grid,.image-materials-gallery-tools{grid-template-columns:minmax(0,1fr)}
   .output-page .wb-actions-note,.output-native-actions>span{margin-left:0}
 }

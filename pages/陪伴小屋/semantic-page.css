@@ -17,7 +17,7 @@
 .perception-page{min-width:0;max-width:1200px;display:grid;gap:var(--sp-4);--perception-ink:var(--t-ok);--perception-accent:var(--t-ok);--perception-line:color-mix(in srgb,var(--t-ok) 16%,transparent)}
 
 /* 感知概览容器 - 采用网格布局 */
-.perception-overview{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:var(--sp-3);padding:0}
+.perception-overview{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:var(--sp-3);padding:0}
 
 /* 感知分组 - 大卡片容器。
    必须单列：分组内只有「标题 + 卡片网格」两个子元素，若用 auto-fit 多列，
@@ -1568,8 +1568,8 @@
 .perception-mini-grid{display:grid;gap:var(--sp-2);min-width:0}
 /* 小卡不再固定均分：窄卡片里三等分只剩 ~150px，标题会被挤成一列一个字。
    auto-fit + 最小列宽让它们先换行，而不是继续压窄。 */
-.perception-mini-grid.is-two{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
-.perception-mini-grid.is-three{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+.perception-mini-grid.is-two{grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr))}
+.perception-mini-grid.is-three{grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr))}
 /* 状态徽标和英雄卡一样落到第二行：它一旦挤在第一行，`minmax(0,1fr)` 的文字列
    就会被压到 40px 上下，中文竖着排。 */
 .perception-mini{display:grid;grid-template-columns:24px minmax(0,1fr) 12px;grid-template-areas:"icon copy chevron" ". badge .";align-items:start;gap:var(--sp-2);row-gap:2px;width:100%;min-width:0;min-height:58px;padding:var(--sp-2) calc(var(--sp-2) * 1.25);border:1px solid var(--t-line-firm,var(--t-line));border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text);font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease}

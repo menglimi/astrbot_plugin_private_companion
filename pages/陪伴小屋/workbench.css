@@ -756,8 +756,13 @@
   .wb-field:where(:not(:has(>.wb-rail)):has(>.wb-field-side:not(:empty))){grid-template-columns:minmax(0,1fr)}
   .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
   .wb-field:where(:not(:has(>.wb-rail)))>.wb-field-side{grid-column:1}
-  .wb-reset{opacity:1}
+  .wb-reset{opacity:1;min-height:36px}
+  .wb-save,.wb-actions .button{min-height:44px}
+  .wb-actions-note{flex-basis:100%;margin-left:0}
   .wb-control .wb-segmented-option span{width:100%}
+}
+@media (hover:none),(pointer:coarse){
+  .wb-reset{opacity:1;min-height:36px}
 }
 @media (max-width:720px){
   :where(.wb-field:has(.wb-switch))>.wb-field-main{grid-template-columns:minmax(8em,1fr) auto;column-gap:var(--sp-3)}

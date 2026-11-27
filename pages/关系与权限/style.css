@@ -212,7 +212,7 @@ h3 { margin: 0; font-size: 16px; line-height: 1.4; }
 .auth-row { display: grid; gap: 5px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
 .auth-head { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; }
 .auth-name { font-size: 12px; }
-.auth-code { color: var(--quiet); font-size: 9px; }
+.auth-code { color: var(--quiet); font-size: 12px; }
 .auth-state { margin-left: auto; color: var(--muted); font-size: 10px; }
 .auth-state.state-active { color: var(--teal); }
 .auth-state.state-revoked, .auth-state.state-expired { color: var(--danger); }
@@ -322,18 +322,17 @@ h3 { margin: 0; font-size: 16px; line-height: 1.4; }
   .page-heading { align-items: flex-start; padding-bottom: 14px; }
   h1 { font-size: 23px; }
   .heading-actions { align-items: flex-end; flex-direction: column-reverse; gap: 5px; }
-  .refresh-button { min-height: 34px; padding: 5px 8px; }
+  .refresh-button { min-width: 44px; min-height: 44px; padding: 6px 8px; }
   .refresh-button > span:last-child { display: none; }
-  .scope-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .scope-item { padding: 9px 7px; }
-  .scope-item strong { font-size: 11px; }
+  .scope-item strong { font-size: 12px; }
   .scope-metric { padding: 9px 6px; }
-  .scope-metric span { font-size: 9px; }
+  .scope-metric span { font-size: 12px; }
   .scope-metric strong { font-size: 17px; }
   .commandbar { align-items: stretch; flex-direction: column-reverse; gap: 7px; margin-top: 15px; }
   .search-field { width: 100%; min-width: 0; margin-bottom: 0; }
   .view-tabs { justify-content: space-between; gap: 13px; }
-  .tab { flex: 1; justify-content: center; min-height: 42px; font-size: 12px; }
+  .tab { flex: 1; justify-content: center; min-height: 44px; font-size: 12px; }
   .panel-heading { align-items: flex-start; flex-direction: column; gap: 9px; }
   .panel-heading p { max-width: 100%; }
   .graph-controls { align-self: flex-start; }
