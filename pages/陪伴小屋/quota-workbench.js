@@ -67,7 +67,109 @@ window.CompanionQuotaWorkbench = (() => {
 
   const SAFE_ICON_DATA_URL_RE = /^data:image\/(png|jpeg|webp|x-icon|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/i;
   const isSafeIconDataUrl = url => typeof url === "string" && SAFE_ICON_DATA_URL_RE.test(url);
-  const iconCache = new Map(); // `${id}:${version}` -> verified raster or sanitized static-SVG data_url
+  const iconCache = new Map(); // `${id}:${version}` -> verified raster or sanitized static-SVG data_url (NEVER stores empty/false!)
+  const iconBackoff = new Map(); // stationId -> retryAfterTimestampMs (short cooldown on transient miss)
+  const iconInflight = new Map(); // `${id}:${version}` -> Promise<string>
+  const ICON_BACKOFF_MS = 30_000;
+  const BG_SYNC_DELAY_MS = 2500;
+  const LOGO_STORE_PREFIX = "companion-qw-logo.v1:";
+  const LOGO_STORE_INDEX_KEY = "companion-qw-logo.v1:index";
+  const LOGO_STORE_MAX_ENTRIES = 32;
+  const LOGO_STORE_MAX_BYTES = 2 * 1024 * 1024;
+  const LOGO_STORE_SINGLE_MAX_BYTES = 1_536 * 1024;
+
+  function safeStorage() {
+    try {
+      if (typeof localStorage !== "undefined" && localStorage && typeof localStorage.getItem === "function") {
+        return localStorage;
+      }
+    } catch {}
+    return null;
+  }
+
+  function readLogoIndex(storage) {
+    try {
+      const raw = storage.getItem(LOGO_STORE_INDEX_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter(item => item && typeof item.id === "string" && item.id)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeLogoIndex(storage, entries) {
+    try {
+      storage.setItem(LOGO_STORE_INDEX_KEY, JSON.stringify(entries));
+    } catch {}
+  }
+
+  function readStoredLogo(stationId, version) {
+    if (!stationId || !version) return "";
+    const storage = safeStorage();
+    if (!storage) return "";
+    try {
+      const raw = storage.getItem(LOGO_STORE_PREFIX + stationId);
+      if (!raw) return "";
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== version || !isSafeIconDataUrl(parsed.dataUrl)) return "";
+      return parsed.dataUrl;
+    } catch {
+      return "";
+    }
+  }
+
+  function writeStoredLogo(stationId, version, dataUrl) {
+    if (!stationId || !version || !isSafeIconDataUrl(dataUrl)) return;
+    const storage = safeStorage();
+    if (!storage) return;
+    const payload = JSON.stringify({ v: version, dataUrl, ts: Date.now() });
+    if (payload.length > LOGO_STORE_SINGLE_MAX_BYTES) return;
+    try {
+      let index = readLogoIndex(storage).filter(item => item.id !== stationId);
+      const entry = { id: stationId, bytes: payload.length, ts: Date.now() };
+      index.push(entry);
+      index.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+      let totalBytes = index.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0);
+      while (index.length > 1 && (index.length > LOGO_STORE_MAX_ENTRIES || totalBytes > LOGO_STORE_MAX_BYTES)) {
+        const evicted = index.shift();
+        if (evicted && evicted.id !== stationId) {
+          totalBytes -= Number(evicted.bytes) || 0;
+          try { storage.removeItem(LOGO_STORE_PREFIX + evicted.id); } catch {}
+        }
+      }
+      storage.setItem(LOGO_STORE_PREFIX + stationId, payload);
+      writeLogoIndex(storage, index);
+    } catch {
+      // QuotaExceededError or sandbox restriction: silently degrade to in-memory cache.
+    }
+  }
+
+  function removeStoredLogo(stationId) {
+    if (!stationId) return;
+    const storage = safeStorage();
+    if (!storage) return;
+    try {
+      storage.removeItem(LOGO_STORE_PREFIX + stationId);
+      const index = readLogoIndex(storage).filter(item => item.id !== stationId);
+      writeLogoIndex(storage, index);
+    } catch {}
+  }
+
+  function resolveCachedLogo(stationId, version) {
+    if (!stationId || !version) return "";
+    const cacheKey = `${stationId}:${version}`;
+    const mem = iconCache.get(cacheKey);
+    if (isSafeIconDataUrl(mem)) return mem;
+    const persisted = readStoredLogo(stationId, version);
+    if (persisted) {
+      iconCache.set(cacheKey, persisted);
+      return persisted;
+    }
+    return "";
+  }
 
   /* Theme-adapted monochrome vector emblems (100% currentColor, zero hardcoded colors)
    * used as graceful fallbacks when an official station's remote icon is offline/unavailable. */
@@ -224,6 +326,7 @@ window.CompanionQuotaWorkbench = (() => {
       refreshingId: "",
       autoRefresh: true,
       autoTimer: null,
+      bgSyncTimer: null,
       data: null,
       notice: "",
       noticeTone: "", // ok | warn | error | ""
@@ -251,11 +354,19 @@ window.CompanionQuotaWorkbench = (() => {
     return list.find(item => item.id === id) || list[0] || null;
   }
 
+  function clearBgSyncTimer(q) {
+    if (q?.bgSyncTimer) {
+      clearTimeout(q.bgSyncTimer);
+      q.bgSyncTimer = null;
+    }
+  }
+
   function clearAutoTimer(q) {
     if (q?.autoTimer) {
       clearTimeout(q.autoTimer);
       q.autoTimer = null;
     }
+    clearBgSyncTimer(q);
   }
 
   function clearDomTimers(dom) {
@@ -574,9 +685,7 @@ window.CompanionQuotaWorkbench = (() => {
   }
 
   function avatarMarkupFor(station, snap) {
-    const logoKey = snap?.logo_version ? `${station.id}:${snap.logo_version}` : "";
-    const cachedLogo = logoKey ? iconCache.get(logoKey) : "";
-    const logoUrl = isSafeIconDataUrl(cachedLogo) ? cachedLogo : "";
+    const logoUrl = snap?.logo_version ? resolveCachedLogo(station.id, snap.logo_version) : "";
     if (logoUrl) {
       return { hasLogo: true, isBrand: false, title: station.name, html: `<img src="${esc(logoUrl)}" alt="" loading="lazy" decoding="async">` };
     }
@@ -1310,9 +1419,11 @@ window.CompanionQuotaWorkbench = (() => {
       const st = (q.data?.stations || []).find(item => item.id === sid);
       const avatarEl = dom.gridEl.querySelector?.(`[data-qw-avatar="${sid}"]`);
       if (!st || !avatarEl) continue;
+      const hadLogo = Boolean(avatarEl.classList?.contains?.("has-logo"));
       const av = avatarMarkupFor(st, snaps[sid]);
       avatarEl.classList?.toggle?.("has-logo", av.hasLogo);
       avatarEl.classList?.toggle?.("is-brand", av.isBrand);
+      avatarEl.classList?.toggle?.("is-hydrated", Boolean(av.hasLogo && !hadLogo));
       avatarEl.title = av.title;
       avatarEl.innerHTML = av.html;
     }
@@ -1732,25 +1843,76 @@ window.CompanionQuotaWorkbench = (() => {
     }, minSec * 1000);
   }
 
-  async function hydrateLogos(ctx) {
+  function scheduleBgSync(ctx) {
+    const q = ctx.q;
+    clearBgSyncTimer(q);
+    const ticket = ctx.ticket();
+    q.bgSyncTimer = setTimeout(async () => {
+      q.bgSyncTimer = null;
+      if (!ctx.isCurrent(ticket)) return;
+      if (ctx.state?.tab !== "quota" || q.loading || q.refreshingAll) return;
+      try {
+        const fresh = await ctx.api("GET", `${ctx.path}/quota`, undefined, 15000);
+        if (!ctx.isCurrent(ticket) || !fresh) return;
+        q.data = fresh;
+        q.loaded = true;
+        scheduleAutoRefresh(ctx);
+        syncMainDom(ctx, { includeAwareness: false });
+        void hydrateLogos(ctx);
+      } catch {}
+    }, BG_SYNC_DELAY_MS);
+  }
+
+  async function hydrateLogos(ctx, { ignoreBackoff = false } = {}) {
     const q = ctx.q;
     const snaps = q.data?.snapshots || {};
     const ticket = ctx.ticket();
+    const now = Date.now();
     const pending = [];
     const updatedIds = [];
     for (const st of q.data?.stations || []) {
       const snap = snaps[st.id];
       if (!snap?.logo_version) continue;
       const cacheKey = `${st.id}:${snap.logo_version}`;
-      if (iconCache.has(cacheKey)) continue;
-      pending.push(
-        ctx.api("GET", `${ctx.path}/quota/icon`, { id: st.id, v: snap.logo_version }, 8000)
+      if (resolveCachedLogo(st.id, snap.logo_version)) continue;
+      if (!ignoreBackoff) {
+        const retryAfter = iconBackoff.get(st.id) || 0;
+        if (retryAfter > now) continue;
+      }
+      let req = iconInflight.get(cacheKey);
+      if (!req) {
+        req = ctx.api("GET", `${ctx.path}/quota/icon`, { id: st.id, v: snap.logo_version }, 8000)
           .then(res => {
-            if (res?.available && isSafeIconDataUrl(res?.data_url)) iconCache.set(cacheKey, res.data_url);
-            else iconCache.set(cacheKey, "");
-            updatedIds.push(st.id);
+            if (res?.available && isSafeIconDataUrl(res?.data_url)) {
+              const actualVer = String(res.version || snap.logo_version);
+              iconCache.set(cacheKey, res.data_url);
+              if (actualVer !== snap.logo_version) {
+                iconCache.set(`${st.id}:${actualVer}`, res.data_url);
+              }
+              writeStoredLogo(st.id, actualVer, res.data_url);
+              if (actualVer !== snap.logo_version) {
+                writeStoredLogo(st.id, snap.logo_version, res.data_url);
+              }
+              iconBackoff.delete(st.id);
+              return res.data_url;
+            }
+            // NEVER poison iconCache with empty strings on transient misses; use short backoff instead.
+            iconBackoff.set(st.id, Date.now() + ICON_BACKOFF_MS);
+            return "";
           })
-          .catch(() => {})
+          .catch(() => {
+            iconBackoff.set(st.id, Date.now() + ICON_BACKOFF_MS);
+            return "";
+          })
+          .finally(() => {
+            if (iconInflight.get(cacheKey) === req) iconInflight.delete(cacheKey);
+          });
+        iconInflight.set(cacheKey, req);
+      }
+      pending.push(
+        req.then(url => {
+          if (url) updatedIds.push(st.id);
+        })
       );
     }
     if (pending.length) {
@@ -1763,6 +1925,7 @@ window.CompanionQuotaWorkbench = (() => {
     const q = ctx.q;
     if (q.loading) return;
     const ticket = ctx.ticket();
+    clearBgSyncTimer(q);
     q.loading = true;
     q.notice = "";
     q.noticeTone = "";
@@ -1779,6 +1942,7 @@ window.CompanionQuotaWorkbench = (() => {
         q.pendingFocus = "";
       }
       scheduleAutoRefresh(ctx);
+      if (data?.background_refresh_scheduled) scheduleBgSync(ctx);
       syncMainDom(ctx, { includeAwareness: true });
       void hydrateLogos(ctx);
     } catch (err) {
@@ -1794,6 +1958,11 @@ window.CompanionQuotaWorkbench = (() => {
     const q = ctx.q;
     if (stationId ? q.refreshingId === stationId : q.refreshingAll) return;
     const ticket = ctx.ticket();
+    clearBgSyncTimer(q);
+    if (force) {
+      if (stationId) iconBackoff.delete(stationId);
+      else iconBackoff.clear();
+    }
     if (stationId) q.refreshingId = stationId;
     else q.refreshingAll = true;
     // Patch ONLY refresh button states — never rebuild cards or touch open modal!
@@ -1808,7 +1977,7 @@ window.CompanionQuotaWorkbench = (() => {
         q.noticeTone = "ok";
       }
       scheduleAutoRefresh(ctx);
-      void hydrateLogos(ctx);
+      void hydrateLogos(ctx, { ignoreBackoff: Boolean(force) });
     } catch (err) {
       if (!ctx.isCurrent(ticket)) return;
       if (force) {
@@ -2324,6 +2493,8 @@ window.CompanionQuotaWorkbench = (() => {
       if (!ctx.isCurrent(ticket)) return;
       q.data = data;
       q.deleteConfirmId = "";
+      iconBackoff.delete(stationId);
+      removeStoredLogo(stationId);
       syncAwarenessDraft(q);
       q.notice = "已删除该站点。";
       q.noticeTone = "ok";

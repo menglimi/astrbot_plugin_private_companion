@@ -976,6 +976,95 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_icon_cold_start_disk_hit_single_flight_lazy_fetch_and_bg_refresh_flag(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                icon_hits = [0]
+
+                def router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "system_name": "冷启动站",
+                                    "server_address": "https://alias-cold.example.test",
+                                    "quota_display_type": "CNY",
+                                    "quota_per_unit": 500000,
+                                    "logo": "/logo.png",
+                                },
+                            },
+                        )
+                    if url.endswith("/logo.png"):
+                        icon_hits[0] += 1
+                        return _FakeResponse(200, PNG_BYTES, {"Content-Type": "image/png"})
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(200, {"success": True, "data": {"quota": 5_000_000, "used_quota": 0}})
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc1 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc1.store.read()
+                svc1.store.upsert_station(
+                    tok,
+                    {
+                        "id": "cold-st",
+                        "name": "冷启动站",
+                        "adapter_id": "newapi",
+                        "base_url": "https://cold.example.test",
+                        "auth_token": "tok-cold",
+                    },
+                )
+                # 1) Initial dashboard before any snapshot reports background_refresh_scheduled=True
+                api = ModelWebAPI(ctrl)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest()):
+                        res_dash = await api._quota_api.dashboard()
+                    self.assertEqual(res_dash["status"], "ok")
+                    self.assertTrue(res_dash["data"]["background_refresh_scheduled"])
+
+                await close_quota_watch_services(ctrl)
+
+                # 2) Clear disk logos to test cold-start miss -> Single-Flight lazy fetch on GET /quota/icon
+                logo_dir = Path(tmp) / "quota" / "logos"
+                if logo_dir.exists():
+                    for p in logo_dir.iterdir():
+                        p.unlink(missing_ok=True)
+                icon_hits[0] = 0
+
+                svc2 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(query={"id": "cold-st"})):
+                        r1, r2 = await asyncio.gather(api._quota_api.icon(), api._quota_api.icon())
+                self.assertEqual(r1["status"], "ok")
+                self.assertTrue(r1["data"]["available"])
+                self.assertEqual(r1["data"]["data_url"], r2["data"]["data_url"])
+                self.assertEqual(icon_hits[0], 1, "Concurrent /quota/icon misses must collapse via single-flight")
+                self.assertTrue((logo_dir / "cold-st.bin").exists())
+                await close_quota_watch_services(ctrl)
+
+                # 3) Cold restart with empty memory: GET /quota/icon serves directly from disk (0 upstream fetches!)
+                icon_hits[0] = 0
+                svc3 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(query={"id": "cold-st"})):
+                        r_disk = await api._quota_api.icon()
+                self.assertEqual(r_disk["status"], "ok")
+                self.assertTrue(r_disk["data"]["available"])
+                self.assertTrue(r_disk["data"]["data_url"].startswith("data:image/png;base64,"))
+                self.assertEqual(icon_hits[0], 0, "Restarted service should hit persistent disk logo cache without network I/O")
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

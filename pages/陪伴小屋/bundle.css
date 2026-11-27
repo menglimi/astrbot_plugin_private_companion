@@ -12871,6 +12871,15 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   display: block;
 }
 
+.qw-avatar.is-hydrated img {
+  animation: qwAvatarFadeIn 180ms ease both;
+}
+
+@keyframes qwAvatarFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .qw-card-title-wrap {
   min-width: 0;
   flex: 1 1 auto;
@@ -13837,7 +13846,8 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   .qw-test-preview,
   .qw-card,
   .qw-btn,
-  .qw-progress-fill {
+  .qw-progress-fill,
+  .qw-avatar.is-hydrated img {
     animation: none !important;
     transition: none !important;
   }
@@ -13849,7 +13859,8 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 :root[data-motion="off"] .qw-test-preview,
 :root[data-motion="off"] .qw-card,
 :root[data-motion="off"] .qw-btn,
-:root[data-motion="off"] .qw-progress-fill {
+:root[data-motion="off"] .qw-progress-fill,
+:root[data-motion="off"] .qw-avatar.is-hydrated img {
   animation: none !important;
   transition: none !important;
 }
