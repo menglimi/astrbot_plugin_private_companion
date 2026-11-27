@@ -122,6 +122,64 @@ class SemanticDebounceModeCompatibilityTests(unittest.TestCase):
                 self.assertEqual(snap3.fields[GROUP + ".private_debounce_semantic_mode"].value, "off")
                 self.assertFalse(snap3.fields[GROUP + ".private_debounce_semantic_mode"].explicit)
                 self.assertFalse(snap3.fields[GROUP + ".private_debounce_semantic_enabled"].explicit)
+
+                # Cross-layer ROLE -> WINDOW inheritance cases:
+                role_target = ConfigTarget("debounce-owner", ConfigLayer.ROLE, role, bot_id="bot-1")
+                # 1. ROLE legacy enabled=True + WINDOW empty -> WINDOW inherits mode="onnx" (source=role, explicit=False).
+                super(ReplyConfigurationOwner, owner).write(
+                    role_target, fields,
+                    changes={GROUP + ".private_debounce_semantic_enabled": True},
+                    reset=(), expected_revision=0, observed_at=NOW,
+                )
+                win_inherit_legacy = owner.read(win_target, fields)
+                mode_field = win_inherit_legacy.fields[GROUP + ".private_debounce_semantic_mode"]
+                self.assertEqual(mode_field.value, "onnx")
+                self.assertEqual(mode_field.source, role_target)
+                self.assertFalse(mode_field.explicit)
+
+                # 2. WINDOW explicit mode="laya" overrides ROLE legacy enabled=True.
+                owner.write(
+                    win_target, fields,
+                    changes={GROUP + ".private_debounce_semantic_mode": "laya"},
+                    reset=(), expected_revision=win_inherit_legacy.revision, observed_at=NOW,
+                )
+                win_override = owner.read(win_target, fields)
+                self.assertEqual(win_override.fields[GROUP + ".private_debounce_semantic_mode"].value, "laya")
+                self.assertTrue(win_override.fields[GROUP + ".private_debounce_semantic_mode"].explicit)
+
+                # Reset WINDOW override -> falls back to ROLE legacy enabled=True ("onnx").
+                owner.write(
+                    win_target, fields,
+                    changes={},
+                    reset=(GROUP + ".private_debounce_semantic_mode",),
+                    expected_revision=win_override.revision, observed_at=NOW,
+                )
+                self.assertEqual(owner.read(win_target, fields).fields[GROUP + ".private_debounce_semantic_mode"].value, "onnx")
+
+                # 3. ROLE new mode="laya" (syncs enabled=False) + WINDOW empty -> WINDOW inherits mode="laya".
+                role_snap = owner.read(role_target, fields)
+                owner.write(
+                    role_target, fields,
+                    changes={GROUP + ".private_debounce_semantic_mode": "laya"},
+                    reset=(), expected_revision=role_snap.revision, observed_at=NOW,
+                )
+                win_inherit_laya = owner.read(win_target, fields)
+                mode_laya = win_inherit_laya.fields[GROUP + ".private_debounce_semantic_mode"]
+                self.assertEqual(mode_laya.value, "laya")
+                self.assertEqual(mode_laya.source, role_target)
+                self.assertFalse(mode_laya.explicit)
+
+                # 4. ROLE new mode="laya" + WINDOW legacy explicit enabled=True -> WINDOW overrides to "onnx".
+                super(ReplyConfigurationOwner, owner).write(
+                    win_target, fields,
+                    changes={GROUP + ".private_debounce_semantic_enabled": True},
+                    reset=(), expected_revision=win_inherit_laya.revision, observed_at=NOW,
+                )
+                win_legacy_override = owner.read(win_target, fields)
+                mode_win_legacy = win_legacy_override.fields[GROUP + ".private_debounce_semantic_mode"]
+                self.assertEqual(mode_win_legacy.value, "onnx")
+                self.assertEqual(mode_win_legacy.source, win_target)
+                self.assertTrue(mode_win_legacy.explicit)
             finally:
                 runtime.close()
 
@@ -182,13 +240,13 @@ class LayaTurnCompletenessClientAndServiceTests(unittest.IsolatedAsyncioTestCase
             store = LayaSettingsStore(root / "settings")
             store.update(store.read()["revision"], {
                 "enabled": True, "mode": "remote", "endpoint": "https://laya.example.test/v1/systemone",
-                "remote_model": "NeoHorse-Jev-4B", "timeout_seconds": 6,
+                "remote_model": "laya-test-model", "timeout_seconds": 6,
             })
             runtime = StorageRuntime.open(data_root=root / "runtime", installation_id="debounce-laya-ledger")
             try:
                 class FakeClient:
                     last_trace = {
-                        "request": {"model": "NeoHorse-Jev-4B", "sent": True,
+                        "request": {"model": "laya-test-model", "sent": True,
                                     "state": '{"facts":{"user_text":"机密私聊文本"}}'},
                         "response": {"format": "json", "body": "机密私聊文本", "value": {}},
                         "processing": {"stages": [{"name": "inference", "status": "ok"}], "turn_state": "unfinished"},
@@ -279,6 +337,29 @@ class LayaPrivateDebounceFlowTests(unittest.IsolatedAsyncioTestCase):
         res = manager.reserve("target", event, "明天几点出门？")
         self.assertEqual(await asyncio.wait_for(manager.wait_for_quiet(res, event), 1.0), "ready")
         fake_service.classify_turn_completeness.assert_not_awaited()
+
+    async def test_laya_check_incomplete_handles_none_or_invalid_remaining_safely(self):
+        captured = {"calls": 0}
+
+        class FakeService:
+            store = SimpleNamespace(raw=lambda: {"enabled": True, "timeout_seconds": 6})
+
+            def set_trace(self, **_kwargs):
+                pass
+
+            async def classify_turn_completeness(self, facts, *, timeout_seconds=None):
+                captured["calls"] += 1
+                captured["timeout"] = timeout_seconds
+                return {"status": "ok", "turn_state": "unfinished"}
+
+        laya = LayaTurnCompleteness(lambda _ctx: FakeService(), wait_seconds=10.0, max_timeout=1.7)
+        self.assertTrue(await laya.check_incomplete("跟你说个事", None))
+        self.assertEqual(captured["timeout"], 1.7)
+        self.assertEqual(captured["calls"], 1)
+        # Invalid or NaN remaining must fail-open safely without raising or calling Laya.
+        self.assertFalse(await laya.check_incomplete("跟你说个事", "not-a-number"))
+        self.assertFalse(await laya.check_incomplete("跟你说个事", float("nan")))
+        self.assertEqual(captured["calls"], 1)
 
     async def test_laya_disabled_error_or_timeout_fails_open(self):
         for kind in ("disabled", "error", "timeout"):
@@ -373,7 +454,7 @@ class SemanticDebounceStatusAndReplyAPITests(MultiFixture, unittest.IsolatedAsyn
                 "enabled": True, "mode": "remote",
                 "endpoint": "https://secret-gateway.example.test/v1/systemone",
                 "api_key": "sk-super-secret-value",
-                "remote_model": "NeoHorse-Jev-4B",
+                "remote_model": "laya-test-model",
             })
             model_dir = root / "onnx_model"
             (model_dir / "tokenizer").mkdir(parents=True)
@@ -386,7 +467,7 @@ class SemanticDebounceStatusAndReplyAPITests(MultiFixture, unittest.IsolatedAsyn
                 )
             self.assertEqual(status1["onnx"], {"ready": True, "reason": "ready"})
             self.assertEqual(status1["laya"], {
-                "ready": True, "mode": "remote", "model": "NeoHorse-Jev-4B", "reason": "ready",
+                "ready": True, "mode": "remote", "model": "laya-test-model", "reason": "ready",
             })
             serialized = json.dumps(status1, ensure_ascii=False)
             self.assertNotIn("sk-super-secret-value", serialized)
@@ -405,7 +486,7 @@ class SemanticDebounceStatusAndReplyAPITests(MultiFixture, unittest.IsolatedAsyn
             "enabled": True, "mode": "remote",
             "endpoint": "https://laya.example.test/v1/systemone",
             "api_key": "sk-private-key-do-not-expose",
-            "remote_model": "NeoHorse-Jev-4B",
+            "remote_model": "laya-test-model",
         })
         await self.start_host()
         (await self.controller.authorize_delivery("first")).unwrap()
@@ -427,7 +508,7 @@ class SemanticDebounceStatusAndReplyAPITests(MultiFixture, unittest.IsolatedAsyn
         status = (await call_api(handlers[reply_route]))["data"]
         self.assertEqual(status["settings"]["private_debounce_semantic_mode"], "off")
         self.assertEqual(status["private_debounce_semantic_status"]["laya"], {
-            "ready": True, "mode": "remote", "model": "NeoHorse-Jev-4B", "reason": "ready",
+            "ready": True, "mode": "remote", "model": "laya-test-model", "reason": "ready",
         })
         self.assertEqual(status["private_debounce_semantic_status"]["onnx"]["ready"], False)
         self.assertNotIn("sk-private-key-do-not-expose", json.dumps(status))

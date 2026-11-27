@@ -158,7 +158,7 @@ function status(changes = {}, token = TOKEN) {
     tts: {state: 'ready', providers: [{id: 'tts-a', model: 's2.1-pro-free', voice: '示例音色甲'}, {id: 'tts-b'}]},
     private_debounce_semantic_status: {
       onnx: {ready: false, reason: 'model_dir_missing'},
-      laya: {ready: true, mode: 'remote', model: 'NeoHorse-Jev-4B', reason: 'ready'},
+      laya: {ready: true, mode: 'remote', model: 'laya-test-model', reason: 'ready'},
     },
   };
 }
@@ -1486,7 +1486,7 @@ test('private debounce semantic mode renders 3 choices, clear copy, live readine
   /* Readiness meta helper reflects every backend state accurately. */
   const readyPayload = status();
   assert.equal(h.page.debounceSemanticStatusMeta('laya', readyPayload).tone, 'ok');
-  assert.match(h.page.debounceSemanticStatusMeta('laya', readyPayload).text, /Laya 已就绪（remote · NeoHorse-Jev-4B）/);
+  assert.match(h.page.debounceSemanticStatusMeta('laya', readyPayload).text, /Laya 已就绪（remote · laya-test-model）/);
   assert.equal(h.page.debounceSemanticStatusMeta('onnx', readyPayload).tone, 'warn');
   assert.match(h.page.debounceSemanticStatusMeta('onnx', readyPayload).text, /未配置本地 ONNX 目录/);
 
@@ -1494,7 +1494,7 @@ test('private debounce semantic mode renders 3 choices, clear copy, live readine
     ...readyPayload,
     private_debounce_semantic_status: {
       onnx: {ready: true, reason: 'ready'},
-      laya: {ready: false, mode: 'remote', model: 'NeoHorse-Jev-4B', reason: 'disabled'},
+      laya: {ready: false, mode: 'remote', model: 'laya-test-model', reason: 'disabled'},
     },
   };
   assert.equal(h.page.debounceSemanticStatusMeta('laya', unreadyPayload).tone, 'warn');
@@ -1516,7 +1516,7 @@ test('private debounce semantic mode renders 3 choices, clear copy, live readine
   };
   h.listeners['settings:change']({target: fakeSelect});
   assert.equal(live(h).state.draft.private_debounce_semantic_mode, 'laya');
-  assert.match(noteSlot.innerHTML, /Laya 已就绪（remote · NeoHorse-Jev-4B）/);
+  assert.match(noteSlot.innerHTML, /Laya 已就绪（remote · laya-test-model）/);
   assert.match(noteSlot.innerHTML, /data-tone="ok"/);
 
   fakeSelect.value = 'onnx';
@@ -1536,7 +1536,7 @@ test('private debounce semantic mode renders 3 choices, clear copy, live readine
   });
   await saving;
   await drains();
-  assert.match(h.slots.settings.innerHTML, /Laya 已就绪（remote · NeoHorse-Jev-4B）/);
+  assert.match(h.slots.settings.innerHTML, /Laya 已就绪（remote · laya-test-model）/);
   h.page.unmount();
 
   /* Legacy payload carrying only private_debounce_semantic_enabled derives mode cleanly. */

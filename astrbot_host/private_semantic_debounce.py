@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import logging
+import math
 from pathlib import Path
 
 
@@ -25,7 +26,8 @@ def fast_path_complete_reason(text, remaining) -> str | None:
     """
     if remaining is not None:
         try:
-            if float(remaining) <= FAST_PATH_MIN_REMAINING_SECONDS:
+            remaining_seconds = float(remaining)
+            if math.isnan(remaining_seconds) or remaining_seconds <= FAST_PATH_MIN_REMAINING_SECONDS:
                 return "budget_too_short"
         except (TypeError, ValueError):
             return "budget_too_short"
@@ -160,7 +162,13 @@ class LayaTurnCompleteness:
         service = self.service_resolver(context) if callable(self.service_resolver) else None
         if service is None:
             return None
-        budget = min(self.max_timeout, max(0.0, float(remaining)))
+        if remaining is None:
+            budget = self.max_timeout
+        else:
+            try:
+                budget = min(self.max_timeout, max(0.0, float(remaining)))
+            except (TypeError, ValueError):
+                return None
         store = getattr(service, "store", None)
         if store is not None and callable(getattr(store, "raw", None)):
             try:

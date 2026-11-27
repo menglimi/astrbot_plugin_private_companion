@@ -676,7 +676,9 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
         debounce_legacy = snapshot.fields.get(debounce_legacy_key)
         debounce_mode = snapshot.fields.get(debounce_mode_key)
         if (debounce_legacy is not None and debounce_mode is not None
-                and not debounce_mode.explicit and debounce_legacy.explicit):
+                and debounce_legacy.source is not None
+                and (debounce_mode.source is None
+                     or (debounce_legacy.explicit and not debounce_mode.explicit))):
             derived_mode = "onnx" if debounce_legacy.value else "off"
             snapshot = replace(snapshot, fields={**snapshot.fields,
                 debounce_mode_key: replace(debounce_mode, value=derived_mode,
