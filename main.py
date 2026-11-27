@@ -2482,7 +2482,9 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
-        prepare_core_result_decoration(event)
+        get_config = getattr(getattr(self, "context", None), "get_config", None)
+        astrbot_config = get_config(event.unified_msg_origin) if callable(get_config) else None
+        prepare_core_result_decoration(event, astrbot_config=astrbot_config)
 
     @filter.on_decorating_result(priority=-1000001)
     async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):

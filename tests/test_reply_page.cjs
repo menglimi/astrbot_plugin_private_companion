@@ -22,7 +22,7 @@ const DEFAULTS = {
   rule_regex: '.*?[。？！~…\\n]+|.+$',
   threshold: 500, min_segment_chars: 5, max_segments: 5, prompt: '', streaming: false, streaming_mode: 'buffered',
   part_gap_mode: 'fixed', part_gap_ms: 0, part_gap_min_ms: 1500, part_gap_max_ms: 3500,
-  part_gap_log_base: 1.8, image_position: 'after_text', voice_enabled: false,
+  part_gap_log_base: 1.8, t2i_segmentation_mode: 'per_segment', image_position: 'after_text', voice_enabled: false,
   group_wakeup_enabled: true, group_wakeup_direct_words: '[]',
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',

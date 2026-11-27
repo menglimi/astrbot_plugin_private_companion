@@ -161,6 +161,8 @@ IMAGE_NARRATION_DEFAULTS = {"enable_private_image_self_recognition": False,
     "private_image_provider_failure_cooldown_seconds": 60,
     "private_image_self_recognition_hint": ""}
 DIAGNOSTIC_DEFAULTS = {"reply_diagnostic_limit": 80}
+T2I_SEGMENTATION_MODES = frozenset(("per_segment", "whole_reply", "off"))
+T2I_DEFAULTS = {"t2i_segmentation_mode": "per_segment"}
 ROLE_SHARED_FIELDS = (frozenset(asdict(SegmentationPolicy())) | SPACING_FIELDS
     | frozenset(("streaming", "part_gap_ms", "image_position", "rules_enabled"))
     | frozenset(("voice_enabled", *("voice_" + key for key in VOICE_FIELDS)))
@@ -171,7 +173,7 @@ ROLE_SHARED_FIELDS = (frozenset(asdict(SegmentationPolicy())) | SPACING_FIELDS
     | frozenset(GROUP_SAFETY_DEFAULTS) | frozenset(SILENCE_DEFAULTS) | frozenset(OUTBOUND_DEFAULTS) | frozenset(TEXT_DEFAULTS)
     | frozenset(FORWARD_DEFAULTS) | frozenset(CONTEXT_IMAGE_DEFAULTS)
     | frozenset(IMAGE_NARRATION_DEFAULTS) | frozenset(UNDERSTANDING_DEFAULTS)
-    | frozenset(DIAGNOSTIC_DEFAULTS) | frozenset(GROUP_TOOL_DEFAULTS)
+    | frozenset(DIAGNOSTIC_DEFAULTS) | frozenset(T2I_DEFAULTS) | frozenset(GROUP_TOOL_DEFAULTS)
     | frozenset(PRIVATE_TOOL_DEFAULTS) | ROLE_PROMPT_FIELDS)
 
 
@@ -384,11 +386,12 @@ def validate(values):
     understanding = set(UNDERSTANDING_DEFAULTS)
     spacing = set(SPACING_DEFAULTS)
     diagnostics = set(DIAGNOSTIC_DEFAULTS)
+    t2i = set(T2I_DEFAULTS)
     tool = set(GROUP_TOOL_DEFAULTS) | set(PRIVATE_TOOL_DEFAULTS)
     optional = set(values) - expected - {"image_position"}
     provided = set(values)
     if (not legacy_required <= provided
-            or optional - voice - air - continuation - private_closing - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - tool
+            or optional - voice - air - continuation - private_closing - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - t2i - tool
             or (optional & voice and not (voice - {"voice_conversion_scope"}) <= optional)
             or any(optional & block and not block <= optional for block in
                    (air, continuation, private_closing, private_debounce_timing, presentation))
@@ -404,6 +407,9 @@ def validate(values):
         diagnostic_limit = values.get("reply_diagnostic_limit", DIAGNOSTIC_DEFAULTS["reply_diagnostic_limit"])
         if type(diagnostic_limit) is not int or not 10 <= diagnostic_limit <= 300:
             raise ValueError("invalid reply diagnostic limit")
+        t2i_mode = values.get("t2i_segmentation_mode", T2I_DEFAULTS["t2i_segmentation_mode"])
+        if t2i_mode not in T2I_SEGMENTATION_MODES:
+            raise ValueError("invalid t2i segmentation mode")
         policy = SegmentationPolicy(**{key: values.get(key, default)
                                        for key, default in segmentation_defaults.items()})
         if type(values["streaming"]) is not bool or type(values["part_gap_ms"]) is not int or not 0 <= values["part_gap_ms"] <= 60000:
@@ -486,6 +492,7 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
     defaults.update(IMAGE_NARRATION_DEFAULTS)
     defaults.update(UNDERSTANDING_DEFAULTS)
     defaults.update(DIAGNOSTIC_DEFAULTS)
+    defaults.update(T2I_DEFAULTS)
     defaults.update(GROUP_TOOL_DEFAULTS)
     defaults.update(PRIVATE_TOOL_DEFAULTS)
     validate(defaults)
