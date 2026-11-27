@@ -82,6 +82,18 @@ class DesignerAPITests(unittest.IsolatedAsyncioTestCase):
         limits = [call.kwargs["max_tokens"] for call in self.provider.text_chat.call_args_list]
         self.assertEqual(limits, [8000, 4096])
 
+    async def test_turn_tolerates_chatter_missing_optional_fields_and_extra_options(self):
+        self.provider.text_chat = AsyncMock(return_value=NS(
+            completion_text='好的，这是回复：\n{"reply":"继续聊聊她的说话方式吧。","options":["短句","毒舌","温柔","多余项"]}\n祝好'))
+        snapshot = state(stage="voice", confirmed="已定性格", draft="已有草稿", lorebook="世界背景")
+        result = await self.call("/turn", method="POST", body=self.turn_body(state=snapshot))
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["stage"], "voice")
+        self.assertEqual(result["data"]["confirmed"], "已定性格")
+        self.assertEqual(result["data"]["draft"], "已有草稿")
+        self.assertEqual(result["data"]["lorebook"], "世界背景")
+        self.assertEqual(result["data"]["options"], ["短句", "毒舌", "温柔"])
+
     async def test_new_agent_runner_default_and_persona_list_failure_are_local(self):
         self.context.get_config = lambda **_: {"agent_runner": {"runner_type": "local",
             "config": {"persona": {"persona_id": "conversation-role"}}}}

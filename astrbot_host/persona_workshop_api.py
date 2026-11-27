@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import inspect
 import json
 import logging
 
 from astrbot.api.web import request
+from companion_v2.adapters.astrbot.native import configured_default_persona_id, persona_instruction
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
@@ -49,12 +51,111 @@ from companion_v2.relationships.profile import (FIELD_LIMITS as RELATIONSHIP_PRO
 from companion_v2.relationships.profile_drafts import (build_relationship_profile_prompt,
     parse_relationship_profile_draft)
 
+from .bootstrap_provider import (
+    provider_identifier,
+    supported_text_provider,
+    text_provider_catalog,
+    text_provider_predicate,
+)
 from .management_identity import dashboard_operator
 from .legacy_config import find_v1_data_root, read_v1_host_configuration, v1_setting
-from .persona_catalog import persona_choices
+from .persona_catalog import available_personas, persona_choices
 
 logger = logging.getLogger(__name__)
 DRAFT_TEXT_TIMEOUT_SECONDS = 180
+MAX_WORKSHOP_BODY_BYTES = 256 * 1024
+DEFAULT_FALLBACK_MAX_TOKENS = 4096
+
+
+def _is_max_tokens_rejection(error: Exception) -> bool:
+    name = type(error).__name__
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if name in ("BadRequestError", "InvalidRequestError", "InvalidArgument") or status == 400:
+        return True
+    detail = str(error).lower()
+    return any(token in detail for token in ("max_tokens", "max_output_tokens", "max_completion_tokens"))
+
+
+async def _text_chat_with_fallback(
+    provider,
+    *,
+    prompt: str,
+    max_tokens: int = 6800,
+    timeout: float = DRAFT_TEXT_TIMEOUT_SECONDS,
+    fallback_max_tokens: int = DEFAULT_FALLBACK_MAX_TOKENS,
+    operation: str = "persona_workshop",
+    provider_id: str = "",
+):
+    """Call provider.text_chat with declared ceiling respect and 4096 retry on 400/max_tokens."""
+    limit = max_tokens
+    config = getattr(provider, "provider_config", None)
+    if isinstance(config, dict):
+        declared = config.get("max_tokens")
+        if isinstance(declared, int) and not isinstance(declared, bool) and 0 < declared < limit:
+            limit = declared
+    try:
+        return await asyncio.wait_for(provider.text_chat(prompt=prompt, max_tokens=limit), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise
+    except Exception as error:
+        if limit <= fallback_max_tokens or not _is_max_tokens_rejection(error):
+            raise
+        logger.warning(
+            "[CompanionV2] 人格工坊模型拒绝输出上限 operation=%s provider_id=%s max_tokens=%s fallback=%s error_type=%s status=%s",
+            operation,
+            provider_id or "default",
+            limit,
+            fallback_max_tokens,
+            type(error).__name__,
+            getattr(error, "status_code", None) or getattr(error, "status", None),
+        )
+        return await asyncio.wait_for(
+            provider.text_chat(prompt=prompt, max_tokens=fallback_max_tokens),
+            timeout=timeout,
+        )
+
+
+async def _persona_summaries(context, names, *, active_id: str = "") -> dict[str, dict]:
+    """Read-only persona preview metadata (char count + 120-char excerpt, no hashes)."""
+    manager = getattr(context, "persona_manager", None)
+    if manager is None or not names:
+        return {}
+    records = {}
+    raw_v3 = getattr(manager, "personas_v3", None)
+    if isinstance(raw_v3, (list, tuple)):
+        for entry in raw_v3:
+            if isinstance(entry, dict):
+                key = str(entry.get("name") or entry.get("persona_id") or entry.get("id") or "").strip()
+                if key:
+                    records[key] = entry
+            elif entry is not None and hasattr(entry, "__dict__"):
+                key = str(getattr(entry, "name", "") or getattr(entry, "persona_id", "") or "").strip()
+                if key:
+                    records[key] = vars(entry)
+    getter = getattr(manager, "get_persona_v3_by_id", None)
+    summaries = {}
+    for name in names:
+        record = records.get(name)
+        if record is None and callable(getter):
+            try:
+                fetched = getter(name)
+                if inspect.isawaitable(fetched):
+                    fetched = await asyncio.wait_for(fetched, timeout=2)
+                if isinstance(fetched, dict):
+                    record = fetched
+                elif fetched is not None and hasattr(fetched, "__dict__"):
+                    record = vars(fetched)
+            except Exception:
+                record = None
+        if record is None:
+            continue
+        text = persona_instruction(record)
+        summaries[name] = {
+            "chars": len(text),
+            "preview": " ".join(text.split())[:120],
+            "active": name == active_id,
+        }
+    return summaries
 
 
 def _session_provider_id(session):
@@ -271,9 +372,83 @@ class PersonaWorkshopWebAPI:
             raise TaskError("host_persona_unavailable", "this host assembly cannot resolve a persona for the page")
         return bridge
 
-    async def _read_persona(self, controller, session, persona_id=None) -> PersonaSnapshot:
+    @staticmethod
+    async def _read_host_persona_direct(controller, persona_id=None) -> PersonaSnapshot:
+        """Read-only lookup directly from AstrBot's persona manager for non-private admin scopes."""
+        context = getattr(controller, "context", None)
+        manager = getattr(context, "persona_manager", None)
+        if manager is None:
+            if persona_id is not None:
+                raise TaskError("host_persona_unavailable", "the selected AstrBot persona no longer exists")
+            return PersonaSnapshot("", "", "", False)
+
+        async def _lookup(target_id: str):
+            record = None
+            for method_name in ("get_persona_v3_by_id", "get_persona"):
+                getter = getattr(manager, method_name, None)
+                if callable(getter):
+                    candidate = getter(target_id)
+                    if inspect.isawaitable(candidate):
+                        candidate = await asyncio.wait_for(candidate, timeout=5)
+                    if candidate is not None:
+                        record = candidate
+                        break
+            if record is None:
+                record = next(
+                    (item for item in getattr(manager, "personas_v3", ()) or ()
+                     if isinstance(item, dict) and item.get("name") == target_id),
+                    None,
+                )
+            if record is None:
+                return None
+            if not isinstance(record, dict):
+                record = vars(record) if hasattr(record, "__dict__") else {}
+            return record
+
+        if persona_id is not None:
+            if type(persona_id) is not str or not persona_id.strip() or persona_id == "[%None]":
+                raise TaskError("host_persona_invalid", "a concrete AstrBot persona must be selected")
+            record = await _lookup(persona_id)
+            if record is None:
+                raise TaskError("host_persona_unavailable", "the selected AstrBot persona no longer exists")
+            name = record.get("name")
+            if isinstance(name, str) and name and name != persona_id:
+                raise TaskError("host_persona_invalid", "host returned a different persona")
+            return PersonaSnapshot(persona_id, name if isinstance(name, str) and name else persona_id,
+                                   persona_instruction(record), True)
+
+        names = await available_personas(context)
+        selected = ""
+        try:
+            selected = configured_default_persona_id(context, None)
+        except Exception:
+            try:
+                config = context.get_config() if callable(getattr(context, "get_config", None)) else {}
+                selected = (config.get("provider_settings") or {}).get("default_personality", "")
+            except Exception:
+                selected = ""
+        if selected == "default":
+            default_record = getattr(manager, "selected_default_persona_v3", None)
+            if isinstance(default_record, dict) and default_record.get("name") in names:
+                selected = default_record["name"]
+        if selected == "[%None]":
+            return PersonaSnapshot("", "", "", False)
+        if selected not in names:
+            selected = names[0] if names else ""
+        if not selected:
+            return PersonaSnapshot("", "", "", False)
+        record = await _lookup(selected)
+        if record is None:
+            return PersonaSnapshot("", "", "", False)
+        name = record.get("name")
+        return PersonaSnapshot(selected, name if isinstance(name, str) and name else selected,
+                               persona_instruction(record), True)
+
+    async def _read_persona(self, controller, session, persona_id=None, *, allow_non_private=False) -> PersonaSnapshot:
         context = session.profile.target
         if context.scope.kind is not ScopeKind.PRIVATE:
+            if allow_non_private:
+                return await self._read_host_persona_direct(controller, persona_id=persona_id)
             raise TaskError("persona_workshop_scope_unsupported", "the workshop edits a private conversation's persona")
         bridge = self._bridge(controller, session)
         if persona_id is not None:
@@ -294,19 +469,30 @@ class PersonaWorkshopWebAPI:
         return self._workshop_for(controller.runtime, session, controller.now)
 
     @staticmethod
-    def _provider_for_id(controller, provider_id):
+    def _loaded_text_providers(controller):
+        expected_type = text_provider_predicate(getattr(controller, "native_types", None))
+        loaded = {}
+        for provider in list(controller.context.get_all_providers() or []):
+            try:
+                if expected_type is not None and not supported_text_provider(provider, expected_type):
+                    continue
+                if not callable(getattr(provider, "text_chat", None)):
+                    continue
+                identifier = provider_identifier(provider)
+                if identifier:
+                    loaded[identifier] = provider
+            except Exception:
+                continue
+        return loaded, expected_type
+
+    @classmethod
+    def _provider_for_id(cls, controller, provider_id):
         provider_id = provider_id.strip() if isinstance(provider_id, str) else ""
         if not provider_id:
             return None
-        from .bootstrap_provider import supported_text_provider, text_provider_predicate
-        expected_type = text_provider_predicate(getattr(controller, "native_types", None))
-        for provider in list(controller.context.get_all_providers() or []):
-            if expected_type is not None and not supported_text_provider(provider, expected_type):
-                continue
-            meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
-            identifier = str(getattr(meta, "id", "") or getattr(provider, "id", "") or "").strip()
-            if identifier == provider_id and callable(getattr(provider, "text_chat", None)):
-                return provider
+        loaded, _ = cls._loaded_text_providers(controller)
+        if provider_id in loaded:
+            return loaded[provider_id]
         raise TaskError("role_profile_model_unavailable", "the selected provider is not loaded")
 
     @staticmethod
@@ -353,8 +539,8 @@ class PersonaWorkshopWebAPI:
         model._current()
         return provider, (authorized_session or model_session).application
 
-    async def _confirm_generation(self, *, persona_id, snapshot, context_key, application,
-                                  provider, provider_id=""):
+    async def _confirm_generation(self, *, persona_id="", snapshot=None, context_key, application,
+                                  provider, provider_id="", allow_non_private=False):
         async with self.controller._control_lock:
             controller = self.controller
             session, _ = self._authorized(controller)
@@ -371,9 +557,11 @@ class PersonaWorkshopWebAPI:
                 raise TaskError("role_profile_source_changed", "the selected role or model changed while drafting")
             if not provider_id:
                 current_model._current()
-            latest = await self._read_persona(controller, session, persona_id=persona_id)
-            if latest != snapshot:
-                raise TaskError("role_profile_source_changed", "the selected persona changed while drafting")
+            if snapshot is not None and persona_id:
+                latest = await self._read_persona(controller, session, persona_id=persona_id,
+                                                  allow_non_private=allow_non_private)
+                if latest != snapshot:
+                    raise TaskError("role_profile_source_changed", "the selected persona changed while drafting")
 
     async def status(self):
         from .web_api import outcome_response
@@ -390,19 +578,27 @@ class PersonaWorkshopWebAPI:
                 session, runtime, observed_at, resolved_username = self._snapshot(controller, username)
                 owner = getattr(controller, "controller", controller)
                 model_session = owner.session or owner.last_session
-                default_provider_id = str(getattr(getattr(model_session, "model", None),
-                                                  "provider_id", "") or "")
+                default_provider_id = (
+                    str(getattr(getattr(model_session, "model", None), "provider_id", "") or "")
+                    or self._session_provider_id(model_session)
+                )
             await asyncio.to_thread(self._authorize_snapshot, session, runtime, observed_at, resolved_username)
-            snapshot = await self._read_persona(controller, session, persona_id=persona_id)
+            snapshot = await self._read_persona(controller, session, persona_id=persona_id, allow_non_private=True)
             state = await asyncio.to_thread(
                 lambda: self._workshop_for(runtime, session, controller.now).state(snapshot, limit=limit))
             choices = await persona_choices(controller.context, selected=snapshot.persona_id)
             if persona_id is not None and persona_id not in {item["value"] for item in choices}:
                 raise TaskError("host_persona_unavailable", "the selected AstrBot persona is unavailable")
             state["personas"] = choices
+            state["persona_summaries"] = await _persona_summaries(
+                controller.context, [item["value"] for item in choices], active_id=snapshot.persona_id
+            )
             try:
-                from .model_api import text_provider_catalog
-                providers = text_provider_catalog(controller)
+                loaded, expected_type = self._loaded_text_providers(controller)
+                providers = [
+                    item for item in text_provider_catalog(controller.context, expected_type)
+                    if item["id"] in loaded
+                ]
             except Exception:
                 providers = []
             state["providers"] = providers
@@ -423,7 +619,7 @@ class PersonaWorkshopWebAPI:
             if request.query:
                 raise ValueError("commands do not accept query fields")
             raw = await request.body()
-            if len(raw) > 262144:
+            if len(raw) > MAX_WORKSHOP_BODY_BYTES:
                 raise ValueError("body too large")
             data = self._document(raw)
             action = data.get("action")
@@ -434,8 +630,10 @@ class PersonaWorkshopWebAPI:
             if not required or not required.issubset(data) or set(data) - allowed:
                 raise ValueError("provide exactly the fields this command needs")
             persona_id = data.get("persona_id")
-            if persona_id is not None and (type(persona_id) is not str or not persona_id.strip()):
-                raise ValueError("invalid persona selection")
+            if persona_id is not None:
+                if type(persona_id) is not str or len(persona_id) > 256:
+                    raise ValueError("invalid persona selection")
+                persona_id = persona_id.strip() or None
             original_text = data.get("original_text")
             if original_text is not None and (action != "save" or type(original_text) is not str
                                               or len(original_text) > 30000):
@@ -443,7 +641,7 @@ class PersonaWorkshopWebAPI:
             async with self.controller._control_lock:
                 controller = self.controller
                 session, _ = self._authorized(controller)
-                snapshot = await self._read_persona(controller, session, persona_id=persona_id)
+                snapshot = await self._read_persona(controller, session, persona_id=persona_id, allow_non_private=True)
                 workshop = self._workshop(controller, session, snapshot)
                 if action == "save":
                     result = workshop.save(snapshot, text=data["text"], note=data["note"],
@@ -671,8 +869,15 @@ class PersonaWorkshopWebAPI:
                                     "the current role or relationship profile sources could not be read") from error
 
             try:
-                response = await asyncio.wait_for(provider.text_chat(prompt=prompt, max_tokens=6800), timeout=DRAFT_TEXT_TIMEOUT_SECONDS)
+                response = await _text_chat_with_fallback(
+                    provider, prompt=prompt, max_tokens=6800,
+                    operation="profile_draft", provider_id=provider_id,
+                )
             except asyncio.TimeoutError as error:
+                logger.warning(
+                    "[CompanionV2] 角色档案草稿请求超时 provider_id=%s timeout_s=%s",
+                    provider_id or "default", DRAFT_TEXT_TIMEOUT_SECONDS,
+                )
                 raise TaskError("role_profile_draft_timeout", "the profile draft request timed out") from error
             raw_text = getattr(response, "completion_text", response)
             parsed = (parse_role_profile_draft(raw_text)
@@ -977,22 +1182,31 @@ class PersonaWorkshopWebAPI:
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("role_profile_migration_invalid", "invalid role-profile migration request"))
 
+    @staticmethod
+    def _clean_optional_provider_id(data) -> str:
+        requested_provider_id = data.get("provider_id", "")
+        if requested_provider_id is None:
+            return ""
+        if type(requested_provider_id) is not str or len(requested_provider_id) > 256:
+            raise ValueError("invalid provider selection")
+        return requested_provider_id.strip()
+
     async def standardize(self):
-        """Turn questionnaire answers and a selected AstrBot persona into an editable draft."""
+        """Turn questionnaire answers and a selected or pasted persona into an editable draft."""
         from .web_api import outcome_response
+        effective_provider_id = ""
         try:
             if request.query:
                 raise ValueError("standardization does not accept query fields")
             raw = await request.body()
-            if len(raw) > 90000:
+            if len(raw) > MAX_WORKSHOP_BODY_BYTES:
                 raise ValueError("questionnaire too large")
             data = self._document(raw)
             allowed_request = {"persona_id", "answers", "strength", "source_mode", "source_text",
-                               "reference_material"}
-            if not {"persona_id", "answers"}.issubset(data) or set(data) - allowed_request \
-                    or type(data["persona_id"]) is not str \
-                    or not data["persona_id"].strip() or type(data["answers"]) is not dict:
+                               "reference_material", "provider_id"}
+            if "answers" not in data or set(data) - allowed_request or type(data["answers"]) is not dict:
                 raise ValueError("provide a persona and questionnaire answers")
+            requested_provider_id = self._clean_optional_provider_id(data)
             answers = data["answers"]
             allowed = {"identity", "appearance", "personality", "values", "relationships", "speech",
                        "habits", "boundaries", "world", "supplement"}
@@ -1003,120 +1217,207 @@ class PersonaWorkshopWebAPI:
             source_mode = data.get("source_mode", "current")
             source_text = data.get("source_text", "")
             reference_material = data.get("reference_material", "")
+            raw_persona_id = data.get("persona_id", "")
+            if raw_persona_id is None:
+                raw_persona_id = ""
+            if type(raw_persona_id) is not str or len(raw_persona_id) > 256:
+                raise ValueError("invalid persona selection")
+            persona_id = raw_persona_id.strip()
             if strength not in {"light", "medium", "deep"} or source_mode not in {"current", "paste"} \
                     or type(source_text) is not str or len(source_text) > 30000 \
                     or type(reference_material) is not str or len(reference_material) > 4000 \
-                    or source_mode == "current" and source_text.strip() \
-                    or source_mode == "paste" and not source_text.strip():
+                    or (source_mode == "current" and (not persona_id or source_text.strip())) \
+                    or (source_mode == "paste" and not source_text.strip()):
                 raise ValueError("invalid source, strength or reference material")
             async with self.controller._control_lock:
                 controller = self.controller
                 session, _ = self._authorized(controller)
-                snapshot = await self._read_persona(controller, session, persona_id=data["persona_id"])
-                if not snapshot.resolved:
-                    raise TaskError("host_persona_invalid", "the selected AstrBot persona has no usable prompt")
-                working_source = source_text if source_mode == "paste" else snapshot.text
+                if source_mode == "paste":
+                    if persona_id:
+                        snapshot = await self._read_persona(controller, session, persona_id=persona_id,
+                                                            allow_non_private=True)
+                    else:
+                        snapshot = PersonaSnapshot("", "", "", False)
+                    working_source = source_text
+                else:
+                    snapshot = await self._read_persona(controller, session, persona_id=persona_id,
+                                                        allow_non_private=True)
+                    if not snapshot.resolved:
+                        raise TaskError("host_persona_invalid", "the selected AstrBot persona has no usable prompt")
+                    working_source = snapshot.text
                 if not working_source.strip():
                     raise TaskError("host_persona_invalid", "the selected AstrBot persona has no usable prompt")
                 if len(working_source) > 30000:
                     raise TaskError("persona_standardization_source_too_large", "the selected persona is too large")
+                owner = getattr(controller, "controller", controller)
+                model_session = owner.session or owner.last_session
                 provider, application = self._text_provider(
-                    controller, session, message="the selected model cannot create a persona draft")
+                    controller, session, provider_id=requested_provider_id,
+                    message="the selected model cannot create a persona draft")
+                effective_provider_id = requested_provider_id or str(
+                    getattr(getattr(model_session, "model", None), "provider_id", "") or "")
                 prompt = build_persona_standardization_prompt(working_source, answers, strength=strength,
                                                               reference_material=reference_material)
                 context_key = session.profile.target.key
-                selected_model = provider
 
             try:
-                response = await asyncio.wait_for(provider.text_chat(prompt=prompt, max_tokens=6800), timeout=DRAFT_TEXT_TIMEOUT_SECONDS)
+                response = await _text_chat_with_fallback(
+                    provider, prompt=prompt, max_tokens=6800,
+                    operation="standardize", provider_id=effective_provider_id,
+                )
             except asyncio.TimeoutError as error:
+                logger.warning(
+                    "[CompanionV2] 人格工坊模型请求超时 operation=standardize provider_id=%s timeout_s=%s",
+                    effective_provider_id or "default", DRAFT_TEXT_TIMEOUT_SECONDS,
+                )
                 raise TaskError("role_profile_draft_timeout", "the persona draft request timed out") from error
             raw_text = getattr(response, "completion_text", response)
-            draft = parse_persona_standardization_draft(raw_text)
+            try:
+                draft = parse_persona_standardization_draft(raw_text)
+            except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+                logger.warning(
+                    "[CompanionV2] 人格工坊模型输出解析失败 operation=standardize provider_id=%s error_type=%s raw_chars=%s",
+                    effective_provider_id or "default", type(error).__name__,
+                    len(raw_text) if isinstance(raw_text, str) else -1,
+                )
+                raise TaskError("persona_model_output_invalid", "模型输出格式不规范，可重试或更换模型。") from error
 
-            async with self.controller._control_lock:
-                controller = self.controller
-                current, _ = self._authorized(controller)
-                current_owner = getattr(controller, "controller", controller)
-                current_session = current_owner.session or current_owner.last_session
-                current_model = getattr(current_session, "model", None)
-                if (current.profile.target.key != context_key or current.application is not application
-                        or current_model is None or current_model.native is not selected_model):
-                    raise TaskError("role_profile_source_changed", "the selected persona, role or model changed")
-                latest = await self._read_persona(controller, current, persona_id=data["persona_id"])
-                if latest != snapshot:
-                    raise TaskError("role_profile_source_changed", "the selected persona changed while drafting")
-            return outcome_response(Outcome.success({"draft": draft,
+            await self._confirm_generation(
+                persona_id=persona_id if source_mode == "current" else "",
+                snapshot=snapshot if source_mode == "current" else None,
+                context_key=context_key,
+                application=application,
+                provider=provider,
+                provider_id=requested_provider_id,
+                allow_non_private=True,
+            )
+            return outcome_response(Outcome.success({
+                "draft": draft,
                 "source": {"persona_id": snapshot.persona_id, "name": snapshot.name,
-                           "source_chars": len(working_source), "source_mode": source_mode}}))
+                           "source_chars": len(working_source), "source_mode": source_mode},
+                "provider_id": effective_provider_id,
+            }))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("persona_standardization_invalid", "check the persona and questionnaire answers"))
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "[CompanionV2] 人格工坊请求失败 operation=standardize provider_id=%s error_type=%s status=%s",
+                effective_provider_id or "default", type(error).__name__,
+                getattr(error, "status_code", None) or getattr(error, "status", None),
+            )
             return outcome_response(Outcome.failed("role_profile_draft_failed", "the persona could not be standardized; check the selected model and try again"))
 
     async def tryouts(self):
         """Generate real model replies for the six fixed voice-calibration scenes."""
         from .web_api import outcome_response
+        effective_provider_id = ""
         try:
             if request.query:
                 raise ValueError("tryouts do not accept query fields")
             raw = await request.body()
-            if len(raw) > 80000:
+            if len(raw) > MAX_WORKSHOP_BODY_BYTES:
                 raise ValueError("draft too large")
             data = self._document(raw)
-            if set(data) - {"persona_id", "draft_text", "variation"} \
-                    or not {"persona_id", "draft_text"}.issubset(data) \
-                    or type(data["persona_id"]) is not str or not data["persona_id"].strip() \
+            if set(data) - {"persona_id", "draft_text", "variation", "provider_id"} \
+                    or "draft_text" not in data \
                     or type(data["draft_text"]) is not str or not data["draft_text"].strip() \
                     or len(data["draft_text"]) > 65536:
                 raise ValueError("provide the selected persona and a reviewed draft")
+            raw_persona_id = data.get("persona_id", "")
+            if raw_persona_id is None:
+                raw_persona_id = ""
+            if type(raw_persona_id) is not str or len(raw_persona_id) > 256:
+                raise ValueError("invalid persona selection")
+            persona_id = raw_persona_id.strip()
+            requested_provider_id = self._clean_optional_provider_id(data)
             variation = data.get("variation", 0)
             if type(variation) is not int or not 0 <= variation <= 100:
                 raise ValueError("invalid tryout variation")
             async with self.controller._control_lock:
                 controller = self.controller
                 session, _ = self._authorized(controller)
-                snapshot = await self._read_persona(controller, session, persona_id=data["persona_id"])
-                if not snapshot.resolved:
-                    raise TaskError("host_persona_invalid", "the selected AstrBot persona is unavailable")
-                provider, application = self._text_provider(controller, session)
+                snapshot = None
+                if persona_id:
+                    snapshot = await self._read_persona(controller, session, persona_id=persona_id,
+                                                        allow_non_private=True)
+                    if not snapshot.resolved:
+                        raise TaskError("host_persona_invalid", "the selected AstrBot persona is unavailable")
+                owner = getattr(controller, "controller", controller)
+                model_session = owner.session or owner.last_session
+                provider, application = self._text_provider(controller, session, provider_id=requested_provider_id)
+                effective_provider_id = requested_provider_id or str(
+                    getattr(getattr(model_session, "model", None), "provider_id", "") or "")
                 context_key = session.profile.target.key
                 prompt = build_persona_tryouts_prompt(data["draft_text"], variation=variation)
             try:
-                response = await asyncio.wait_for(provider.text_chat(prompt=prompt, max_tokens=3600), timeout=DRAFT_TEXT_TIMEOUT_SECONDS)
+                response = await _text_chat_with_fallback(
+                    provider, prompt=prompt, max_tokens=3600,
+                    operation="tryouts", provider_id=effective_provider_id,
+                )
             except asyncio.TimeoutError as error:
+                logger.warning(
+                    "[CompanionV2] 人格工坊模型请求超时 operation=tryouts provider_id=%s timeout_s=%s",
+                    effective_provider_id or "default", DRAFT_TEXT_TIMEOUT_SECONDS,
+                )
                 raise TaskError("role_profile_draft_timeout", "scenario replies timed out") from error
-            generated = parse_persona_tryouts(getattr(response, "completion_text", response))
-            await self._confirm_generation(persona_id=data["persona_id"], snapshot=snapshot,
-                                           context_key=context_key, application=application, provider=provider)
-            return outcome_response(Outcome.success({"scenarios": generated, "variation": variation}))
+            raw_text = getattr(response, "completion_text", response)
+            try:
+                generated = parse_persona_tryouts(raw_text)
+            except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+                logger.warning(
+                    "[CompanionV2] 人格工坊模型输出解析失败 operation=tryouts provider_id=%s error_type=%s raw_chars=%s",
+                    effective_provider_id or "default", type(error).__name__,
+                    len(raw_text) if isinstance(raw_text, str) else -1,
+                )
+                raise TaskError("persona_model_output_invalid", "模型输出格式不规范，可重试或更换模型。") from error
+            await self._confirm_generation(
+                persona_id=persona_id, snapshot=snapshot,
+                context_key=context_key, application=application,
+                provider=provider, provider_id=requested_provider_id,
+                allow_non_private=True,
+            )
+            return outcome_response(Outcome.success({
+                "scenarios": generated, "variation": variation, "provider_id": effective_provider_id,
+            }))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("persona_standardization_invalid", "scenario replies were invalid"))
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "[CompanionV2] 人格工坊请求失败 operation=tryouts provider_id=%s error_type=%s status=%s",
+                effective_provider_id or "default", type(error).__name__,
+                getattr(error, "status_code", None) or getattr(error, "status", None),
+            )
             return outcome_response(Outcome.failed("role_profile_draft_failed", "scenario replies could not be generated; check the selected model and try again"))
 
     async def style_rules(self):
         """Condense selected, reviewed scenario replies into editable voice rules."""
         from .web_api import outcome_response
+        effective_provider_id = ""
         try:
             if request.query:
                 raise ValueError("style rules do not accept query fields")
             raw = await request.body()
-            if len(raw) > 30000:
+            if len(raw) > MAX_WORKSHOP_BODY_BYTES:
                 raise ValueError("style evidence too large")
             data = self._document(raw)
             allowed = {"persona_id", "draft_text", "reference_material", "speech_preference",
-                       "constraint_preference", "selections"}
-            if set(data) - allowed or not {"persona_id", "draft_text", "selections"}.issubset(data) \
-                    or type(data["persona_id"]) is not str or not data["persona_id"].strip() \
+                       "constraint_preference", "selections", "provider_id"}
+            if set(data) - allowed or not {"draft_text", "selections"}.issubset(data) \
                     or type(data["draft_text"]) is not str or not data["draft_text"].strip() \
                     or len(data["draft_text"]) > 65536 or type(data["selections"]) is not list \
                     or len(data["selections"]) > len(PERSONA_TRYOUT_SCENARIOS):
                 raise ValueError("provide the reviewed draft and selected scenario replies")
+            raw_persona_id = data.get("persona_id", "")
+            if raw_persona_id is None:
+                raw_persona_id = ""
+            if type(raw_persona_id) is not str or len(raw_persona_id) > 256:
+                raise ValueError("invalid persona selection")
+            persona_id = raw_persona_id.strip()
+            requested_provider_id = self._clean_optional_provider_id(data)
             reference = data.get("reference_material", "")
             speech = data.get("speech_preference", "")
             constraints = data.get("constraint_preference", "")
@@ -1136,27 +1437,59 @@ class PersonaWorkshopWebAPI:
             async with self.controller._control_lock:
                 controller = self.controller
                 session, _ = self._authorized(controller)
-                snapshot = await self._read_persona(controller, session, persona_id=data["persona_id"])
-                if not snapshot.resolved:
-                    raise TaskError("host_persona_invalid", "the selected AstrBot persona is unavailable")
-                provider, application = self._text_provider(controller, session)
+                snapshot = None
+                if persona_id:
+                    snapshot = await self._read_persona(controller, session, persona_id=persona_id,
+                                                        allow_non_private=True)
+                    if not snapshot.resolved:
+                        raise TaskError("host_persona_invalid", "the selected AstrBot persona is unavailable")
+                owner = getattr(controller, "controller", controller)
+                model_session = owner.session or owner.last_session
+                provider, application = self._text_provider(controller, session, provider_id=requested_provider_id)
+                effective_provider_id = requested_provider_id or str(
+                    getattr(getattr(model_session, "model", None), "provider_id", "") or "")
                 context_key = session.profile.target.key
                 prompt = build_persona_style_prompt(data["draft_text"], selections,
                     reference_material=reference, speech_preference=speech,
                     constraint_preference=constraints)
             try:
-                response = await asyncio.wait_for(provider.text_chat(prompt=prompt, max_tokens=2600), timeout=DRAFT_TEXT_TIMEOUT_SECONDS)
+                response = await _text_chat_with_fallback(
+                    provider, prompt=prompt, max_tokens=2600,
+                    operation="style_rules", provider_id=effective_provider_id,
+                )
             except asyncio.TimeoutError as error:
+                logger.warning(
+                    "[CompanionV2] 人格工坊模型请求超时 operation=style_rules provider_id=%s timeout_s=%s",
+                    effective_provider_id or "default", DRAFT_TEXT_TIMEOUT_SECONDS,
+                )
                 raise TaskError("role_profile_draft_timeout", "style rules timed out") from error
-            result = parse_persona_style_rules(getattr(response, "completion_text", response))
-            await self._confirm_generation(persona_id=data["persona_id"], snapshot=snapshot,
-                                           context_key=context_key, application=application, provider=provider)
-            return outcome_response(Outcome.success({"style": result}))
+            raw_text = getattr(response, "completion_text", response)
+            try:
+                result = parse_persona_style_rules(raw_text)
+            except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+                logger.warning(
+                    "[CompanionV2] 人格工坊模型输出解析失败 operation=style_rules provider_id=%s error_type=%s raw_chars=%s",
+                    effective_provider_id or "default", type(error).__name__,
+                    len(raw_text) if isinstance(raw_text, str) else -1,
+                )
+                raise TaskError("persona_model_output_invalid", "模型输出格式不规范，可重试或更换模型。") from error
+            await self._confirm_generation(
+                persona_id=persona_id, snapshot=snapshot,
+                context_key=context_key, application=application,
+                provider=provider, provider_id=requested_provider_id,
+                allow_non_private=True,
+            )
+            return outcome_response(Outcome.success({"style": result, "provider_id": effective_provider_id}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("persona_standardization_invalid", "style rules were invalid"))
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "[CompanionV2] 人格工坊请求失败 operation=style_rules provider_id=%s error_type=%s status=%s",
+                effective_provider_id or "default", type(error).__name__,
+                getattr(error, "status_code", None) or getattr(error, "status", None),
+            )
             return outcome_response(Outcome.failed("role_profile_draft_failed", "style rules could not be generated; check the selected model and try again"))
 
 
@@ -1180,9 +1513,18 @@ PERSONA_STANDARD_SECTIONS = {
     "world": "世界设定",
     "personality": "性格特质",
     "motivations": "价值、目标与关系",
-    "habits": "表达习惯与日常",
+    "habits": "兴趣习惯与表达",
     "boundaries": "社交距离与边界",
     "supplement": "长期补充条件",
+}
+
+PERSONA_STANDARD_SECTION_ALIASES = {
+    "habits": ("兴趣习惯与表达", "表达习惯与日常"),
+}
+
+_SECTION_TITLE_TO_KEY = {
+    **{title: key for key, title in PERSONA_STANDARD_SECTIONS.items()},
+    **{alias: key for key, aliases in PERSONA_STANDARD_SECTION_ALIASES.items() for alias in aliases},
 }
 
 PERSONA_TRYOUT_SCENARIOS = (
@@ -1296,6 +1638,81 @@ def _model_json(raw_text):
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid JSON number")))
 
 
+def extract_canonical_persona_sections(text: str) -> dict | None:
+    """Parse canonical <Role_Profile> text into sections, accepting legacy habits heading aliases."""
+    if type(text) is not str or "<Role_Profile>" not in text:
+        return None
+    out = {key: "" for key in PERSONA_STANDARD_SECTIONS}
+
+    def titles_for(key: str) -> tuple[str, ...]:
+        canonical = PERSONA_STANDARD_SECTIONS[key]
+        aliases = PERSONA_STANDARD_SECTION_ALIASES.get(key, ())
+        return tuple(dict.fromkeys((canonical, *aliases)))
+
+    all_heading_markers = [
+        f"## {title}"
+        for key in PERSONA_STANDARD_SECTIONS
+        if key != "supplement"
+        for title in titles_for(key)
+    ]
+    fences = ("</Role_Profile>", "</Output_Constraints>", "# 对话安全", "# 补充条件", "# 初始化")
+
+    for key in PERSONA_STANDARD_SECTIONS:
+        if key == "supplement":
+            markers = ("# 补充条件",)
+        else:
+            markers = tuple(f"## {title}" for title in titles_for(key))
+        found_start = -1
+        for marker in markers:
+            pos = text.find(marker)
+            if pos >= 0 and (found_start < 0 or pos < found_start):
+                found_start = pos
+        if found_start < 0:
+            continue
+        newline = text.find("\n", found_start)
+        if newline < 0:
+            continue
+        body_start = newline + 1
+        end = len(text)
+        if key == "supplement":
+            next_init = text.find("# 初始化", body_start)
+            if next_init >= 0:
+                end = next_init
+        else:
+            for marker in (*all_heading_markers, *fences):
+                pos = text.find(marker, body_start)
+                if pos >= 0 and pos < end:
+                    end = pos
+        out[key] = text[body_start:end].strip()
+
+    style, examples = "", ""
+    style_at = text.find("## 对话风格")
+    if style_at >= 0:
+        begin = text.find("\n", style_at)
+        if begin >= 0:
+            begin += 1
+            end = text.find("## 口吻示例与标志表达", begin)
+            if end < 0:
+                end = text.find("</Output_Constraints>", begin)
+            if end < 0:
+                end = len(text)
+            style = text[begin:end].strip()
+            example_at = text.find("## 口吻示例与标志表达")
+            if example_at >= 0:
+                ex_begin = text.find("\n", example_at)
+                if ex_begin >= 0:
+                    ex_begin += 1
+                    ex_end = text.find("</Output_Constraints>", ex_begin)
+                    if ex_end < 0:
+                        ex_end = len(text)
+                    examples = text[ex_begin:ex_end].strip()
+    return {
+        "sections": out,
+        "style": "" if style == "[STYLE_PENDING]" else style,
+        "examples": examples,
+    }
+
+
 def parse_persona_standardization_draft(raw_text):
     result = _model_json(raw_text)
     if type(result) is not dict:
@@ -1303,13 +1720,26 @@ def parse_persona_standardization_draft(raw_text):
     sections = result.get("sections")
     normalized_sections = None
     if sections is not None:
-        if type(sections) is not dict or set(sections) - set(PERSONA_STANDARD_SECTIONS) \
-                or any(type(value) is not str or len(value) > 10000 for value in sections.values()):
+        if type(sections) is not dict:
             raise ValueError("standardized sections have an invalid shape")
-        normalized_sections = {key: sections.get(key, "") for key in PERSONA_STANDARD_SECTIONS}
+        mapped_sections = {}
+        for raw_key, value in sections.items():
+            if type(raw_key) is not str or type(value) is not str or len(value) > 10000:
+                raise ValueError("standardized sections have an invalid shape")
+            canonical_key = raw_key if raw_key in PERSONA_STANDARD_SECTIONS else _SECTION_TITLE_TO_KEY.get(raw_key.strip())
+            if canonical_key is None:
+                raise ValueError("standardized sections have an invalid shape")
+            if canonical_key in mapped_sections and mapped_sections[canonical_key]:
+                raise ValueError("duplicate standardized section key")
+            mapped_sections[canonical_key] = value
+        normalized_sections = {key: mapped_sections.get(key, "") for key in PERSONA_STANDARD_SECTIONS}
     text = result.get("text")
     if normalized_sections is not None:
         text = canonical_persona_text(normalized_sections)
+    elif type(text) is str:
+        extracted = extract_canonical_persona_sections(text)
+        if extracted is not None:
+            normalized_sections = extracted["sections"]
     if type(text) is not str or not text.strip() \
             or len(text) > 65536 or type(result.get("notes", [])) is not list \
             or any(type(note) is not str or len(note) > 1000 for note in result.get("notes", [])):
