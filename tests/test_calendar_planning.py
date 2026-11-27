@@ -1084,3 +1084,56 @@ class ContinuousScheduleContextTests(StateFixture, unittest.IsolatedAsyncioTestC
         self.configure(manager, calendar_enabled=False)
         with self.assertRaises(TaskError):
             consumer.contributions(second_snapshot, context, NOW, fallback_source=source)
+
+    def test_planning_output_accepts_optional_presence_and_routine_slot_sets_default_presence(self):
+        from companion_v2.agenda.planning_output import parse_output
+        from companion_v2.role_work.life.calendar_work import reserve_routine_slot
+
+        start = NOW + timedelta(hours=1)
+        job = {
+            "mode": "daily",
+            "at": NOW,
+            "end": NOW + timedelta(hours=12),
+            "slot": "daily-slot",
+            "settings": {"planning_timezone": "Asia/Shanghai", "planning_max_items": 5},
+            "goal_refs": {},
+            "calendar_refs": {},
+            "existing": set(),
+            "material": {"calendar": ()},
+        }
+        payload = json.dumps({"items": [{
+            "title": "晚间练琴",
+            "start": start.isoformat(),
+            "minutes": 45,
+            "detail": "练一段肖邦夜曲",
+            "presence": "弹琴练习中超长截断测试",
+        }]}, ensure_ascii=False)
+        accepted, rejected = parse_output(payload, job)
+        self.assertEqual(rejected, ())
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0][0]["presence"], "弹琴练习中超长截")
+
+        # Intervention create also accepts optional presence wording
+        intervention_job = {**job, "mode": "intervention"}
+        changes, inv_rejected = parse_output(json.dumps({"changes": [{
+            "action": "create",
+            "title": "外出买咖啡",
+            "start": start.isoformat(),
+            "minutes": 30,
+            "detail": "去街角买杯拿铁",
+            "presence": "买咖啡中",
+        }]}, ensure_ascii=False), intervention_job)
+        self.assertEqual(inv_rejected, ())
+        self.assertEqual(changes[0]["data"]["presence"], "买咖啡中")
+
+        # reserve_routine_slot assigns concise default presence wording by routine
+        _, app, context, manager = self.setup_state()
+        self.configure(manager, calendar_enabled=True)
+        booked = reserve_routine_slot(
+            app.calendar, context, routine="reading", timezone="Asia/Shanghai", now=NOW, items=[]
+        )
+        self.assertIsNotNone(booked)
+        created = [item for item in app.calendar.occurrences(
+            context, start=NOW, end=NOW + timedelta(days=2))["items"] if item["kind"] == "role_plan"]
+        self.assertTrue(created)
+        self.assertEqual(created[0]["presence"], "阅读中")

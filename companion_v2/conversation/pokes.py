@@ -25,10 +25,12 @@ MODEL_REPLY_PROMPT = (
     "text 与 statement 都不要句号；不要输出 JSON 之外的任何文字。"
 )
 CONTEXT_STREAM_PROMPT = (
-    "拍一拍发生几秒后，你看到了群里最近的聊天记录（附在通知文本里）。"
-    "请判断这段记录里有没有需要你接的内容：有人在问问题（不管是不是直接问你的）、"
-    "有话题明显没聊完、有人提到你或点你名字，就回一句把那个接住；"
-    "如果话题已经被别人接住、只是普通闲聊互怼、或与你无关，只输出 [SKIP]，不要输出任何别的内容。"
+    "拍一拍发生几秒后，你看到了群里刚刚的聊天时间线（附在通知文本里，含每条消息的时间与发言人，其中标有「戳你的人」的是本次戳一戳的发起者，标有「我」的是你自己刚发过的消息）。"
+    "请严格按以下规则判断是否需要接话：\n"
+    "1. 只关注拍一拍发生前后几十秒内、还没有被你或群友接住的最新内容，绝不把更早已经聊完或回复过的旧话题重新翻出来念叨；\n"
+    "2. 注意区分发言人，切勿把其他群友的发言错当成这次戳你的人说的话；\n"
+    "3. 如果最新消息里有明显没聊完的话题、有人在问问题、或有人提到你/点你名字需要接住，就回一句简短自然的话接住；\n"
+    "4. 如果话题已经被接住、只是普通闲聊互怼、或与你无关，只输出 [SKIP]，不要输出任何别的内容。\n"
     "需要回应时保持一条适合直接发送的简短正文，按角色个性与当下状态自然说话，"
     "单条内部不换行，不解释选择或复述规则，最终输出遵循本轮宿主提供的回复格式。\n"
     "输出必须是 JSON 对象，格式：{\"text\": \"回复正文\", \"claims\": [{\"id\": \"c1\", \"kind\": \"subjective\", \"statement\": \"与正文相同的一句话\", \"evidence\": null}]}。"
@@ -129,6 +131,7 @@ class PokeReplyJob:
     event_key: str
     mode: str = "reply"
     recent_context: str = ""
+    poker_label: str = ""
 
 
 class PokeReplyModel:
@@ -161,7 +164,8 @@ class PokeReplyModel:
         require(self.tasks.check_context_access(job.context, action="conversation.reply", observed_at=at))
         return True
 
-    async def reply(self, context, role_instruction, event_key, *, mode: str = "reply", recent_context: str = ""):
+    async def reply(self, context, role_instruction, event_key, *, mode: str = "reply",
+                    recent_context: str = "", poker_label: str = ""):
         """Run one supervised poke reply attempt and return its text.
 
         The empty string means the model deliberately chose not to join a
@@ -177,7 +181,8 @@ class PokeReplyModel:
         if not isinstance(context, TaskContext) or not isinstance(role_instruction, str) or not role_instruction.strip():
             raise TaskError("poke_model_context_invalid", "the original role context is unavailable")
         task_id = ("poke-context-reply-" if mode == "context" else "poke-reply-") + digest(event_key)
-        job = PokeReplyJob(context, role_instruction, event_key, mode, str(recent_context or "").strip())
+        job = PokeReplyJob(context, role_instruction, event_key, mode,
+                           str(recent_context or "").strip(), str(poker_label or "").strip())
         self.pending[task_id] = job
         invocation = asyncio.current_task()
         self.invocations.add(invocation)
@@ -214,7 +219,11 @@ class PokeReplyModel:
         at = self.tasks.now()
         trigger = BackgroundPromptTrigger("poke-" + digest(job.event_key), job.context.actor.principal,
                                           job.context.scope, at)
-        notice_text = "当前聊天中收到了一次戳一戳提示。"
+        poker_label = str(getattr(job, "poker_label", "") or "").strip()
+        if poker_label:
+            notice_text = f"当前聊天中收到了一次来自「{poker_label}」的戳一戳提示。"
+        else:
+            notice_text = "当前聊天中收到了一次戳一戳提示。"
         role_state = getattr(self.app, "role_state", None)
         if role_state is not None:
             try:

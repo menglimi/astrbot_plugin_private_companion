@@ -110,6 +110,7 @@ from .astrbot_host.core_reply_telemetry import (
 from .astrbot_host.calendar_command import parse_calendar_command
 from .astrbot_host.functional_commands import classify_functional_command, inject_functional_command_instruction
 from .astrbot_host.group_command import receive_group_llm_command
+from .astrbot_host.diagnostic_command import receive_diagnostic_command
 from .astrbot_host.reset_command import receive_reset_command
 from .astrbot_host.phone_command import receive_phone_command
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
@@ -1284,6 +1285,21 @@ class PrivateCompanionV2StagingPlugin(Star):
                                           channel=channel, event_ref=event_ref, stage="command")
                 else:
                     logger.info("[CompanionV2] 全部重置由专用流程处理 event_ref=%s", event_ref)
+                return
+            # 答疑确认/取消走确定性直发快路径，免去 LLM 与 TTS 往返。
+            try:
+                diagnostic_command = await receive_diagnostic_command(self.staging, event, target=target)
+            except Exception as error:
+                diagnostic_command = None
+                logger.warning("[CompanionV2] 答疑确认指令处理异常 event_ref=%s error_type=%s",
+                               event_ref, type(error).__name__)
+            if diagnostic_command is not None:
+                suppress_default_reply(event)
+                if diagnostic_command.failure is not None:
+                    self._record_no_reply(event, diagnostic_command.failure.code, origin_key=origin_key,
+                                          channel=channel, event_ref=event_ref, stage="command")
+                else:
+                    logger.info("[CompanionV2] 答疑确认/取消由专用快路径处理 event_ref=%s", event_ref)
                 return
         is_calendar_command = (channel == "private"
                                and parse_calendar_command(str(getattr(event, "message_str", "") or "")))

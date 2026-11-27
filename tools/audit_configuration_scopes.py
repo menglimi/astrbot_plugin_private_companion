@@ -60,6 +60,7 @@ EXCEPTIONS = {
     "role.state.typing_enabled": "bot_role_preference_and_scoped_platform_grant",
     "role.state.presence_enabled": "bot_role_preference_and_scoped_platform_grant",
     "role.state.online_status_enabled": "bot_role_preference_and_scoped_platform_grant",
+    "role.state.presence_priority": "bot_role_preference_and_scoped_platform_grant",
 }
 
 

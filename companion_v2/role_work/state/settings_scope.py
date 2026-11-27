@@ -7,7 +7,7 @@ from companion_v2.configuration.owners import OwnerSnapshot, OwnerWrite, SparseC
 from companion_v2.agenda.planning_config import DEFAULTS as PLANNING_DEFAULTS
 
 WINDOW_FIELDS = frozenset({"typing_enabled", "typing_refresh_seconds"})
-PRESENCE_FIELDS = frozenset({"presence_enabled", "online_status_enabled"})
+PRESENCE_FIELDS = frozenset({"presence_enabled", "online_status_enabled", "presence_priority"})
 ROLE_ONLY_FIELDS = frozenset({"enabled", "maintenance_grant_scope", "calendar_enabled",
     *PLANNING_DEFAULTS, *PRESENCE_FIELDS})
 

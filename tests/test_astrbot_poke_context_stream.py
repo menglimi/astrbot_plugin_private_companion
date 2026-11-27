@@ -1,5 +1,6 @@
 """Privacy and behaviour contract for the group-only poke context stream B."""
 
+from datetime import timedelta
 import asyncio
 from types import SimpleNamespace as NS
 import unittest
@@ -163,10 +164,11 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
             "data": {"text": "锅底我已经想好了，等着就是。"}}])
 
     async def test_zero_delay_stream_skip_stays_silent(self):
-        """Enabled + delay=0 with nothing to pick up: the stream must
-        actually run (the model is invoked) and stay silent on [SKIP]."""
+        """Enabled + delay=0 with a fresh banter message: the stream must
+        run (the model is invoked) and stay silent on [SKIP]."""
         self.configure(context_reply=True, delay=0)
         await self.start_host()
+        await self.seed_group_observation(text="哈哈哈草", speaker="201", identifier="seed-banter")
         calls = 0
 
         async def model_behavior(payload, tools):
@@ -182,6 +184,137 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)  # the stream ran and asked the model
         api = self.native.platform.client._api._wsr_api
         self.assertEqual([action for action, _ in api.calls], ["send_group_msg"])
+
+    async def test_empty_and_stale_windows_skip_without_calling_model(self):
+        """Empty windows or observations older than 90s must never invoke the model."""
+        self.configure(context_reply=True, delay=0)
+        await self.start_host()
+
+        async def fail_if_called(payload, tools):
+            raise AssertionError("stale or empty context must skip with zero LLM calls")
+
+        self.native.provider.client.state.behavior = fail_if_called
+        # 1) Empty group window -> zero LLM calls
+        result = (await self.controller.receive_notice(
+            poke_notice(self.group_event(identifier="701"), time=int(self.clock.now().timestamp())))).unwrap()
+        self.assertEqual(result["state"], "delivered")
+        await self.wait_context_tasks()
+        self.assertEqual(len(self.native.provider.client.state.calls), 0)
+
+        # 2) Observation older than 90s (e.g. 90 minutes earlier) -> zero LLM calls
+        await self.seed_group_observation(text="很久之前的旧话题", speaker="201", identifier="seed-old")
+        self.clock.advance(timedelta(minutes=90))
+        later = poke_notice(self.group_event(identifier="702", sender="202"),
+                            time=int(self.clock.now().timestamp()))
+        result2 = (await self.controller.receive_notice(later)).unwrap()
+        self.assertEqual(result2["state"], "delivered")
+        await self.wait_context_tasks()
+        self.assertEqual(len(self.native.provider.client.state.calls), 0)
+
+    async def test_repeated_poke_does_not_reconsume_answered_topic_and_isolates_bot_replies(self):
+        """After stream B answers a fresh message, another poke with no new message
+        must skip with zero calls, and bot replies must never pollute human observations."""
+        self.configure(context_reply=True, delay=0)
+        await self.start_host()
+        await self.seed_group_observation(text="今晚吃什么", speaker="201", identifier="seed-1")
+        calls = 0
+
+        async def model_behavior(payload, tools):
+            nonlocal calls
+            calls += 1
+            return completion(final_text("去吃火锅吧。"))
+
+        self.native.provider.client.state.behavior = model_behavior
+        first = poke_notice(self.group_event(identifier="701", sender="201"),
+                            time=int(self.clock.now().timestamp()))
+        (await self.controller.receive_notice(first)).unwrap()
+        await self.wait_context_tasks()
+        self.assertEqual(calls, 1)
+
+        # Verify group_admission.observations only contains human messages (never bot poke replies)
+        admission = self.controller.session.application.tools.group_participation.admission
+        all_obs = [item for bucket in admission.observations.values() for item in bucket]
+        self.assertEqual(len(all_obs), 1)
+        self.assertEqual(all_obs[0]["speaker_id"], "201")
+
+        # Second poke 10s later with no new human message -> zero LLM calls
+        self.clock.advance(timedelta(seconds=10))
+        second = poke_notice(self.group_event(identifier="702", sender="202"),
+                             time=int(self.clock.now().timestamp()))
+        (await self.controller.receive_notice(second)).unwrap()
+        await self.wait_context_tasks()
+        self.assertEqual(calls, 1)
+
+    async def test_poker_identity_is_injected_and_marked_in_timeline(self):
+        """Stream B must clearly identify who poked and distinguish them from other speakers."""
+        self.configure(context_reply=True, delay=0)
+        await self.start_host()
+        await self.seed_group_observation(text="之前的话题先放一边", speaker="201", identifier="seed-other")
+        await self.seed_group_observation(text="看看新买的键盘", speaker="202", identifier="seed-poker")
+        seen = {}
+
+        async def model_behavior(payload, tools):
+            import json as _json
+            raw = payload["messages"][-1]["content"]
+            seen["text"] = str(_json.loads(raw)["materials"][0]["text"])
+            return completion(final_text("这把键盘配色看着挺清爽的。"))
+
+        self.native.provider.client.state.behavior = model_behavior
+        poke_ev = self.group_event(identifier="703", sender="202")
+        poke_ev.message_obj.sender.nickname = "小北"
+        poke_ev.message_obj.raw_message["sender"] = {"user_id": 202, "nickname": "小北"}
+        notice = poke_notice(poke_ev, time=int(self.clock.now().timestamp()))
+        notice.message_obj.sender.nickname = "小北"
+        notice.message_obj.raw_message["sender"] = {"user_id": 202, "nickname": "小北"}
+        (await self.controller.receive_notice(notice)).unwrap()
+        await self.wait_context_tasks()
+        self.assertIn("小北(202)", seen["text"])
+        self.assertIn("小北(202)[戳你的人]: 看看新买的键盘", seen["text"])
+        self.assertNotIn("201[戳你的人]", seen["text"])
+
+    async def test_conflicting_core_reply_suppresses_stream_b(self):
+        """If the main group reply path is active or already answered around the poke,
+        stream B must abort instead of sending a duplicate/conflicting message."""
+        self.configure(context_reply=True, delay=0)
+        await self.start_host()
+        ev = await self.seed_group_observation(text="看看新买的键盘", speaker="202", identifier="seed-core")
+        admission = self.controller.session.application.tools.group_participation.admission
+        target = self.controller.settings.target("group-a")
+        ctx = (await self.controller.session.prepare_group(ev, target)).unwrap()
+        admission.note_live_core_turn(ctx, "core-ev-1", active=True)
+
+        async def fail_if_called(payload, tools):
+            raise AssertionError("stream B must abort while a core group turn is live")
+
+        self.native.provider.client.state.behavior = fail_if_called
+        notice = poke_notice(self.group_event(identifier="704", sender="202"),
+                             time=int(self.clock.now().timestamp()))
+        (await self.controller.receive_notice(notice)).unwrap()
+        await self.wait_context_tasks()
+        self.assertEqual(len(self.native.provider.client.state.calls), 0)
+        admission.note_live_core_turn(ctx, "core-ev-1", active=False)
+
+    async def test_rapid_same_group_pokes_coalesce_stream_b(self):
+        """Multiple rapid pokes in the same group cancel the earlier pending stream B
+        so only the latest one executes."""
+        self.configure(context_reply=True, delay=1)
+        await self.start_host()
+        await self.seed_group_observation(text="有人在吗", speaker="201", identifier="seed-coalesce")
+        calls = 0
+
+        async def model_behavior(payload, tools):
+            nonlocal calls
+            calls += 1
+            return completion(final_text("在的呀。"))
+
+        self.native.provider.client.state.behavior = model_behavior
+        t0 = int(self.clock.now().timestamp())
+        (await self.controller.receive_notice(
+            poke_notice(self.group_event(identifier="705", sender="201"), time=t0))).unwrap()
+        (await self.controller.receive_notice(
+            poke_notice(self.group_event(identifier="706", sender="202"), time=t0 + 1))).unwrap()
+        await self.wait_context_tasks()
+        self.assertEqual(calls, 1)
 
     async def test_private_poke_never_runs_the_stream(self):
         self.configure(context_reply=True)
@@ -255,7 +388,7 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         for task in tuple(tasks):
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=30)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 pass
 
 

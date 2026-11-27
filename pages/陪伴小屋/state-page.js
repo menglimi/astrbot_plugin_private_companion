@@ -29,6 +29,8 @@ window.CompanionStatePage = (() => {
     presence_authorization_changed:"发送前授权或平台环境未通过复核", presence_wording_invalid:"公开文案需为 1–8 个字",
     presence_action_rejected:"平台拒绝了展示请求", presence_ack_unknown:"平台未返回可确认的结果",
     presence_interrupted:"请求被中断，结果需要人工核对", typing_failed:"输入提示未获得可确认的结果",
+    blocked_role_mode:"角色模拟处于离开或忙碌，已自动回退为在线（不自动切换 QQ 离开或忙碌）",
+    state_presence_priority_invalid:"展示优先策略需为自定义短状态优先或在线状态优先",
   };
   const e = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const when = value => value && Number.isFinite(Date.parse(value))
@@ -292,12 +294,15 @@ window.CompanionStatePage = (() => {
     const explain=code=>presentationReasons[code]||reason(code);
     const configured=option=>!settings[option]?"开关已关闭":effective[option]?.allowed
       ?"已开启 · 授权通过":effective[option]?.reason?`已开启 · ${explain(effective[option].reason)}`:"已开启 · 授权待核对";
-    /* 三条通道的 idle 含义不同：正在输入是「本轮没有回复」，在线状态是
-       「这轮没轮到它」（短文案或日程文案优先），短状态是「没有待展示文案」。
-       分开写，别让在线状态那一行显示「暂无待展示文案」。 */
+    const priority=diagnostics?.priority||settings.presence_priority||"custom_first";
+    const priorityLabel=priority==="online_first"?"在线状态优先于自定义短状态":"自定义短状态优先于在线状态";
+    const shadowedText=by=>({calendar_plan:"当前由日程公开文案接管展示",custom_status:"当前由自定义短状态优先展示",
+      online_status:"当前由在线状态优先展示",native_reply:"当前由真实回复恢复在线优先"})[by]||"";
+    /* 三条通道的 idle 含义不同，且被另一路遮蔽时直接标出接管来源。 */
     const activity=(value,channel="custom")=>{
       if(!value)return "尚无运行诊断";
-      const idle={typing:"当前会话没有进行中的回复",online:"当前不展示在线状态（日程文案或短状态优先）",custom:"暂无待展示文案"};
+      if(value.state==="idle"&&value.shadowed_by)return [shadowedText(value.shadowed_by),value.reason?explain(value.reason):null].filter(Boolean).join(" · ");
+      const idle={typing:"当前会话没有进行中的回复",online:"当前无待上报在线状态",custom:"暂无待展示文案"};
       const labels={
         typing:{waiting:"等待刷新任务",refreshing:"刷新任务运行中",suppressed:"本轮已停止刷新"},
         online:{waiting:"等待上报在线状态",recorded:"相同状态已有请求记录，不自动重发",deduplicated:"账号已有相同状态记录，不重复请求"},
@@ -308,14 +313,15 @@ window.CompanionStatePage = (() => {
         value.reason?explain(value.reason):null].filter(Boolean).join(" · ");
     };
     const typing=diagnostics?.typing, custom=diagnostics?.custom_status, online=diagnostics?.online_status;
-    const basis=value=>({calendar_plan:"当前日程的公开文案",role_simulation:"角色模拟的公开文案"})[value]||"公开文案";
+    const basis=value=>({calendar_plan:"当前日程的公开文案",role_simulation:"角色模拟的公开文案",
+      native_reply:"真实回复恢复在线",blocked_role_mode:"安全策略回退在线"})[value]||"公开文案";
     /* 在线模式的四个档位与适配层的映射一致（delivery 侧 status 10/30/50/40）。 */
     const onlineMode=value=>({online:"在线",away:"离开",busy:"忙碌",invisible:"隐身"})[value]||value;
     const configuration=`<dl class="state-presentation-settings">${data.windowSelected?`<div><dt>正在输入 · ${e(configured("typing_enabled"))}</dt>
       <dd>${e(activity(typing,"typing"))}</dd><dd class="state-presentation-note">配置刷新间隔：${e(typing?.refresh_seconds??settings.typing_refresh_seconds??"未提供")} 秒</dd></div>`:'<div><dt>正在输入 · 未选择私聊窗口</dt><dd>请选择当前角色的私聊窗口查看和设置。</dd></div>'}
       <div><dt>在线状态 · ${e(configured("online_status_enabled"))}</dt><dd>${e(activity(online,"online"))}</dd>
       ${online?.desired?.mode?`<dd class="state-presentation-note">待展示：${e(onlineMode(online.desired.mode))} · ${e(basis(online.desired.basis))}</dd>`:""}
-      <dd class="state-presentation-note">与自定义短状态共用同一路：同一时刻只报一种，在线状态优先；日程里写了公开文案时以日程为准。</dd></div>
+      <dd class="state-presentation-note">与自定义短状态共用同一路：同一时刻只报一种；日程里写了公开文案时以日程为准，其余时段当前策略为${e(priorityLabel)}。</dd></div>
       <div><dt>自定义短状态 · ${e(configured("presence_enabled"))}</dt><dd>${e(activity(custom))}</dd>
       ${custom?.desired?`<dd class="state-presentation-note">待展示：${e(custom.desired.wording)} · ${e(basis(custom.desired.basis))}</dd>`:""}</div></dl>`;
     const items=Object.entries(receipts).filter(([,result])=>result&&typeof result==="object");
@@ -444,8 +450,12 @@ window.CompanionStatePage = (() => {
     const zone=settings.planning_timezone||"Asia/Shanghai";
     const local=options=>{try{return new Intl.DateTimeFormat("zh-CN",{timeZone:zone,...options}).format(new Date());}catch{return "时区待核对";}};
     const location=window.CompanionStateMaintenance?.weatherLocationParts(settings.planning_weather_location)?.name;
+    const activePresentation=[settings.typing_enabled&&"正在输入",settings.online_status_enabled&&"在线状态",settings.presence_enabled&&"自定义短状态"].filter(Boolean);
+    const effectiveCh=status.presentation_diagnostics?.effective_channel;
+    const effectiveHint=effectiveCh==="custom_status"?"当前生效：自定义短状态":effectiveCh==="online_status"?"当前生效：在线状态":"";
+    const presentationHelp=[activePresentation.length?activePresentation.join(" · "):"未开启展示通道",effectiveHint].filter(Boolean).join(" | ");
     const cards=[
-      {name:"presentation",label:"QQ 状态",icon:"radio-tower",value:`${[settings.typing_enabled,settings.presence_enabled,settings.online_status_enabled].filter(Boolean).length} 项已开启`,help:"正在输入提示 · 在线状态 · 自定义短状态"},
+      {name:"presentation",label:"QQ 状态",icon:"radio-tower",value:`${activePresentation.length} 项已开启`,help:presentationHelp},
       {name:"planning",label:"日程配置",icon:"calendar-days",value:settings.calendar_enabled?(settings.schedule_simulation_mode==="continuous"?"连续日程":"日程编排"):"日程已关闭",help:"规划方式 · 安排与公开文案"},
       {name:"weather",label:"天气",icon:"cloud-sun",value:settings.planning_weather_enabled?(location||"地点待配置"):"天气感知已关闭",help:"角色所在地 · 实况信息时效"},
       {name:"datetime",label:"时间与日期",icon:"calendar-clock",value:local({hour:"2-digit",minute:"2-digit",hourCycle:"h23"})+" · "+local({month:"long",day:"numeric",weekday:"long"}),help:zone+" · 日期背景"},
@@ -488,16 +498,29 @@ window.CompanionStatePage = (() => {
       body=overviewMarkup(feature,"当地时间与日期",local({hour:"2-digit",minute:"2-digit",hourCycle:"h23"})+" · "+local({year:"numeric",month:"long",day:"numeric",weekday:"long"}),"按角色时区计算；对话日期背景在感知设置中维护。",[["小屋与日程时区",zone],["日期来源","当前系统时间按时区换算"]])
         +(editor?.markup({feature,related:relatedSettings([["日期与历法背景","设置对话日期时区、日期开关、节假日、农历与节气。","calendar-days","data-state-date-settings"]])})||"");
     } else if(feature==="presentation") {
-      const diag=status.presentation_diagnostics,enabled=[settings.typing_enabled,settings.presence_enabled].filter(Boolean).length;
-      const channel=(name,value)=>{
+      const diag=status.presentation_diagnostics;
+      const enabled=[settings.typing_enabled,settings.online_status_enabled,settings.presence_enabled].filter(Boolean).length;
+      const priority=diag?.priority||settings.presence_priority||"custom_first";
+      const priorityText=priority==="online_first"?"在线状态优先":"自定义短状态优先（默认）";
+      const shadowedLabel=by=>({calendar_plan:"已开启 · 当前由日程公开文案接管",custom_status:"已开启 · 当前由自定义短状态优先展示",
+        online_status:"已开启 · 当前由在线状态优先展示",native_reply:"已开启 · 当前由真实回复恢复在线优先"})[by]||"已开启 · 当前空闲";
+      const channel=(name,value,kind="custom")=>{
         if(name==="typing_enabled"&&!data.windowSelected)return "未选择私聊窗口";
         if(!settings[name])return "开关已关闭";
         if(!status.effective?.[name]?.allowed)return `已开启 · ${presentationReasons[status.effective?.[name]?.reason]||"授权待核对"}`;
         if(!value)return "已开启 · 授权通过";
-        const label=({idle:"已开启 · 当前空闲",waiting:"已开启 · 等待任务",refreshing:"已开启 · 刷新中",suppressed:"本轮已停止刷新",recorded:"相同文案已有请求记录",deduplicated:"账号已有相同文案记录",blocked:"当前条件未满足",paused:"已暂停",unavailable:"展示端口不可用"})[value.state]||"运行状态待确认";
+        if(value.state==="idle"&&value.shadowed_by)return [shadowedLabel(value.shadowed_by),value.reason?presentationReasons[value.reason]||reason(value.reason):null].filter(Boolean).join(" · ");
+        const rec=kind==="online"?"相同状态已有请求记录":"相同文案已有请求记录";
+        const dup=kind==="online"?"账号已有相同状态记录":"账号已有相同文案记录";
+        const label=({idle:"已开启 · 当前空闲",waiting:"已开启 · 等待任务",refreshing:"已开启 · 刷新中",suppressed:"本轮已停止刷新",recorded:rec,deduplicated:dup,blocked:"当前条件未满足",paused:"已暂停",unavailable:"展示端口不可用"})[value.state]||"运行状态待确认";
         return [label,value.reason?presentationReasons[value.reason]||reason(value.reason):null].filter(Boolean).join(" · ");
       };
-      body=overviewMarkup(feature,"展示通道",`${enabled} 项开关已开启`,"受理确认只说明请求被平台接受，不代表客户端当前展示状态。",[["正在输入",channel("typing_enabled",diag?.typing)],["自定义短状态",channel("presence_enabled",diag?.custom_status)],["输入提示刷新间隔",data.windowSelected?`${settings.typing_refresh_seconds??"未提供"} 秒（取值 1–10）`:"未选择私聊窗口"],["诊断时间",diag?.observed_at?when(diag.observed_at):"尚无诊断记录"]])+(editor?.markup({feature,details:presentationMarkup(status,{receiptsOnly:true})})||"");
+      const effectiveText=diag?.effective_channel==="custom_status"
+        ?`自定义短状态${diag.custom_status?.desired?.wording?`（${diag.custom_status.desired.wording}）`:""}`
+        :diag?.effective_channel==="online_status"
+          ?`在线状态${diag.online_status?.desired?.mode?`（${({online:"在线",away:"离开",busy:"忙碌",invisible:"隐身"})[diag.online_status.desired.mode]||diag.online_status.desired.mode}）`:""}`
+          :"当前无待上报状态";
+      body=overviewMarkup(feature,"展示通道",`${enabled} 项开关已开启`,"受理确认只说明请求被平台接受，不代表客户端当前展示状态。",[["正在输入",channel("typing_enabled",diag?.typing,"typing")],["在线状态",channel("online_status_enabled",diag?.online_status,"online")],["自定义短状态",channel("presence_enabled",diag?.custom_status,"custom")],["状态优先策略",priorityText],["当前生效通道",effectiveText],["输入提示刷新间隔",data.windowSelected?`${settings.typing_refresh_seconds??"未提供"} 秒（取值 1–10）`:"未选择私聊窗口"],["诊断时间",diag?.observed_at?when(diag.observed_at):"尚无诊断记录"]])+(editor?.markup({feature,details:presentationMarkup(status,{receiptsOnly:true})})||"");
     } else body=workspaceOverview(status,feature)+(editor?.markup({feature})||"");
     const scopePill=featureScopes[feature]||"当前角色";
     const subtitle=featureSubtitles[feature]||"";

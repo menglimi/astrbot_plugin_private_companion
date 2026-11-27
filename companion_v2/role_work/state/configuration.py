@@ -23,6 +23,8 @@ FEATURE_SWITCHES = {name: name + "_enabled" for name in (
 SPECIAL_DISPLAY_FEATURES = ("health", "hunger", "sleep", "cycle", "busy")
 DEFAULT_GRANT_SCOPE = "role"
 GRANT_SCOPES = frozenset({"window", "role"})
+DEFAULT_PRESENCE_PRIORITY = "custom_first"
+PRESENCE_PRIORITIES = frozenset({"custom_first", "online_first"})
 DEFAULTS = {"enabled": False, "maintenance_grant_scope": DEFAULT_GRANT_SCOPE,
     "maintenance_minutes": 30, "hunger_enabled": True,
     "health_enabled": True, "cycle_enabled": False, "calendar_enabled": True,
@@ -35,7 +37,7 @@ DEFAULTS = {"enabled": False, "maintenance_grant_scope": DEFAULT_GRANT_SCOPE,
     # Refresh without a stop/start toggle. Four seconds reduces request frequency;
     # actual expiry and flicker depend on the QQ client and need field validation.
     "typing_enabled": False, "typing_refresh_seconds": 4, "presence_enabled": False,
-    "online_status_enabled": False,
+    "online_status_enabled": False, "presence_priority": DEFAULT_PRESENCE_PRIORITY,
     # Bounded mood dynamics. The probability shape the update, the half-life shapes the
     # regression, and the step cap keeps one message from swinging an axis to an extreme.
     # Retained for stored-config compatibility; role simulation is always persona-wide.
@@ -64,6 +66,13 @@ def validate_grant_scope(values):
     if scope not in GRANT_SCOPES:
         raise ConfigurationError("state_grant_scope_invalid",
             "maintenance_grant_scope must be 'window' or 'role'")
+
+
+def validate_presence_priority(values):
+    priority = values.get("presence_priority", DEFAULT_PRESENCE_PRIORITY)
+    if priority not in PRESENCE_PRIORITIES:
+        raise ConfigurationError("state_presence_priority_invalid",
+            "presence_priority must be 'custom_first' or 'online_first'")
 
 
 def validate_mood_settings(values):
@@ -220,6 +229,7 @@ class StateConfigurationOwner(PhysicalSettingsOwner):
         validate_mood_settings(values)
         validate_humanized(values)
         validate_grant_scope(values)
+        validate_presence_priority(values)
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
@@ -244,6 +254,7 @@ class StateConfigurationOwner(PhysicalSettingsOwner):
             validate_mood_settings(proposed)
             validate_humanized(proposed)
             validate_grant_scope(proposed)
+            validate_presence_priority(proposed)
             saved = super().write(target, fields, changes=changes, reset=reset,
                                   expected_revision=expected_revision, observed_at=observed_at)
             changed = {key.rsplit(".", 1)[-1] for key in (*changes, *reset)}

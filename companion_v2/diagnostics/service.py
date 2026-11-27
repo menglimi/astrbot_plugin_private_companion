@@ -256,11 +256,32 @@ class DiagnosticService:
                 reference = "diagnostic:" + check.check_id + ":" + fingerprint([query.document(), scope.document()])
                 results.append(CheckResult(check, status, code, started, finished, elapsed, encode(details),
                                            (DiagnosticEvidence(reference, scope, token),)))
-            # A state digest excludes observation clocks; it includes permission and
-            # all actual data revisions, so redaction does not hide changes from us.
-            token = fingerprint([context.key, self.identity.revision, self.policy.revision,
-                                 [(r.check.check_id, r.check.version, r.status.value, r.code, r.details_json,
-                                   [asdict(e) for e in r.evidence]) for r in results]])
+            # A state digest excludes observation clocks and global counters that
+            # advance for unrelated users, group bindings, memories or reminders.
+            # Anchor it on this caller's exact binding, role revision, tier and
+            # grants on the checked scopes plus every check's own evidence tokens.
+            tier_row = self.runtime.read_one(
+                "SELECT tier, revision FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+                (context.actor.subject.kind.value, context.actor.subject.subject_id),
+            )
+            actor_tier = (tier_row["tier"], tier_row["revision"]) if tier_row else ("standard", 0)
+            checked_scopes = {e.scope for r in results for e in r.evidence}
+            actor_grants = sorted(
+                (grant.grant_id, grant.scope.key, grant.capability, grant.state.value,
+                 grant.valid_from.isoformat(), grant.expires_at.isoformat() if grant.expires_at else None)
+                for grant in self.identity.grants_for_subject(context.actor.subject)
+                if grant.scope in checked_scopes
+            )
+            token = fingerprint([
+                context.key,
+                context.actor.binding_id,
+                context.actor.binding_revision,
+                context.role_binding.revision,
+                actor_tier,
+                actor_grants,
+                [(r.check.check_id, r.check.version, r.status.value, r.code, r.details_json,
+                  [asdict(e) for e in r.evidence]) for r in results],
+            ])
         return tuple(results), token
 
     def _remember(self, report: DiagnosticReport) -> DiagnosticReport:

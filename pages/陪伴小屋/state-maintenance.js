@@ -722,7 +722,8 @@ window.CompanionStateMaintenance = (() => {
     ["typing_enabled","启用正在输入提示","仅对所选私聊窗口生效；从收到消息并通过身份校验开始，持续到最后一条分段发送结束。"],
     ["typing_refresh_seconds","输入提示刷新间隔（秒）","每隔几秒续一次「正在输入」，取值 1–10。"],
     ["presence_enabled","启用 QQ 自定义短状态","把角色的公开短文案显示成 QQ 自定义状态。"],
-    ["online_status_enabled","启用 QQ 在线状态","按角色的模拟状态上报在线／离开／忙碌。"],
+    ["online_status_enabled","启用 QQ 在线状态","按角色的模拟状态同步 QQ 在线／隐身（不自动切换离开或忙碌）。"],
+    ["presence_priority","QQ 状态展示优先策略","选择角色模拟时段自定义短状态与在线状态的优先顺序，默认自定义短状态优先。"],
   ];
   function searchEntries() {
     const kinds=Object.keys(titles).filter(kind=>groups[kind]);

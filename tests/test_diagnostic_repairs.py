@@ -235,6 +235,46 @@ class DiagnosticRepairTests(DiagnosticFixture):
         self.assertEqual(self.finish(proposal, context=context).failure.code, "repair_proposal_unavailable")
         self.assertEqual(self.counts()[:3], (0, 0, 0))
 
+    def test_unrelated_identity_and_policy_bumps_do_not_stale_pending_proposal(self):
+        proposal = self.proposal(proposal_id="repair-stable-ab12").unwrap()
+        # Advance global identity.revision via an unrelated user binding & grant
+        unrelated_subject = SubjectRef(INSTALLATION, SubjectKind.HUMAN, "unrelated-user")
+        unrelated_principal = AuthenticatedHostPrincipal(INSTALLATION, "host", "onebot", "unrelated", "bot-a", "login-a")
+        self.identity.bind(binding_id="unrelated-binding", principal=unrelated_principal, subject=unrelated_subject,
+                           valid_from=NOW, expected_revision=self.identity.revision)
+        other_scope = replace(SCOPE, native_scope_id="other-peer")
+        self.identity.issue_grant(grant_id="unrelated-grant", subject=unrelated_subject, scope=other_scope,
+                                  capability="configuration.read", tier=AuthorizationTier.STANDARD,
+                                  valid_from=NOW, expected_revision=self.identity.revision)
+        # Advance global policy.revision via an unrelated subject tier and object registration
+        self.policy.set_tier(unrelated_subject, AuthorizationTier.IMPORTANT,
+                             expected_revision=self.policy.revision, observed_at=NOW)
+        self.policy.register_object("memory:unrelated-1", owner=unrelated_subject, scope=other_scope, domain="memory")
+
+        current = self.repairs.read(self.important_context, proposal_id=proposal.proposal_id).unwrap()
+        self.assertEqual(current.state, "pending")
+        confirmed = self.finish(proposal).unwrap()
+        self.assertEqual(confirmed.state, "confirmed")
+        self.assertFalse(self.read(self.important).unwrap().values["output.enabled"])
+
+    def test_list_pending_and_short_code_resolution(self):
+        first = self.proposal(proposal_id="repair-alpha-11aa").unwrap()
+        second = self.proposal(proposal_id="repair-beta-22bb").unwrap()
+        listed = self.repairs.list_pending(self.important_context).unwrap()
+        self.assertEqual([item.proposal_id for item in listed], ["repair-beta-22bb", "repair-alpha-11aa"])
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "11AA").unwrap(), "repair-alpha-11aa")
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "22bb").unwrap(), "repair-beta-22bb")
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "11").failure.code, "repair_proposal_unavailable")
+        # Ambiguous 4-char suffix fails safely
+        self.proposal(proposal_id="repair-gamma-11aa").unwrap()
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "11aa").failure.code, "repair_proposal_ambiguous")
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "gamma-11aa").unwrap(), "repair-gamma-11aa")
+        self.finish(first, confirm=False).unwrap()
+        listed_after = self.repairs.list_pending(self.important_context).unwrap()
+        self.assertNotIn("repair-alpha-11aa", [item.proposal_id for item in listed_after])
+        # Now 11aa uniquely matches the remaining pending proposal
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "11aa").unwrap(), "repair-gamma-11aa")
+
 
 if __name__ == "__main__":
     unittest.main()

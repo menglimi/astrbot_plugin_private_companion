@@ -271,12 +271,33 @@ class RoleStateConfigurationTests(HostFixture, unittest.IsolatedAsyncioTestCase)
             observed_at=self.clock.now()).unwrap()
         self.assertTrue(inherited.values[GROUP + ".enabled"])
         self.assertEqual(inherited.fields[GROUP + ".enabled"].source, role_target)
-        for field, value in (("enabled", False), ("maintenance_grant_scope", "role")):
+        for field, value in (("enabled", False), ("maintenance_grant_scope", "role"), ("presence_priority", "online_first")):
             denied = app.configuration.patch(self.core, target=other_target, group_id=GROUP,
                 operation=self.operation(other_target.authorization_scope, owner=OWNER),
                 expected_edit_token=inherited.edit_token, changes={GROUP + "." + field: value},
                 observed_at=self.clock.now())
             self.assertEqual(denied.failure.code, "configuration_scope_not_supported")
+
+    async def test_presence_priority_defaults_validates_and_shares_at_role_scope(self):
+        host = await self.start()
+        app = host.application
+        batch = host.receive(self.event()).unwrap()
+        context = self.context(app, batch)
+        role_target = role_target_for(context)
+        before = app.configuration.read(self.core, target=role_target, group_id=GROUP,
+            observed_at=self.clock.now()).unwrap()
+        self.assertEqual(before.values[GROUP + ".presence_priority"], "custom_first")
+        bad = app.configuration.patch(self.core, target=role_target, group_id=GROUP,
+            operation=self.operation(role_target.authorization_scope, owner=OWNER),
+            expected_edit_token=before.edit_token, changes={GROUP + ".presence_priority": "invalid_mode"},
+            observed_at=self.clock.now())
+        self.assertEqual(bad.failure.code, "state_presence_priority_invalid")
+        app.configuration.patch(self.core, target=role_target, group_id=GROUP,
+            operation=self.operation(role_target.authorization_scope, owner=OWNER),
+            expected_edit_token=before.edit_token, changes={GROUP + ".presence_priority": "online_first"},
+            observed_at=self.clock.now()).unwrap()
+        effective = app.role_state.settings(context)[0]
+        self.assertEqual(effective["presence_priority"], "online_first")
 
 
 if __name__ == "__main__":
