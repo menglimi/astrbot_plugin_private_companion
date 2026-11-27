@@ -415,6 +415,19 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
                     manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
             self.assertEqual(open_error.exception.code, "generated_album_open_failed")
 
+            # Headless / non-interactive host still syncs files and returns opened=False + reason.
+            from companion_v2.storage.local_folder import FolderOpenResult
+            with patch(
+                "companion_v2.references.management.open_local_folder",
+                side_effect=lambda p: FolderOpenResult(
+                    path=str(p), opened=False, reason="headless_environment", launcher="none",
+                ),
+            ):
+                headless = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
+            self.assertEqual(headless["opened"], False)
+            self.assertEqual(headless["reason"], "headless_environment")
+            self.assertEqual(headless["total_count"], 1)
+
 
 class HostApiOpenAlbumFolderRouteTests(unittest.TestCase):
     @classmethod
