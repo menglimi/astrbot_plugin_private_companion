@@ -21,7 +21,21 @@ from companion_v2.role_work.life.body_clock import RoleBodyClock
 from .access import RoleStateAccess
 
 FIELDS = ("energy", "hunger", "health", "sleep", "busy", "mood", "location", "cycle", "presence", "online_mode", "conditions")
-PERSONA_STATE_FIELDS = frozenset(FIELDS)
+STATUS_LEVELS = {
+    "health_level": frozenset({"well", "recovering", "strained"}),
+    "hunger_level": frozenset({"sated", "hungry", "full"}),
+    "sleep_level": frozenset({"awake", "sleepy", "restless", "rest"}),
+    "busy_level": frozenset({"free", "busy"}),
+}
+STATUS_LEVEL_FOR_FIELD = {
+    "health": "health_level",
+    "hunger": "hunger_level",
+    "sleep": "sleep_level",
+    "busy": "busy_level",
+}
+REQUIRED_FIELDS = frozenset(FIELDS) - {"online_mode"}
+OPTIONAL_FIELDS = frozenset({"online_mode", *STATUS_LEVELS})
+PERSONA_STATE_FIELDS = frozenset(FIELDS) | OPTIONAL_FIELDS
 ONLINE_MODES = frozenset({"online", "away", "busy", "invisible"})
 STATE_CHAIN_OWNERS = frozenset({"role.state", "role.state.cycle"})
 MAX_ROLE_STATE_ANCESTOR_DEPTH = 16
@@ -117,7 +131,9 @@ INSTRUCTION = """role_state 描述角色自身的人格模拟感受，不是用�
 
 
 def validate_state(data, at):
-    if type(data) is not dict or set(data) not in (set(FIELDS), set(FIELDS) - {"online_mode"}):
+    if (type(data) is not dict
+            or not REQUIRED_FIELDS.issubset(data)
+            or not set(data).issubset(PERSONA_STATE_FIELDS)):
         raise TaskError("role_state_contract", "provide the complete state object")
     data = {**data, "online_mode": data.get("online_mode")}
     energy = data["energy"]
@@ -135,6 +151,19 @@ def validate_state(data, at):
             continue
         if data[name] is not None and (type(data[name]) is not str or len(data[name]) > (8 if name == "presence" else 256)):
             raise TaskError("role_state_contract", "state descriptions must be bounded text or null")
+    for level_key, allowed in STATUS_LEVELS.items():
+        if level_key not in data:
+            continue
+        level_value = data[level_key]
+        if level_value is None:
+            data.pop(level_key, None)
+            continue
+        if type(level_value) is not str or level_value not in allowed:
+            raise TaskError("role_state_contract", f"{level_key} must be a declared status level or null")
+    for field_name, level_key in STATUS_LEVEL_FOR_FIELD.items():
+        raw_value = data.get(field_name)
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            data.pop(level_key, None)
     if type(data["conditions"]) is not list or len(data["conditions"]) > 16:
         raise TaskError("role_state_contract", "state conditions must be bounded")
     for condition in data["conditions"]:
@@ -236,6 +265,9 @@ class RoleStateService:
             for name in ("hunger", "health", "cycle"):
                 if not values[name + "_enabled"]:
                     data[name] = None
+                    level_key = STATUS_LEVEL_FOR_FIELD.get(name)
+                    if level_key:
+                        data.pop(level_key, None)
                     data["conditions"] = [c for c in data["conditions"] if c["kind"] != name]
             actor = operator.subject if operator else context.role_binding.role
             parameters = [original_data if expected_settings_token is not None else dict(data), sources, actor, reason]
@@ -321,6 +353,7 @@ class RoleStateService:
                     and source_ref(original["sources"][0]).scope != context.scope):
                 for name in ("mood", "location", "busy", "presence"):
                     payload[name] = None
+                payload.pop("busy_level", None)
                 payload.pop("mood_dynamics", None)
                 payload["conditions"] = [c for c in payload["conditions"] if c["kind"] in ("hunger", "health", "sleep", "cycle")]
             payload["cycle"] = None
@@ -407,7 +440,8 @@ class RoleStateService:
         if not local or not visible:
             allowed = PERSONA_STATE_FIELDS if role_shared else set()
             result["values"] = {key: (value if key in allowed else [] if key == "conditions" else None)
-                                for key, value in record["values"].items()}
+                                for key, value in record["values"].items()
+                                if key in allowed or key in FIELDS}
             result.pop("changed_by", None)
             result.pop("reason", None)
             if not visible and not role_shared:
@@ -436,6 +470,9 @@ class RoleStateService:
         for name, option in FEATURE_SWITCHES.items():
             if not values[option]:
                 result["values"][name] = None
+                level_key = STATUS_LEVEL_FOR_FIELD.get(name)
+                if level_key:
+                    result["values"].pop(level_key, None)
                 live_conditions = [c for c in live_conditions if c["kind"] != name]
         if clock and (clock["applicability"] != "applicable" or not values["cycle_discomfort_enabled"]
                       or not clock.get("discomfort_enabled", False)):
