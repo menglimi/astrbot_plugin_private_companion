@@ -1493,7 +1493,7 @@
 .perception-summary-close:hover{border-color:var(--t-accent);color:var(--t-text-strong)}
 .perception-summary-close:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
 .perception-summary-close svg{width:12px;height:12px;flex:none}
-.perception-summary-jump-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--sp-2)}
+.perception-summary-jump-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(240px,100%),1fr));gap:var(--sp-2)}
 .perception-summary-jump{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:var(--sp-2);min-width:0;padding:var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text);font:inherit;text-align:left;cursor:pointer;transition:background-color var(--dur-fast) ease,border-color var(--dur-fast) ease}
 .perception-summary-jump:hover{border-color:var(--t-accent);background:var(--t-surface-raised)}
 .perception-summary-jump:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
