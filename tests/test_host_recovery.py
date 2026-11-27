@@ -76,7 +76,7 @@ class HostRecoveryTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.advance(new.application, 2)
         await self.done(new.application, batch)
         self.assertEqual(len(self.called), 1)
-        self.assertEqual([e.text for e in self.sent], ["第一段\n", "第二段"])
+        self.assertEqual([e.text for e in self.sent], ["第一段", "第二段"])
 
     async def test_accepted_or_unknown_send_is_never_replayed_after_restart(self):
         async def accepted(envelope):
