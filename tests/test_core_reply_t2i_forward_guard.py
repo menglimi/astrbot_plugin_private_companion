@@ -720,6 +720,76 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].file, "http://127.0.0.1:6185/api/file/tok-abc")
 
+    async def test_whole_reply_t2i_preserves_voice_only_multi_bubble_segments(self):
+        seg1 = "第一段短语音消息大约六十多个字，用来测试在整条转图片模式下仅语音多气泡不能被提前合并成一条语音，保留各自独立的口语节奏和自然停顿感。"
+        seg2 = "第二段短语音消息同样大约六十多个字，两条合起来超过一百字阈值但分别作为独立语音气泡逐条合成发出，不会触发图片渲染也不会吞并气泡。"
+        self.assertLessEqual(len(seg1), 100)
+        self.assertLessEqual(len(seg2), 100)
+        self.assertGreater(len(seg1) + len(seg2), 100)
+        draft = f"{seg1}\n{MARKER}\n{seg2}"
+        voice_policy = VoiceReplyPolicy(
+            trigger_mode="always",
+            generation_mode="plain",
+            delivery_mode="voice_only",
+            segment_mode="each",
+        )
+        _, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
+            draft,
+            t2i=True,
+            t2i_word_threshold=100,
+            t2i_segmentation_mode="whole_reply",
+            segmentation_policy=SegmentationPolicy(enabled=True, llm_controlled=True),
+            voice_policy=voice_policy,
+        )
+        render_t2i.assert_not_awaited()
+        self.assertEqual(voice_mock.await_count, 2)
+        self.assertEqual([[type(comp) for comp in chain] for chain in event.sent], [[Record], [Record]])
+
+    async def test_collapse_segments_for_t2i_preserves_reply_at_order_markers_and_voice_source(self):
+        from astrbot.core.message.components import At, Reply
+        from astrbot_host.core_reply_presentation import MARKED as PRESENTED_MARKED
+        from astrbot_host.core_reply_segmentation import MARKED as SEGMENTED_MARKED
+        from astrbot_host.core_reply_t2i import collapse_segments_for_t2i
+
+        seg1 = "第一段群聊回复包含足够长的自然描述内容，用来确认前置引用和艾特顺序在合并后保持不变，同时验证已分段与已清洗标记能够完整继承下来。"
+        seg2 = "第二段群聊回复继续补充完整说明，使合并后的整条文本超过一百字阈值并触发整条转图片渲染，同时确保群聊协议头部顺序完全符合规范要求。"
+        self.assertLessEqual(len(seg1), 100)
+        self.assertLessEqual(len(seg2), 100)
+        self.assertGreater(len(seg1) + len(seg2), 100)
+
+        # Direct helper check: Reply + At stay ahead of Plain, trailing Image stays after, markers & voice source preserved.
+        sentinel_presentation = object()
+        original = MessageChain(chain=[Plain(f"{seg1}\n{seg2}")])
+        part1 = MessageChain(chain=[Reply(id="r1"), At(qq="200"), Plain(seg1), Image.fromURL("https://example.com/a.png")])
+        part2 = MessageChain(chain=[Plain(seg2)])
+        setattr(part1, SEGMENTED_MARKED, True)
+        setattr(part1, PRESENTED_MARKED, sentinel_presentation)
+        collapsed = collapse_segments_for_t2i(original, (part1, part2))
+        self.assertEqual([type(comp) for comp in collapsed.chain], [Reply, At, Plain, Image])
+        self.assertTrue(getattr(collapsed, SEGMENTED_MARKED, False))
+        self.assertIs(getattr(collapsed, PRESENTED_MARKED, None), sentinel_presentation)
+        self.assertEqual(getattr(collapsed, "_companion_v2_voice_source", None), f"{seg1}\n{seg2}")
+
+        # End-to-end group pipeline check: Reply/At remain strictly ahead of rendered Image.
+        draft = f"{seg1}\n{MARKER}\n{seg2}"
+        _, event, render_t2i, _, _ = await self.run_core_pipeline(
+            draft,
+            t2i=True,
+            t2i_word_threshold=100,
+            t2i_segmentation_mode="whole_reply",
+            channel="group",
+            segmentation_policy=SegmentationPolicy(enabled=True, llm_controlled=True),
+            outbound_settings={"reply_quote_enabled": True, "reply_mention_speaker_enabled": True},
+        )
+        render_t2i.assert_awaited_once()
+        self.assertEqual(len(event.sent), 1)
+        sent_types = [type(comp) for comp in event.sent[0]]
+        self.assertIn(Image, sent_types)
+        img_idx = sent_types.index(Image)
+        for idx, comp_type in enumerate(sent_types):
+            if comp_type in (Reply, At):
+                self.assertLess(idx, img_idx, f"Header {comp_type.__name__} appeared after Image: {sent_types}")
+
 
 if __name__ == "__main__":
     unittest.main()

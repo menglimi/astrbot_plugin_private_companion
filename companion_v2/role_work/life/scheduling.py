@@ -69,14 +69,25 @@ def next_bedtime(now: datetime, owner, timezone_id: str, local_time: time, maxim
     return candidate
 
 
+def sleep_due_grace_minutes(*, window_minutes: int, sleep_minutes: int) -> int:
+    """Total minutes after nominal bedtime before a missed night sleep is considered stale."""
+    return max(int(window_minutes), 60) + max(int(sleep_minutes) // 2, 120)
+
+
 def sleep_due_window_expired(now: datetime, next_sleep: datetime, *, window_minutes: int, sleep_minutes: int) -> bool:
     """Return True when a missed bedtime is far enough in the past that starting night sleep now would be stale."""
-    grace_minutes = max(int(window_minutes), 60) + max(int(sleep_minutes) // 2, 120)
-    return now >= next_sleep + timedelta(minutes=grace_minutes)
+    return now >= next_sleep + timedelta(minutes=sleep_due_grace_minutes(
+        window_minutes=window_minutes, sleep_minutes=sleep_minutes
+    ))
 
 
 def project_sleep_occurrence(body_clock, context, owner, settings: dict, now: datetime) -> tuple[date, datetime]:
-    """Project the active or next night sleep occurrence, shared by runtime and status reads."""
+    """Project the active or next night sleep occurrence, shared by runtime and status reads.
+
+    Restart recovery is bounded to the configured ``sleep_window_minutes`` (strictly
+    shorter than ``sleep_due_grace_minutes``), while night-sleep coverage recognizes
+    catch-up manual night sleeps across the full grace horizon.
+    """
     timezone_id = settings["sleep_timezone"]
     bedtime = time.fromisoformat(settings["sleep_time"])
     variation = settings["sleep_variation_minutes"]
@@ -85,13 +96,10 @@ def project_sleep_occurrence(body_clock, context, owner, settings: dict, now: da
     window = timedelta(minutes=window_minutes)
     schedule_day, due = next_bedtime_occurrence(now - window, owner, timezone_id, bedtime, variation)
     request_id = "daily-sleep-" + schedule_day.isoformat()
-    expired = due <= now and sleep_due_window_expired(
-        now, due, window_minutes=window_minutes, sleep_minutes=sleep_minutes
-    )
     covered = body_clock.night_sleep_covered(
-        context, request_id, due_at=due, window_minutes=window_minutes
+        context, request_id, due_at=due, window_minutes=window_minutes, sleep_minutes=sleep_minutes
     )
-    if expired or covered:
+    if covered:
         return next_bedtime_occurrence(
             max(now, due) + timedelta(microseconds=1),
             owner,

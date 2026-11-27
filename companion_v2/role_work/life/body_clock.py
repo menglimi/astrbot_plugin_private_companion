@@ -50,19 +50,28 @@ class RoleBodyClock:
     def scheduled_sleep(self, context, request_id):
         return next(iter(self._records(context, kind="sleep", request_id=request_id, limit=1)), None)
 
-    def night_sleep_covered(self, context, request_id, *, due_at, window_minutes):
+    def night_sleep_covered(self, context, request_id, *, due_at, window_minutes, sleep_minutes=None):
         """Return True when tonight's scheduled sleep has already been fulfilled.
 
         Matches either the canonical ``daily-sleep-{schedule_day}`` receipt or a
         non-cancelled night sleep (``kind == 'night'``, or ``kind == 'manual'``
         with ``target_minutes > 60`` matching ``physiology.sleep_profile``)
-        started within the night-sleep coverage window. Short naps (``kind ==
-        'nap'`` or manual sleeps ``<= 60`` minutes) never suppress night sleep.
+        started within the night-sleep coverage window (aligned with
+        ``sleep_due_grace_minutes`` when ``sleep_minutes`` is supplied). Short
+        naps (``kind == 'nap'`` or manual sleeps ``<= 60`` minutes) never
+        suppress night sleep.
         """
         if self.scheduled_sleep(context, request_id) is not None:
             return True
         start_floor = due_at - timedelta(hours=4)
-        end_ceiling = due_at + timedelta(minutes=max(0, int(window_minutes)))
+        if sleep_minutes is None:
+            ceiling_minutes = max(0, int(window_minutes))
+        else:
+            from .scheduling import sleep_due_grace_minutes
+            ceiling_minutes = sleep_due_grace_minutes(
+                window_minutes=window_minutes, sleep_minutes=sleep_minutes
+            )
+        end_ceiling = due_at + timedelta(minutes=ceiling_minutes)
         for item in self._records(context, kind="sleep", limit=32):
             if item.state is State.CANCELLED:
                 continue

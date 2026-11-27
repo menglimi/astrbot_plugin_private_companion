@@ -164,7 +164,31 @@ class RoleLifeRuntime:
             return None
         self.authorize()
         if snapshot.resolution_token == self._revision and self._next_sleep is not None:
-            next_at = self._next_sleep
+            due = self._next_sleep
+            schedule_day = self._next_sleep_day
+            if schedule_day is None:
+                schedule_day, _ = next_bedtime_occurrence(
+                    due,
+                    self.owner,
+                    settings["sleep_timezone"],
+                    time.fromisoformat(settings["sleep_time"]),
+                    settings["sleep_variation_minutes"],
+                )
+            request_id = "daily-sleep-" + schedule_day.isoformat()
+            expired = due <= now and sleep_due_window_expired(
+                now,
+                due,
+                window_minutes=settings["sleep_window_minutes"],
+                sleep_minutes=settings["sleep_minutes"],
+            )
+            covered = self.app.role_state.body_clock.night_sleep_covered(
+                self.context,
+                request_id,
+                due_at=due,
+                window_minutes=settings["sleep_window_minutes"],
+                sleep_minutes=settings["sleep_minutes"],
+            )
+            next_at = self._projected_sleep_at(settings, now) if (expired or covered) else due
         else:
             next_at = self._projected_sleep_at(settings, now)
         return settings, next_at
@@ -260,7 +284,8 @@ class RoleLifeRuntime:
             self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
             return False
         if self.app.role_state.body_clock.night_sleep_covered(
-                self.context, request_id, due_at=due, window_minutes=window_minutes):
+                self.context, request_id, due_at=due, window_minutes=window_minutes,
+                sleep_minutes=settings["sleep_minutes"]):
             self._next_sleep_day, self._next_sleep = next_bedtime_occurrence(
                 max(now, due) + timedelta(microseconds=1),
                 self.owner, timezone_id, bedtime, variation, after_day=schedule_day,

@@ -195,6 +195,75 @@ class SleepSchedulingAuditTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCa
         # Even without an active executor, status must report the open window's due time, not tomorrow.
         self.assertEqual(status["next_sleep_at"], datetime(2026, 9, 21, 0, 1, tzinfo=timezone.utc).isoformat())
 
+    async def test_catchup_manual_night_sleep_in_grace_window_prevents_duplicate_and_updates_projection(self):
+        await self.initialize(self.shared_role_config())
+        await self.enable(
+            sleep_enabled=True,
+            sleep_time="23:00",
+            sleep_timezone="UTC",
+            sleep_variation_minutes=0,
+            sleep_window_minutes=60,
+            sleep_minutes=480,
+        )
+        self.clock.set(datetime(2026, 9, 21, 22, 30, tzinfo=timezone.utc))
+        app = await self.start()
+        routine = self.routine()
+        routine.refresh()
+        context = self.context()
+        tonight_due = datetime(2026, 9, 21, 23, 0, tzinfo=timezone.utc)
+        tomorrow_due = datetime(2026, 9, 22, 23, 0, tzinfo=timezone.utc)
+        self.assertEqual(routine._next_sleep, tonight_due)
+
+        # 1) A short 30-min nap inside the grace window must NOT suppress tonight's auto sleep.
+        self.clock.set(datetime(2026, 9, 22, 0, 10, tzinfo=timezone.utc))
+        nap = routine.start_sleep("grace-short-nap", 30, sleep_kind="manual")
+        self.clock.set(datetime(2026, 9, 22, 0, 20, tzinfo=timezone.utc))
+        routine.wake(nap.activity_id, expected_revision=nap.revision, operation_id="wake-grace-nap")
+        self.assertFalse(
+            app.role_state.body_clock.night_sleep_covered(
+                context,
+                "daily-sleep-2026-09-21",
+                due_at=tonight_due,
+                window_minutes=60,
+                sleep_minutes=480,
+            )
+        )
+
+        # 2) Missed 23:00-00:00, then manually starts a 420-min catch-up night sleep at 00:30 (due+90m)
+        #    and wakes at 02:30 (due+210m, still inside the 300-min grace horizon ending at 04:00).
+        self.clock.set(datetime(2026, 9, 22, 0, 30, tzinfo=timezone.utc))
+        catchup = routine.start_sleep("manual-catchup-night", 420, sleep_kind="manual")
+        self.clock.set(datetime(2026, 9, 22, 2, 30, tzinfo=timezone.utc))
+        routine.wake(catchup.activity_id, expected_revision=catchup.revision, operation_id="wake-catchup-night")
+        routine._dreams.update({nap.activity_id, catchup.activity_id})
+
+        self.assertTrue(
+            app.role_state.body_clock.night_sleep_covered(
+                context,
+                "daily-sleep-2026-09-21",
+                due_at=tonight_due,
+                window_minutes=60,
+                sleep_minutes=480,
+            )
+        )
+        # Bound executor projection must immediately reflect tomorrow's bedtime instead of stale cached tonight.
+        _, projected_at = routine.sleep_projection(now=self.clock.now())
+        self.assertEqual(projected_at, tomorrow_due)
+
+        # Running _start_due_night_sleep must NOT start a second auto sleep for 2026-09-21.
+        started = routine._start_due_night_sleep(self.clock.now())
+        self.assertFalse(started)
+        self.assertEqual(app.role_state.body_clock.active(context, "sleep"), ())
+        self.assertEqual(routine._next_sleep, tomorrow_due)
+
+        # 3) Completing a manual night sleep BEFORE tomorrow's bedtime also updates sleep_projection immediately.
+        self.clock.set(datetime(2026, 9, 22, 21, 0, tzinfo=timezone.utc))
+        early_night = routine.start_sleep("manual-early-night", 420, sleep_kind="manual")
+        self.clock.set(datetime(2026, 9, 22, 22, 15, tzinfo=timezone.utc))
+        routine.wake(early_night.activity_id, expected_revision=early_night.revision, operation_id="wake-early-night")
+        _, projected_after_early = routine.sleep_projection(now=self.clock.now())
+        self.assertEqual(projected_after_early, datetime(2026, 9, 23, 23, 0, tzinfo=timezone.utc))
+
 
 class MorningRhythmAndWakeTimeTests(unittest.TestCase):
     def test_role_wake_at_prefers_sleep_execution_ended_at_and_falls_back_to_legacy_body_sleep(self):

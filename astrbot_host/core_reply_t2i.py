@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.core.message.components import Image, Node, Plain
+from astrbot.core.message.components import At, AtAll, Image, Node, Plain, Reply
 from astrbot.core.message.message_event_result import MessageChain
 
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
@@ -18,6 +18,8 @@ T2I_SEGMENTATION_MODES = frozenset(("per_segment", "whole_reply", "off"))
 DEFAULT_T2I_SEGMENTATION_MODE = "per_segment"
 MIN_T2I_WORD_THRESHOLD = 50
 DEFAULT_T2I_WORD_THRESHOLD = 150
+_SEGMENTED_MARKED = "_companion_v2_segmented"
+_PRESENTED_MARKED = "_companion_v2_text_presented"
 
 
 def resolve_t2i_segmentation_mode(prepared: Any) -> str:
@@ -100,6 +102,18 @@ def should_collapse_segments_for_t2i(event: Any, parts: Any) -> bool:
         return False
     if intent.get("mode") != "whole_reply" or core.get("_native_voice_response"):
         return False
+    prepared = core.get("prepared")
+    voice_policy = prepared.get("voice_reply_policy") if isinstance(prepared, Mapping) else None
+    if (
+        voice_policy is not None
+        and getattr(voice_policy, "delivery_mode", None) == "voice_only"
+        and getattr(voice_policy, "trigger_mode", None) != "never"
+        and (
+            bool(core.get("_voice_authored"))
+            or not getattr(voice_policy, "uses_model_tags", True)
+        )
+    ):
+        return False
     if not isinstance(parts, (list, tuple)) or len(parts) <= 1:
         return False
     texts = []
@@ -117,36 +131,73 @@ def should_collapse_segments_for_t2i(event: Any, parts: Any) -> bool:
 
 
 def collapse_segments_for_t2i(message: Any, parts: Any) -> Any:
-    """Merge multi-segment parts into a single chain while preserving non-text items and voice source."""
+    """Merge multi-segment parts into a single chain while preserving headers, markers, and voice source."""
     merged_texts: list[str] = []
-    non_plain: list[Any] = []
+    leading_headers: list[Any] = []
+    trailing_non_plain: list[Any] = []
     voice_sources: list[str] = []
+    seen_plain = False
+    segmented_mark = False
+    presented_mark = None
     for part in parts:
+        if getattr(part, _SEGMENTED_MARKED, False):
+            segmented_mark = True
+        if presented_mark is None:
+            candidate_presented = getattr(part, _PRESENTED_MARKED, None)
+            if candidate_presented is not None:
+                presented_mark = candidate_presented
         chain = getattr(part, "chain", None)
         if isinstance(chain, (list, tuple)):
             part_text = _plain_text_from_chain(chain).strip()
             if part_text:
                 merged_texts.append(part_text)
             for comp in chain:
-                if not isinstance(comp, Plain):
-                    non_plain.append(comp)
+                if isinstance(comp, Plain):
+                    if isinstance(comp.text, str) and comp.text.strip():
+                        seen_plain = True
+                    continue
+                if isinstance(comp, Reply) or (not seen_plain and isinstance(comp, (At, AtAll))):
+                    leading_headers.append(comp)
+                else:
+                    trailing_non_plain.append(comp)
         source = getattr(part, "_companion_v2_voice_source", None)
         if isinstance(source, str) and source.strip():
             voice_sources.append(source.strip())
-    chain_items: list[Any] = []
+    replies = [comp for comp in leading_headers if isinstance(comp, Reply)]
+    other_headers = [comp for comp in leading_headers if not isinstance(comp, Reply)]
+    chain_items: list[Any] = [*replies, *other_headers]
     if merged_texts:
         chain_items.append(Plain("\n\n".join(merged_texts)))
-    chain_items.extend(non_plain)
+    chain_items.extend(trailing_non_plain)
     derive = getattr(message, "derive", None)
     collapsed = derive(chain_items) if callable(derive) else MessageChain(chain=chain_items)
-    if voice_sources and hasattr(collapsed, "chain"):
-        object.__setattr__(collapsed, "_companion_v2_voice_source", "\n".join(voice_sources))
+    if segmented_mark:
+        setattr(collapsed, _SEGMENTED_MARKED, True)
+    if presented_mark is not None:
+        setattr(collapsed, _PRESENTED_MARKED, presented_mark)
+    if hasattr(collapsed, "chain"):
+        if voice_sources:
+            object.__setattr__(collapsed, "_companion_v2_voice_source", "\n".join(voice_sources))
+        elif merged_texts:
+            raw_original = _plain_text_from_chain(getattr(message, "chain", None)).strip()
+            fallback_source = (
+                raw_original
+                if raw_original and all(text in raw_original for text in merged_texts)
+                else "\n".join(merged_texts)
+            )
+            object.__setattr__(collapsed, "_companion_v2_voice_source", fallback_source)
     return collapsed
 
 
 def _derive(message: Any, chain: list[Any]) -> Any:
     derive = getattr(message, "derive", None)
-    return derive(chain) if callable(derive) else MessageChain(chain=chain)
+    derived = derive(chain) if callable(derive) else MessageChain(chain=chain)
+    if getattr(message, _SEGMENTED_MARKED, False):
+        setattr(derived, _SEGMENTED_MARKED, True)
+    presented = getattr(message, _PRESENTED_MARKED, None)
+    if presented is not None:
+        setattr(derived, _PRESENTED_MARKED, presented)
+    return derived
 
 
 async def apply_deferred_core_t2i(event: Any, part: Any) -> Any:
