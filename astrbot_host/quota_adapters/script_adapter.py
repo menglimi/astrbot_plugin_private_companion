@@ -149,14 +149,18 @@ class CustomScriptAdapter(QuotaAdapter):
         display_type = unit_raw if unit_raw in ("CNY", "USD", "CREDIT", "TOKENS") else "CREDIT"
         symbol = "" if unit_raw in ("CNY", "USD", "CREDIT", "TOKENS") else str(observation.unit or "")[:12]
 
+        has_total = observation.total is not None and float(observation.total) > 0
+        raw_subs = getattr(observation, "subscriptions", None) or ()
         return QuotaSnapshot(
             station_id=spec.id,
             ok=True,
             remaining=round(float(observation.balance), 6),
             used=round(float(observation.used), 6) if observation.used is not None else None,
             total=round(float(observation.total), 6) if observation.total is not None else None,
+            quota_model="capped" if has_total else "wallet",
             display_type=display_type,
             symbol=symbol,
+            subscriptions=raw_subs,
             group_name=observation.plan_name or "",
             extra=observation.extra or "",
             checked_at=observation.observed_at.isoformat(),

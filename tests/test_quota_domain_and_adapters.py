@@ -388,7 +388,9 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertTrue(snap.ok)
             self.assertAlmostEqual(snap.remaining, 5.0, places=4)
             self.assertAlmostEqual(snap.used, 1.0, places=4)
-            self.assertAlmostEqual(snap.total, 6.0, places=4)
+            self.assertIsNone(snap.total)
+            self.assertIsNone(snap.remaining_percent)
+            self.assertEqual(snap.quota_model, "wallet")
             self.assertEqual(snap.display_type, "CNY")
             self.assertEqual(snap.symbol, "¥")
             self.assertEqual(snap.group_name, "vip")
@@ -773,7 +775,8 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertEqual(snap_c10.symbol, "🍪")
             self.assertAlmostEqual(snap_c10.remaining, 732.98, places=4)
             self.assertAlmostEqual(snap_c10.used, 2614.72, places=4)
-            self.assertAlmostEqual(snap_c10.total, 3347.70, places=4)
+            self.assertIsNone(snap_c10.total)
+            self.assertEqual(snap_c10.quota_model, "wallet")
             self.assertAlmostEqual(snap_c10.last_used_cost, 0.05, places=6)
             self.assertIn("10 🍪", snap_c10.extra)
             self.assertIn("¥73.30", snap_c10.extra)
@@ -1105,11 +1108,14 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertAlmostEqual(snap.remaining, 732.98, places=4)
             self.assertAlmostEqual(snap.fiat_remaining, 73.298, places=4)
             self.assertAlmostEqual(snap.fiat_used, 261.472, places=4)
-            self.assertAlmostEqual(snap.fiat_total, 334.77, places=4)
+            self.assertIsNone(snap.fiat_total)
+            self.assertEqual(snap.quota_model, "wallet")
             self.assertAlmostEqual(snap.fiat_last_used_cost, 0.005, places=6)
             self.assertIn("10 🍪 = ¥1", snap.extra)
             self.assertEqual(snap.server_address, "https://cookie.example.test")
             self.assertEqual(len(snap.subscriptions), 2)
+            self.assertAlmostEqual(snap.subscriptions[0]["remaining_percent"], round((59 / 70) * 100.0, 2), places=2)
+            self.assertEqual(snap.subscriptions[0]["source"], "newapi_subscription")
             sub_rem_sum = sum(s["remaining"] for s in snap.subscriptions)
             sub_fiat_sum = sum(s["fiat_remaining"] for s in snap.subscriptions)
             self.assertAlmostEqual(sub_rem_sum, 4180.0, places=2)
@@ -1322,6 +1328,136 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             )
             self.assertAlmostEqual(snap_stripe_manual.fiat_remaining, 10.0, places=4)
             self.assertIn("10 ★ = $1", snap_stripe_manual.extra)
+
+        asyncio.run(run())
+
+    def test_wallet_vs_capped_health_thresholds_and_universal_subscriptions(self):
+        from companion_v2.model_gateway.quota import (
+            resolve_effective_thresholds,
+            resolve_station_quota_model,
+        )
+
+        async def run():
+            now_dt = datetime(2026, 11, 25, 8, 0, tzinfo=timezone.utc)
+            # 1) Old-account pay-as-you-go wallet (remaining ¥55.73, lifetime used ¥807.48) must stay "normal"
+            spec_xy = QuotaStationSpec(id="xy", name="星渊", adapter_id="newapi", base_url="https://api.syuan.org")
+            snap_xy = QuotaSnapshot(
+                station_id="xy",
+                ok=True,
+                remaining=55.73,
+                used=807.48,
+                quota_model="wallet",
+                display_type="CNY",
+                symbol="¥",
+                checked_at=now_dt.isoformat(),
+            )
+            self.assertIsNone(snap_xy.total)
+            self.assertIsNone(snap_xy.remaining_percent)
+            self.assertEqual(evaluate_station_health(spec_xy, snap_xy), "normal")
+            eff_xy = resolve_effective_thresholds(spec_xy, snap_xy, usd_cny_rate=7.2)
+            self.assertEqual(eff_xy["quota_model"], "wallet")
+            self.assertEqual(eff_xy["source"], "default")
+            self.assertEqual(eff_xy["low"], 10.0)
+            self.assertEqual(eff_xy["critical"], 3.0)
+
+            # Even a legacy cached snapshot with fabricated total & empty quota_model heals immediately to "wallet"
+            legacy_cached = QuotaSnapshot.from_dict({
+                "station_id": "xy",
+                "ok": True,
+                "remaining": 55.73,
+                "used": 807.48,
+                "total": 863.21,
+                "remaining_percent": 6.46,
+                "display_type": "CNY",
+                "checked_at": now_dt.isoformat(),
+            })
+            self.assertEqual(resolve_station_quota_model(spec_xy, legacy_cached), "wallet")
+            self.assertEqual(evaluate_station_health(spec_xy, legacy_cached), "normal")
+
+            # Wallet triggers low/critical strictly on absolute balance thresholds
+            snap_low = QuotaSnapshot(station_id="xy", ok=True, remaining=8.5, used=800.0, quota_model="wallet", display_type="CNY", checked_at=now_dt.isoformat())
+            snap_crit = QuotaSnapshot(station_id="xy", ok=True, remaining=2.5, used=800.0, quota_model="wallet", display_type="CNY", checked_at=now_dt.isoformat())
+            self.assertEqual(evaluate_station_health(spec_xy, snap_low), "low")
+            self.assertEqual(evaluate_station_health(spec_xy, snap_crit), "critical")
+
+            # Custom threshold overrides default; setting low_threshold=0 disables alerts completely
+            spec_custom = QuotaStationSpec(id="xy", name="星渊", adapter_id="newapi", base_url="https://api.syuan.org", low_threshold=60.0, critical_threshold=20.0)
+            self.assertEqual(evaluate_station_health(spec_custom, snap_xy), "low")
+            spec_disabled = QuotaStationSpec(id="xy", name="星渊", adapter_id="newapi", base_url="https://api.syuan.org", low_threshold=0.0, critical_threshold=0.0)
+            self.assertEqual(evaluate_station_health(spec_disabled, snap_crit), "normal")
+            self.assertEqual(resolve_effective_thresholds(spec_disabled, snap_crit)["source"], "disabled")
+
+            # 2) OpenRouter /credits is wallet (no fabricated total/percent); /auth/key with limit is capped
+            reg = default_registry()
+            f_or_wallet, _ = _mock_factory({
+                ("GET", "https://openrouter.ai/api/v1/credits"): _FakeResponse(
+                    200, {"data": {"total_credits": 500.0, "total_usage": 495.0}}
+                ),
+            })
+            or_spec = QuotaStationSpec(id="or-w", name="OpenRouter", adapter_id="openrouter", base_url="https://openrouter.ai/api/v1")
+            or_snap = await reg.get("openrouter").probe(
+                or_spec,
+                AdapterProbeContext(base_url=or_spec.base_url, astrbot_api_key="or-tok", now=lambda: now_dt, session_factory=f_or_wallet),
+            )
+            self.assertTrue(or_snap.ok)
+            self.assertEqual(or_snap.quota_model, "wallet")
+            self.assertIsNone(or_snap.total)
+            self.assertIsNone(or_snap.remaining_percent)
+            self.assertAlmostEqual(or_snap.remaining, 5.0)
+            self.assertAlmostEqual(or_snap.used, 495.0)
+            self.assertEqual(evaluate_station_health(or_spec, or_snap), "normal")  # $5 > default $2
+
+            # 3) Sub2API multi-plan subscriptions normalize into universal protocol-agnostic items with remaining_percent
+            f_sub, _ = _mock_factory({
+                ("GET", "https://sub.example.test/v1/usage"): _FakeResponse(
+                    200,
+                    {
+                        "isValid": True,
+                        "remaining": 18.0,
+                        "unit": "USD",
+                        "planName": "Team Pro",
+                        "subscriptions": [
+                            {"name": "月度主力包", "remaining": 15.0, "limit": 20.0, "expiresAt": int(now_dt.timestamp()) + 86400 * 12},
+                            {"name": "夜间流量包", "remaining": 3.0, "limit": 30.0, "expiresAt": int(now_dt.timestamp()) + 86400 * 2},
+                        ],
+                    },
+                ),
+            })
+            sub_spec = QuotaStationSpec(id="sub1", name="Sub2API站", adapter_id="sub2api", base_url="https://sub.example.test")
+            sub_snap = await reg.get("sub2api").probe(
+                sub_spec,
+                AdapterProbeContext(base_url=sub_spec.base_url, astrbot_api_key="sub-tok", now=lambda: now_dt, session_factory=f_sub),
+            )
+            self.assertTrue(sub_snap.ok)
+            self.assertEqual(len(sub_snap.subscriptions), 2)
+            self.assertAlmostEqual(sub_snap.subscriptions[0]["remaining_percent"], 75.0, places=2)
+            self.assertEqual(sub_snap.subscriptions[0]["source"], "sub2api_plan")
+            self.assertTrue(sub_snap.subscriptions[0]["expires_at"])
+            self.assertAlmostEqual(sub_snap.subscriptions[1]["remaining_percent"], 10.0, places=2)
+            self.assertEqual(sub_snap.subscriptions[1]["status"], "low")
+
+            # 4) Atomic store threshold update preserves secrets & allows disabling via 0
+            with tempfile.TemporaryDirectory() as tmp:
+                store = QuotaStationStore(Path(tmp))
+                _, _, tok = store.read()
+                store.upsert_station(
+                    tok,
+                    {
+                        "id": "xy",
+                        "name": "星渊",
+                        "adapter_id": "newapi",
+                        "base_url": "https://api.syuan.org",
+                        "auth_token": "secret-tok-keep",
+                        "proxy_url": "http://127.0.0.1:7890",
+                        "low_threshold": 25.0,
+                        "critical_threshold": 10.0,
+                    },
+                )
+                updated, _, _, _ = store.update_station_thresholds("xy", low_threshold=0.0, critical_threshold=None, has_critical_threshold=False)
+                self.assertEqual(updated.auth_token, "secret-tok-keep")
+                self.assertEqual(updated.proxy_url, "http://127.0.0.1:7890")
+                self.assertEqual(updated.low_threshold, 0.0)
+                self.assertEqual(updated.critical_threshold, 0.0)
 
         asyncio.run(run())
 

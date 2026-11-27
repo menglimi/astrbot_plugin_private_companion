@@ -579,9 +579,12 @@ def _normalize_subscriptions(
     display_type: str,
     display_multiplier: float,
     effective_fiat_pbu: float | None,
+    symbol: str = "",
+    inferred_fiat_currency: str = "",
 ) -> tuple[dict[str, Any], ...]:
     normalized: list[dict[str, Any]] = []
     inactive_states = frozenset({"expired", "cancelled", "canceled", "inactive", "disabled", "revoked", "0", "false"})
+    fiat_cur = display_type if display_type in ("CNY", "USD") else inferred_fiat_currency
     for item in raw_items:
         sub_obj = item.get("subscription") if isinstance(item.get("subscription"), dict) else item
         plan_obj = item.get("plan") if isinstance(item.get("plan"), dict) else {}
@@ -615,6 +618,8 @@ def _normalize_subscriptions(
                 break
         if raw_rem is None and raw_total is not None:
             raw_rem = max(0.0, raw_total - (raw_used or 0.0))
+        if raw_used is None and raw_total is not None and raw_rem is not None:
+            raw_used = max(0.0, raw_total - raw_rem)
         if raw_rem is None and raw_total is None:
             continue
         if raw_rem is not None and raw_rem <= 0 and (raw_total is None or raw_total > 0):
@@ -634,22 +639,38 @@ def _normalize_subscriptions(
         total_disp = convert_newapi_quota(raw_total, per_unit=per_unit, display_type=display_type, display_multiplier=display_multiplier)
 
         fiat_rem = None
+        fiat_used = None
         fiat_total = None
         if display_type in ("CNY", "USD"):
             fiat_rem = rem_disp
+            fiat_used = used_disp
             fiat_total = total_disp
         elif effective_fiat_pbu is not None and effective_fiat_pbu > 0 and per_unit > 0 and display_type != "TOKENS":
             fiat_rem = max(0.0, (raw_rem / per_unit) * effective_fiat_pbu) if raw_rem is not None else None
+            fiat_used = max(0.0, (raw_used / per_unit) * effective_fiat_pbu) if raw_used is not None else None
             fiat_total = max(0.0, (raw_total / per_unit) * effective_fiat_pbu) if raw_total is not None else None
+
+        pct = (
+            round(max(0.0, min(100.0, (rem_disp / total_disp) * 100.0)), 2)
+            if (rem_disp is not None and total_disp is not None and total_disp > 0)
+            else None
+        )
 
         normalized.append({
             "name": name,
             "remaining": round(rem_disp, 6) if rem_disp is not None else None,
             "used": round(used_disp, 6) if used_disp is not None else None,
             "total": round(total_disp, 6) if total_disp is not None else None,
+            "remaining_percent": pct,
+            "display_type": display_type,
+            "currency": display_type,
+            "symbol": symbol,
             "fiat_remaining": round(fiat_rem, 6) if fiat_rem is not None else None,
+            "fiat_used": round(fiat_used, 6) if fiat_used is not None else None,
             "fiat_total": round(fiat_total, 6) if fiat_total is not None else None,
+            "fiat_currency": fiat_cur,
             "expires_at": end_iso,
+            "source": "newapi_subscription",
         })
     return tuple(normalized[:12])
 
@@ -1219,7 +1240,9 @@ class _BaseNewApiAdapter(QuotaAdapter):
             display_type=display_type,
             display_multiplier=display_multiplier,
         )
-        total = (remaining + used) if used is not None else None
+        # NewAPI account balance is a rechargeable pay-as-you-go wallet:
+        # `used_quota` is lifetime cumulative spend, NOT a fixed quota ceiling.
+        total = None
 
         inferred_fiat_cur, site_recharge_price, effective_fiat_pbu = infer_newapi_fiat_conversion(
             params,
@@ -1238,7 +1261,6 @@ class _BaseNewApiAdapter(QuotaAdapter):
         if display_type in ("CNY", "USD"):
             fiat_remaining = remaining
             fiat_used = used
-            fiat_total = total
             fiat_last_cost = last_cost
         elif (
             display_type == "CREDIT"
@@ -1249,7 +1271,6 @@ class _BaseNewApiAdapter(QuotaAdapter):
         ):
             fiat_remaining = max(0.0, (quota_raw / per_unit) * effective_fiat_pbu)
             fiat_used = max(0.0, (used_raw / per_unit) * effective_fiat_pbu) if used_raw is not None else None
-            fiat_total = (fiat_remaining + fiat_used) if fiat_used is not None else None
             fiat_last_cost = (
                 max(0.0, (last_raw_quota / per_unit) * effective_fiat_pbu) if last_raw_quota is not None else None
             )
@@ -1264,6 +1285,8 @@ class _BaseNewApiAdapter(QuotaAdapter):
             display_type=display_type,
             display_multiplier=display_multiplier,
             effective_fiat_pbu=effective_fiat_pbu,
+            symbol=symbol,
+            inferred_fiat_currency=inferred_fiat_cur,
         )
 
         account_name = str(user_data.get("display_name") or user_data.get("username") or "").strip()
@@ -1280,7 +1303,8 @@ class _BaseNewApiAdapter(QuotaAdapter):
             ok=True,
             remaining=round(remaining, 6),
             used=round(used, 6) if used is not None else None,
-            total=round(total, 6) if total is not None else None,
+            total=total,
+            quota_model="wallet",
             display_type=display_type,
             symbol=symbol,
             quota_per_unit=per_unit,
@@ -1289,7 +1313,7 @@ class _BaseNewApiAdapter(QuotaAdapter):
             inferred_fiat_currency=inferred_fiat_cur,
             fiat_remaining=round(fiat_remaining, 6) if fiat_remaining is not None else None,
             fiat_used=round(fiat_used, 6) if fiat_used is not None else None,
-            fiat_total=round(fiat_total, 6) if fiat_total is not None else None,
+            fiat_total=fiat_total,
             fiat_last_used_cost=round(fiat_last_cost, 6) if fiat_last_cost is not None else None,
             subscriptions=subscriptions,
             server_address=server_address,

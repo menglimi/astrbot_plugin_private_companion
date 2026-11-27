@@ -1532,3 +1532,185 @@ test("Polish: openAwareness honors reduced motion, resize listener cleans up on 
   h.page.unmount();
   assert.equal(h.winHandlers.get("resize")?.size || 0, 0, "unmount must remove window resize listener");
 });
+
+test("Wallet Plan A ledger row, 1-click inline threshold editor, universal multi-station subscription progress bars, and wallet edit modal UX", async () => {
+  const h = quotaHarness();
+  const future12d = new Date(Date.now() + 12 * 86400 * 1000).toISOString();
+  const future2d = new Date(Date.now() + 2 * 86400 * 1000).toISOString();
+  const payload = sampleQuotaPayload({
+    stations: [
+      {
+        id: "st-xy",
+        name: "星渊中转站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://api.syuan.org",
+        enabled: true,
+        participate_in_awareness: true,
+        low_threshold: null,
+        critical_threshold: null,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "native",
+      },
+      {
+        id: "st-key",
+        name: "单 Key 限额站",
+        adapter_id: "openai_billing",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://compat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        low_percent: 15,
+        has_token: true,
+        has_proxy: false,
+      },
+      {
+        id: "st-sub2",
+        name: "Sub2API 多套餐站",
+        adapter_id: "sub2api",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://sub.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+      },
+    ],
+    snapshots: {
+      "st-xy": {
+        station_id: "st-xy",
+        ok: true,
+        remaining: 55.73,
+        used: 807.48,
+        total: null,
+        remaining_percent: null,
+        quota_model: "wallet",
+        display_type: "CNY",
+        symbol: "¥",
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-key": {
+        station_id: "st-key",
+        ok: true,
+        remaining: 15.8,
+        used: 4.2,
+        total: 20.0,
+        remaining_percent: 79.0,
+        quota_model: "capped",
+        is_key_scoped: true,
+        display_type: "USD",
+        symbol: "$",
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-sub2": {
+        station_id: "st-sub2",
+        ok: true,
+        remaining: 25.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "月度主力包", remaining: 15.0, used: 5.0, total: 20.0, remaining_percent: 75.0, display_type: "USD", symbol: "$", expires_at: future12d, status: "active" },
+          { name: "夜间流量包", remaining: 3.0, used: 27.0, total: 30.0, remaining_percent: 10.0, display_type: "USD", symbol: "$", expires_at: future2d, status: "low" },
+          { name: "备用体验包", remaining: 2.0, used: 8.0, total: 10.0, remaining_percent: 20.0, display_type: "USD", symbol: "$", expires_at: future12d, status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      total_stations: 3,
+      ok_count: 3,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      health_by_id: { "st-xy": "normal", "st-key": "normal", "st-sub2": "normal" },
+      quota_model_by_id: { "st-xy": "wallet", "st-key": "capped", "st-sub2": "wallet" },
+      effective_thresholds_by_id: {
+        "st-xy": { quota_model: "wallet", source: "default", unit: "CNY", symbol: "¥", low: 10, critical: 3, fiat_currency: "CNY", fiat_symbol: "¥", fiat_per_native: 1, cny_low: 10, cny_critical: 3, usd_low: 1.39, usd_critical: 0.42 },
+        "st-key": { quota_model: "capped", source: "none", unit: "USD", symbol: "$", low: null, critical: null, fiat_currency: "USD", fiat_symbol: "$", fiat_per_native: 1, low_percent: 15 },
+        "st-sub2": { quota_model: "wallet", source: "default", unit: "USD", symbol: "$", low: 2, critical: 0.5, fiat_currency: "USD", fiat_symbol: "$", fiat_per_native: 1, cny_low: 14.4, cny_critical: 3.6, usd_low: 2, usd_critical: 0.5 },
+      },
+    },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  // 1) Wallet station uses Plan A ledger row (NO fake progress bar / 总额 / 剩 %)
+  const xyCardHtml = h.root.innerHTML.split('data-qw-card="st-xy"')[1].split('data-qw-card="st-key"')[0];
+  assert.match(xyCardHtml, /¥55\.73/);
+  assert.match(xyCardHtml, /累计消费 ¥807\.48/);
+  assert.match(xyCardHtml, /data-qw-threshold-open="st-xy"[^>]*>预警线 ¥10</);
+  assert.doesNotMatch(xyCardHtml, /qw-progress-track/, "Wallet card must not render misleading progress bar");
+  assert.doesNotMatch(xyCardHtml, /总额/, "Wallet card must not fabricate total");
+
+  // 2) Capped key-scoped station keeps real progress bar with Key 已用 / 限额 / 剩 79.0%
+  const keyCardHtml = h.root.innerHTML.split('data-qw-card="st-key"')[1].split('data-qw-card="st-sub2"')[0];
+  assert.match(keyCardHtml, /qw-progress-track/);
+  assert.match(keyCardHtml, /Key 已用 \$4\.20/);
+  assert.match(keyCardHtml, /限额 \$20\.00 · 剩 79\.0%/);
+
+  // 3) Universal subscriptions panel on Sub2API renders real progress bars, exact %, expiry countdown, and collapses >2 plans
+  const sub2CardHtml = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2CardHtml, /月度主力包/);
+  assert.match(sub2CardHtml, /剩 75\.0%/);
+  assert.match(sub2CardHtml, /夜间流量包/);
+  assert.match(sub2CardHtml, /剩 10\.0%/);
+  assert.match(sub2CardHtml, /qw-sub-bar-track/);
+  assert.match(sub2CardHtml, /qw-sub-expiry/);
+  const subsListBefore = sub2CardHtml.split('class="qw-subs-list"')[1];
+  assert.equal((subsListBefore.match(/data-qw-sub-item/g) || []).length, 2, "Only top 2 subscriptions should be rendered before expand");
+  assert.doesNotMatch(subsListBefore, /备用体验包/, "3rd subscription should be collapsed by default");
+  assert.match(sub2CardHtml, /展开其余 1 个套餐/);
+
+  // Clicking expand reveals 3rd subscription cleanly
+  h.root.click("[data-qw-subs-toggle]", { qwSubsToggle: "st-sub2" });
+  const subsListAfter = h.root.innerHTML.split('data-qw-card="st-sub2"')[1].split('class="qw-subs-list"')[1];
+  assert.equal((subsListAfter.match(/data-qw-sub-item/g) || []).length, 3, "All 3 subscriptions should render after expand");
+  assert.match(subsListAfter, /备用体验包/);
+  assert.match(h.root.innerHTML, /收起其余套餐/);
+
+  // 4) 1-click inline threshold editor on wallet card: click 预警线 ¥10 -> pick ¥20 preset -> save via /thresholds
+  h.root.click("[data-qw-threshold-open]", { qwThresholdOpen: "st-xy" });
+  assert.match(h.root.innerHTML, /data-qw-threshold-editor="st-xy"/);
+  h.root.click("[data-qw-th-preset-low]", { qwThPresetLow: "20", qwThPresetCrit: "5" });
+  h.root.click("[data-qw-th-save]");
+  await flush();
+  const thReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations/st-xy/thresholds");
+  assert.ok(thReq, "Saving inline threshold editor must POST model/quota/stations/<id>/thresholds");
+  assert.equal(thReq.values.low_threshold, 20);
+  assert.equal(thReq.values.critical_threshold, 5);
+  thReq.resolve({
+    ...payload,
+    summary: {
+      ...payload.summary,
+      effective_thresholds_by_id: {
+        ...payload.summary.effective_thresholds_by_id,
+        "st-xy": { ...payload.summary.effective_thresholds_by_id["st-xy"], source: "custom", low: 20, critical: 5, cny_low: 20, cny_critical: 5 },
+      },
+    },
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /预警线 ¥20/);
+  assert.doesNotMatch(h.root.innerHTML, /data-qw-threshold-editor="st-xy"/);
+
+  // 5) Edit modal for wallet station promotes threshold card and hides inapplicable low_percent; capped station shows low_percent
+  h.root.click("[data-qw-edit]", { qwEdit: "st-xy" });
+  assert.match(h.root.innerHTML, /data-qw-wallet-thresholds/);
+  assert.match(h.root.innerHTML, /偏低预警金额/);
+  assert.doesNotMatch(h.root.innerHTML, /data-qw-field="low_percent"/, "Wallet edit modal must hide inapplicable low_percent");
+  h.root.click("[data-qw-close-wizard]");
+
+  h.root.click("[data-qw-edit]", { qwEdit: "st-key" });
+  assert.doesNotMatch(h.root.innerHTML, /data-qw-wallet-thresholds/);
+  assert.match(h.root.innerHTML, /data-qw-field="low_percent"/, "Capped edit modal must keep low_percent");
+
+  h.page.unmount();
+});
