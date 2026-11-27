@@ -4470,7 +4470,7 @@ function renderMemoryPageOriginal(){return consoleSections([
 ]);}
 /* 模型页自带页头、页签与刷新控件；不再套配置控制台的子类统计与边界卡，
    避免「模型分配」说明块与真实工作区重复占据首屏。只保留分区卡片容器。 */
-function renderModelsPage(){return `<div class="models-management-page"><section id="modelWorkspace" class="console-section" aria-label="任务模型配置">${consoleLoading('正在读取任务模型配置…')}</section><section class="models-budget-section" aria-labelledby="models-budget-heading"><div><h2 id="models-budget-heading">后台任务预算</h2><p>达到限额后暂停启动新的可选任务；已运行的任务会完成，交互回复不受影响。</p></div>${configEditors('budgetConfigWorkspace',['budget'],'后台任务预算')}</section></div>`;}
+function renderModelsPage(){return `<div class="models-management-page"><section id="modelWorkspace" class="console-section" aria-label="任务模型配置">${consoleLoading('正在读取任务模型配置…')}</section><section class="models-budget-section" aria-labelledby="models-budget-heading"><header class="models-budget-head"><div class="models-budget-copy"><span class="models-budget-eyebrow">全局保护 · 每日 Token 软限额</span><h2 id="models-budget-heading">后台任务预算</h2><p>默认关闭；全局开启后角色设置才生效。达到限额后暂缓启动新的可选后台任务，已运行任务会正常收尾，交互回复不受影响。</p></div><span class="models-budget-status" data-budget-status="off" aria-live="polite">已关闭</span></header>${configEditors('budgetConfigWorkspace',['budget'],'后台任务预算')}</section></div>`;}
 /* 治理与维护 = 账号与会话运行状态 + 备份与还原。风控与用量那两块本来就没有可写端点，
    旧版各放一张 boundaryCard 解释「为什么没有开关」；按「接不上就删」直接去掉。 */
 function renderPhoneUsage(){
@@ -4547,8 +4547,10 @@ function outputConfigView(kind,overrides={}){
   return {note:'',navigationLimit:0,helps:Object.fromEntries(Object.keys(definition.helps||{}).map(key=>[key,''])),...overrides};
 }
 let learningPolicyDockCleanup=null;
+let budgetStatusCleanup=null;
 function unmountConfigEditors(){
   if(learningPolicyDockCleanup){learningPolicyDockCleanup();learningPolicyDockCleanup=null;}
+  if(budgetStatusCleanup){budgetStatusCleanup();budgetStatusCleanup=null;}
   for(const mount of configEditorMounts)mount?.unmount?.();
   configEditorMounts=[];
   roleProfileConfigMount=null;
@@ -4660,7 +4662,37 @@ function renderConfigEditors(){
     }),
   }));
   if($('#reactionConfigWorkspace'))configEditorMounts.push(mountConfigEditor('reactionConfigWorkspace',['reaction']));
-  if($('#budgetConfigWorkspace'))configEditorMounts.push(mountConfigEditor('budgetConfigWorkspace',['budget']));
+  if($('#budgetConfigWorkspace')){
+    if(budgetStatusCleanup){budgetStatusCleanup();budgetStatusCleanup=null;}
+    const budgetHost=$('#budgetConfigWorkspace');
+    let savedBudgetEnabled=false;
+    const updateBudgetBadge=(enabled,dirty=false)=>{
+      const badge=$('[data-budget-status]');
+      if(!badge)return;
+      const on=Boolean(enabled);
+      badge.dataset.budgetStatus=on?'on':'off';
+      badge.textContent=on?(dirty?'已启用 · 待保存':'已启用'):(dirty?'已关闭 · 待保存':'已关闭');
+    };
+    const syncBudgetDraft=()=>{
+      const toggle=budgetHost.querySelector('input[data-wb-field="enable_daily_token_soft_limit"]');
+      if(toggle)updateBudgetBadge(toggle.checked,toggle.checked!==savedBudgetEnabled);
+    };
+    const onWorkbenchState=event=>{
+      if(!event?.detail?.group||event.detail.group==='budget')syncBudgetDraft();
+    };
+    configEditorMounts.push(mountConfigEditor('budgetConfigWorkspace',['budget'],{
+      budget:{onStatus:value=>{
+        savedBudgetEnabled=Boolean(value?.settings?.enable_daily_token_soft_limit);
+        updateBudgetBadge(savedBudgetEnabled,false);
+      }},
+    }));
+    budgetHost.addEventListener('change',syncBudgetDraft);
+    window.addEventListener('companion:workbench-state',onWorkbenchState);
+    budgetStatusCleanup=()=>{
+      budgetHost.removeEventListener('change',syncBudgetDraft);
+      window.removeEventListener('companion:workbench-state',onWorkbenchState);
+    };
+  }
   if($('#busyGateWorkspace'))configEditorMounts.push(mountConfigEditor('busyGateWorkspace',['busy_gate']));
   if($('#recallConfigWorkspace'))configEditorMounts.push(mountConfigEditor('recallConfigWorkspace',['recall']));
   if($('#screenConfigWorkspace'))configEditorMounts.push(mountConfigEditor('screenConfigWorkspace',['screen']));

@@ -3,11 +3,11 @@
 .decision-page [hidden],
 .decision-panel[hidden],
 .decision-editors [hidden]{display:none!important}
-.decision-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);min-width:0;padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
+.decision-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);min-width:0;padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--t-tab-track-radius);background:var(--t-tab-track);box-shadow:var(--t-shadow)}
 .decision-tab-list{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);min-width:0}
-.decision-tab{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:38px;padding:var(--sp-2) var(--sp-3);border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:500;white-space:nowrap;cursor:pointer;transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease}
-.decision-tab:hover{background:var(--t-surface-soft);color:var(--t-text-strong)}
-.decision-tab.is-active{border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line));background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600}
+.decision-tab{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:38px;padding:var(--sp-1) var(--sp-3);border:1px solid transparent;border-radius:var(--t-tab-radius);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:550;white-space:nowrap;cursor:pointer;transition:background .2s var(--t-tab-ease),border-color .2s var(--t-tab-ease),color .2s var(--t-tab-ease),box-shadow .2s var(--t-tab-ease)}
+.decision-tab:hover:not(.is-active){background:var(--t-tab-hover-bg);color:var(--t-text-strong)}
+.decision-tab.is-active{border-color:var(--t-tab-active-border);background:var(--t-tab-active-bg);color:var(--t-tab-active-fg);font-weight:650;box-shadow:var(--t-tab-active-shadow)}
 .decision-tab:focus-visible,.decision-chain-step:focus-visible,.decision-shortcuts button:focus-visible,.decision-domain-link:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
 .decision-tab svg{width:16px;height:16px;flex:none}
 .decision-current{margin-inline-start:auto;padding:var(--sp-1) var(--sp-2);border:1px solid color-mix(in srgb,var(--t-ok) 24%,var(--t-line));border-radius:var(--r-pill);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-micro);white-space:nowrap}

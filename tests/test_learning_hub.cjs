@@ -229,9 +229,11 @@ test('学习工作台顶部 8 Tab 胶囊导航、总览间距语义色与角色�
   assert.doesNotMatch(hubCss, /\.learning-hub-nav\{[^}]*mask-image/, '不得对带边框圆角的外壳 .learning-hub-nav 直接施以 mask-image');
   assert.match(hubCss, /\.learning-hub-tabs\{[^}]*display:flex;flex-wrap:nowrap[^}]*overflow-x:auto/);
   assert.match(hubCss, /\.learning-hub-tabs\{[\s\S]*?mask-image:linear-gradient\(to right,black 0,black calc\(100% - 22px\),transparent 100%\)/);
-  assert.match(hubCss, /\.learning-hub-tab:hover:not\(\.is-active\)\{[^}]*color-mix\(in srgb,var\(--t-accent\) 9%,transparent\)/);
+  assert.match(hubCss, /\.learning-hub-tab:hover:not\(\.is-active\)\{[^}]*background:var\(--t-tab-hover-bg\)/);
+  assert.match(hubCss, /\.learning-hub-tab\.is-active,\.learning-hub-tab\.is-active:hover\{[^}]*background:var\(--t-tab-active-bg\)/);
   assert.doesNotMatch(hubCss, /\.learning-hub-tab:hover\{background:var\(--t-surface\)/);
   assert.doesNotMatch(pageCss, /\.learning-hub-tab:hover\{background:var\(--t-surface\)/);
+  assert.doesNotMatch(pageCss, /\.learning-hub-tab\.is-active/, 'learning-page.css 不应重复定义 .learning-hub-tab 激活样式');
 
   // 2. 总览容器拼写修复与语义状态色
   assert.doesNotMatch(hubCss, /\.lh-overview-workspace\b/, '必须修复 .lh-overview-workspace 拼写错误');

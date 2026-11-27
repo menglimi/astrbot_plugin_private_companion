@@ -1099,16 +1099,37 @@ window.CompanionWorkbench = (() => {
       const count = Array.from(String(value ?? "")).length;
       return `<div class="wb-textarea-wrap">${textarea}<span class="wb-text-length${count > item.maximumChars ? " is-over-limit" : ""}" data-wb-counter="${e(item.name)}">${count} / ${e(item.maximumChars)} 字</span></div>`;
     }
+    const formatBoundDisplay = bound => {
+      if (typeof bound !== "number" || !Number.isFinite(bound)) return String(bound ?? "");
+      const abs = Math.abs(bound);
+      if (abs < 1e6) return String(bound);
+      const sign = bound < 0 ? "-" : "";
+      for (const [unit, suffix] of [[1e12, "万亿"], [1e8, "亿"], [1e4, "万"]]) {
+        if (abs >= unit) {
+          const scaled = abs / unit;
+          const text = Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(2).replace(/\.?0+$/, "");
+          return `${sign}${text} ${suffix}`;
+        }
+      }
+      return String(bound);
+    };
     const shown = e(toDisplay(item, value));
     /* 0–1 的概率在界面上按百分数编辑：步长与上下界也必须换算，
        否则输入框写着 100%，下面却提示 0–1、每次只能加减 0.01。 */
     const percent = item.kind === "float" && item.maximum === 1 && item.minimum === 0;
     const step = percent ? "1" : item.kind === "int" ? "1" : String(1 / Math.pow(10, item.decimals));
+    const minRaw = toDisplay(item, item.minimum);
+    const maxRaw = toDisplay(item, item.maximum);
+    const minShown = percent ? minRaw : formatBoundDisplay(item.minimum);
+    const maxShown = percent ? maxRaw : formatBoundDisplay(item.maximum);
+    const exactRange = `${Number.isFinite(item.minimum) && !percent ? item.minimum.toLocaleString("en-US") : minRaw} – ${Number.isFinite(item.maximum) && !percent ? item.maximum.toLocaleString("en-US") : maxRaw}${percent ? "%" : ""}`;
+    const rangeTitle = String(minShown) !== String(minRaw) || String(maxShown) !== String(maxRaw)
+      ? ` title="允许范围：${e(exactRange)}"` : "";
     const bounds = item.hasBounds
-      ? `<span class="wb-range">${e(toDisplay(item, item.minimum))} – ${e(toDisplay(item, item.maximum))}${percent ? "%" : ""}</span>` : "";
+      ? `<span class="wb-range"${rangeTitle}>${e(minShown)} – ${e(maxShown)}${percent ? "%" : ""}</span>` : "";
     const unit = percent ? " %" : "";
     return `<span class="wb-number"><input type="number" data-wb-field="${e(item.name)}"`
-      + ` min="${e(toDisplay(item, item.minimum))}" max="${e(toDisplay(item, item.maximum))}"`
+      + ` min="${e(minRaw)}" max="${e(maxRaw)}"`
       + ` step="${e(step)}" value="${shown}"${dis}>${unit ? `<span class="wb-unit">${unit.trim()}</span>` : ""}${bounds}</span>`;
   }
 

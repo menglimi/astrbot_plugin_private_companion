@@ -511,34 +511,7 @@
   .lea-card:hover{transform:none}
 }
 
-/* ===== 学习工作台分区 ===== */
-.learning-hub-nav{
-  display:block;min-width:0;margin-bottom:var(--sp-4);padding:var(--sp-1);
-  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft);
-  overflow:hidden;
-}
-.learning-hub-tabs{
-  display:flex;flex-wrap:nowrap;align-items:center;gap:var(--sp-1);min-width:0;
-  overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;
-}
-.learning-hub-tabs::-webkit-scrollbar{display:none}
-.learning-hub-tab{
-  flex:1 0 auto;display:inline-flex;align-items:center;justify-content:center;
-  min-width:max-content;min-height:36px;padding:var(--sp-1) var(--sp-3);
-  border:1px solid transparent;border-radius:var(--r-pill);background:transparent;
-  color:var(--t-text-soft);font-size:var(--fs-tiny);font-weight:550;line-height:1.3;
-  text-align:center;text-decoration:none;white-space:nowrap;
-  transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease;
-}
-.learning-hub-tab:hover:not(.is-active){
-  background:color-mix(in srgb,var(--t-accent) 9%,transparent);color:var(--t-text-strong);
-}
-.learning-hub-tab.is-active,
-.learning-hub-tab.is-active:hover{
-  border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid);
-  box-shadow:0 2px 8px color-mix(in srgb,var(--t-accent-solid) 24%,transparent);font-weight:650;
-}
-.learning-hub-tab:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+/* ===== 学习工作台分区（顶栏选项卡样式已统一收敛至 learning-hub.css 与 tokens.css 统一标签页令牌） ===== */
 .learning-hub-panel{display:flex;flex-direction:column;gap:var(--sp-4);min-width:0}
 .learning-hub-head{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0}
 .learning-hub-head h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650}

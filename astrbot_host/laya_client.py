@@ -29,7 +29,7 @@ from companion_v2.decision.prompt import (
 )
 from companion_v2.decision.store import (
     CHAT_COMPLETIONS_ENDPOINT_REQUIRED, MODE_MODELS, SYSTEMONE_ENDPOINT_REQUIRED,
-    WORKERS_AI_ENDPOINT_REQUIRED, cached_multilingual_model)
+    WORKERS_AI_ENDPOINT_REQUIRED, _clean_windows_path, cached_multilingual_model)
 
 
 logger = logging.getLogger(__name__)
@@ -278,7 +278,7 @@ def _load_local_model(local_model_path=""):
 
 
 def _torch_install_command():
-    executable = str(Path(sys.executable).resolve())
+    executable = _clean_windows_path(str(Path(sys.executable).resolve()))
     if os.name == "nt":
         quote = lambda value: "'" + value.replace("'", "''") + "'"
         return (f"& {quote(executable)} -m pip install --force-reinstall "
