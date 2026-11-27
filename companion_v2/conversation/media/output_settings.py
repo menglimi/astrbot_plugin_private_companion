@@ -140,7 +140,7 @@ def configuration_fields():
         if type(value) is float:
             return {"minimum": 0, "maximum": 1}
         if type(value) is int:
-            return {"minimum": -1, "maximum": 20} if key == "max_calls_per_turn" else {"minimum": 0, "maximum": 100}
+            return {"minimum": -1, "maximum": 20} if key == "max_calls_per_turn" else {"minimum": -1, "maximum": 100}
         return {}
 
     return tuple(FieldDefinition(GROUP + "." + key, GROUP, GROUP,

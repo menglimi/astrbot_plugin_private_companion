@@ -210,13 +210,22 @@ class SubjectModeAndOutputSettingsTests(unittest.TestCase):
                 observed_at=now,
                 changes={
                     OUTPUT_GROUP + ".max_calls_per_turn": valid,
+                    OUTPUT_GROUP + ".proactive_max_daily": -1,
                     OUTPUT_GROUP + ".apply_fixed_prompt_only_for_character": False,
                 },
             )
         context = NS(scope=NS(installation_id=installation, bot_id="bot-a"), role_binding=NS(role=role))
         loaded = effective_settings(runtime, context)
         self.assertEqual(loaded["max_calls_per_turn"], 20)
+        self.assertEqual(loaded["proactive_max_daily"], -1)
         self.assertIs(loaded["apply_fixed_prompt_only_for_character"], False)
+
+        # Verify all registered integer fields preserve -1 (unlimited) lower bound.
+        int_fields = {f.field_id: f for f in fields if f.field_id.endswith(("max_calls_per_turn", "proactive_max_daily"))}
+        self.assertEqual(int_fields[OUTPUT_GROUP + ".proactive_max_daily"].minimum, -1)
+        self.assertEqual(int_fields[OUTPUT_GROUP + ".proactive_max_daily"].maximum, 100)
+        self.assertEqual(int_fields[OUTPUT_GROUP + ".max_calls_per_turn"].minimum, -1)
+        self.assertEqual(int_fields[OUTPUT_GROUP + ".max_calls_per_turn"].maximum, 20)
 
 
 class NativeAdapterAndNAIContractTests(unittest.IsolatedAsyncioTestCase):
