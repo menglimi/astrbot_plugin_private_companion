@@ -81,10 +81,21 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
 
     def test_original_questionnaire_full_workflow_and_old_version_restore(self):
         self.assertEqual(self.page.locator('[data-persona-recreation="questionnaire"]').get_attribute("aria-selected"), "true")
+        # Slim outer hub bar has no redundant mode cards or 3-step guide bar; embedded iframe hides duplicate .pw-head
+        self.assertEqual(self.page.locator(".persona-mode-grid").count(), 0)
+        self.assertEqual(self.page.locator(".persona-guide").count(), 0)
+        self.assertFalse(self.frame.locator(".pw-head").is_visible())
+        self.assertTrue(self.frame.locator(".pw-context-bar").is_visible())
+        # Step 1 optional clues start collapsed at 0/10
+        self.assertFalse(self.frame.locator('[data-answer="identity"]').is_visible())
+        self.assertEqual(self.frame.locator("#clues-count").inner_text().strip(), "0/10")
+
         self.frame.locator("#load-version").click()
         self.assertEqual(self.frame.locator('[data-review-raw="right"]').input_value(), "原问卷已保存的旧稿")
         self.frame.locator('[data-prev="1"]').click()
+        self.frame.locator("#optional-clues > summary").click()
         self.frame.locator('[data-answer="identity"]').fill("用户填写的职业")
+        self.assertEqual(self.frame.locator("#clues-count").inner_text().strip(), "1/10")
         self.frame.locator('[data-strength="light"]').click()
         self.frame.locator("#generate-draft").click()
         self.frame.locator("#notice").filter(has_text="基础稿已生成").wait_for()
@@ -105,10 +116,14 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertIn("审核后手改的身份", selected["draft_text"])
         self.assertEqual(self.frame.locator("#style-text").input_value(), "短句，保留自然的停顿。")
         self.frame.locator('[data-next="5"]').click()
-        self.frame.locator('[data-replace="identity"]').click()
+        # Step 5 auto-fills timestamped note and supports one-click adopt all
+        self.assertTrue(self.frame.locator("#note").input_value().startswith("规范化整理 · "))
+        self.frame.locator("#adopt-all-right").click()
         self.frame.locator("#note").fill("问卷完整流程保存")
         self.frame.locator("#save").click()
         self.frame.locator("#notice").filter(has_text="已保存为第 2 版").wait_for()
+        self.assertTrue(self.frame.locator("#save-success-guide").is_visible())
+        self.assertTrue(self.frame.locator("#copy-saved-full").is_visible())
         saved = self.page.evaluate("questionnaire.history.original[1]")
         self.assertIn("审核后手改的身份", saved["draft_text"])
         self.assertEqual(saved["original_text"], "原人格 A，保留空白。  \n\n")
@@ -124,14 +139,15 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
     def test_designer_failure_then_questionnaire_persona_selection_and_paste_generation(self):
         self.page.locator('[data-persona-recreation="create"]').click()
         designer = self.page.frame_locator('[data-workspace="designer"] iframe')
-        designer.locator("#choose-model").click()
-        designer.locator("#model-select").select_option("design-model")
-        designer.locator("#confirm-model").click()
+        # Auto-preselected default model enables sending immediately without opening model dialog
+        designer.locator("#send-turn:not([disabled])").wait_for()
         self.page.evaluate("mock.fail=true")
         designer.locator("#send-turn").click()
         designer.locator("#retry-turn").wait_for(state="visible")
         self.page.locator('[data-persona-recreation="questionnaire"]').click()
-        self.frame.locator("#source-persona").select_option("second")
+        # Use modern searchable persona card picker
+        self.frame.locator("#persona-search").fill("second")
+        self.frame.locator('[data-persona-card="second"]').click()
         self.frame.locator("#persona-name").filter(has_text="second").wait_for()
         self.frame.locator('input[name="source-mode"][value="paste"]').check()
         self.frame.locator("#source-text").fill("列表以外的粘贴人设")
@@ -142,6 +158,23 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertEqual(sent["source_mode"], "paste")
         self.assertEqual(sent["source_text"], "列表以外的粘贴人设")
         self.assertEqual(self.page.evaluate("questionnaire.history.original.length"), 1)
+        # Verify 360px mobile viewport has zero horizontal overflow in persona workshop
+        self.page.set_viewport_size({"width": 360, "height": 840})
+        frame = self.page.frames[1]
+        self.assertLessEqual(frame.evaluate("document.documentElement.scrollWidth"), 360)
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
+    def test_designer_handoff_sends_draft_into_workshop_paste_mode(self):
+        self.page.locator('[data-persona-recreation="create"]').click()
+        designer = self.page.frame_locator('[data-workspace="designer"] iframe')
+        designer.locator("#draft-text").wait_for()
+        designer.locator("#draft-text").fill("从新的她共创出来的角色设定初稿")
+        designer.locator("#send-to-workshop").click()
+        # Switches back to questionnaire tab and pre-fills paste mode automatically
+        self.page.locator('[data-persona-recreation="questionnaire"][aria-selected="true"]').wait_for()
+        self.frame.locator("#source-text").wait_for(state="visible")
+        self.assertEqual(self.frame.locator("#source-text").input_value(), "从新的她共创出来的角色设定初稿")
+        self.frame.locator("#notice").filter(has_text="新的她").wait_for()
         self.assertFalse(self.browser_errors, self.browser_errors)
 
 

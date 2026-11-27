@@ -4723,19 +4723,12 @@ function renderConfigEditors(){
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
 const PERSONA_HUB_MODES=[
   {id:'questionnaire',label:'规范人格',kicker:'结构化核对',icon:'notebook-pen',
-    summary:'按字段整理、补齐已有设定，逐项审核后保存底稿。',
-    steps:['选人格或粘贴文本','按字段核对并选强度','生成基础稿审核保存']},
+    summary:'已有完整人设，一键按标准结构整理并逐段对照。'},
   {id:'create',label:'创建人格',kicker:'从零共创',icon:'sparkles',
-    summary:'从一个想法出发，通过五阶段对话聊出性格、经历与说话方式。',
-    steps:['选模型并说出想法','五阶段推敲角色细节','整理成稿保存或复制']},
-  {id:'optimize',label:'拟人优化',kicker:'基于现有人设',icon:'sliders-horizontal',
-    summary:'载入现有人设，围绕“哪里不像”逐段微调，保留原来的她。',
-    steps:['载入人设指出痛点','逐段优化性格与口吻','对照原文确认后保存']},
+    summary:'只有一个想法，通过对话从零一起聊出完整人设。'},
+  {id:'optimize',label:'拟人优化',kicker:'痛点微调',icon:'sliders-horizontal',
+    summary:'已有人设但口吻像 AI 或容易崩，针对痛点逐段微调。'},
 ];
-function personaGuideStepsMarkup(mode){
-  const item=PERSONA_HUB_MODES.find(entry=>entry.id===mode)||PERSONA_HUB_MODES[0];
-  return item.steps.map((step,index)=>`<li><span>0${index+1}</span><p>${step}</p></li>`).join('');
-}
 function syncPersonaModeUI(mode){
   if(!PERSONA_MODE_IDS.includes(mode))return;
   document.querySelectorAll('[role="tab"][data-persona-recreation]').forEach(button=>{
@@ -4743,18 +4736,9 @@ function syncPersonaModeUI(mode){
     button.classList.toggle('is-active',active);
     button.setAttribute('aria-selected',String(active));
     button.setAttribute('tabindex',active?'0':'-1');
-    const badge=button.querySelector('.persona-mode-current');
-    if(badge)badge.textContent=active?'当前':'';
-  });
-  document.querySelectorAll('[data-persona-switch]').forEach(button=>{
-    const active=button.dataset.personaSwitch===mode;
-    button.classList.toggle('is-active',active);
-    button.setAttribute('aria-pressed',String(active));
   });
   const panel=document.getElementById('persona-workspace-panel');
   if(panel)panel.setAttribute('aria-labelledby','persona-mode-'+mode);
-  const stepsEl=document.getElementById('persona-guide-steps');
-  if(stepsEl)stepsEl.innerHTML=personaGuideStepsMarkup(mode);
 }
 function switchPersonaMode(mode,focusSelector){
   if(!PERSONA_MODE_IDS.includes(mode))return;
@@ -4767,14 +4751,11 @@ function switchPersonaMode(mode,focusSelector){
 function renderPersonaPage(){
   const current=PERSONA_HUB_MODES.find(mode=>mode.id===personaRecreationMode)||PERSONA_HUB_MODES[0];
   const workspace=current.id==='questionnaire'?product.workspace('persona'):product.workspace('designer',current.id);
-  const quickTabs=PERSONA_HUB_MODES.map(mode=>{
+  const modeTabs=PERSONA_HUB_MODES.map(mode=>{
     const active=mode.id===current.id;
-    return `<button type="button" class="persona-bar-tab${active?' is-active':''}" data-persona-switch="${mode.id}" aria-pressed="${active}">${I(mode.icon)}<span>${mode.label}</span></button>`;
+    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-bar-tab${active?' is-active':''}" data-persona-recreation="${mode.id}" data-persona-switch="${mode.id}" aria-selected="${active}" tabindex="${active?'0':'-1'}" aria-controls="persona-workspace-panel">${I(mode.icon)}<span>${mode.label}</span></button>`;
   }).join('');
-  const cards=PERSONA_HUB_MODES.map(mode=>{
-    const active=mode.id===current.id;
-    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-mode-card${active?' is-active':''}" data-persona-recreation="${mode.id}" aria-selected="${active}" tabindex="${active?'0':'-1'}" aria-controls="persona-workspace-panel"><span class="persona-mode-icon">${I(mode.icon)}</span><span class="persona-mode-copy"><span class="persona-mode-title"><strong>${mode.label}</strong><small>${mode.kicker}</small></span><span class="persona-mode-summary">${mode.summary}</span></span><span class="persona-mode-current" aria-hidden="true">${active?'当前':''}</span></button>`;
-  }).join('');
+  const helperItems=PERSONA_HUB_MODES.map(mode=>`<li><strong>${mode.label}</strong><span>${mode.summary}</span></li>`).join('');
   return `<div class="persona-hub">
     <header class="persona-hub-bar" aria-label="人格处理导航">
       <div class="persona-hub-bar-lead">
@@ -4782,13 +4763,11 @@ function renderPersonaPage(){
         <span class="persona-hub-divider" aria-hidden="true"></span>
         <div class="persona-hub-bar-title"><h2>人格处理</h2><span class="persona-hub-role">${roleName()}</span></div>
       </div>
-      <div class="persona-bar-switch" role="group" aria-label="快捷切换人格处理方式">${quickTabs}</div>
+      <div class="persona-hub-bar-controls">
+        <div class="persona-bar-switch" role="tablist" aria-label="人格处理方式">${modeTabs}</div>
+        <details class="persona-helper"><summary>${I('help-circle')}<span>怎么选</span></summary><div class="persona-helper-body"><ul class="persona-helper-list">${helperItems}</ul><p class="persona-helper-note">三种模式都只生成可编辑草稿，不会直接覆盖 AstrBot 线上人设。</p></div></details>
+      </div>
     </header>
-    <div class="persona-mode-grid" role="tablist" aria-label="人格处理方式">${cards}</div>
-    <section class="persona-guide" aria-live="polite">
-      <ol class="persona-steps" id="persona-guide-steps">${personaGuideStepsMarkup(current.id)}</ol>
-      <details class="persona-helper"><summary>怎么选？</summary><div class="persona-helper-body"><p>已有完整文本、想按字段校对 → <strong>规范人格</strong>；只有想法、想从零聊出来 → <strong>创建人格</strong>；已有人设、但口吻不像 → <strong>拟人优化</strong>。</p><p class="persona-helper-note">三种入口都只产出可核对的底稿/草稿，不会直接覆盖当前 AstrBot 线上人设。</p></div></details>
-    </section>
     <section class="persona-workspace" id="persona-workspace-panel" role="tabpanel" aria-labelledby="persona-mode-${current.id}">${workspace}</section>
   </div>`;
 }
@@ -4800,6 +4779,9 @@ document.addEventListener('companion:persona-mode-change',event=>{
   // A restored draft already lives in the iframe. Update the entry without
   // remounting it and interrupting the restore operation.
   syncPersonaModeUI(mode);
+});
+document.addEventListener('companion:persona-handoff',()=>{
+  switchPersonaMode('questionnaire');
 });
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
@@ -7465,7 +7447,7 @@ document.addEventListener('keydown',event=>{
   if(arrangementDraft&&handleRoomEditorKey(event))return;
   const personaTab=event.target.closest?.('[role="tab"][data-persona-recreation]');
   if(personaTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
-    const tabs=$$('.persona-mode-grid [role="tab"][data-persona-recreation]');
+    const tabs=$$('.persona-bar-switch [role="tab"][data-persona-recreation]');
     const index=tabs.indexOf(personaTab);
     if(index>=0&&tabs.length){
       event.preventDefault();

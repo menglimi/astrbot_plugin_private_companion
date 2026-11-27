@@ -4,6 +4,18 @@
   const $ = id => document.getElementById(id);
   const STAGES = ["positioning", "personality", "voice", "background", "review"];
   const LABELS = {optimize: "拟人优化", create: "创建人格"};
+  const LOCAL_PREFIX = "companion.persona-designer.v1.";
+  const OPTIMIZE_QUICK_CHIPS = [
+    "说话太像 AI 客服",
+    "回复太啰嗦",
+    "人设容易崩",
+    "口吻再自然点",
+  ];
+  const CREATE_QUICK_CHIPS = [
+    "我有一个大致的角色想法",
+    "还没想好，先帮我找方向",
+    "从我熟悉的性格出发",
+  ];
   const errors = {
     dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开此页。",
     core_access_required: "当前账号没有管理本安装的权限。",
@@ -11,7 +23,7 @@
     persona_designer_unavailable: "新的她暂时不可用，当前编辑内容仍保留，可以稍后重试。",
     persona_designer_model_rejected: "模型没有接受这次设计请求；可以换一个文本模型，或缩短人设/对话后重试。",
     persona_designer_model_missing: "所选文本模型尚未加载，请重新选择模型。",
-    persona_designer_source_required: "先输入人设，或从“选择人设”载入一份。",
+    persona_designer_source_required: "先输入人设，或从“切换人设”载入一份。",
     persona_designer_draft_required: "先生成或填写一份人设稿，再进行情景试演。",
     persona_designer_response_invalid: "模型返回的设计结果不完整，请重试本轮或换一个文本模型。",
     persona_designer_context_full: "这次设计的内容较长，请先保存草稿，再精简对话后继续。",
@@ -38,15 +50,51 @@
     if (className) el.className = className;
     return el;
   };
-  let bridge, root = fresh(), options = {models: [], personas: []}, loaded = false, disposed = false;
+  let bridge, root = fresh(), options = {models: [], personas: [], persona_summaries: {}}, loaded = false, disposed = false;
   let working = false, nextBefore = null, pollTimer, loadingDrafts = false, polling = false;
-  let pendingPersonaId = "";
-  let entryMode = "";
+  let pendingPersonaId = "", entryMode = "", pickerFilter = "", autoPreloading = false;
   const session = () => root.sessions[root.activeMode];
   const doc = () => session().document;
   const generating = () => Object.values(root.sessions).some(s => s.pending);
   const errorText = error => errors[error?.code] || errors[error?.message]
     || "这次操作没有完成，当前编辑内容仍保留，请稍后重试。";
+
+  function sanitizeDocument(raw, mode) {
+    const base = newDocument(mode);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    base.stage = STAGES.includes(raw.stage) ? raw.stage : "positioning";
+    for (const [key, max] of [["provider_id", 200], ["source_persona_id", 200], ["source_text", 30000],
+      ["confirmed", 16000], ["draft", 65536], ["lorebook", 20000], ["input", 8000]]) {
+      base[key] = typeof raw[key] === "string" ? raw[key].slice(0, max) : "";
+    }
+    if (Array.isArray(raw.messages)) {
+      base.messages = raw.messages.filter(m => m && typeof m === "object"
+        && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+        .slice(-100).map(m => ({role: m.role, content: m.content.slice(0, 16000)}));
+    }
+    if (Array.isArray(raw.options)) {
+      base.options = raw.options.filter(v => typeof v === "string" && v.trim()).slice(0, 3).map(v => v.slice(0, 300));
+    }
+    return base;
+  }
+  function hasDocumentContent(d) {
+    if (!d) return false;
+    return d.messages.length > 0
+      || ["source_text", "confirmed", "draft", "lorebook", "input"].some(key => String(d[key] || "").trim());
+  }
+  function readDirectLocal(mode) {
+    try {
+      const raw = localStorage.getItem(LOCAL_PREFIX + mode);
+      if (typeof raw !== "string" || !raw) return null;
+      return sanitizeDocument(JSON.parse(raw), mode);
+    } catch { return null; }
+  }
+  function writeDirectLocal(mode, document) {
+    try {
+      if (document === null) localStorage.removeItem(LOCAL_PREFIX + mode);
+      else localStorage.setItem(LOCAL_PREFIX + mode, JSON.stringify(document));
+    } catch {}
+  }
   function unwrap(response) {
     const wrapped = ["ok", "error"].includes(response?.status) ? response
       : response?.status === undefined && ["ok", "error"].includes(response?.data?.status) ? response.data : null;
@@ -63,8 +111,17 @@
     $("notice").classList.toggle("error", error);
     $("notice").hidden = !message;
   }
+  function syncLocalDraft(mode, documentOrNull) {
+    writeDirectLocal(mode, documentOrNull);
+    if (!disposed && bridge) {
+      api("POST", "designer/local-draft", {mode, document: documentOrNull}).catch(() => {});
+    }
+  }
   function persist() {
     if (disposed || !bridge) return Promise.resolve();
+    const active = root.activeMode;
+    const currentDoc = root.sessions[active]?.document;
+    if (currentDoc) syncLocalDraft(active, hasDocumentContent(currentDoc) ? currentDoc : null);
     return api("POST", "designer/client-state", root).catch(() => {
       notice("页面内的进度暂未同步，请先保存草稿，再切换其他页面。", true);
     });
@@ -77,19 +134,22 @@
     $("stop-turn").hidden = !ownBusy;
     $("retry-turn").hidden = !session().retry || anyBusy;
     $("generation-state").textContent = ownBusy ? "正在推敲，请稍候…" : anyBusy ? "另一模式正在生成" : "";
-    ["source-text", "confirmed", "draft-text", "lorebook", "choose-persona", "choose-model"].forEach(id => $(id).disabled = ownBusy || working);
+    ["source-text", "confirmed", "draft-text", "lorebook", "choose-persona", "choose-model", "quick-reset"].forEach(id => {
+      if ($(id)) $(id).disabled = ownBusy || working;
+    });
     $("choose-persona").disabled ||= anyBusy || !!root.pendingSave;
+    if ($("quick-reset")) $("quick-reset").disabled ||= anyBusy || !!root.pendingSave;
     ["generate-draft", "tryout"].forEach(id => $(id).disabled = !loaded || anyBusy || working || !modelAvailable);
     $("tryout").disabled ||= !d.draft.trim();
     $("generate-draft").textContent = d.draft.trim() ? "重新整理成稿" : "整理成稿";
-    const hasContent = d.messages.length > 0
-      || ["source_text", "confirmed", "draft", "lorebook", "input"].some(key => String(d[key] || "").trim());
+    const hasContent = hasDocumentContent(d);
     $("save-draft").disabled = !loaded || !!root.pendingSave || anyBusy || working || !hasContent;
     $("retry-save").hidden = !root.retrySave;
     $("retry-save").disabled = !!root.pendingSave || anyBusy || working;
     $("compare").disabled = root.activeMode !== "optimize" || !d.source_text;
     $("copy-draft").disabled = !d.draft;
     $("copy-lorebook").disabled = !d.lorebook;
+    if ($("send-to-workshop")) $("send-to-workshop").disabled = !(d.draft.trim() || d.source_text.trim());
     $("source-count").textContent = Array.from(d.source_text).length + " 字";
     $("draft-count").textContent = Array.from(d.draft).length + " 字";
     document.querySelectorAll("[data-stage]").forEach(el => el.disabled = ownBusy);
@@ -114,8 +174,8 @@
     log.replaceChildren();
     if (!d.messages.length) {
       const empty = node("div", undefined, "empty-message");
-      empty.append(node("strong", d.mode === "optimize" ? "先看看哪些地方值得调整。" : "她可以从一个很小的念头开始。"),
-        node("p", d.mode === "optimize" ? "提供原人设后，说说你遇到的问题，或直接开始，让助手给出具体建议。" : "描述一种性格、一段关系或几句你喜欢的话；还没有方向也没关系。"));
+      empty.append(node("strong", d.mode === "optimize" ? "直接点下方常见痛点，或说说哪里不像她。" : "她可以从一个很小的念头开始。"),
+        node("p", d.mode === "optimize" ? "已自动预选模型并准备人设起点，点一个快捷胶囊即可开始针对性优化。" : "描述一种性格、一段关系或几句你喜欢的话；点下方开场胶囊也能立刻开聊。"));
       log.append(empty);
     }
     for (const message of d.messages) {
@@ -126,11 +186,15 @@
     log.scrollTop = log.scrollHeight;
     const suggestions = $("suggestions");
     suggestions.replaceChildren();
-    const choices = d.options.length ? d.options : d.mode === "create" && !d.messages.length
-      ? ["我有一个大致的角色想法", "还没想好，先帮我找方向", "从我熟悉的性格出发"] : [];
+    const isOptimizeStarter = !d.options.length && d.mode === "optimize" && !d.messages.length;
+    const choices = d.options.length ? d.options
+      : d.mode === "create" && !d.messages.length ? CREATE_QUICK_CHIPS
+      : isOptimizeStarter ? OPTIMIZE_QUICK_CHIPS : [];
     for (const choice of choices) {
-      const button = node("button", choice, "button small"); button.type = "button";
-      button.addEventListener("click", () => sendTurn("chat", choice)); suggestions.append(button);
+      const button = node("button", choice, "button small" + (isOptimizeStarter ? " chip-pain" : ""));
+      button.type = "button";
+      button.addEventListener("click", () => sendTurn("chat", choice));
+      suggestions.append(button);
     }
     controls();
   }
@@ -143,6 +207,102 @@
     }
     select.value = selected || "";
     select.disabled = !items.length;
+  }
+  function toneForName(name) {
+    let hash = 0;
+    for (const ch of String(name || "")) hash = (hash * 31 + ch.codePointAt(0)) % 4;
+    return String(hash);
+  }
+  function paintPersonaCards(selectedId) {
+    const grid = $("persona-card-grid");
+    if (!grid) return;
+    const items = options.personas || [];
+    const summaries = options.persona_summaries || {};
+    const currentVal = selectedId !== undefined ? selectedId : $("persona-select").value;
+    const query = pickerFilter.trim().toLowerCase();
+    const filtered = items.filter(item => {
+      if (!query) return true;
+      const summary = summaries[item.id];
+      const hay = ((item.name || item.id) + " " + (summary?.preview || "")).toLowerCase();
+      return hay.includes(query);
+    });
+    const countEl = $("persona-match-count");
+    if (countEl) countEl.textContent = items.length ? (query ? `${filtered.length}/${items.length} 份` : `共 ${items.length} 份`) : "";
+    grid.replaceChildren();
+    if (!filtered.length) {
+      grid.append(node("p", items.length ? "没有匹配该关键词的人设，可清空搜索重试。" : "暂无可选 AstrBot 人设。", "persona-pick-empty"));
+      return;
+    }
+    filtered.forEach(item => {
+      const label = item.name || item.id;
+      const summary = summaries[item.id];
+      const selected = item.id === currentVal;
+      const active = Boolean(item.default || summary?.active);
+      const card = node("button", undefined, "persona-pick-card" + (selected ? " is-selected" : ""));
+      card.type = "button";
+      card.setAttribute("role", "option");
+      card.setAttribute("aria-selected", String(selected));
+      card.dataset.personaCard = item.id;
+
+      const avatar = node("span", Array.from(label)[0] || "人", "persona-pick-avatar");
+      avatar.dataset.tone = toneForName(label);
+      avatar.setAttribute("aria-hidden", "true");
+
+      const body = node("span", undefined, "persona-pick-body");
+      const head = node("span", undefined, "persona-pick-head");
+      head.append(node("span", label, "persona-pick-name"));
+      if (active) head.append(node("span", "使用中", "persona-pick-active"));
+      if (summary && Number.isFinite(summary.chars)) head.append(node("span", summary.chars + " 字", "persona-pick-chars"));
+      body.append(head, node("span", summary?.preview || "点击选中并载入这份人设", "persona-pick-preview"));
+
+      card.append(avatar, body);
+      card.addEventListener("click", () => {
+        $("persona-select").value = item.id;
+        paintPersonaCards(item.id);
+      });
+      card.addEventListener("dblclick", () => {
+        $("persona-select").value = item.id;
+        $("persona-form").requestSubmit();
+      });
+      grid.append(card);
+    });
+  }
+  function ensureDefaultModelSelected() {
+    if (!options.models.length) return false;
+    const fallbackId = options.models[0].id;
+    let changed = false;
+    for (const mode of ["optimize", "create"]) {
+      const targetDoc = root.sessions[mode]?.document;
+      if (!targetDoc) continue;
+      if (!targetDoc.provider_id || !options.models.some(m => m.id === targetDoc.provider_id)) {
+        targetDoc.provider_id = fallbackId;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+  async function maybeAutoPreloadOptimizePersona() {
+    if (autoPreloading || disposed || working || generating()) return;
+    const optSession = root.sessions.optimize;
+    const optDoc = optSession?.document;
+    if (root.activeMode !== "optimize" || !optDoc || optSession.manuallyCleared) return;
+    if (optDoc.source_text.trim() || optDoc.source_persona_id || optDoc.messages.length) return;
+    const targetId = options.default_persona_id || options.personas[0]?.id || "";
+    if (!targetId) return;
+    autoPreloading = true;
+    try {
+      const result = await api("GET", "designer/persona", {id: targetId});
+      if (disposed || root.sessions.optimize !== optSession || optSession.manuallyCleared) return;
+      if (optDoc.source_text.trim() || optDoc.source_persona_id || optDoc.messages.length) return;
+      if (result.id === targetId && typeof result.text === "string" && result.text.trim()) {
+        optDoc.source_persona_id = targetId;
+        optDoc.source_text = result.text;
+        await persist();
+        render();
+      }
+    } catch {} finally {
+      autoPreloading = false;
+    }
   }
   let optionsBusy = false, optionsSeq = 0;
   const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
@@ -166,17 +326,22 @@
       const next = await api("GET", "designer/options", {});
       if (disposed || seq !== optionsSeq) return;
       if (!Array.isArray(next.models) || !Array.isArray(next.personas)) throw new Error("persona_designer_response_invalid");
-      options = next;
+      options = Object.assign({persona_summaries: {}}, next);
       loaded = true;
+      const modelAutoPicked = ensureDefaultModelSelected();
+      const selectedPersona = doc().source_persona_id || options.default_persona_id || options.personas[0]?.id || "";
       fillSelect("model-select", options.models, doc().provider_id, "暂无文本模型");
-      fillSelect("persona-select", options.personas, doc().source_persona_id || options.default_persona_id || options.personas[0]?.id, "暂无人设");
+      fillSelect("persona-select", options.personas, selectedPersona, "暂无人设");
+      paintPersonaCards(selectedPersona);
       $("model-empty").hidden = !!options.models.length;
       $("persona-empty").hidden = !!options.personas.length;
       $("confirm-model").disabled = !options.models.length;
       $("load-persona").disabled = !options.personas.length;
+      if (modelAutoPicked) await persist();
       if (options.persona_issue) notice(options.persona_issue);
       else if (manual) notice(`刚刚已刷新 ${formatClock()}`);
       render();
+      void maybeAutoPreloadOptimizePersona();
     } catch (error) {
       if (!disposed && seq === optionsSeq) notice(errorText(error), true);
     } finally {
@@ -212,7 +377,6 @@
     notice(); render();
     await persist();
     if (disposed) return;
-    // The parent retains the receipt if this iframe is replaced during the call.
     api("POST", "designer/turn", request, 135000).catch(() => {}).finally(() => { if (!disposed) poll(); });
     schedulePoll();
   }
@@ -335,6 +499,7 @@
   document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => {
     selectMode(button.dataset.mode);
     persist(); notice(session().error || "", !!session().error); render();
+    void maybeAutoPreloadOptimizePersona();
   }));
   document.querySelectorAll("[data-stage]").forEach(button => button.addEventListener("click", () => {
     doc().stage = button.dataset.stage;
@@ -361,8 +526,20 @@
     doc().provider_id = $("model-select").value; persist(); $("model-dialog").close(); notice(); render();
   });
   $("choose-persona").addEventListener("click", () => {
-    fillSelect("persona-select", options.personas, doc().source_persona_id || options.default_persona_id || options.personas[0]?.id, "暂无人设"); $("persona-dialog").showModal();
+    const selected = doc().source_persona_id || options.default_persona_id || options.personas[0]?.id || "";
+    pickerFilter = "";
+    if ($("persona-search")) $("persona-search").value = "";
+    fillSelect("persona-select", options.personas, selected, "暂无人设");
+    paintPersonaCards(selected);
+    $("persona-dialog").showModal();
   });
+  if ($("persona-search")) {
+    $("persona-search").addEventListener("input", () => {
+      pickerFilter = $("persona-search").value;
+      paintPersonaCards();
+    });
+  }
+  $("persona-select").addEventListener("change", () => paintPersonaCards($("persona-select").value));
   async function loadPersona(id) {
     const current = session(), mode = root.activeMode;
     if (!id || working || generating() || root.pendingSave) return;
@@ -370,7 +547,6 @@
     try {
       const result = await api("GET", "designer/persona", {id});
       if (result.id !== id || typeof result.text !== "string") throw new Error("persona_designer_response_invalid");
-      // Fetch first: a failed read must leave the previous design recoverable.
       if (current.document.source_persona_id !== id) {
         const document = newDocument(mode);
         document.provider_id = current.document.provider_id;
@@ -378,9 +554,10 @@
         root.sessions[mode] = {document};
       } else {
         current.document.source_text = result.text;
+        delete current.manuallyCleared;
       }
       await persist(); $("persona-dialog").close(); $("switch-persona-dialog").close();
-      notice("已载入人设，可以先说说希望调整的地方。"); render();
+      notice("已载入人设，可以直接点下方快捷痛点或输入想调整的地方。"); render();
     } catch (error) {
       notice(errorText(error), true); $("persona-dialog").close(); $("switch-persona-dialog").close();
     }
@@ -406,16 +583,54 @@
   $("open-drafts").addEventListener("click", () => { $("drafts-dialog").showModal(); listDrafts(); });
   $("more-drafts").addEventListener("click", () => listDrafts(nextBefore));
   $("new-design").addEventListener("click", () => { $("drafts-dialog").close(); $("reset-dialog").showModal(); });
+  if ($("quick-reset")) $("quick-reset").addEventListener("click", () => $("reset-dialog").showModal());
   $("confirm-reset").addEventListener("click", () => {
     if (generating() || root.pendingSave) { notice("请先等待本轮操作完成，再重新开始。", true); $("reset-dialog").close(); return; }
+    const mode = root.activeMode;
     const provider = doc().provider_id;
-    root.sessions[root.activeMode] = {document: newDocument(root.activeMode)};
-    doc().provider_id = provider; persist(); $("reset-dialog").close(); notice(); render();
+    root.sessions[mode] = {document: newDocument(mode), manuallyCleared: true};
+    doc().provider_id = provider;
+    syncLocalDraft(mode, null);
+    persist(); $("reset-dialog").close(); notice("已清空当前模式进度，可重新开始。"); render();
   });
   $("copy-draft").addEventListener("click", () => copyText("draft-text")); $("copy-lorebook").addEventListener("click", () => copyText("lorebook"));
+  if ($("send-to-workshop")) {
+    $("send-to-workshop").addEventListener("click", () => {
+      const d = doc();
+      const text = (d.draft || "").trim() || (d.source_text || "").trim();
+      if (!text) return;
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          channel: "companion-workspace",
+          kind: "send-to-workshop",
+          text,
+          personaId: d.source_persona_id || "",
+        }, "*");
+        notice("正在送往「规范人格」逐段核对…");
+      } else {
+        copyText(d.draft.trim() ? "draft-text" : "source-text");
+      }
+    });
+  }
   $("compare").addEventListener("click", () => {
     $("compare-source").textContent = doc().source_text; $("compare-draft").textContent = doc().draft; $("compare-dialog").showModal();
   });
+  async function restoreLocalModes() {
+    for (const mode of ["optimize", "create"]) {
+      const target = root.sessions[mode];
+      if (!target || hasDocumentContent(target.document)) continue;
+      let restored = readDirectLocal(mode);
+      if (!restored) {
+        try {
+          const remote = await api("GET", "designer/local-draft", {mode});
+          restored = sanitizeDocument(remote?.document, mode);
+        } catch {}
+      }
+      if (restored && hasDocumentContent(restored)) {
+        target.document = restored;
+      }
+    }
+  }
   async function initialize() {
     try {
       bridge = window.AstrBotPluginPage;
@@ -423,9 +638,9 @@
       entryMode = ["create", "optimize"].includes(context?.tab) ? context.tab : "";
       const cached = await api("GET", "designer/client-state", {});
       root = cached.state?.version === 1 ? cached.state : fresh();
-      // Apply the entry after restoring memory; a bridge-generated click before
-      // the read finishes would otherwise overwrite or lose the selected mode.
+      await restoreLocalModes();
       if (entryMode) selectMode(entryMode);
+      document.documentElement.classList.toggle("has-entry-mode", !!entryMode);
       document.querySelector(".mode-switch").hidden = !!entryMode;
       await persist();
       render(); await loadOptions();

@@ -154,7 +154,7 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
 
     def load_persona(self, identifier):
         self.frame.locator("#choose-persona").click()
-        self.frame.locator("#persona-select").select_option(identifier)
+        self.frame.locator(f'[data-persona-card="{identifier}"]').click()
         self.frame.locator("#load-persona").click()
 
     def prepare_existing_design(self):
@@ -234,6 +234,8 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
 
     def test_loading_persona_over_pasted_source_requires_confirmation(self):
         self.choose_model()
+        self.frame.locator("#quick-reset").click()
+        self.frame.locator("#confirm-reset").click()
         self.frame.locator('[data-mode="create"]').click()
         self.frame.locator("#chat-input").fill("从零模式的独立想法")
         self.frame.locator('[data-mode="optimize"]').click()
@@ -306,11 +308,13 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
         designer.locator(".chat-message.assistant").wait_for()
         self.assertEqual(self.page.evaluate("mock.calls.find(c=>c.endpoint==='persona-designer/turn').body.state.mode"), "create")
         self.page.locator('[data-persona-recreation="questionnaire"]').click()
-        self.assertEqual(self.page.locator('[data-persona-recreation="questionnaire"]').get_attribute("aria-pressed"), "true")
+        self.assertEqual(self.page.locator('[data-persona-recreation="questionnaire"]').get_attribute("aria-selected"), "true")
         self.page.locator('[data-persona-recreation="optimize"]').click()
         designer.locator("#source-text").wait_for()
         self.assertEqual(designer.locator("#source-text").input_value(), "切换问卷后也要保留的原文")
         self.assertEqual(designer.locator("#chat-input").input_value(), "优化模式的想法")
+        # Beginner pain-point quick chips are rendered in optimize mode before first turn
+        self.assertIn("说话太像 AI 客服", designer.locator("#suggestions").inner_text())
         self.assertFalse(self.saved)
         self.assertFalse(self.browser_errors, self.browser_errors)
         self.page.screenshot(path="/tmp/companion-persona-designer-preview/cottage-integration.png", full_page=True)
@@ -336,8 +340,15 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
         self.assertEqual(len(self.saved), 1)
         self.page.reload()
         self.frame.locator("#source-text").wait_for()
-        self.assertEqual(self.frame.locator("#source-text").input_value(), "")
-        self.assertEqual(self.frame.locator("#choose-model").inner_text(), "选择模型")
+        # Default available model is auto-preselected after reload (zero disabled landing screen)
+        self.frame.locator("#send-turn:not([disabled])").wait_for()
+        self.assertIn("共创模型", self.frame.locator("#choose-model").inner_text())
+        # F5 reload preserves create-mode local draft automatically, and quick-reset clears it cleanly
+        self.frame.locator('[data-mode="create"]').click()
+        self.assertEqual(self.frame.locator("#draft-text").input_value(), "手改的正文，保留！保留！  \n")
+        self.frame.locator("#quick-reset").click()
+        self.frame.locator("#confirm-reset").click()
+        self.assertEqual(self.frame.locator("#draft-text").input_value(), "")
         self.frame.locator("#open-drafts").click()
         self.frame.locator(".saved-item button").click()
         self.frame.locator("#drafts-dialog").wait_for(state="hidden")
@@ -364,7 +375,7 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
         designer.locator("#open-drafts").click()
         designer.locator(".saved-item button").click()
         designer.locator("#notice").filter(has_text="已读取").wait_for()
-        self.page.locator('[data-persona-recreation="create"][aria-pressed="true"]').wait_for()
+        self.page.locator('[data-persona-recreation="create"][aria-selected="true"]').wait_for()
         self.assertFalse(designer.locator(".mode-switch").is_visible())
         self.assertFalse(designer.locator("#source-panel").is_visible())
         self.assertEqual(designer.locator("#chat-input").input_value(), "已保存的从零设计想法")
@@ -410,8 +421,8 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
         self.page.locator("#other").click()
         self.assertEqual(self.page.locator("#core").inner_text(), "主体页面正常")
 
-    def test_themes_density_mobile_layout_and_no_unsaved_browser_storage(self):
-        for width, theme in ((1280, "courtyard"), (1280, "night"), (390, "dawn"), (320, "contrast")):
+    def test_themes_density_mobile_layout_and_mode_isolated_local_storage(self):
+        for width, theme in ((1280, "courtyard"), (1280, "night"), (390, "dawn"), (360, "dusk"), (320, "contrast")):
             self.page.set_viewport_size({"width": width, "height": 1100})
             self.page.evaluate("theme=>{CompanionProduct.setAppearance('motion','off');CompanionProduct.setAppearance('theme',theme);CompanionProduct.setAppearance('density','compact');CompanionProduct.setAppearance('radius','round');CompanionProduct.setAppearance('typeScale','l');}", theme)
             frame = self.page.frames[1]
@@ -421,11 +432,21 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
             artifacts = Path("/tmp/companion-persona-designer-preview")
             artifacts.mkdir(exist_ok=True)
             self.frame.locator("main").screenshot(path=str(artifacts / f"{theme}-{width}.png"))
-        self.frame.locator("#source-text").fill("只在内存中的人设材料")
-        storage = self.page.evaluate("JSON.stringify({local:{...localStorage},session:{...sessionStorage}})")
-        self.assertNotIn("只在内存中的人设材料", storage)
+        # Mode-isolated localStorage auto-sync survives F5 reload, and quick-reset clears it
+        self.frame.locator("#source-text").fill("跨刷新保留的优化人设材料")
+        self.frame.locator('[data-mode="create"]').click()
+        self.frame.locator("#chat-input").fill("仅属于创建模式的草稿想法")
+        storage = self.page.evaluate("JSON.stringify({local:{...localStorage}})")
+        self.assertIn("companion.persona-designer.v1.optimize", storage)
+        self.assertIn("companion.persona-designer.v1.create", storage)
         self.page.goto("about:blank"); self.page.goto(self.url)
-        self.assertEqual(self.frame.locator("#source-text").input_value(), "")
+        self.frame.locator("#source-text").wait_for()
+        self.assertEqual(self.frame.locator("#source-text").input_value(), "跨刷新保留的优化人设材料")
+        self.frame.locator('[data-mode="create"]').click()
+        self.assertEqual(self.frame.locator("#chat-input").input_value(), "仅属于创建模式的草稿想法")
+        self.frame.locator("#quick-reset").click()
+        self.frame.locator("#confirm-reset").click()
+        self.assertEqual(self.frame.locator("#chat-input").input_value(), "")
         self.assertFalse(self.browser_errors, self.browser_errors)
 
 
