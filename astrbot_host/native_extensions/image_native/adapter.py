@@ -10,7 +10,7 @@ from .output_configuration import MAX_TASK_TIMEOUT_SECONDS, task_timeout_seconds
 from .package import package_hash
 from .references import (EDIT_REFERENCE_ROLES, ReferenceSelectionError, edit_role,
                          select_edit_tickets)
-from .types import (MAX_REFERENCE_IMAGES, ImageInvocation, NativeImageError, ReferenceImage,
+from .types import (ASPECT_RATIOS, MAX_REFERENCE_IMAGES, ImageInvocation, NativeImageError, ReferenceImage,
                     ReferenceOffer, document, fingerprint, require_text)
 from .waiting import deadline_timestamp, wait_for_output
 
@@ -70,6 +70,15 @@ class NativeImageProvider:
         for operation in IMAGE_OPERATIONS:
             properties = {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}}
             required = ["prompt"]
+            if operation in ("generate", "edit"):
+                properties["aspect_ratio"] = {
+                    "type": "string",
+                    "enum": list(ASPECT_RATIOS),
+                    "description": (
+                        "可选：画面宽高比（留空则使用默认画布；改图留空时默认保持原图比例）。"
+                        "横版常用 3:2 或 16:9，竖版常用 2:3 或 9:16，方图用 1:1。"
+                    ),
+                }
             if operation == "edit":
                 properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不能填写路径。"}
                 properties["reference_ids"] = {"type": "array", "items": {"type": "string"},
@@ -130,6 +139,8 @@ class NativeImageProvider:
             args = value["arguments"]
             operation = value["action"].split(".", 1)[1]
             allowed = {"prompt", "negative_prompt"}
+            if operation in ("generate", "edit"):
+                allowed.add("aspect_ratio")
             if operation == "edit":
                 allowed.update(("artifact_id", "reference_ids", "reference_indices", "reference_roles"))
             elif operation == "mask_edit":
@@ -139,6 +150,9 @@ class NativeImageProvider:
             require_text(args["prompt"], "prompt")
             if not isinstance(args.get("negative_prompt", ""), str):
                 raise NativeImageError("invalid_negative_prompt", unconfirmed=False)
+            if "aspect_ratio" in args:
+                if type(args["aspect_ratio"]) is not str or args["aspect_ratio"] not in ASPECT_RATIOS:
+                    raise NativeImageError("invalid_aspect_ratio", unconfirmed=False)
             if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
                 require_text(args["artifact_id"], "artifact_id")
                 if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
@@ -366,9 +380,13 @@ class NativeImageProvider:
                     or any(not isinstance(nai_prompt[key], str) for key in ("positive", "negative"))):
                 raise NativeImageError("invalid_image_prompt_preferences", unconfirmed=False)
             envelope["nai_prompt"] = nai_prompt
+        parameters = {}
+        if "aspect_ratio" in arguments:
+            parameters["aspect_ratio"] = arguments["aspect_ratio"]
         try:
             invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
                                          operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
+                                         parameters=parameters,
                                          reference_ids=(tuple(ref.reference_id for ref in refs)
                                                         or tuple(offer.reference_id for offer in reference_offers)),
                                          envelope=envelope, model_call=model_call)

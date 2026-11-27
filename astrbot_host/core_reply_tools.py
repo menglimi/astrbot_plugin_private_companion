@@ -48,7 +48,7 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-11-24.1"
+TOOL_MANIFEST_VERSION = "2026-11-27.1"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")

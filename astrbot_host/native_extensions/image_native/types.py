@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
@@ -15,6 +16,50 @@ from PIL import Image, ImageChops
 # ``companion_v2.conversation.media.models.MAX_REFERENCE_IMAGES`` and both are
 # asserted equal by the protocol tests.
 MAX_REFERENCE_IMAGES = 16
+ASPECT_RATIOS = ("1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9")
+
+
+def aspect_ratio_dimensions(
+    aspect_ratio: str,
+    *,
+    base_width: int = 1024,
+    base_height: int = 1024,
+    multiple: int = 64,
+    min_side: int = 512,
+    max_side: int = 1920,
+) -> tuple[int, int]:
+    """Compute area-preserving multiple-of-N canvas dimensions for one standard ratio."""
+    if type(aspect_ratio) is not str or aspect_ratio not in ASPECT_RATIOS:
+        raise NativeImageError("invalid_aspect_ratio", unconfirmed=False)
+    rw, rh = (int(part) for part in aspect_ratio.split(":", 1))
+    safe_w = base_width if type(base_width) is int and base_width > 0 else 1024
+    safe_h = base_height if type(base_height) is int and base_height > 0 else 1024
+    max_area = max(min_side * min_side, safe_w * safe_h)
+    target_ratio = rw / rh
+    ideal_w = math.sqrt(max_area * target_ratio)
+    ideal_h = math.sqrt(max_area / target_ratio)
+
+    def _candidates(value: float) -> tuple[int, ...]:
+        low = max(min_side, min(max_side, (int(value) // multiple) * multiple))
+        high = max(min_side, min(max_side, ((int(math.ceil(value)) + multiple - 1) // multiple) * multiple))
+        return (low,) if low == high else (low, high)
+
+    best: tuple[tuple[float, int, float, float], int, int] | None = None
+    w_cands = _candidates(ideal_w)
+    h_cands = _candidates(ideal_h)
+    for w in w_cands:
+        for h in h_cands:
+            area = w * h
+            if area > max_area:
+                continue
+            error = abs(math.log((w / h) / target_ratio))
+            rank = (error, -area, abs(w - ideal_w), abs(h - ideal_h))
+            if best is None or rank < best[0]:
+                best = (rank, w, h)
+    if best is not None:
+        return best[1], best[2]
+    # Fallback when min_side * min_side is tight: clamp the lower pair.
+    return w_cands[0], h_cands[0]
 
 
 class NativeImageError(ValueError):
@@ -168,13 +213,18 @@ class ImageInvocation:
         if not isinstance(self.parameters, Mapping):
             raise NativeImageError("invalid_image_parameters")
         params = json.loads(document(dict(self.parameters)))
-        allowed = {"width", "height", "steps", "cfg_scale", "seed", "batch_size",
+        allowed = {"width", "height", "aspect_ratio", "steps", "cfg_scale", "seed", "batch_size",
                    "sampler_name", "scheduler", "denoising_strength"}
         if params.keys() - allowed:
+            raise NativeImageError("unsupported_image_parameter")
+        if self.operation == "mask_edit" and "aspect_ratio" in params:
             raise NativeImageError("unsupported_image_parameter")
         for name, value in params.items():
             if name in {"sampler_name", "scheduler"}:
                 require_text(value, name)
+            elif name == "aspect_ratio":
+                if type(value) is not str or value not in ASPECT_RATIOS:
+                    raise NativeImageError("invalid_aspect_ratio")
             elif name in {"cfg_scale", "denoising_strength"}:
                 if type(value) not in {int, float} or value < 0:
                     raise NativeImageError("invalid_image_parameter")

@@ -101,7 +101,7 @@ class NAIImageBackend:
         api = self._api()
         if api is None or invocation.operation not in self.operations:
             raise NativeImageError("nai_plugin_unavailable", unconfirmed=False)
-        if invocation.parameters.keys() - {"width", "height", "denoising_strength"}:
+        if invocation.parameters.keys() - {"width", "height", "aspect_ratio", "denoising_strength"}:
             raise NativeImageError("unsupported_image_parameter", unconfirmed=False)
         prepared = invocation.envelope.get("nai_prompt") or {}
         prompt = prepared.get("positive", invocation.prompt)
@@ -116,6 +116,8 @@ class NAIImageBackend:
             if "width" not in parameters or "height" not in parameters:
                 raise NativeImageError("invalid_image_parameter", unconfirmed=False)
             request["size"] = f"{parameters['width']}x{parameters['height']}"
+        elif "aspect_ratio" in parameters:
+            request["ratio"] = parameters["aspect_ratio"]
         if "denoising_strength" in parameters:
             if not 0 < parameters["denoising_strength"] <= 1:
                 raise NativeImageError("invalid_image_parameter", unconfirmed=False)

@@ -83,6 +83,11 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
     if action == "image.edit" and isinstance(properties.get("artifact_id"), dict):
         properties["artifact_id"]["description"] = (
             "仅编辑已保存生成产物时填写真实的非空 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不要传空字符串。")
+    if isinstance(properties.get("aspect_ratio"), dict):
+        properties["aspect_ratio"]["description"] = (
+            "可选：画面宽高比（留空使用默认画布；改图留空时默认保持原图比例）。"
+            "横版/宽屏选 3:2 或 16:9，竖版选 2:3 或 9:16，方图选 1:1。"
+        )
     return description, parameters
 
 
