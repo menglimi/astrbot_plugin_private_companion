@@ -232,7 +232,14 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertEqual(q_card.get_attribute("aria-pressed"), "true")
         self.assertTrue(q_card.locator(".persona-helper-current").is_visible())
 
-        # Pressing Escape closes the guide strip without exiting the persona workspace.
+        # When a top-level modal (#searchDialog) is open above the guide strip, Escape closes the modal first.
+        self.page.evaluate("document.getElementById('searchDialog')?.showModal()")
+        self.page.locator("#searchDialog").wait_for(state="visible")
+        self.page.keyboard.press("Escape")
+        self.page.locator("#searchDialog").wait_for(state="hidden")
+        self.assertTrue(strip.is_visible(), "guide strip must stay open while Escape closes the foreground modal")
+
+        # Pressing Escape again closes the guide strip without exiting the persona workspace.
         self.page.keyboard.press("Escape")
         strip.wait_for(state="hidden")
         self.assertEqual(toggle.get_attribute("aria-expanded"), "false")

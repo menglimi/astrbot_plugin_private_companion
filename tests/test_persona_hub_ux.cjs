@@ -237,6 +237,10 @@ test("persona designer beginner UX: auto model select, optimize quick chips, loc
   assert.doesNotMatch(html, /<details id="source-panel"[^>]*open/);
   // Clicking stages must never inject hardcoded prompt strings into user input
   assert.doesNotMatch(js, /doc\(\)\.input\s*=\s*"我们先聊/);
+  // Preload starts before render() in both loadOptions() and [data-mode] click so optimize panel does not flash open
+  assert.match(js, /void maybeAutoPreloadOptimizePersona\(\);\s*\n\s*render\(\);/);
+  const appSource = read("pages/陪伴小屋/app.js");
+  assert.match(appSource, /if\(event\.key==='Escape'&&personaGuideOpen\s*\n\s*&&!\$\('#searchDialog'\)\?\.open&&!\$\('#detailDialog'\)\?\.open&&!\$\('#navigationDialog'\)\?\.open\)/);
   for (const chip of ["说话太像 AI 客服", "回复太啰嗦", "人设容易崩", "口吻再自然点"]) {
     assert.ok(js.includes(chip), `optimize starter should include chip: ${chip}`);
   }

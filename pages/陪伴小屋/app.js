@@ -7591,7 +7591,8 @@ document.addEventListener('keydown',event=>{
     }
     return;
   }
-  if(event.key==='Escape'&&personaGuideOpen){
+  if(event.key==='Escape'&&personaGuideOpen
+     &&!$('#searchDialog')?.open&&!$('#detailDialog')?.open&&!$('#navigationDialog')?.open){
     const strip=document.getElementById('persona-helper-strip');
     if(strip&&!strip.hidden){
       event.preventDefault();

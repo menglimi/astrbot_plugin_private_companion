@@ -503,8 +503,8 @@
       if (modelAutoPicked) await persist();
       if (options.persona_issue) notice(options.persona_issue);
       else if (manual) notice(`刚刚已刷新 ${formatClock()}`);
-      render();
       void maybeAutoPreloadOptimizePersona();
+      render();
     } catch (error) {
       if (!disposed && seq === optionsSeq) notice(errorText(error), true);
     } finally {
@@ -669,8 +669,9 @@
   }
   document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => {
     selectMode(button.dataset.mode);
-    persist(); notice(session().error || "", !!session().error); render();
+    persist(); notice(session().error || "", !!session().error);
     void maybeAutoPreloadOptimizePersona();
+    render();
   }));
   document.querySelectorAll("[data-stage]").forEach(button => button.addEventListener("click", () => {
     doc().stage = button.dataset.stage;
