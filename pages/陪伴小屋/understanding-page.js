@@ -46,16 +46,16 @@ window.CompanionUnderstandingPage = (() => {
       const count = permissionCount();
       return [
         ["视觉转述缓存上限", number("private_image_vision_cache_max_items", "条"), status("enable_private_image_vision_cache")],
-        ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), ""],
-        ["视频理解", status("video_understanding_enabled"), ""],
+        ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), "同图失败暂缓重试"],
+        ["视频理解", status("video_understanding_enabled"), "支持原生与抽帧兜底"],
         ["场景许可", "6 项", count === null ? "—" : `已启用 ${count} 项`],
       ];
     }
     if (tab === "image") return [
       ["视觉转述缓存上限", number("private_image_vision_cache_max_items", "条"), status("enable_private_image_vision_cache")],
-      ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), ""],
+      ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), "同图失败暂缓重试"],
       ["上下文描述条数", number("context_image_caption_max_items", "张"), status("enable_context_image_captioning")],
-      ["AstrBot 原生动图优化", status("astrbot_animated_image_understanding_enabled"), ""],
+      ["AstrBot 原生动图优化", status("astrbot_animated_image_understanding_enabled"), "GIF 3×3 连续帧说明"],
     ];
     if (tab === "video") {
       const actionLabel = {
@@ -72,9 +72,9 @@ window.CompanionUnderstandingPage = (() => {
         settings().video_understanding_qa_enabled ? "定向问答" : "",
       ].filter(Boolean).join(" · ");
       return [
-        ["视频理解状态", status("video_understanding_enabled"), features],
+        ["视频理解状态", status("video_understanding_enabled"), features || "按当前窗口生效"],
         ["体积 / 时长上限", `${number("video_understanding_target_mb", "MB")} · ${number("video_understanding_max_duration_seconds", "秒")}`, actionLabel],
-        ["转述预算", `${number("video_understanding_max_chars", "字")} · ${number("video_understanding_wait_seconds", "秒")}`, ""],
+        ["转述预算", `${number("video_understanding_max_chars", "字")} · ${number("video_understanding_wait_seconds", "秒")}`, "正文上限 · 等待时间"],
         ["FFmpeg 压缩器", ffmpegText, videoCaps.ffmpeg_available === false ? "仅小视频可直传或抽帧" : "支持异步压缩与截断"],
       ];
     }
@@ -86,21 +86,21 @@ window.CompanionUnderstandingPage = (() => {
       const missing = suffixes.filter(name => parsers[name] !== true)
         .map(name => name.replace(/^\./, "").toUpperCase());
       return [
-        ["纳入格式", count === null ? "—" : `${count} / 5 类`, ""],
-        ["解析预算", `${number("file_understanding_max_size_mb", "MB")} · ${number("file_understanding_timeout_seconds", "秒")}`, ""],
-        ["文件理解状态", status("file_understanding_enabled"), ""],
+        ["纳入格式", count === null ? "—" : `${count} / 5 类`, "文本与常见办公文档"],
+        ["解析预算", `${number("file_understanding_max_size_mb", "MB")} · ${number("file_understanding_timeout_seconds", "秒")}`, "单文件上限 · 读取超时"],
+        ["文件理解状态", status("file_understanding_enabled"), "附件正文不写长期存储"],
         ["解析组件", suffixes.length ? `${ready} / ${suffixes.length} 可用` : "—",
-          missing.length ? `缺少 ${missing.join("、")}` : ""],
+          missing.length ? `缺少 ${missing.join("、")}` : "全部组件已就绪"],
       ];
     }
     if (tab === "web") {
       const web = replyStatus?.web || {};
       const value = name => Number.isFinite(Number(web[name])) ? Number(web[name]) : null;
       return [
-        ["链接读取", web.enabled === false ? "已关闭" : web.enabled === true ? "已启用" : "—", ""],
-        ["每轮条数", value("max_links") === null ? "—" : `${value("max_links")} 条`, ""],
-        ["单页正文", value("max_chars") === null ? "—" : `${value("max_chars")} 字`, ""],
-        ["抓取超时", value("timeout_seconds") === null ? "—" : `${value("timeout_seconds")} 秒`, ""],
+        ["链接读取", web.enabled === false ? "已关闭" : web.enabled === true ? "已启用" : "—", "仅读 http(s) 公开网页"],
+        ["每轮条数", value("max_links") === null ? "—" : `${value("max_links")} 条`, "超出按普通文字保留"],
+        ["单页正文", value("max_chars") === null ? "—" : `${value("max_chars")} 字`, "超限自动截断摘录"],
+        ["抓取超时", value("timeout_seconds") === null ? "—" : `${value("timeout_seconds")} 秒`, "超时不阻塞本轮回复"],
       ];
     }
     const intake = hostStatus?.forwardIntake || {};

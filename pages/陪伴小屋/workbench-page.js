@@ -1112,7 +1112,51 @@ window.CompanionWorkbench = (() => {
       + ` step="${e(step)}" value="${shown}"${dis}>${unit ? `<span class="wb-unit">${unit.trim()}</span>` : ""}${bounds}</span>`;
   }
 
-  function fieldMarkup(state, container, name) {
+  function isWideFieldItem(item) {
+    if (!item || item.kind === "bool" || item.segmented) return false;
+    if (item.choices && item.input !== "chips") return false;
+    if (item.kind !== "text") return false;
+    if (item.input === "time" || item.input === "line") return false;
+    if (item.input === "chips" && item.chipOptions?.mode !== "multi") return false;
+    return true;
+  }
+
+  function computeGroupSpans(visibleNames, fields) {
+    const spans = new Map();
+    if (!visibleNames.length) return {spans, gridMode: ""};
+    if (visibleNames.length === 1) {
+      spans.set(visibleNames[0], " is-span-full");
+      return {spans, gridMode: "single"};
+    }
+    if (visibleNames.length === 3 && visibleNames.every(name => fields[name]?.kind === "bool")) {
+      return {spans, gridMode: "trio"};
+    }
+    let index = 0;
+    while (index < visibleNames.length) {
+      if (isWideFieldItem(fields[visibleNames[index]])) {
+        spans.set(visibleNames[index], " is-span-full");
+        index += 1;
+        continue;
+      }
+      const start = index;
+      while (index < visibleNames.length && !isWideFieldItem(fields[visibleNames[index]])) index += 1;
+      const run = visibleNames.slice(start, index);
+      if (run.length === 1) {
+        const first = run[0];
+        const isMaster = start === 0 && fields[first]?.kind === "bool" && visibleNames.length > 1;
+        spans.set(first, isMaster ? " is-span-full is-master-field" : " is-span-full");
+      } else if (run.length % 2 === 1) {
+        const first = run[0];
+        const isMaster = start === 0 && fields[first]?.kind === "bool"
+          && (run.length >= 5 || run.slice(1).some(name => fields[name]?.kind !== "bool"));
+        if (isMaster) spans.set(first, " is-span-full is-master-field");
+        else spans.set(run[run.length - 1], " is-span-full");
+      }
+    }
+    return {spans, gridMode: ""};
+  }
+
+  function fieldMarkup(state, container, name, spanClass = "") {
     const item = container.fields[name];
     if (!item) return "";
     const value = state.draft[name];
@@ -1144,7 +1188,7 @@ window.CompanionWorkbench = (() => {
         + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
         + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div></div>`;
     }
-    return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
+    return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}${spanClass}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
       + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
@@ -1166,7 +1210,15 @@ window.CompanionWorkbench = (() => {
     const groupMarkup = (group, index) => {
       const names = group.fields.filter(name => container.fields[name]);
       if (!names.length) return "";
-      let rows = names.map(name => fieldMarkup(s, container, name)).join("");
+      const visibleNames = names.filter(name => {
+        const item = container.fields[name];
+        return !item?.visibleWhen || Object.entries(item.visibleWhen)
+          .every(([field, expected]) => s.draft?.[field] === expected);
+      });
+      const {spans, gridMode} = !journal && !policy
+        ? computeGroupSpans(visibleNames, container.fields)
+        : {spans: new Map(), gridMode: ""};
+      let rows = names.map(name => fieldMarkup(s, container, name, spans.get(name) || "")).join("");
       if (journal && container.group === "role_profile" && group.id === "identity") {
         /* 原来这里左侧还有一块 3:4 的虚线「像位」，只画姓名首字：
            它不读头像、不可点击、对屏幕阅读器隐藏，纯粹占掉 96px 宽。
@@ -1176,17 +1228,23 @@ window.CompanionWorkbench = (() => {
             .map(name => fieldMarkup(s, container, name)).join("")}</div></div>`
           + names.filter(name => !identityFields.includes(name)).map(name => fieldMarkup(s, container, name)).join("");
       }
-      /* 只有一段时不必重复标题。 */
-      const heading = grouped && group.title
+      const showHeader = Boolean(group.title && (grouped || (!journal && !policy && group.title !== container.title)));
+      const heading = showHeader
         ? `<h4 class="wb-group-head">${e(group.title)}</h4>` : "";
       /* 段落级的依赖说明必须渲染出来。它说的是「总闸关着时下面几项为什么没反应」——
          不显示的话，用户看到一排不起作用的开关却找不到原因。数据一直传到了这里
          （spec.sections 的 help 经 group.help 进来），只是渲染时被漏掉了。
          用与字段说明同一个 .wb-help 类，保持同一套排版。 */
-      const groupHelp = !journal && grouped && group.help
+      const groupHelp = !journal && (grouped || showHeader) && group.help
         ? `<p class="wb-help">${e(group.help)}</p>` : "";
-      return `<section class="wb-group" data-wb-group="${e(group.id || index)}">${heading}`
-        + `${groupHelp}<div class="wb-fields">${rows}</div></section>`;
+      const headerMarkup = !journal && !policy && (heading || groupHelp)
+        ? `<header class="wb-group-header"><div class="wb-group-copy">${heading}${groupHelp}</div>`
+          + `<span class="wb-group-count">${visibleNames.length} 项</span></header>`
+        : `${heading}${groupHelp}`;
+      const gridAttr = gridMode ? ` data-wb-grid="${e(gridMode)}"` : "";
+      const singleClass = !journal && !policy && visibleNames.length === 1 ? " is-single-field" : "";
+      return `<section class="wb-group${singleClass}" data-wb-group="${e(group.id || index)}">${headerMarkup}`
+        + `<div class="wb-fields"${gridAttr} data-wb-field-count="${visibleNames.length}">${rows}</div></section>`;
     };
     const useSectionNavigation = grouped && groups.length <= container.navigationLimit;
     const activeGroup = groups.find(group => group.id === state.activeGroupId)
@@ -1239,7 +1297,7 @@ window.CompanionWorkbench = (() => {
       : `<div class="wb-skeleton" role="status" aria-label="正在读取设置">`
         + `<div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div></div>`;
     const legend = !journal && !policy && s.status && container.layers.length > 1
-      ? `<div class="wb-rail-legend">${container.layers.map(layer =>
+      ? `<div class="wb-rail-legend"><span class="wb-rail-legend-label">层级</span>${container.layers.map(layer =>
           `<b>${e(LAYER_SHORT_LABELS[layer] || layer)}</b>`).join("<span>·</span>")}`
         + `</div>` : "";
      const pendingText = s.pending

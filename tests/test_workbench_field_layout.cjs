@@ -151,3 +151,82 @@ test("数字输入框按内容取宽，不再拉伸到整幅", () => {
   assert.match(rule(".wb-number input"), /flex:\s*0\s+1\s+\d+px/,
     ".wb-number input 没有宽度上限：范围提示会被推到很远的地方");
 });
+
+test("共享工作台全宽分组白卡、3px 纤细层轨、智能跨列与非侵入式脏态保存条", () => {
+  const decisionCss = fs.readFileSync(path.join(DIR, "decision-page.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(rule(".wb-card-copy p"), /max-width:\s*none/, "卡片介绍段落不应被 62ch 硬截断成窄列三行");
+  assert.match(rule(".wb-rail"), /width:\s*3px/, "层轨应使用精致 3px 细色条而非厚重 11px 色块");
+  assert.match(rule(".wb-rail-legend"), /width:\s*fit-content/, "层轨图例在网格容器内应保持紧凑胶囊宽");
+  assert.match(rule(".wb-field.is-span-full"), /grid-column:\s*1\s*\/\s*-1/);
+  assert.match(rule(".wb-actions"), /position:\s*static/, "未修改态保存条应安静落底，不腰斩底部控件");
+  assert.match(rule(".wb-actions.is-dirty"), /position:\s*sticky/, "仅在存在未保存改动时吸底浮起保存条");
+  assert.match(mediaRule(".wb-actions.is-dirty", "max-width:760px"), /position:\s*static/, "窄屏脏态保存条也不应遮挡字段");
+  assert.match(decisionCss, /\.decision-editors \.wb-card-body\{[^}]*grid-template-columns:minmax\(0,1fr\)/,
+    "决策页配置分组应全宽单列堆叠，根除字段数不等分组并排扯出的大块空白");
+  assert.match(decisionCss, /\.decision-page\{[^}]*padding-bottom:var\(--sp-6\)/);
+
+  // 运行时验证 computeGroupSpans：单字段卡、主开关+4子项、3项对等开关与混合奇偶段落零空洞
+  const vm = require("node:vm");
+  const wbSource = fs.readFileSync(path.join(DIR, "workbench-page.js"), "utf8");
+  const win = {addEventListener() {}, removeEventListener() {}};
+  const ctx = vm.createContext({
+    window: win,
+    document: {documentElement: {dataset: {}}, addEventListener() {}, removeEventListener() {}},
+    console, Intl, Date, JSON, Math, Number, Object, Array, String, Set, Map, Boolean, Error, Promise,
+    Event: class Event { constructor(t) { this.type = t; } },
+    CustomEvent: class CustomEvent { constructor(t, o) { this.type = t; this.detail = o?.detail; } },
+    sessionStorage: {getItem: () => null, setItem() {}, removeItem() {}},
+    setTimeout: () => 1, clearTimeout() {},
+  });
+  vm.runInContext(wbSource, ctx);
+
+  const host = {innerHTML: "", addEventListener() {}, removeEventListener() {}, querySelector: () => null, querySelectorAll: () => [], closest: () => null};
+  const statusPayload = {
+    edit_token: "a".repeat(64),
+    scope: "role",
+    layers: ["installation", "role"],
+    settings: {
+      solo_flag: true,
+      master_on: true, child_a: true, child_b: true, child_c: true, child_d: true,
+      peer_1: true, peer_2: true, peer_3: true,
+      img_master: true, img_cache: true, img_max: 300, img_prompt: "", img_a: 10, img_b: 20, img_c: 30,
+    },
+    fields: {
+      solo_flag: {kind: "boolean"},
+      master_on: {kind: "boolean"}, child_a: {kind: "boolean"}, child_b: {kind: "boolean"}, child_c: {kind: "boolean"}, child_d: {kind: "boolean"},
+      peer_1: {kind: "boolean"}, peer_2: {kind: "boolean"}, peer_3: {kind: "boolean"},
+      img_master: {kind: "boolean"}, img_cache: {kind: "boolean"}, img_max: {kind: "integer"},
+      img_prompt: {kind: "text"}, img_a: {kind: "integer"}, img_b: {kind: "integer"}, img_c: {kind: "integer"},
+    },
+    provenance: {},
+  };
+  win.CompanionProduct = {
+    hosted: () => true,
+    bridgeNow: () => ({apiGet: async () => ({status: "ok", data: statusPayload}), apiPost: async () => ({status: "ok", data: {}})}),
+  };
+  const inst = win.CompanionWorkbench.create({
+    group: "test_layout",
+    title: "测试分组布局",
+    mount: () => host,
+    endpoint: "/astrbot_plugin_private_companion/test",
+    navigationLimit: 0,
+    sections: [
+      {id: "solo", title: "单项分组", help: "单字段说明", fields: ["solo_flag"]},
+      {id: "atmos", title: "主开关领衔", help: "总开关加四子项", fields: ["master_on", "child_a", "child_b", "child_c", "child_d"]},
+      {id: "trio", title: "三项对等开关", help: "三列对称", fields: ["peer_1", "peer_2", "peer_3"]},
+      {id: "mixed", title: "混合字段分组", help: "主开关+文本域+三数字", fields: ["img_master", "img_cache", "img_max", "img_prompt", "img_a", "img_b", "img_c"]},
+    ],
+  });
+  return inst.refresh().then(() => {
+    const html = host.innerHTML;
+    assert.match(html, /class="wb-group is-single-field" data-wb-group="solo"/);
+    assert.match(html, /class="wb-group-count">1 项<\/span>/);
+    assert.match(html, /class="wb-group-count">5 项<\/span>/);
+    assert.match(html, /class="wb-field is-span-full is-master-field" data-wb-row="master_on"/);
+    assert.match(html, /class="wb-field" data-wb-row="child_a"/);
+    assert.match(html, /data-wb-group="trio"[\s\S]*?class="wb-fields" data-wb-grid="trio"/);
+    assert.match(html, /class="wb-field is-span-full is-master-field" data-wb-row="img_master"/);
+    assert.match(html, /class="wb-field is-span-full" data-wb-row="img_c"/);
+    inst.unmount();
+  });
+});
