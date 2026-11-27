@@ -10,7 +10,9 @@ from companion_v2.storage.native_dedup import (
 
 TABLE = "astrbot_core_reply_observations"
 ROLLUPS_TABLE = "core_reply_daily_rollups"
-SCHEMA_KEY = "astrbot_core_reply_observations.v2"
+OBSERVED_MODEL_CATALOG_TABLE = "observed_model_catalog"
+OBSERVED_TURN_USAGE_TABLE = "observed_core_reply_turn_usage"
+SCHEMA_KEY = "astrbot_core_reply_observations.v3"
 
 STATEMENTS = (
     *DEDUP_TABLE_STATEMENTS,
@@ -50,6 +52,37 @@ STATEMENTS = (
     )""",
     "CREATE INDEX IF NOT EXISTS idx_core_reply_rollups_day "
     "ON core_reply_daily_rollups(day)",
+    """CREATE TABLE IF NOT EXISTS observed_model_catalog (
+        role_key TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        calls INTEGER NOT NULL DEFAULT 0,
+        requests INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        last_observed_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (role_key, provider_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_observed_model_catalog_provider "
+    "ON observed_model_catalog(provider_id)",
+    """CREATE TABLE IF NOT EXISTS observed_core_reply_turn_usage (
+        turn_id TEXT NOT NULL,
+        role_key TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0,
+        provider_id TEXT NOT NULL,
+        calls INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        observed_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (turn_id, provider_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_observed_turn_usage_role "
+    "ON observed_core_reply_turn_usage(role_key, provider_id)",
 )
 
 
@@ -108,6 +141,49 @@ def ensure_core_reply_telemetry_migrations(connection) -> bool:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_core_reply_rollups_day "
                 "ON core_reply_daily_rollups(day)"
+            )
+            changed = True
+        if OBSERVED_MODEL_CATALOG_TABLE not in tables:
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS observed_model_catalog (
+                    role_key TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    calls INTEGER NOT NULL DEFAULT 0,
+                    requests INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_observed_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (role_key, provider_id)
+                )"""
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_observed_model_catalog_provider "
+                "ON observed_model_catalog(provider_id)"
+            )
+            changed = True
+        if OBSERVED_TURN_USAGE_TABLE not in tables:
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS observed_core_reply_turn_usage (
+                    turn_id TEXT NOT NULL,
+                    role_key TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    provider_id TEXT NOT NULL,
+                    calls INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    observed_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (turn_id, provider_id)
+                )"""
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_observed_turn_usage_role "
+                "ON observed_core_reply_turn_usage(role_key, provider_id)"
             )
             changed = True
     return changed
