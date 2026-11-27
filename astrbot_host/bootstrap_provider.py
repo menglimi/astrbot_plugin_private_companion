@@ -158,17 +158,21 @@ def resolve_bootstrap_provider(context, expected_type, configured_id: str = "") 
     configured = str(configured_id or "").strip()
     catalog = text_provider_catalog(context, expected_type)
     by_id = {item["id"]: item for item in catalog}
+    if not catalog:
+        # AstrBot loads plugins before instantiating providers; avoid probing
+        # get_provider_by_id / get_using_provider on an empty catalog, which
+        # emits noisy startup "Provider ... was not found" warnings.
+        return BootstrapProvider("", "", "unavailable")
     if configured:
+        if configured in by_id:
+            return BootstrapProvider(configured, by_id[configured]["name"], "configured")
         provider = None
         try:
             provider = context.get_provider_by_id(configured)
         except Exception:
             provider = None
         if provider is not None and _supported(provider, expected_type):
-            return BootstrapProvider(configured, by_id.get(configured, {}).get(
-                "name") or provider_name(provider, configured), "configured")
-        if configured in by_id:
-            return BootstrapProvider(configured, by_id[configured]["name"], "configured")
+            return BootstrapProvider(configured, provider_name(provider, configured), "configured")
 
     active = None
     try:

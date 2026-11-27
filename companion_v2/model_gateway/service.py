@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from datetime import timedelta
 import json
 from logging import getLogger
 import math
@@ -11,7 +12,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from companion_v2.conversation.foreground import ModelDraft, PromptRequest
-from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require, stamp
+from companion_v2.execution.models import Lane, TaskContext, TaskDeferred, TaskError, digest, encode, require, stamp
 from companion_v2.execution.runner import TaskRun
 from companion_v2.execution.service import TaskSupervisor, outcome
 from companion_v2.role_profile.task_reference import TaskRoleReference
@@ -19,8 +20,8 @@ from companion_v2.sources.repositories import SourceRepository
 
 from .budget import BudgetDeferral, BudgetLedger
 from .failures import ModelFailure
-from .models import (MAX_MODEL_OUTPUT_TOKENS, MAX_TOOL_CATALOG, Amount, LocalProvider, ModelCompletion,
-                     ModelEnvelope, ProviderResponse, ToolSpec)
+from .models import (MAX_MODEL_OUTPUT_TOKENS, MAX_TOOL_CATALOG, RELEASE_WITHOUT_USAGE, Amount, LocalProvider,
+                     ModelCompletion, ModelEnvelope, ProviderResponse, ToolSpec)
 from .refusal import matches_refusal_text
 from .routing import ModelRouter
 from .response_diagnostics import checked_response_diagnostics
@@ -63,6 +64,94 @@ CEILING_RETRY_REFUSAL_CODES = frozenset({
     "model_budget_exhausted", "model_budget_soft_deferred", "model_estimation_failed",
     "host_model_limit_input", "host_model_limit_output",
 })
+CONTEXT_BLOCKING_TASK_CODES = frozenset({
+    "host_persona_changed",
+    "host_persona_window_unbound",
+    "host_persona_unmapped",
+    "host_persona_unavailable",
+    "role_binding_changed",
+    "host_account_offline",
+    "host_platform_unavailable",
+    "host_route_changed",
+    "host_conversation_missing",
+    "host_conversation_changed",
+})
+_PERSONA_MISMATCH_CODES = frozenset({
+    "host_persona_changed",
+    "host_persona_window_unbound",
+    "host_persona_unmapped",
+    "host_persona_unavailable",
+    "role_binding_changed",
+    "host_conversation_missing",
+    "host_conversation_changed",
+})
+_ACCOUNT_OFFLINE_CODES = frozenset({"host_account_offline", "host_platform_unavailable"})
+_CONNECT_TIMEOUT_TYPES = frozenset({"ConnectTimeout", "PoolTimeout"})
+_CONNECT_FAILED_TYPES = frozenset({"ConnectError", "UnsupportedProtocol"})
+ACCOUNT_OFFLINE_DEFER_SECONDS = 15.0
+TRANSIENT_UPSTREAM_FALLBACK_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _classify_not_started(attempts: list[dict]) -> tuple[str, str, dict]:
+    """Classify sanitized ``not_started`` attempt diagnostics into cause, hint, and details."""
+    chosen = None
+    for item in attempts:
+        if item.get("task_error_code") in CONTEXT_BLOCKING_TASK_CODES:
+            chosen = item
+            break
+    if chosen is None:
+        for item in attempts:
+            if (item.get("task_error_code") or item.get("status_code") is not None
+                    or item.get("error_type")):
+                chosen = item
+                break
+    if chosen is None and attempts:
+        chosen = attempts[-1]
+    chosen = chosen or {}
+    task_error_code = chosen.get("task_error_code")
+    status_code = chosen.get("status_code")
+    error_type = chosen.get("error_type")
+
+    if task_error_code in _PERSONA_MISMATCH_CODES:
+        cause = "persona_binding_mismatch"
+        hint = "会话人格与陪伴角色映射不一致或已切换；请到「陪伴小屋 → 账号与会话」核对角色映射，或在聊天窗口 /reset 后重载插件"
+    elif task_error_code == "host_provider_changed":
+        cause = "provider_config_changed"
+        hint = "模型 Provider 配置或模型 ID 在运行期间变更；请检查「模型与连接」配置并重载插件"
+    elif task_error_code in _ACCOUNT_OFFLINE_CODES:
+        cause = "host_account_offline"
+        hint = "Bot 协议端账号当前离线或尚未连上，待重连后会自动恢复"
+    elif error_type in _CONNECT_TIMEOUT_TYPES:
+        cause = "connect_timeout"
+        hint = "连接模型接口超时（请求尚未发出），请检查代理或中转站连通性并适当调大超时"
+    elif error_type in _CONNECT_FAILED_TYPES:
+        cause = "connect_failed"
+        hint = "无法连接到模型接口（DNS/端口/代理失败），请检查 API Base URL 与代理设置"
+    elif status_code == 404:
+        cause = "model_or_endpoint_not_found"
+        hint = "上游返回 HTTP 404（常见为模型 ID 填写错误或接口路径不对），请核对模型名与 Provider 地址"
+    elif status_code in (401, 403):
+        cause = "provider_auth_rejected"
+        hint = "上游返回 HTTP 401/403（API Key 无效、过期或无权限），请检查提供商密钥"
+    elif status_code in (400, 405, 415, 422):
+        cause = "provider_request_rejected"
+        hint = "上游返回 HTTP 400/422 等请求拒绝（参数或模型名不被支持），请核对模型配置"
+    else:
+        cause = "preparation_or_prestart_failed"
+        hint = "模型请求在发送前准备失败，请结合上方 provider 警告日志核对模型与会话配置"
+
+    details: dict[str, object] = {"cause": cause, "hint": hint, "attempts": len(attempts)}
+    if chosen.get("provider"):
+        details["provider"] = chosen["provider"]
+    if chosen.get("model"):
+        details["model"] = chosen["model"]
+    if task_error_code:
+        details["task_error_code"] = task_error_code
+    if type(status_code) is int:
+        details["status_code"] = status_code
+    if error_type:
+        details["upstream_error_type"] = error_type
+    return cause, hint, details
 # 一轮网关调用最多派发 3 次：provider 链本身 1 次 + 合同回退 1 次 + 升限重试 1 次
 # （没有备用 provider 或没发生合同回退时是 2 次）。owner 对同一学习轮还有一次
 # 整轮降载重试，所以同一任务叠加后的上界是 2 × 3 = 6 次。
@@ -407,6 +496,7 @@ class LocalModelGateway:
                 require(sources.validate_reference(reference, observed_at=self.tasks.now()))
 
         contract_fallback_used = False
+        not_started_attempts: list[dict] = []
         for provider_position, provider in providers:
             provider_envelope = replace(envelope,
                 model_override=envelope.model_override if provider_position == 0 else "",
@@ -600,21 +690,61 @@ class LocalModelGateway:
                         "tools" if response.tool_calls else "final", call_id, encode(response.tool_calls),
                         run.task.task_id, round_no))
                 return ModelCompletion(call_id, draft, usage_known, response.tool_calls, captured)
+            if not prefix_committed and response.status == "not_started":
+                diagnostics = response.diagnostics
+                failure = response.failure or (diagnostics.failure if diagnostics is not None else None)
+                phase = failure.document()["phase"] if failure is not None else "unclassified"
+                task_error_code = diagnostics.error_code if diagnostics is not None else None
+                not_started_attempts.append({
+                    "provider": provider.binding.provider,
+                    "model": provider_envelope.model_override or provider.model,
+                    "phase": phase,
+                    "failure": failure.value if failure is not None else "unclassified",
+                    "error_type": diagnostics.error_type if diagnostics is not None else None,
+                    "task_error_code": task_error_code,
+                    "status_code": diagnostics.status_code if diagnostics is not None else None,
+                })
+                if task_error_code in CONTEXT_BLOCKING_TASK_CODES:
+                    if task_error_code == "host_account_offline":
+                        registration = run.supervisor.registrations.get(run.task.spec.kind)
+                        if registration is not None and registration.definition.lane is Lane.BACKGROUND:
+                            raise TaskDeferred(
+                                "host_account_offline",
+                                "host account is offline; deferring background task",
+                                retry_at=self.tasks.now() + timedelta(seconds=ACCOUNT_OFFLINE_DEFER_SECONDS),
+                            )
+                    break
+                continue
             if prefix_committed or response.status != "not_started":
                 diagnostics = response.diagnostics
                 failure = response.failure or (diagnostics.failure if diagnostics is not None else None)
                 phase = failure.document()["phase"] if failure is not None else "unclassified"
-                if (envelope.original.output_format == "phone_action" and not envelope.tools
-                        and not prefix_committed and failure is ModelFailure.TRANSPORT
-                        and diagnostics is not None and diagnostics.status_code == 429
-                        and not diagnostics.completion_present):
-                    # The phone has not acted on a model result. Keep the original
-                    # call's accounting and let a configured vision fallback decide.
+                transient_upstream = (
+                    not prefix_committed
+                    and not response.tool_calls
+                    and failure is ModelFailure.TRANSPORT
+                    and diagnostics is not None
+                    and type(diagnostics.status_code) is int
+                    and diagnostics.status_code in TRANSIENT_UPSTREAM_FALLBACK_STATUSES
+                    and not diagnostics.completion_present
+                )
+                if transient_upstream:
                     if allow_fallback and provider_position + 1 < len(plan.providers):
-                        logger.warning("Phone decision rate limited; trying the configured fallback task=%s provider=%s",
-                                       run.task.task_id, provider.binding.provider)
+                        # No reply prefix, completion, or tool call was produced by this
+                        # provider. Keep the call's ``unknown`` audit state, release the
+                        # unconfirmed reservation so fallback attempts never leak or starve
+                        # the daily budget ceiling, and try the configured fallback provider.
+                        self.ledger.release(call_id, reason=RELEASE_WITHOUT_USAGE, observed_at=self.tasks.now())
+                        logger.warning(
+                            "[CompanionV2] 上游模型瞬态不可用，释放未确认预留并切换备用模型重试 "
+                            "task=%s kind=%s provider=%s status_code=%s error_type=%s",
+                            run.task.task_id, plan.audit["profile"]["kind"],
+                            provider.binding.provider, diagnostics.status_code,
+                            diagnostics.error_type or "unavailable",
+                        )
                         continue
-                    raise TaskError("phone_model_rate_limited", "the phone decision provider returned HTTP 429")
+                    if envelope.original.output_format == "phone_action" and diagnostics.status_code == 429:
+                        raise TaskError("phone_model_rate_limited", "the phone decision provider returned HTTP 429")
                 logger.warning(
                     "[CompanionV2] 模型结果无法确认 task=%s kind=%s round=%d provider=%s "
                     "phase=%s failure=%s parse_state=%s finish_reason=%s completion_present=%s "
@@ -649,8 +779,33 @@ class LocalModelGateway:
                         run.task.task_id, provider.binding.provider, phase,
                         diagnostics.parse_state if diagnostics is not None else "unavailable")
                     continue
-                raise TaskError("model_usage_unknown", "provider processing is unknown; no fallback was dispatched")
-        raise TaskError("model_not_started", "configured providers confirmed they did not process the request")
+                unknown_details: dict[str, object] = {
+                    "provider": provider.binding.provider,
+                    "model": provider_envelope.model_override or provider.model,
+                }
+                if diagnostics is not None:
+                    if type(diagnostics.status_code) is int:
+                        unknown_details["status_code"] = diagnostics.status_code
+                    if diagnostics.error_type:
+                        unknown_details["upstream_error_type"] = diagnostics.error_type
+                    if diagnostics.error_code:
+                        unknown_details["task_error_code"] = diagnostics.error_code
+                if transient_upstream:
+                    unknown_details["cause"] = "upstream_transient_error"
+                    unknown_details["hint"] = "上游模型返回瞬态错误且无可用备用模型，请检查主/备用模型可用性后重试"
+                raise TaskError("model_usage_unknown", "provider processing is unknown; no fallback was dispatched",
+                                details=unknown_details)
+        cause, _hint, details = _classify_not_started(not_started_attempts)
+        logger.warning(
+            "[CompanionV2] 模型请求未开始 task=%s kind=%s cause=%s attempts=%d "
+            "provider=%s model=%s task_error_code=%s status_code=%s upstream_error_type=%s",
+            run.task.task_id, plan.audit["profile"]["kind"], cause, len(not_started_attempts),
+            details.get("provider", "unavailable"), details.get("model", "unavailable"),
+            details.get("task_error_code", "unavailable"), details.get("status_code", "unavailable"),
+            details.get("upstream_error_type", "unavailable"),
+        )
+        raise TaskError("model_not_started", "configured providers confirmed they did not process the request",
+                        details=details)
 
     def _ceiling_retry_plan(self, run, plan, envelope, round_no, provider, provider_position, captured,
                             *, usage_known, prefix_committed, tool_calls):

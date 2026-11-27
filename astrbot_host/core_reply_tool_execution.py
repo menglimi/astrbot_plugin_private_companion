@@ -9,7 +9,9 @@ import json
 import logging
 import re
 
-from companion_v2.conversation.external_tools import ExternalToolInvocation, ExternalToolResponse, _SourceAccess
+from companion_v2.conversation.external_tools import (
+    CORE_TOOL_KIND_PREFIX as PREFIX, ExternalToolInvocation, ExternalToolResponse, _SourceAccess, core_tool_kind,
+)
 from companion_v2.execution.models import (
     SideEffect, TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp,
 )
@@ -22,7 +24,6 @@ from companion_v2.conversation.tool_failures import failure_guidance, retry_disp
 from companion_v2.sources.dependencies import link
 
 
-PREFIX = "astrbot.core-tool."
 logger = logging.getLogger(__name__)
 def supports_native_external(action):
     return True
@@ -37,7 +38,7 @@ class CoreReplyToolExecutor:
         self.providers = ({action: provider for action, provider in self.external.providers.items()
                            if supports_native_external(action)} if self.external is not None else {})
         self.registrations = tuple(TaskRegistration(replace(provider.descriptor.definition(),
-            kind=PREFIX + digest(provider.descriptor), owner="astrbot.core-tool"), self.validate)
+            kind=core_tool_kind(provider.descriptor.tool.action), owner="astrbot.core-tool"), self.validate)
             for provider in self.providers.values())
         self.kinds = {provider.descriptor.tool.action: registration.definition.kind
                       for provider, registration in zip(self.providers.values(), self.registrations)}

@@ -46,6 +46,12 @@ from .tool_failures import blocks_repeat, failure_guidance, retry_disposition_fo
 
 MAX_RESULT_BYTES = 65536
 MAX_TURN_RESULT_BYTES = 262144
+CORE_TOOL_KIND_PREFIX = "astrbot.core-tool."
+
+
+def core_tool_kind(action: str) -> str:
+    """Stable, deterministic task kind for a native core-reply external tool action."""
+    return CORE_TOOL_KIND_PREFIX + action
 _ADOPTION_WITHDRAWN = frozenset({
     "message_withdrawn", "message_batch_closed", "source_revoked", "source_expired", "source_not_active",
     "asset_revoked", "asset_expired", "group_input_unavailable", "group_reply_unavailable",
@@ -253,6 +259,17 @@ class ExternalToolExecutor:
         self.capabilities = CapabilityRepository(runtime)
         self.messages = self.tasks = self.runner = None
         self.registrations = tuple(TaskRegistration(p.descriptor.definition(), self.validate_child) for p in providers)
+        self.core_tool_registrations = tuple(
+            TaskRegistration(
+                replace(
+                    p.descriptor.definition(),
+                    kind=core_tool_kind(p.descriptor.tool.action),
+                    owner="astrbot.core-tool",
+                ),
+                self.validate_core_tool_recovery,
+            )
+            for p in providers
+        )
         # A host registry refresh moves every provider binding at once.  Keep the
         # last observed binding per action so a persistent drift is reported once
         # instead of turning every catalog round into a warning.
@@ -482,6 +499,11 @@ class ExternalToolExecutor:
                     provider.descriptor.binding.provider, provider.descriptor.binding.capability)):
             raise TaskError("tool_owner_unavailable", "original extension owner or declaration changed")
         return descriptor
+
+    @outcome
+    def validate_core_tool_recovery(self, spec, at):
+        """Native core tool calls belong to a single live AstrBot turn and never replay after restart."""
+        raise TaskError("core_tool_dispatch_closed", "the original native tool call cannot be dispatched after restart")
 
     @outcome
     def validate_child(self, spec, at):
