@@ -1,9 +1,32 @@
-/* 小屋缩略卡片：角色切换、拖动与浏览器位置偏好。 */
+/* 小屋缩略卡片：角色切换、拖动、移动端默认迷你胶囊与浏览器位置偏好。 */
 "use strict";
 
 window.CompanionRoleCard = (() => {
   const MARGIN = 8;
   const DRAG_DISTANCE = 5;
+  const MOBILE_BREAKPOINT = 760;
+  const MOBILE_PIP_SESSION_KEY = "companion-mobile-pip-state.v1";
+
+  function readMobilePipChoice() {
+    try {
+      const value = typeof sessionStorage !== "undefined" && sessionStorage
+        ? sessionStorage.getItem(MOBILE_PIP_SESSION_KEY) : null;
+      return value === "expanded" || value === "collapsed" ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeMobilePipChoice(value) {
+    try {
+      if (typeof sessionStorage === "undefined" || !sessionStorage) return;
+      if (value === "expanded" || value === "collapsed") {
+        sessionStorage.setItem(MOBILE_PIP_SESSION_KEY, value);
+      } else {
+        sessionStorage.removeItem(MOBILE_PIP_SESSION_KEY);
+      }
+    } catch (_) { /* 沙箱 iframe 无 allow-same-origin 时降级到内存态。 */ }
+  }
 
   function clampPosition(position, size, viewport) {
     const left = (viewport.left || 0) + MARGIN;
@@ -15,9 +38,13 @@ window.CompanionRoleCard = (() => {
   }
 
   function mount({root = document, product = window.CompanionProduct, shell = window.CompanionShell} = {}) {
+    const homeShell = root.querySelector("#homeShell");
     const region = root.querySelector(".stage-region");
     const scene = root.querySelector("#stageScene");
     const handle = root.querySelector("[data-role-card-handle]");
+    const pill = root.querySelector("[data-role-card-pill]");
+    const pillInitial = root.querySelector("[data-role-card-pill-initial]");
+    const collapseBtn = root.querySelector("[data-role-card-collapse]");
     const name = root.querySelector("[data-role-card-name]");
     const toggle = root.querySelector("[data-role-card-switch]");
     const menu = root.querySelector("#roleCardMenu");
@@ -28,6 +55,8 @@ window.CompanionRoleCard = (() => {
     let position = null;
     let anchoredPosition = null;
     let docked = false;
+    let collapsed = false;
+    let mobilePipChoice = readMobilePipChoice();
     let slide = null;
     let preferenceIdentity = null;
     let preferencePosition = "null";
@@ -38,6 +67,11 @@ window.CompanionRoleCard = (() => {
     const controls = "button, a, select, input, label";
 
     const isAway = () => Boolean(shell.section) && !document.body.classList.contains("room-editing");
+    const isMobileViewport = () => window.innerWidth <= MOBILE_BREAKPOINT;
+    const prefersReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      || ["off", "low"].includes(document.documentElement.dataset.motion);
+    let wasAway = isAway();
+    let startedOnMobile = isMobileViewport();
     const main = root.querySelector(".shell-body");
     const rail = root.querySelector("#homeShell > .rail");
     function contentBounds() {
@@ -56,6 +90,11 @@ window.CompanionRoleCard = (() => {
     }
     const currentKey = () => product.role() && product.roleTarget()
       ? product.roleChoiceKey({target: product.roleTarget(), role: product.role()}) : "";
+
+    function syncShellPipState() {
+      if (!homeShell) return;
+      homeShell.dataset.pipCollapsed = String(Boolean(isAway() && (collapsed || docked)));
+    }
 
     function anchorPosition(next) {
       const bounds = contentBounds();
@@ -116,16 +155,78 @@ window.CompanionRoleCard = (() => {
       menu.style.top = `${placed.top}px`;
     }
 
-    function fitPosition() {
-      if (!isAway()) {
+    function setCollapsed(value, {remember = false, animate = false} = {}) {
+      const next = Boolean(value) && Boolean(pill) && isAway();
+      if (remember && isMobileViewport()) {
+        mobilePipChoice = next ? "collapsed" : "expanded";
+        writeMobilePipChoice(mobilePipChoice);
+      }
+      const changed = next !== collapsed;
+      collapsed = next;
+      region.dataset.roleCardCollapsed = String(next);
+      if (next) {
+        docked = false;
+        region.dataset.roleCardDocked = "false";
+        if (handle) handle.hidden = true;
+        applyPosition(null);
+        scene.inert = true;
+        closeMenu();
+      } else {
+        scene.inert = Boolean(docked);
+      }
+      if (pill) {
+        pill.hidden = !next;
+        pill.setAttribute("aria-expanded", String(!next));
+      }
+      syncShellPipState();
+      if (animate && changed && !next && !prefersReducedMotion() && typeof scene.animate === "function") {
+        stopSlide();
+        region.dataset.roleCardSettling = "true";
+        slide = scene.animate([
+          {opacity: 0, transform: "scale(0.88) translateY(8px)"},
+          {opacity: 1, transform: "none"},
+        ], {duration: 180, easing: "cubic-bezier(0.22, 1, 0.36, 1)"});
+        slide.onfinish = () => { slide = null; delete region.dataset.roleCardSettling; };
+      }
+    }
+
+    function shouldDefaultMobileCollapse({enteringAway = false} = {}) {
+      if (!pill || !isMobileViewport()) return false;
+      if (mobilePipChoice === "collapsed") return true;
+      if (mobilePipChoice === "expanded") return false;
+      /* 手机端首屏或离家进入配置页时默认收起为 44px 迷你胶囊，避免遮挡正文；
+         若用户在桌面端已手动拖动/停靠后临时缩窄窗口，则保留展开态便于继续操作。 */
+      if (enteringAway || startedOnMobile) return true;
+      return !docked && !anchoredPosition;
+    }
+
+    function fitPosition({enteringAway = false} = {}) {
+      const awayNow = isAway();
+      if (!awayNow) {
+        wasAway = false;
         setDocked(false);
+        setCollapsed(false);
+        syncShellPipState();
         return;
       }
+      const justEnteredAway = enteringAway || !wasAway;
+      wasAway = true;
       if (drag) return;
       stopSlide();
+      if (!isMobileViewport()) {
+        startedOnMobile = false;
+        if (collapsed) setCollapsed(false);
+      } else if (shouldDefaultMobileCollapse({enteringAway: justEnteredAway})) {
+        if (!collapsed) setCollapsed(true);
+        return;
+      }
+      if (collapsed) {
+        syncShellPipState();
+        return;
+      }
       const bounds = contentBounds();
-      region.style.setProperty("--role-card-max-width", `${Math.max(0, bounds.width - MARGIN * 2)}px`);
-      region.style.setProperty("--role-card-max-height", `${Math.max(0, bounds.height - MARGIN * 2)}px`);
+      region.style.setProperty("--role-card-max-width", `${Math.max(0, Math.floor(bounds.width - MARGIN * 2))}px`);
+      region.style.setProperty("--role-card-max-height", `${Math.max(0, Math.floor(bounds.height - MARGIN * 2))}px`);
       if (!anchoredPosition) applyPosition(null);
       const rect = scene.getBoundingClientRect();
       const candidate = anchoredPosition ? {
@@ -136,6 +237,7 @@ window.CompanionRoleCard = (() => {
       const next = clampPosition(candidate, rect, bounds);
       if (docked) next.left = docked === "left" ? bounds.left - rect.width : bounds.left + bounds.width;
       if (position || next.left !== rect.left || next.top !== rect.top) applyPosition(next);
+      syncShellPipState();
       placeMenu();
     }
 
@@ -144,10 +246,13 @@ window.CompanionRoleCard = (() => {
       region.dataset.roleCardDocked = String(Boolean(value));
       const side = value || (drag?.fromHandle && drag.wasDocked) || "right";
       region.dataset.roleCardDockSide = side;
-      handle.title = `点击展开，或向${side === "left" ? "右" : "左"}拖出小屋卡片`;
-      scene.inert = Boolean(value);
-      handle.hidden = !value && !drag?.fromHandle;
+      if (handle) {
+        handle.title = `点击展开，或向${side === "left" ? "右" : "左"}拖出小屋卡片`;
+        handle.hidden = !value && !drag?.fromHandle;
+      }
+      scene.inert = Boolean(value || collapsed);
       if (value) closeMenu();
+      syncShellPipState();
     }
 
     function stopSlide() {
@@ -160,8 +265,7 @@ window.CompanionRoleCard = (() => {
       stopSlide();
       const after = scene.getBoundingClientRect();
       const offset = Number.parseFloat(region.style.getPropertyValue("--role-card-offset")) || 0;
-      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          || ["off", "low"].includes(document.documentElement.dataset.motion)) return;
+      if (prefersReducedMotion()) return;
       region.dataset.roleCardSettling = "true";
       slide = scene.animate([
         {transform:`translate(${offset + before.left - after.left}px, ${before.top - after.top}px)`},
@@ -172,6 +276,7 @@ window.CompanionRoleCard = (() => {
 
     function revealCard() {
       const before = scene.getBoundingClientRect();
+      if (collapsed) setCollapsed(false, {remember: true});
       setDocked(false);
       fitPosition();
       savePosition();
@@ -189,8 +294,18 @@ window.CompanionRoleCard = (() => {
     function render() {
       restorePosition();
       const role = product.role();
-      name.textContent = role ? product.roleLabel(role) : "尚未选择角色";
-      name.title = role ? `${product.accountLabel(product.roleTarget())} · ${product.roleLabel(role)}` : name.textContent;
+      const label = role ? product.roleLabel(role) : "尚未选择角色";
+      name.textContent = label;
+      name.title = role ? `${product.accountLabel(product.roleTarget())} · ${label}` : label;
+      if (pillInitial) {
+        const ch = role ? Array.from(String(label).trim())[0] : "屋";
+        pillInitial.textContent = (ch || "屋").toUpperCase();
+      }
+      if (pill) {
+        const pillHint = role ? `${label} · 点击展开小屋预览` : "点击展开小屋预览";
+        pill.title = pillHint;
+        pill.setAttribute("aria-label", role ? `展开 ${label} 的小屋预览` : "展开小屋预览");
+      }
       const choices = product.roleChoices();
       select.replaceChildren(...choices.map(choice => {
         const option = document.createElement("option");
@@ -202,7 +317,24 @@ window.CompanionRoleCard = (() => {
       select.disabled = choices.length < 2;
       status.textContent = product.browserPreferencesNotice()
         || (choices.length ? "角色设置与资料跟随这里的选择。" : "尚无可选角色。");
-      requestAnimationFrame(fitPosition);
+      if (isAway() && shouldDefaultMobileCollapse()) setCollapsed(true);
+      requestAnimationFrame(() => fitPosition());
+    }
+
+    if (pill) {
+      pill.addEventListener("click", event => {
+        event.stopPropagation();
+        setCollapsed(false, {remember: true, animate: true});
+        fitPosition();
+        scene.focus({preventScroll: true});
+      });
+    }
+    if (collapseBtn) {
+      collapseBtn.addEventListener("click", event => {
+        event.stopPropagation();
+        setCollapsed(true, {remember: true});
+        pill?.focus({preventScroll: true});
+      });
     }
 
     toggle.addEventListener("click", event => {
@@ -228,6 +360,9 @@ window.CompanionRoleCard = (() => {
       }
     });
     reset.addEventListener("click", () => {
+      if (isMobileViewport()) mobilePipChoice = "expanded";
+      writeMobilePipChoice(null);
+      setCollapsed(false);
       setDocked(false);
       anchoredPosition = null;
       applyPosition(null);
@@ -254,7 +389,7 @@ window.CompanionRoleCard = (() => {
       suppressClick = false;
       const fromHandle = event.currentTarget === handle;
       startedOnControl = !fromHandle && Boolean(event.target.closest(controls));
-      if (!isAway() || event.button !== 0 || startedOnControl) return;
+      if (!isAway() || collapsed || event.button !== 0 || startedOnControl) return;
       stopSlide();
       closeMenu();
       const rect = scene.getBoundingClientRect();
@@ -308,18 +443,20 @@ window.CompanionRoleCard = (() => {
         revealCard();
       }
     }
-    for (const target of [scene, handle]) {
+    for (const target of [scene, handle].filter(Boolean)) {
       target.addEventListener("pointerdown", startDrag);
       target.addEventListener("pointermove", moveDrag);
       target.addEventListener("pointerup", endDrag);
       target.addEventListener("pointercancel", endDrag);
       target.addEventListener("lostpointercapture", endDrag);
     }
-    handle.addEventListener("click", event => {
-      event.stopPropagation();
-      if (suppressClick && event.detail !== 0) { suppressClick = false; return; }
-      revealCard();
-    });
+    if (handle) {
+      handle.addEventListener("click", event => {
+        event.stopPropagation();
+        if (suppressClick && event.detail !== 0) { suppressClick = false; return; }
+        revealCard();
+      });
+    }
     scene.addEventListener("click", event => {
       const leftControl = startedOnControl && !event.target.closest(controls);
       startedOnControl = false;
@@ -329,16 +466,22 @@ window.CompanionRoleCard = (() => {
       event.stopImmediatePropagation();
     }, true);
 
-    window.addEventListener("resize", fitPosition);
-    window.addEventListener("scroll", fitPosition, {passive: true});
-    const layoutObserver = new ResizeObserver(fitPosition);
+    const onViewportChange = () => fitPosition();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, {passive: true});
+    const layoutObserver = new ResizeObserver(onViewportChange);
     layoutObserver.observe(main);
     if (rail) layoutObserver.observe(rail);
     window.addEventListener("companion:scope-changed", render);
     window.addEventListener("companion:browser-preferences-changed", render);
-    shell.onChange(() => { closeMenu(); requestAnimationFrame(fitPosition); });
+    shell.onChange(() => { closeMenu(); requestAnimationFrame(() => fitPosition({enteringAway: isAway()})); });
     render();
-    return {render, resetPosition: () => { setDocked(false); anchoredPosition = null; applyPosition(null); savePosition(); fitPosition(); }, fitPosition};
+    return {
+      render,
+      resetPosition: () => { setCollapsed(false); setDocked(false); anchoredPosition = null; applyPosition(null); savePosition(); fitPosition(); },
+      fitPosition,
+      setCollapsed,
+    };
   }
 
   return {mount, clampPosition};

@@ -13,6 +13,7 @@
   container-type: inline-size;
   container-name: quota-wb;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-3);
   min-width: 0;
 }
@@ -48,6 +49,7 @@
 /* ---------- 顶部英雄区与 4 枚 KPI 轻卡 ---------- */
 .qw-hero {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-3);
   padding: var(--sp-4);
   border: 1px solid var(--t-line);
@@ -63,10 +65,12 @@
   justify-content: space-between;
   gap: var(--sp-3);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .qw-hero-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
   min-width: 0;
   flex: 1 1 260px;
@@ -99,7 +103,9 @@
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .qw-btn {
@@ -249,6 +255,7 @@
 
 .qw-kpi {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
   align-content: start;
   padding: var(--sp-3);
@@ -297,7 +304,9 @@
 /* 陪伴余额感知策略条 */
 .qw-awareness-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-3);
+  min-width: 0;
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid color-mix(in srgb, var(--t-accent) 26%, var(--t-line));
   border-radius: var(--r-sm);
@@ -371,9 +380,11 @@
 .qw-empty {
   grid-column: 1 / -1;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   text-align: center;
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-6) var(--sp-4);
   border: 1px dashed var(--t-line-firm);
   border-radius: var(--r-md);
@@ -513,6 +524,7 @@
   min-width: 0;
   flex: 1 1 auto;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 
@@ -609,7 +621,9 @@
 /* 余额数字与进度条 */
 .qw-balance-block {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
+  min-width: 0;
 }
 
 .qw-balance-row {
@@ -713,7 +727,9 @@
 
 .qw-progress-wrap {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
+  min-width: 0;
 }
 
 .qw-progress-track {
@@ -803,7 +819,9 @@
 /* 诊断与一键修复卡 */
 .qw-error-box {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid color-mix(in srgb, var(--t-risk) 30%, var(--t-line));
   border-radius: var(--r-xs);
@@ -1099,7 +1117,9 @@
 
 .qw-provider-option {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
+  min-width: 0;
   text-align: left;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--t-line);
@@ -1180,6 +1200,7 @@
 /* 表单字段 */
 .qw-field {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
   min-width: 0;
 }
@@ -1291,7 +1312,9 @@
 /* 测试结果预览卡 */
 .qw-test-preview {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-3);
   border-radius: var(--r-sm);
   border: 1px solid color-mix(in srgb, var(--t-ok) 32%, var(--t-line));
@@ -1333,6 +1356,7 @@
 
 .perception-quota-bridge-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   min-width: 0;
   flex: 1 1 220px;
@@ -1359,6 +1383,9 @@
 }
 
 @container quota-wb (max-width: 520px) {
+  .qw-toolbar {
+    width: 100%;
+  }
   .qw-kpis {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1369,6 +1396,10 @@
     padding: var(--sp-3);
   }
   .qw-card-head {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  .qw-card-foot {
     flex-wrap: wrap;
     gap: var(--sp-2);
   }
@@ -1456,9 +1487,11 @@
   .qw-foot-actions {
     flex-wrap: wrap;
   }
+  .qw-btn,
+  .qw-toggle-pill,
   .qw-btn.small,
   .qw-chip-check {
-    min-height: 34px;
+    min-height: 44px;
   }
 }
 
