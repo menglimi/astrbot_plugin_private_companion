@@ -636,3 +636,280 @@ test('active 但 read_only 降级事实不渲染变更按钮与修正表单，�
   assert.equal(h.page.state.data.corpus.length, 2, '查看版本历史失败绝不能清空左侧语料列表');
   assert.doesNotMatch(h.page.state.data.notice, /连接中断/);
 });
+
+test('事实治理与整理与修复视觉契约：玉露柔边页签、高对比已遗忘、对称4列子卡、去孤立竖线与独立编辑卡', async () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/memory-page.css'), 'utf8');
+  /* 顶部二级页签升级为玉露柔边体系，去除悬空绿下划线 */
+  assert.match(css, /\.memory-route-tabs\s*\{[^}]*border-radius:\s*var\(--r-md\)/);
+  assert.match(css, /\.memory-route-tab\s*\{[^}]*border-radius:\s*var\(--r-sm\)/);
+  assert.doesNotMatch(css, /\.memory-route-tab\s*\{[^}]*border-bottom:\s*2px/);
+  /* 已遗忘图例与状态走清晰语义色而非透明分割线 */
+  assert.match(css, /\.mem-state-forgotten\s*\{[^}]*color:\s*var\(--t-text-faint\)/);
+  /* 4 列对称指标网格 + 窄容器 2x2 折叠 */
+  assert.match(css, /\.mem-meta-grid\s*\{[^}]*repeat\(\s*4\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
+  assert.match(css, /@container\s*\(\s*max-width:\s*390px\s*\)[\s\S]*?\.mem-meta-grid\s*\{[^}]*repeat\(\s*2\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\)/);
+  /* 受阻后台任务使用语义风险色而非成功绿 */
+  assert.match(css, /\.mem-job\.is-blocked\s*\{[^}]*var\(--t-risk/);
+  /* 所有动作按钮统一 --r-sm 圆角 */
+  assert.match(css, /\.mem-actions\s+\.mem-btn\s*\{[^}]*border-radius:\s*var\(--r-sm\)/);
+  /* 进度细线收进页头底边，不再悬空浮在标题上方 */
+  assert.match(css, /\.mem-progress\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*-1px/);
+
+  /* 事实治理 DOM 契约：统一工具栏、中文归属映射、摘要卡与独立编辑卡 */
+  const h = harness();
+  await boot(h, [{
+    atom_id: 'a-1', revision: 1, state: 'active', context_mode: 'default',
+    predicate: '常用昵称', representation: '用户常用昵称为小羽。', object: '小羽', subject: 'self', retention: 'durable',
+  }], {'/overview': {
+    local: {facts: {total: 1, active: 1}, experiences: {total: 0, active: 0}, sources: {available_messages: 3}, reflections: {total: 1, by_state: {failed: 1}}},
+    linkage: {state: 'ready', display_name: '记忆搭档', counts: {total: 5}, categories: [{key: 'profile', count: 0}, {key: 'private_conversation', count: 5}]},
+  }});
+  assert.match(h.element.innerHTML, /mem-workbench-bar/);
+  assert.match(h.element.innerHTML, /mem-linkage-total/);
+  assert.doesNotMatch(h.element.innerHTML, /mem-add-row/);
+
+  const card = {disabled: false, id: '', dataset: {factId: 'a-1'}};
+  card.closest = () => card;
+  h.element.__inside.add(card);
+  h.element.dispatch('click', {target: {closest: () => card}});
+  await h.settle();
+  h.reply(h.requests.find(r => r.route === 'memory/detail'), {
+    item: {atom_id: 'a-1', revision: 1, state: 'active', predicate: '常用昵称',
+      representation: '用户常用昵称为小羽。', object: '小羽', subject: 'self', retention: 'durable', confidence: 0.95},
+    sources: [{handle: 'src-1', source_kind: 'human_message', start: 0, end: 12}], session_id: 's-1',
+  });
+  await h.settle();
+  h.reply(h.requests.find(r => r.route === 'memory/revisions'), {items: []});
+  await h.settle();
+  assert.match(h.element.innerHTML, /mem-summary-card/);
+  assert.match(h.element.innerHTML, /mem-meta-grid/);
+  assert.match(h.element.innerHTML, /当前对象/);
+  assert.match(h.element.innerHTML, /mem-edit-card/);
+  assert.match(h.element.innerHTML, /编辑并保存为新版本/);
+  assert.doesNotMatch(h.element.innerHTML, /mem-quote/);
+});
+
+test('整理与修复：失败态不画孤立红点、单页隐藏冗余翻页、点击刷新状态走原地无闪烁刷新且防重入', async () => {
+  const h = harness();
+  await boot(h, []);
+  const area = {disabled: false, id: 'memory-area-reflections', dataset: {}};
+  area.closest = () => area;
+  h.element.__inside.add(area);
+  h.element.dispatch('click', {target: area});
+  await h.settle();
+
+  const failedBatch = {
+    batch_id: 'b-1', state: 'failed', state_label: '整理失败',
+    summary: '模型原始输出未通过校验，可修复未完成项。',
+    captured: true, resumable: false, retryable: true,
+    receipts: {}, remaining_sources: 23, deferred_sources: 0, unavailable_sources: 0,
+    selection: {phase: 'ready', examined: 23},
+    continuation: {state: 'blocked', updated_at: '2026-11-26T15:54:51Z', result_code: 'model_response_contract_rejected'},
+    issues: [{code: 'output_invalid'}],
+  };
+  const firstList = h.requests.filter(r => r.route === 'memory/reflections').at(-1);
+  h.reply(firstList, {items: [failedBatch], next_cursor: null});
+  const firstOv = h.requests.filter(r => r.route === 'memory/overview').at(-1);
+  h.reply(firstOv, {local: {reflections: {total: 1, by_state: {failed: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  /* 失败态不渲染单点 .mem-stages；单页不显示无意义的上一页/下一页；受阻任务用 is-blocked 语义色 */
+  assert.doesNotMatch(h.element.innerHTML, /mem-stages/, '失败态不得渲染孤立红点阶段轨');
+  assert.doesNotMatch(h.element.innerHTML, /memory-previous|memory-next/, '仅一页时隐藏冗余禁用翻页条');
+  assert.match(h.element.innerHTML, /mem-job is-blocked/, '受阻任务必须使用风险语义样式而非成功绿');
+  assert.match(h.element.innerHTML, /mem-meta-grid mem-refl-stats/);
+
+  /* 点击「刷新状态」：进入原地刷新态，绝不清空 detail，绝不闪现「选择一个批次」，且防重复点击 */
+  const refreshCountBefore = h.requests.length;
+  const refreshBtn = {disabled: false, id: 'memory-detail-refresh', dataset: {}};
+  refreshBtn.closest = () => refreshBtn;
+  h.element.__inside.add(refreshBtn);
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+
+  assert.equal(h.page.state.data.refreshing, true, '请求在途时 refreshing 应为 true');
+  assert.equal(h.page.state.data.loading, false, '原地刷新不得触发整页 loading 与顶部进度条');
+  assert.equal(h.page.state.data.detail?.batch_id, 'b-1', '原地刷新在途时绝不能清空已选中的批次详情');
+  assert.doesNotMatch(h.element.innerHTML, /选择一个批次/, '原地刷新期间绝不能闪退回空占位');
+
+  /* 在途再次点击刷新状态：防重入，不得重复发请求 */
+  const inFlightRequests = h.requests.length;
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+  assert.equal(h.requests.length, inFlightRequests, '刷新在途时重复点击不得再次发起请求');
+
+  /* 新响应到达：保留选中批次并原地更新变化字段与刷新时间 */
+  const newRequests = h.requests.slice(refreshCountBefore);
+  const listReq = newRequests.find(r => r.route === 'memory/reflections' && !r.values?.batch_id);
+  const detailReq = newRequests.find(r => r.route === 'memory/reflections' && r.values?.batch_id === 'b-1');
+  const ovReq = newRequests.find(r => r.route === 'memory/overview');
+  assert.ok(listReq && detailReq && ovReq, '原地刷新应并发拉取列表、详情与概况');
+
+  const updatedBatch = {
+    ...failedBatch,
+    remaining_sources: 18,
+    continuation: {state: 'queued', updated_at: '2026-11-27T09:10:00Z', next_at: '2026-11-27T09:15:00Z'},
+  };
+  h.reply(listReq, {items: [updatedBatch], next_cursor: null});
+  h.reply(detailReq, updatedBatch);
+  h.reply(ovReq, {local: {reflections: {total: 1, by_state: {failed: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  assert.equal(h.page.state.data.refreshing, false);
+  assert.equal(h.page.state.data.detailId, 'b-1', '刷新完成后保持当前选中批次不变');
+  assert.equal(h.page.state.data.detail.remaining_sources, 18);
+  assert.ok(h.page.state.data.lastRefreshedAt > 0, '刷新完成后记录最近刷新时间');
+  assert.match(h.element.innerHTML, /已刷新 /);
+  assert.match(h.element.innerHTML, /mem-job is-queued/);
+
+  /* 瞬时网络失败：原地刷新保留已有内容不白屏 */
+  const beforeErr = h.requests.length;
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+  const errReqs = h.requests.slice(beforeErr);
+  errReqs.forEach(req => req.reject(new Error('network_down')));
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false);
+  assert.equal(h.page.state.data.detail?.batch_id, 'b-1', '刷新失败时保留当前批次内容不清空');
+  assert.equal(h.page.state.data.items.length, 1, '刷新失败时保留批次列表不清空');
+  assert.match(h.page.state.data.notice, /已保留当前显示内容/);
+});
+
+test('刷新在途被切换批次或切换视图打断时立即解除 refreshing 锁且过期响应不覆盖现态', async () => {
+  const h = harness();
+  await boot(h, []);
+  const area = {disabled: false, id: 'memory-area-reflections', dataset: {}};
+  area.closest = () => area;
+  h.element.__inside.add(area);
+  h.element.dispatch('click', {target: area});
+  await h.settle();
+
+  const b1 = {batch_id: 'b-1', state: 'failed', state_label: '整理失败', summary: '批次一', receipts: {}, remaining_sources: 12, retryable: true};
+  const b2 = {batch_id: 'b-2', state: 'partial', state_label: '部分已保存', summary: '批次二', receipts: {}, remaining_sources: 4, retryable: true};
+  h.reply(h.requests.filter(r => r.route === 'memory/reflections').at(-1), {items: [b1, b2], next_cursor: null});
+  h.reply(h.requests.filter(r => r.route === 'memory/overview').at(-1), {local: {reflections: {total: 2, by_state: {failed: 1, partial: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  /* 发起原地刷新并让请求悬停在途 */
+  const beforeRefresh = h.requests.length;
+  const refreshBtn = {disabled: false, id: 'memory-detail-refresh', dataset: {}};
+  refreshBtn.closest = () => refreshBtn;
+  h.element.__inside.add(refreshBtn);
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+  const staleRefreshReqs = h.requests.slice(beforeRefresh);
+  assert.equal(h.page.state.data.refreshing, true);
+
+  /* 在途点击第二个批次 b-2 打断刷新 */
+  const batch2Btn = {disabled: false, id: '', dataset: {batchIndex: '1'}};
+  batch2Btn.closest = () => batch2Btn;
+  h.element.__inside.add(batch2Btn);
+  h.element.dispatch('click', {target: batch2Btn});
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false, '切换批次必须立即清理 refreshing 状态防止锁死');
+
+  /* 完成 b-2 读取，随后让迟到的旧刷新响应回来 */
+  const b2Req = h.requests.filter(r => r.route === 'memory/reflections' && r.values?.batch_id === 'b-2').at(-1);
+  assert.ok(b2Req);
+  h.reply(b2Req, {...b2, remaining_sources: 3});
+  await h.settle();
+  for (const stale of staleRefreshReqs) {
+    if (stale.route === 'memory/reflections' && stale.values?.batch_id) h.reply(stale, {...b1, remaining_sources: 99});
+    else if (stale.route === 'memory/reflections') h.reply(stale, {items: [b1, b2], next_cursor: null});
+    else h.reply(stale, {local: {reflections: {total: 2, by_state: {failed: 1, partial: 1}}}, linkage: {state: 'not_owner'}});
+  }
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false, '旧刷新结束后 refreshing 仍应为 false');
+  assert.equal(h.page.state.data.detailId, 'b-2', '过期刷新响应不得覆盖已切换的 b-2');
+
+  /* 验证刷新按钮未锁死：再次点击可正常发起新刷新，并在途切到 query 视图也能立刻清理 */
+  const beforeSecond = h.requests.length;
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, true);
+  assert.ok(h.requests.length > beforeSecond, '解除锁后应能正常再次发起原地刷新');
+  const queryArea = {disabled: false, id: 'memory-area-query', dataset: {}};
+  queryArea.closest = () => queryArea;
+  h.element.__inside.add(queryArea);
+  h.element.dispatch('click', {target: queryArea});
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false, '切换到来源与经历视图必须立即清理 refreshing');
+  assert.equal(h.page.state.data.area, 'query');
+});
+
+test('queue() 超时进入 uncertain 及同批次登记成功时，局部刷新同步更新 #memory-recovery-slot 不死锁', async () => {
+  const h = harness();
+  await boot(h, []);
+
+  /* 挂载带真实局部槽位的 querySelector 桩，强制命中 patchReflectionsDom() 局部更新路径 */
+  const makeSlot = () => ({
+    innerHTML: '', textContent: '', hidden: false, scrollTop: 0,
+    classList: {add() {}, remove() {}, toggle() {}, contains: () => false},
+    setAttribute() {}, removeAttribute() {}, querySelectorAll: () => [],
+  });
+  const slots = {
+    '.mem-detail': makeSlot(),
+    '.mem-corpus': makeSlot(),
+    '.mem-reflection-views': makeSlot(),
+    '.mem-refl-list-bar': makeSlot(),
+    '.mem-rail-count': makeSlot(),
+    '#memory-notice-slot': makeSlot(),
+    '#memory-recovery-slot': makeSlot(),
+  };
+  h.element.querySelector = sel => slots[sel] || null;
+
+  const area = {disabled: false, id: 'memory-area-reflections', dataset: {}};
+  area.closest = () => area;
+  h.element.__inside.add(area);
+  h.element.dispatch('click', {target: area});
+  await h.settle();
+
+  const b1 = {
+    batch_id: 'b-1', state: 'failed', state_label: '整理失败',
+    summary: '需要修复未完成项', retryable: true, resumable: false,
+    receipts: {}, remaining_sources: 9,
+    continuation: {state: 'blocked', updated_at: '2026-11-26T15:54:51Z'},
+  };
+  h.reply(h.requests.filter(r => r.route === 'memory/reflections').at(-1), {items: [b1], next_cursor: null});
+  h.reply(h.requests.filter(r => r.route === 'memory/overview').at(-1), {local: {reflections: {total: 1, by_state: {failed: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  /* 点击「再次修复未完成项」并模拟桥接超时（bridge_timeout） */
+  const queueBtn = {disabled: false, id: 'memory-queue', dataset: {}};
+  queueBtn.closest = () => queueBtn;
+  h.element.__inside.add(queueBtn);
+  h.element.dispatch('click', {target: queueBtn});
+  await h.settle();
+  const queueReq = h.requests.filter(r => r.route === 'memory/reflections/queue').at(-1);
+  assert.ok(queueReq, '应发起 reflections/queue 提交');
+  queueReq.reject(Object.assign(new Error('timeout'), {code: 'bridge_timeout'}));
+  await h.settle();
+
+  assert.equal(h.page.state.data.pending?.uncertain, true);
+  assert.match(slots['#memory-notice-slot'].innerHTML, /核对上次提交/);
+  assert.match(slots['#memory-recovery-slot'].innerHTML, /id="memory-recover"/, '局部刷新必须把「核对上次提交」按钮同步进 #memory-recovery-slot');
+  assert.match(slots['#memory-recovery-slot'].innerHTML, /核对上次提交/);
+
+  /* 点击「核对上次提交」恢复并沿用原 operation_key 成功登记同批次 */
+  const recoverBtn = {disabled: false, id: 'memory-recover', dataset: {}};
+  recoverBtn.closest = () => recoverBtn;
+  h.element.__inside.add(recoverBtn);
+  h.element.dispatch('click', {target: recoverBtn});
+  await h.settle();
+  const retryQueueReq = h.requests.filter(r => r.route === 'memory/reflections/queue').at(-1);
+  assert.equal(retryQueueReq.values.operation_key, queueReq.values.operation_key, '恢复提交必须复用原幂等键');
+  h.reply(retryQueueReq, {batch_id: 'b-1', state: 'queued'});
+  await h.settle();
+
+  const queuedB1 = {...b1, continuation: {state: 'queued', updated_at: '2026-11-27T09:30:00Z'}};
+  const listAfter = h.requests.filter(r => r.route === 'memory/reflections' && !r.values?.batch_id).at(-1);
+  const detailAfter = h.requests.filter(r => r.route === 'memory/reflections' && r.values?.batch_id === 'b-1').at(-1);
+  const ovAfter = h.requests.filter(r => r.route === 'memory/overview').at(-1);
+  h.reply(listAfter, {items: [queuedB1], next_cursor: null});
+  h.reply(detailAfter, queuedB1);
+  h.reply(ovAfter, {local: {reflections: {total: 1, by_state: {failed: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  assert.equal(h.page.state.data.pending?.uncertain, false);
+  assert.match(slots['#memory-recovery-slot'].innerHTML, /查看上次提交/, '登记成功后 #memory-recovery-slot 必须同步切换为「查看上次提交」');
+});
