@@ -484,6 +484,12 @@ window.CompanionQuotaWorkbench = (() => {
     ];
   }
 
+  function resolveStationActiveDisplayMode(station, dual) {
+    if (dual?.canToggle) return dual.mode;
+    const raw = String(station?.display_unit_mode || "native").trim().toLowerCase();
+    return raw === "cny" || raw === "usd" || raw === "fiat" ? raw : "native";
+  }
+
   function resolveEffectiveThresholdView(station, snap, summary, dual) {
     const rate = Number(summary?.usd_cny_rate) || 7.2;
     const serverEff = summary?.effective_thresholds_by_id?.[station?.id] || null;
@@ -528,7 +534,7 @@ window.CompanionQuotaWorkbench = (() => {
     }
 
     // Map into currently displayed unit (native / fiat / cny / usd)
-    const activeMode = dual?.mode || String(station?.display_unit_mode || "native").toLowerCase();
+    const activeMode = resolveStationActiveDisplayMode(station, dual);
     let displayUnit = nativeUnit;
     let displaySymbol = nativeSymbol;
     let editCurrency = ""; // "" means native unit; "CNY"/"USD" when editing in converted fiat
@@ -618,7 +624,7 @@ window.CompanionQuotaWorkbench = (() => {
     const subSym = sub.symbol || (subDt === snap?.display_type ? snap?.symbol : "") || (subDt === "CNY" ? "¥" : subDt === "USD" ? "$" : "");
     const fiatCur = String(sub.fiat_currency || dual?.fiatCurrency || snap?.inferred_fiat_currency || (subDt === "CNY" || subDt === "USD" ? subDt : "")).toUpperCase();
     const fiatSym = fiatCur === "USD" ? "$" : fiatCur === "CNY" ? "¥" : "";
-    const activeMode = dual?.mode || String(station?.display_unit_mode || "native").toLowerCase();
+    const activeMode = resolveStationActiveDisplayMode(station, dual);
 
     const rawRem = sub.remaining != null ? Number(sub.remaining) : null;
     const rawTotal = sub.total != null ? Number(sub.total) : null;
@@ -685,6 +691,80 @@ window.CompanionQuotaWorkbench = (() => {
       altHint,
       expiry,
     };
+  }
+
+  function formatSubscriptionSummary(subs, station, snap, summary, dual) {
+    const rate = Number(summary?.usd_cny_rate) || 7.2;
+    const activeMode = resolveStationActiveDisplayMode(station, dual);
+    const snapDt = String(snap?.display_type || "CREDIT").toUpperCase();
+    const targetFiat = activeMode === "cny"
+      ? "CNY"
+      : activeMode === "usd"
+        ? "USD"
+        : (activeMode === "fiat"
+            ? (dual?.fiatCurrency === "CNY" || dual?.fiatCurrency === "USD"
+                ? dual.fiatCurrency
+                : (snapDt === "CNY" || snapDt === "USD" ? snapDt : ""))
+            : "");
+
+    const metas = subs.map(item => {
+      const dt = String(item.display_type || item.currency || snap?.display_type || "CREDIT").toUpperCase();
+      const sym = item.symbol || (dt === snap?.display_type ? snap?.symbol : "") || (dt === "CNY" ? "¥" : dt === "USD" ? "$" : "");
+      const fiatCur = String(
+        item.fiat_currency
+        || (dt === "CNY" || dt === "USD" ? dt : "")
+        || dual?.fiatCurrency
+        || snap?.inferred_fiat_currency
+        || ""
+      ).toUpperCase();
+      const rem = item.remaining != null && Number.isFinite(Number(item.remaining)) ? Number(item.remaining) : null;
+      const baseFiat = item.fiat_remaining != null && Number.isFinite(Number(item.fiat_remaining))
+        ? Number(item.fiat_remaining)
+        : ((dt === "CNY" || dt === "USD") && rem != null ? rem : null);
+      return { dt, sym, fiatCur, rem, baseFiat };
+    }).filter(m => m.rem != null || m.baseFiat != null);
+
+    if (!metas.length) return "—";
+
+    const toFiat = (meta, dstCur) => {
+      if (meta.baseFiat == null || (meta.fiatCur !== "CNY" && meta.fiatCur !== "USD")) return null;
+      return convertFiatValue(meta.baseFiat, meta.fiatCur, dstCur, rate);
+    };
+
+    const firstDt = metas[0].dt;
+    const firstSym = metas[0].sym;
+    const sameNative = metas.every(m => m.dt === firstDt && m.sym === firstSym && m.rem != null);
+    const nativeSumStr = sameNative
+      ? formatMoneyText(metas.reduce((acc, m) => acc + m.rem, 0), firstDt, firstSym)
+      : "";
+
+    if (targetFiat && metas.every(m => toFiat(m, targetFiat) != null)) {
+      const convSum = metas.reduce((acc, m) => acc + toFiat(m, targetFiat), 0);
+      const dstSym = targetFiat === "USD" ? "$" : "¥";
+      const dstText = `${dstSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      return sameNative && firstDt === "CREDIT" ? `${dstText}（${nativeSumStr}）` : dstText;
+    }
+
+    if (sameNative) {
+      if (firstDt === "CREDIT") {
+        const sharedFiatCur = metas[0].fiatCur;
+        if ((sharedFiatCur === "CNY" || sharedFiatCur === "USD")
+          && metas.every(m => m.baseFiat != null && m.fiatCur === sharedFiatCur)) {
+          const fiatSum = metas.reduce((acc, m) => acc + m.baseFiat, 0);
+          const fiatSym = sharedFiatCur === "USD" ? "$" : "¥";
+          return `${nativeSumStr} ≈ ${fiatSym}${fiatSum.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
+        }
+      }
+      return nativeSumStr;
+    }
+
+    const summaryCur = String(summary?.display_currency || "CNY").toUpperCase();
+    if ((summaryCur === "CNY" || summaryCur === "USD") && metas.every(m => toFiat(m, summaryCur) != null)) {
+      const convSum = metas.reduce((acc, m) => acc + toFiat(m, summaryCur), 0);
+      const sSym = summaryCur === "USD" ? "$" : "¥";
+      return `折合 ${sSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+    return "多币种";
   }
 
   function renderInlineThresholdEditor(station, thView, editState) {
@@ -1009,7 +1089,7 @@ window.CompanionQuotaWorkbench = (() => {
 
         let meterOrLedgerHtml = "";
         if (quotaModel === "wallet") {
-          // Plan A: Pay-as-you-go wallet omits misleading progress bar & fabricated total/%;
+          // Pay-as-you-go wallet omits misleading progress bar & fabricated total/%;
           // renders a crisp ledger reference row with lifetime cumulative spend + 1-click threshold trigger.
           const thBtnCls = `qw-threshold-trigger${thView.source === "disabled" ? " is-muted" : ""}${health === "low" ? " is-warn" : health === "critical" ? " is-risk" : ""}`;
           meterOrLedgerHtml = `
@@ -1082,30 +1162,8 @@ window.CompanionQuotaWorkbench = (() => {
       : [];
     let subscriptionHtml = "";
     if (subs.length) {
-      const subRemSum = subs.reduce((acc, item) => acc + (Number(item.remaining) || 0), 0);
-      const hasSubFiat = subs.every(item => item.fiat_remaining != null);
-      const subFiatSum = hasSubFiat ? subs.reduce((acc, item) => acc + (Number(item.fiat_remaining) || 0), 0) : null;
       const subNames = subs.map(item => item.name || item.title).filter(Boolean).join(" / ");
-      const subNativeM = formatMoney(subRemSum, snap.display_type, snap.symbol);
-      const subNativeStr = subNativeM.unit === "¥" || subNativeM.unit === "$"
-        ? `${subNativeM.unit}${subNativeM.num}`
-        : `${subNativeM.num} ${subNativeM.unit}`.trim();
-      const subFiatSym = dual.fiatSymbol || (snap.inferred_fiat_currency === "USD" ? "$" : "¥");
-      let subMainText = subNativeStr;
-      if (dual.canToggle && subFiatSum != null) {
-        if (dual.mode === "usd" || dual.mode === "cny") {
-          const dst = dual.mode.toUpperCase();
-          const convSum = convertFiatValue(subFiatSum, dual.fiatCurrency, dst, rate);
-          const dstSym = dst === "USD" ? "$" : "¥";
-          subMainText = convSum != null
-            ? `${dstSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}（${subNativeStr}）`
-            : `${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}（${subNativeStr}）`;
-        } else if (dual.mode === "fiat") {
-          subMainText = `${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}（${subNativeStr}）`;
-        } else {
-          subMainText = `${subNativeStr} ≈ ${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
-        }
-      }
+      const subMainText = formatSubscriptionSummary(subs, station, snap, summary, dual);
       const isExpanded = Boolean(q.expandedSubsIds?.has?.(station.id));
       const visibleSubs = isExpanded ? subs : subs.slice(0, MAX_VISIBLE_SUBSCRIPTIONS);
       const hiddenCount = Math.max(0, subs.length - MAX_VISIBLE_SUBSCRIPTIONS);

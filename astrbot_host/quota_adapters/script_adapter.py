@@ -80,7 +80,7 @@ class CustomScriptAdapter(QuotaAdapter):
                     group="primary",
                     default=DEFAULT_SCRIPT_TEMPLATE,
                     placeholder=DEFAULT_SCRIPT_TEMPLATE,
-                    hint="返回字段：isValid、invalidMessage、remaining、total、used、unit、planName、extra。",
+                    hint="返回字段：isValid、invalidMessage、remaining、total、used、unit、planName、extra、subscriptions（可选，订阅套餐数组）。",
                 ),
             ),
             default_display_type="USD",
@@ -150,7 +150,7 @@ class CustomScriptAdapter(QuotaAdapter):
         symbol = "" if unit_raw in ("CNY", "USD", "CREDIT", "TOKENS") else str(observation.unit or "")[:12]
 
         has_total = observation.total is not None and float(observation.total) > 0
-        raw_subs = getattr(observation, "subscriptions", None) or ()
+        raw_subs = getattr(port, "last_subscriptions", ()) or getattr(observation, "subscriptions", None) or ()
         return QuotaSnapshot(
             station_id=spec.id,
             ok=True,

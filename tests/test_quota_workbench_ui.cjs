@@ -1533,7 +1533,7 @@ test("Polish: openAwareness honors reduced motion, resize listener cleans up on 
   assert.equal(h.winHandlers.get("resize")?.size || 0, 0, "unmount must remove window resize listener");
 });
 
-test("Wallet Plan A ledger row, 1-click inline threshold editor, universal multi-station subscription progress bars, and wallet edit modal UX", async () => {
+test("Wallet ledger row, 1-click inline threshold editor, universal multi-station subscription progress bars, and wallet edit modal UX", async () => {
   const h = quotaHarness();
   const future12d = new Date(Date.now() + 12 * 86400 * 1000).toISOString();
   const future2d = new Date(Date.now() + 2 * 86400 * 1000).toISOString();
@@ -1643,7 +1643,7 @@ test("Wallet Plan A ledger row, 1-click inline threshold editor, universal multi
   h.requests.find(r => r.route === "model/quota").resolve(payload);
   await flush();
 
-  // 1) Wallet station uses Plan A ledger row (NO fake progress bar / 总额 / 剩 %)
+  // 1) Wallet station renders crisp ledger reference row (NO fake progress bar / 总额 / 剩 %)
   const xyCardHtml = h.root.innerHTML.split('data-qw-card="st-xy"')[1].split('data-qw-card="st-key"')[0];
   assert.match(xyCardHtml, /¥55\.73/);
   assert.match(xyCardHtml, /累计消费 ¥807\.48/);
@@ -1711,6 +1711,131 @@ test("Wallet Plan A ledger row, 1-click inline threshold editor, universal multi
   h.root.click("[data-qw-edit]", { qwEdit: "st-key" });
   assert.doesNotMatch(h.root.innerHTML, /data-qw-wallet-thresholds/);
   assert.match(h.root.innerHTML, /data-qw-field="low_percent"/, "Capped edit modal must keep low_percent");
+
+  h.page.unmount();
+});
+
+test("Universal subscription summary aligns with fiat-station currency mode and handles mixed-currency plans safely", async () => {
+  const h = quotaHarness();
+  const future10d = new Date(Date.now() + 10 * 86400 * 1000).toISOString();
+  const payload = sampleQuotaPayload({
+    stations: [
+      {
+        id: "st-usd-cny",
+        name: "Sub2API 美元转人民币站",
+        adapter_id: "sub2api",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://sub-fx.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "cny",
+      },
+      {
+        id: "st-mixed-fiat",
+        name: "跨法币多套餐站",
+        adapter_id: "custom_script",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://mixed-fiat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "native",
+      },
+      {
+        id: "st-mixed-incompat",
+        name: "异构币种套餐站",
+        adapter_id: "custom_script",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://mixed-incompat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "native",
+      },
+    ],
+    snapshots: {
+      "st-usd-cny": {
+        station_id: "st-usd-cny",
+        ok: true,
+        remaining: 25.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "主力包", remaining: 15.0, used: 5.0, total: 20.0, remaining_percent: 75.0, display_type: "USD", symbol: "$", expires_at: future10d, status: "active" },
+          { name: "加餐包", remaining: 5.0, used: 5.0, total: 10.0, remaining_percent: 50.0, display_type: "USD", symbol: "$", expires_at: future10d, status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-mixed-fiat": {
+        station_id: "st-mixed-fiat",
+        ok: true,
+        remaining: 10.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "美元包", remaining: 10.0, used: 0.0, total: 10.0, remaining_percent: 100.0, display_type: "USD", symbol: "$", status: "active" },
+          { name: "人民币包", remaining: 20.0, used: 0.0, total: 20.0, remaining_percent: 100.0, display_type: "CNY", symbol: "¥", status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-mixed-incompat": {
+        station_id: "st-mixed-incompat",
+        ok: true,
+        remaining: 10.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "美元包", remaining: 10.0, used: 0.0, total: 10.0, remaining_percent: 100.0, display_type: "USD", symbol: "$", status: "active" },
+          { name: "Token 包", remaining: 50000, used: 50000, total: 100000, remaining_percent: 50.0, display_type: "TOKENS", symbol: "tokens", status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      display_currency: "CNY",
+      display_symbol: "¥",
+      usd_cny_rate: 7.2,
+      total_stations: 3,
+      ok_count: 3,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      health_by_id: { "st-usd-cny": "normal", "st-mixed-fiat": "normal", "st-mixed-incompat": "normal" },
+      quota_model_by_id: { "st-usd-cny": "wallet", "st-mixed-fiat": "wallet", "st-mixed-incompat": "wallet" },
+    },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  // 1) USD station switched to cny converts BOTH header total ($20 -> ¥144.00) and child bars ($15/$20 -> ¥108.00/¥144.00)
+  const usdCnyCard = h.root.innerHTML.split('data-qw-card="st-usd-cny"')[1].split('data-qw-card="st-mixed-fiat"')[0];
+  assert.match(usdCnyCard, /class="qw-subs-head"[\s\S]*?<strong class="qw-num">¥144\.00<\/strong>/);
+  assert.match(usdCnyCard, /剩余 ¥108\.00 \/ ¥144\.00/);
+  assert.match(usdCnyCard, /剩余 ¥36\.00 \/ ¥72\.00/);
+  assert.doesNotMatch(usdCnyCard, /class="qw-subs-head"[\s\S]*?\$20\.00/);
+
+  // 2) Mixed USD + CNY subscriptions fold via FX rate instead of adding raw numbers (10*7.2 + 20 = ¥92.00)
+  const mixedFiatCard = h.root.innerHTML.split('data-qw-card="st-mixed-fiat"')[1].split('data-qw-card="st-mixed-incompat"')[0];
+  assert.match(mixedFiatCard, /class="qw-subs-head"[\s\S]*?<strong class="qw-num">折合 ¥92\.00<\/strong>/);
+
+  // 3) Incompatible USD + TOKENS subscriptions show 多币种 instead of adding 10 + 50000
+  const mixedIncompatCard = h.root.innerHTML.split('data-qw-card="st-mixed-incompat"')[1];
+  assert.match(mixedIncompatCard, /class="qw-subs-head"[\s\S]*?<strong class="qw-num">多币种<\/strong>/);
+  assert.doesNotMatch(mixedIncompatCard, /50,010/);
 
   h.page.unmount();
 });

@@ -1461,6 +1461,121 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_custom_script_subscriptions_validation_redaction_and_probe(self):
+        from unittest.mock import patch
+        from astrbot_host.quota_adapters.script_adapter import CustomScriptAdapter
+        from astrbot_host.service_balance_script import ScriptServiceBalancePort
+
+        now_dt = datetime(2026, 11, 25, 8, 0, tzinfo=timezone.utc)
+        exp_ts = int(now_dt.timestamp()) + 86400 * 7
+        settings = {
+            "advanced_script": "({ request: { url: 'https://relay.example.test/u' }, extractor: (r) => r })",
+            "advanced_base_url": "https://relay.example.test",
+            "advanced_api_key": "sk-secret-api-999",
+            "advanced_access_token": "tok-secret-access-888",
+            "advanced_user_id": "1001",
+            "advanced_proxy_url": "",
+        }
+
+        with patch("astrbot_host.service_balance_script.importlib.util.find_spec", return_value=True):
+            port = ScriptServiceBalancePort(settings, now=lambda: now_dt)
+            obs = port.parse(
+                {
+                    "isValid": True,
+                    "remaining": 42.5,
+                    "unit": "USD",
+                    "planName": "Team",
+                    "subscriptions": [
+                        {
+                            "name": "主力包 sk-secret-api-999",
+                            "remaining": 15.0,
+                            "limit": 20.0,
+                            "expiresAt": exp_ts,
+                        },
+                        {
+                            "title": "夜间包 tok-secret-access-888",
+                            "used": 27.0,
+                            "total": 30.0,
+                            "currency": "CNY",
+                            "expires_at": "2026-12-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                now_dt,
+            )
+            self.assertEqual(float(obs.balance), 42.5)
+            self.assertEqual(len(port.last_subscriptions), 2)
+            sub0, sub1 = port.last_subscriptions
+            self.assertNotIn("sk-secret-api-999", sub0["name"])
+            self.assertIn("[redacted]", sub0["name"])
+            self.assertAlmostEqual(sub0["remaining_percent"], 75.0, places=2)
+            self.assertEqual(sub0["display_type"], "USD")
+            self.assertEqual(sub0["source"], "custom_script")
+            self.assertTrue(sub0["expires_at"].startswith("2026-12-02"))
+            self.assertNotIn("tok-secret-access-888", sub1["name"])
+            self.assertAlmostEqual(sub1["remaining"], 3.0, places=2)
+            self.assertAlmostEqual(sub1["remaining_percent"], 10.0, places=2)
+            self.assertEqual(sub1["display_type"], "CNY")
+            self.assertEqual(sub1["status"], "low")
+
+            # Missing subscriptions resets stale last_subscriptions
+            port.parse({"isValid": True, "remaining": 10.0, "unit": "USD"}, now_dt)
+            self.assertEqual(port.last_subscriptions, ())
+
+            # Strict validation rejects non-list, unknown keys, and non-finite/negative numbers
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": "bad"}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": 1, "evil": 1}]}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": -5}]}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": True}]}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": 1, "expiresAt": -10}]}, now_dt)
+
+            # End-to-end CustomScriptAdapter.probe forwards port.last_subscriptions into QuotaSnapshot
+            async def fake_fetch(self_port):
+                return self_port.parse(
+                    {
+                        "isValid": True,
+                        "remaining": 42.5,
+                        "unit": "USD",
+                        "subscriptions": [
+                            {"name": "周期额度包", "remaining": 8.0, "total": 10.0, "expiresAt": exp_ts},
+                        ],
+                    },
+                    now_dt,
+                )
+
+            async def run_probe():
+                adapter = CustomScriptAdapter()
+                spec = QuotaStationSpec(
+                    id="script-sub",
+                    name="脚本多套餐站",
+                    adapter_id="custom_script",
+                    base_url="https://relay.example.test",
+                    custom_script=settings["advanced_script"],
+                )
+                with patch.object(ScriptServiceBalancePort, "fetch", new=fake_fetch):
+                    snap = await adapter.probe(
+                        spec,
+                        AdapterProbeContext(
+                            base_url=spec.base_url,
+                            auth_token="sk-secret-api-999",
+                            custom_script=spec.custom_script,
+                            now=lambda: now_dt,
+                        ),
+                    )
+                self.assertTrue(snap.ok)
+                self.assertEqual(snap.quota_model, "wallet")
+                self.assertEqual(len(snap.subscriptions), 1)
+                self.assertEqual(snap.subscriptions[0]["name"], "周期额度包")
+                self.assertAlmostEqual(snap.subscriptions[0]["remaining_percent"], 80.0, places=2)
+                self.assertEqual(snap.subscriptions[0]["source"], "custom_script")
+
+            asyncio.run(run_probe())
+
 
 if __name__ == "__main__":
     unittest.main()
