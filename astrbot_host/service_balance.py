@@ -303,6 +303,7 @@ class MultiStationBalancePort:
         from companion_v2.model_gateway.quota import (
             convert_currency_amount,
             evaluate_station_health,
+            resolve_station_quota_model,
         )
 
         service, participating, awareness = self._participating()
@@ -325,9 +326,10 @@ class MultiStationBalancePort:
             observed = datetime.fromisoformat(snap.checked_at) if snap.checked_at else now_dt
             if observed.tzinfo is None:
                 observed = observed.replace(tzinfo=timezone.utc)
+            qmodel = resolve_station_quota_model(spec, snap)
             return BalanceObservation(
                 self._dec(snap.remaining),
-                self._dec(snap.total),
+                self._dec(snap.total) if qmodel == "capped" else None,
                 observed,
                 unit=snap.display_type or "额度",
                 used=self._dec(snap.used),
@@ -353,7 +355,8 @@ class MultiStationBalancePort:
                 if conv_rem is None:
                     continue
                 rem_sum += self._dec(conv_rem)
-                if snap.total is not None:
+                qmodel = resolve_station_quota_model(spec, snap)
+                if qmodel == "capped" and snap.total is not None:
                     conv_tot = convert_currency_amount(snap.total, snap.display_type, target_currency, usd_cny_rate)
                     if conv_tot is not None:
                         total_sum += self._dec(conv_tot)
@@ -387,31 +390,32 @@ class MultiStationBalancePort:
                 extra=extra_text,
             )
 
-        # mode == "any_low": choose the most urgent healthy station (critical > low > lowest pct / converted remaining)
+        # mode == "any_low": choose the most urgent healthy station (critical > low > lowest capped pct / converted remaining)
         severity_rank = {"critical": 0, "low": 1, "normal": 2}
         candidates = []
         for spec in participating:
             snap = snapshots.get(spec.id)
             if snap is None or not snap.ok or snap.remaining is None:
                 continue
-            health = evaluate_station_health(spec, snap)
+            qmodel = resolve_station_quota_model(spec, snap)
+            health = evaluate_station_health(spec, snap, usd_cny_rate=usd_cny_rate)
             rank = severity_rank.get(health, 2)
             conv_rem = convert_currency_amount(snap.remaining, snap.display_type, target_currency, usd_cny_rate)
-            pct = snap.remaining_percent if snap.remaining_percent is not None else 101.0
+            pct = snap.remaining_percent if (qmodel == "capped" and snap.remaining_percent is not None) else 101.0
             sort_key = (rank, pct, conv_rem if conv_rem is not None else snap.remaining)
-            candidates.append((sort_key, spec, snap))
+            candidates.append((sort_key, spec, snap, qmodel))
 
         if not candidates:
             raise ValueError("参与余额感知的站点暂均不可用")
         candidates.sort(key=lambda item: item[0])
-        _, chosen_spec, chosen_snap = candidates[0]
+        _, chosen_spec, chosen_snap, chosen_model = candidates[0]
         self._last_selected = (chosen_spec.id, chosen_spec.name, chosen_snap.symbol or "")
         observed = datetime.fromisoformat(chosen_snap.checked_at) if chosen_snap.checked_at else now_dt
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=timezone.utc)
         return BalanceObservation(
             self._dec(chosen_snap.remaining),
-            self._dec(chosen_snap.total),
+            self._dec(chosen_snap.total) if chosen_model == "capped" else None,
             observed,
             unit=chosen_snap.display_type or "额度",
             used=self._dec(chosen_snap.used),

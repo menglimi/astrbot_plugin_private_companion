@@ -60,6 +60,7 @@ class QuotaWebEndpoints:
             (prefix + "/quota/exchange-token", self.exchange_token, ["POST"], "One-time login to exchange NewAPI credentials for an access token and UID"),
             (prefix + "/quota/stations", self.save_station, ["POST"], "Create or update one monitored quota station"),
             (prefix + "/quota/stations/<station_id>/display-unit", self.save_station_display_unit, ["POST"], "Persist preferred display unit (native/cny/usd) for one monitored quota station"),
+            (prefix + "/quota/stations/<station_id>/thresholds", self.save_station_thresholds, ["POST"], "Atomically update per-station warning thresholds without touching credentials"),
             (prefix + "/quota/stations/delete", self.delete_station, ["POST"], "Delete one monitored quota station"),
             (prefix + "/quota/refresh", self.refresh, ["POST"], "Refresh all or one monitored quota station"),
             (prefix + "/quota/awareness", self.save_awareness, ["POST"], "Save multi-station balance awareness aggregation policy"),
@@ -246,6 +247,43 @@ class QuotaWebEndpoints:
             return self._response(Outcome.failed(error.code, error.reason))
         except (ValueError, TypeError, json.JSONDecodeError):
             return self._response(Outcome.failed("quota_request_invalid", "无法更新站点显示单位"))
+
+    async def save_station_thresholds(self, station_id: str = ""):
+        try:
+            session, _op, _mgr, _status = await self._authorize()
+            body = _parse_json_body(await request.body(), limit=4096)
+            allowed = {"low_threshold", "critical_threshold", "low_percent", "threshold_currency"}
+            if set(body) - allowed or not (set(body) & {"low_threshold", "critical_threshold", "low_percent"}):
+                raise QuotaSettingsError("quota_request_invalid", "预警线更新参数无效")
+            path_params = getattr(request, "path_params", None)
+            sid = str(
+                station_id
+                or (path_params.get("station_id") if isinstance(path_params, dict) else "")
+                or ""
+            ).strip()
+            if not sid:
+                raise QuotaSettingsError("quota_request_invalid", "缺少站点 ID")
+            service, runtime = self._service(session)
+            spec, _stations, _awareness, _token = await asyncio.to_thread(
+                service.update_station_thresholds,
+                sid,
+                low_threshold=body.get("low_threshold"),
+                critical_threshold=body.get("critical_threshold"),
+                low_percent=body.get("low_percent"),
+                has_low_threshold="low_threshold" in body,
+                has_critical_threshold="critical_threshold" in body,
+                has_low_percent="low_percent" in body,
+                threshold_currency=str(body.get("threshold_currency") or ""),
+            )
+            self._sync_live_balance_port(runtime)
+            payload = await asyncio.to_thread(service.get_dashboard_payload, runtime=runtime, session=session)
+            return self._response(Outcome.success({"saved": True, "station_id": spec.id, **payload}))
+        except TaskError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except QuotaSettingsError as error:
+            return self._response(Outcome.failed(error.code, error.reason))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return self._response(Outcome.failed("quota_request_invalid", "更新站点预警线失败"))
 
     async def delete_station(self):
         try:

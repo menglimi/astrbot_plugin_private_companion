@@ -308,6 +308,7 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     "/quota/test",
                     "/quota/exchange-token",
                     "/quota/stations",
+                    "/quota/stations/<station_id>/thresholds",
                     "/quota/stations/delete",
                     "/quota/refresh",
                     "/quota/awareness",
@@ -1180,6 +1181,100 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     # Re-reading /model/balance reflects persisted preferred_unit='usd'
                     res_bal2 = await api.balance()
                     self.assertEqual(res_bal2["data"]["currency_context"]["preferred_unit"], "usd")
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
+    def test_wallet_balance_port_omits_fake_total_and_thresholds_endpoint_updates_atomically(self):
+        from companion_v2.proactive.balance_events import balance_level
+
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                probe_hits = [0]
+
+                def router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {"success": True, "data": {"system_name": "星渊", "quota_display_type": "CNY", "quota_per_unit": 500000, "usd_exchange_rate": 1}},
+                        )
+                    if url.endswith("/api/user/self"):
+                        probe_hits[0] += 1
+                        # Remaining ¥55.73, lifetime spent ¥807.48 (6.46% if miscalculated!)
+                        return _FakeResponse(
+                            200,
+                            {"success": True, "data": {"quota": 27_865_000, "used_quota": 403_740_000, "group": "default"}},
+                        )
+                    if url.endswith("/api/subscription/self"):
+                        return _FakeResponse(404, b"")
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc.store.read()
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "syuan",
+                        "name": "星渊",
+                        "adapter_id": "newapi",
+                        "base_url": "https://api.syuan.org",
+                        "auth_token": "secret-syuan-tok",
+                        "participate_in_awareness": True,
+                    },
+                )
+                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "syuan"})
+                await svc.refresh_station("syuan")
+                self.assertEqual(probe_hits[0], 1)
+
+                # MultiStationBalancePort MUST pass total=None for wallet so balance_level never fires false % alert!
+                port = configured_balance_port(ctrl.config, context=ctrl.context, runtime_root=Path(tmp), controller=ctrl)
+                obs = await port.fetch()
+                self.assertAlmostEqual(float(obs.balance), 55.73, places=2)
+                self.assertIsNone(obs.total)
+                default_prefs = {
+                    "balance_low_threshold": Decimal("10"),
+                    "balance_critical_threshold": Decimal("3"),
+                    "balance_low_percent_threshold": Decimal("15"),
+                    "balance_critical_percent_threshold": Decimal("5"),
+                }
+                self.assertIsNone(balance_level(obs, default_prefs))
+
+                # POST /quota/stations/<station_id>/thresholds updates thresholds atomically with 0 upstream re-probes
+                api = ModelWebAPI(ctrl)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    # Raise low_threshold to 60 -> ¥55.73 immediately becomes "low"
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={"low_threshold": 60, "critical_threshold": 20}),
+                    ):
+                        res_low = await api._quota_api.save_station_thresholds(station_id="syuan")
+                    self.assertEqual(res_low["status"], "ok")
+                    self.assertEqual(probe_hits[0], 1, "Threshold update must not re-probe upstream")
+                    self.assertEqual(res_low["data"]["summary"]["health_by_id"]["syuan"], "low")
+                    self.assertEqual(res_low["data"]["summary"]["effective_thresholds_by_id"]["syuan"]["low"], 60.0)
+                    self.assertEqual(res_low["data"]["summary"]["effective_thresholds_by_id"]["syuan"]["source"], "custom")
+
+                    # Set low_threshold=0 -> alerts disabled, back to "normal", auth_token intact
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={"low_threshold": 0}),
+                    ):
+                        res_off = await api._quota_api.save_station_thresholds(station_id="syuan")
+                    self.assertEqual(res_off["status"], "ok")
+                    self.assertEqual(res_off["data"]["summary"]["health_by_id"]["syuan"], "normal")
+                    self.assertEqual(res_off["data"]["summary"]["effective_thresholds_by_id"]["syuan"]["source"], "disabled")
+
+                    # Verify secret preserved cleanly
+                    stored, _, _ = svc.store.read()
+                    self.assertEqual(stored[0].auth_token, "secret-syuan-tok")
 
                 await close_quota_watch_services(ctrl)
 

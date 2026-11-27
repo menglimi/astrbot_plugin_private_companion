@@ -22,7 +22,9 @@ from companion_v2.model_gateway.quota import (
     QuotaSnapshotCache,
     QuotaStationSpec,
     QuotaStationStore,
+    convert_currency_amount,
     redact_quota_text,
+    resolve_effective_thresholds,
     summarize_quota_portfolio,
 )
 
@@ -399,6 +401,70 @@ class QuotaWatchService:
         return self.store.update_station_display_unit(
             station_id,
             display_unit_mode,
+            seed_stations=self.legacy_seed_stations(),
+        )
+
+    def update_station_thresholds(
+        self,
+        station_id: object,
+        *,
+        low_threshold: object = None,
+        critical_threshold: object = None,
+        low_percent: object = None,
+        has_low_threshold: bool = True,
+        has_critical_threshold: bool = True,
+        has_low_percent: bool = False,
+        threshold_currency: str = "",
+    ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        """Atomically persist per-station warning thresholds (optionally converting from CNY/USD into native unit)."""
+        sid = str(station_id or "").strip()
+        req_cur = str(threshold_currency or "").strip().upper()
+        if req_cur in ("CNY", "USD"):
+            stations, _, _, _ = self._effective_stations()
+            existing = next((st for st in stations if st.id == sid), None)
+            if existing is not None:
+                snap = self.snapshot_cache.get(sid)
+                _dc, rate = self._pricing_fx()
+                eff = resolve_effective_thresholds(existing, snap, usd_cny_rate=rate)
+                native_unit = eff["unit"]
+                fiat_cur = eff["fiat_currency"]
+                fiat_per_native = eff["fiat_per_native"]
+
+                def _convert_to_native(raw_val: object) -> object:
+                    if raw_val is None or raw_val == "":
+                        return None
+                    if isinstance(raw_val, bool):
+                        return raw_val
+                    try:
+                        num = float(raw_val)
+                    except (TypeError, ValueError):
+                        return raw_val
+                    if num <= 0:
+                        return num
+                    if req_cur == native_unit:
+                        return num
+                    if native_unit in ("CNY", "USD"):
+                        converted = convert_currency_amount(num, req_cur, native_unit, rate)
+                        return round(converted, 4) if converted is not None else num
+                    if fiat_cur in ("CNY", "USD") and fiat_per_native and fiat_per_native > 0:
+                        in_fiat = convert_currency_amount(num, req_cur, fiat_cur, rate)
+                        if in_fiat is not None:
+                            return round(in_fiat / fiat_per_native, 4)
+                    return num
+
+                if has_low_threshold:
+                    low_threshold = _convert_to_native(low_threshold)
+                if has_critical_threshold:
+                    critical_threshold = _convert_to_native(critical_threshold)
+
+        return self.store.update_station_thresholds(
+            sid,
+            low_threshold=low_threshold,
+            critical_threshold=critical_threshold,
+            low_percent=low_percent,
+            has_low_threshold=has_low_threshold,
+            has_critical_threshold=has_critical_threshold,
+            has_low_percent=has_low_percent,
             seed_stations=self.legacy_seed_stations(),
         )
 
