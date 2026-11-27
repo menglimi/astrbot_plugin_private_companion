@@ -1548,9 +1548,14 @@ test("Logo cache never poisons on available:false, clears backoff on manual refr
   assert.ok(bgTimer, "background_refresh_scheduled should schedule a 2.5s silent follow-up GET /quota");
 
   // 2) First /quota/icon returns available:false -> MUST NOT poison iconCache
-  const iconReq1 = h.requests.find(r => r.method === "GET" && r.route === "model/quota/icon");
+  const iconReq1 = h.requests.find(r => r.method === "GET" && r.route === "model/quota/icon" && r.params?.id === "st-ds");
   assert.ok(iconReq1);
   iconReq1.resolve({ available: false, data_url: "" });
+  // Station with ok:true and empty logo_version (st-relay) also triggers bounded on-demand /quota/icon
+  const relayOnDemand = h.requests.find(r => r.method === "GET" && r.route === "model/quota/icon" && r.params?.id === "st-relay");
+  assert.ok(relayOnDemand, "Station with ok:true and empty logo_version should attempt bounded on-demand icon hydration");
+  assert.equal(relayOnDemand.params.v, undefined);
+  relayOnDemand.resolve({ available: false, data_url: "" });
   await flush();
   assert.doesNotMatch(h.root.innerHTML, /data:image\/png;base64,/);
 
@@ -1563,29 +1568,33 @@ test("Logo cache never poisons on available:false, clears backoff on manual refr
   await flush();
   await flush();
 
-  const iconReqs = h.requests.filter(r => r.method === "GET" && r.route === "model/quota/icon");
-  assert.equal(iconReqs.length, 2, "Manual refresh must clear icon backoff and retry icon fetch without poisoning");
+  const dsIconReqs = h.requests.filter(r => r.method === "GET" && r.route === "model/quota/icon" && r.params?.id === "st-ds");
+  assert.equal(dsIconReqs.length, 2, "Manual refresh must clear icon backoff and retry icon fetch without poisoning");
   const pngDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
-  iconReqs[1].resolve({ available: true, version: "v1-ds", data_url: pngDataUrl });
+  // Server returns a newer version ("v2-ds") than snapshot's stale "v1-ds": L2 localStorage MUST persist "v2-ds" (never overwritten back to "v1-ds")!
+  dsIconReqs[1].resolve({ available: true, version: "v2-ds", data_url: pngDataUrl });
   await flush();
   assert.match(h.root.innerHTML, /data:image\/png;base64,iVBORw0KGgoAAAANSUhEUg==/);
 
-  // 3) Logo is persisted in localStorage L2 cache under companion-qw-logo.v1:st-ds
+  // 3) Logo is persisted in localStorage L2 cache under companion-qw-logo.v1:st-ds with actualVer="v2-ds"
   const storedRaw = h.localStore.getItem("companion-qw-logo.v1:st-ds");
   assert.ok(storedRaw, "Verified logo should be written to localStorage L2 cache");
+  assert.equal(JSON.parse(storedRaw).v, "v2-ds", "localStorage L2 cache must retain server actualVer without being overwritten by stale snapshot version");
   assert.equal(JSON.parse(storedRaw).dataUrl, pngDataUrl);
 
-  // 4) Fresh harness with pre-seeded localStorage renders real logo on first frame with ZERO /quota/icon requests!
+  // 4) Fresh harness with pre-seeded localStorage renders real logo on first frame with ZERO /quota/icon requests for st-ds!
   h.page.unmount();
   const h2 = quotaHarness();
   h2.localStore.setItem("companion-qw-logo.v1:st-ds", storedRaw);
   h2.page.mount(h2.root, { initialTab: "quota" });
   await flush();
-  h2.requests.find(r => r.method === "GET" && r.route === "model/quota").resolve(sampleQuotaPayload());
+  const p2 = sampleQuotaPayload();
+  p2.snapshots["st-ds"].logo_version = "v2-ds";
+  h2.requests.find(r => r.method === "GET" && r.route === "model/quota").resolve(p2);
   await flush();
   assert.match(h2.root.innerHTML, /data:image\/png;base64,iVBORw0KGgoAAAANSUhEUg==/, "First frame should render L2 cached logo immediately");
   assert.equal(
-    h2.requests.filter(r => r.route === "model/quota/icon").length,
+    h2.requests.filter(r => r.route === "model/quota/icon" && r.params?.id === "st-ds").length,
     0,
     "L2 localStorage cache hit should skip redundant /quota/icon network call"
   );

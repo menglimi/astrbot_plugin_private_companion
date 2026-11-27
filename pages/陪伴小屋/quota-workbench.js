@@ -1869,30 +1869,36 @@ window.CompanionQuotaWorkbench = (() => {
     const ticket = ctx.ticket();
     const now = Date.now();
     const pending = [];
-    const updatedIds = [];
     for (const st of q.data?.stations || []) {
       const snap = snaps[st.id];
-      if (!snap?.logo_version) continue;
-      const cacheKey = `${st.id}:${snap.logo_version}`;
-      if (resolveCachedLogo(st.id, snap.logo_version)) continue;
+      if (!snap) continue;
+      const declaredVer = String(snap.logo_version || "").trim();
+      if (!declaredVer) {
+        if (!snap.ok || st.enabled === false) continue;
+        const adapter = adapterById(q, st.adapter_id);
+        if (adapter?.capabilities && adapter.capabilities.supports_logo === false) continue;
+      }
+      const cacheKey = `${st.id}:${declaredVer || "_ondemand"}`;
+      if (declaredVer && resolveCachedLogo(st.id, declaredVer)) continue;
       if (!ignoreBackoff) {
         const retryAfter = iconBackoff.get(st.id) || 0;
         if (retryAfter > now) continue;
       }
       let req = iconInflight.get(cacheKey);
       if (!req) {
-        req = ctx.api("GET", `${ctx.path}/quota/icon`, { id: st.id, v: snap.logo_version }, 8000)
+        const query = declaredVer ? { id: st.id, v: declaredVer } : { id: st.id };
+        req = ctx.api("GET", `${ctx.path}/quota/icon`, query, 8000)
           .then(res => {
             if (res?.available && isSafeIconDataUrl(res?.data_url)) {
-              const actualVer = String(res.version || snap.logo_version);
+              const actualVer = String(res.version || declaredVer || "v1");
               iconCache.set(cacheKey, res.data_url);
-              if (actualVer !== snap.logo_version) {
+              if (actualVer !== declaredVer) {
                 iconCache.set(`${st.id}:${actualVer}`, res.data_url);
+                snap.logo_version = actualVer;
               }
+              snap.logo_error = "";
+              // Write ONLY once under actualVer so single-key localStorage is never overwritten back to stale version.
               writeStoredLogo(st.id, actualVer, res.data_url);
-              if (actualVer !== snap.logo_version) {
-                writeStoredLogo(st.id, snap.logo_version, res.data_url);
-              }
               iconBackoff.delete(st.id);
               return res.data_url;
             }
@@ -1911,13 +1917,12 @@ window.CompanionQuotaWorkbench = (() => {
       }
       pending.push(
         req.then(url => {
-          if (url) updatedIds.push(st.id);
+          if (url && ctx.isCurrent(ticket)) patchHydratedLogos(ctx, [st.id]);
         })
       );
     }
     if (pending.length) {
       await Promise.all(pending);
-      if (ctx.isCurrent(ticket) && updatedIds.length) patchHydratedLogos(ctx, updatedIds);
     }
   }
 

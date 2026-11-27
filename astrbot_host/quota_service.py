@@ -878,9 +878,19 @@ class QuotaWatchService:
         astrbot_providers, _connections = self._discover_astrbot_suppliers(session=session)
         provider_usage = self._collect_provider_usage(runtime, session) if runtime is not None else {}
 
+        snaps_out: dict[str, dict[str, Any]] = {}
+        for sid, snap in snaps.items():
+            snap_dict = snap.to_dict()
+            if snap.ok and not snap.logo_version:
+                cached_logo = self.logo_cache.get(sid)
+                if cached_logo is not None and cached_logo.usable and cached_logo.version:
+                    snap_dict["logo_version"] = cached_logo.version
+                    snap_dict["logo_error"] = ""
+            snaps_out[sid] = snap_dict
+
         return {
             "stations": [st.to_public_dict() for st in stations],
-            "snapshots": {sid: snap.to_dict() for sid, snap in snaps.items()},
+            "snapshots": snaps_out,
             "summary": summary,
             "awareness": awareness.to_dict(),
             "legacy_projected": legacy_projected,

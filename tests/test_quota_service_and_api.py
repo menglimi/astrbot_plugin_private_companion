@@ -1053,6 +1053,24 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                 # 3) Cold restart with empty memory: GET /quota/icon serves directly from disk (0 upstream fetches!)
                 icon_hits[0] = 0
                 svc3 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                # Seed a snapshot with ok=True and empty logo_version to verify dashboard backfills disk logo_version
+                from companion_v2.model_gateway.quota import QuotaSnapshot
+
+                svc3.snapshot_cache.put(
+                    QuotaSnapshot(
+                        station_id="cold-st",
+                        ok=True,
+                        remaining=10.0,
+                        display_type="CNY",
+                        logo_version="",
+                        checked_at="2026-11-24T12:00:00+00:00",
+                    )
+                )
+                dash_backfill = svc3.get_dashboard_payload(runtime=ctrl.runtime, session=ctrl.session)
+                self.assertTrue(
+                    dash_backfill["snapshots"]["cold-st"]["logo_version"],
+                    "get_dashboard_payload must backfill logo_version from persistent disk cache when snapshot logo_version is empty",
+                )
                 with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
                     with patch("astrbot_host.quota_api.request", _FakeRequest(query={"id": "cold-st"})):
                         r_disk = await api._quota_api.icon()
