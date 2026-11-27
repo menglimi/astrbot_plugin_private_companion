@@ -299,6 +299,82 @@ test("状态否定作用域增强：复杂插词否定、双重否定、转折�
   }
 });
 
+test("双层协同：后端结构化 *_level 优先驱动标签与图标，缺省/旧记录/非法值无缝回退至否定作用域分析器", () => {
+  const { vital, specialState, renderState } = loadHomeSidebar();
+
+  // 1. 第一层优先：即使原文为隐喻或不含显式关键词，后端结构化枚举直接精准定性
+  const metaphorWell = vital("health", "胃部像一团小小的棉花", { level: "well" });
+  assert.equal(metaphorWell.visual, "well");
+  assert.equal(metaphorWell.icon, "heart-pulse");
+  assert.equal(metaphorWell.label, "良好");
+  assert.equal(metaphorWell.tone, "ok");
+
+  const metaphorStrained = vital("health", "胸口像是压着一块微凉的石子", { level: "strained" });
+  assert.equal(metaphorStrained.visual, "strained");
+  assert.equal(metaphorStrained.icon, "heart-crack");
+  assert.equal(metaphorStrained.label, "不适");
+  assert.equal(metaphorStrained.tone, "warn");
+  assert.equal(specialState("health", "胸口像是压着一块微凉的石子", { level: "strained" }), true);
+  assert.equal(specialState("health", "有点低烧，担心明天加重", { level: "strained" }), true);
+  assert.equal(specialState("health", "头疼但其实已经没事了", { level: "well" }), false);
+
+  assert.equal(vital("health", "比昨天好些了", { level: "recovering" }).visual, "recovering");
+  assert.equal(vital("hunger", "胃里有点空落落的", { level: "hungry" }).visual, "hungry");
+  assert.equal(vital("hunger", "刚喝过热汤", { level: "sated" }).visual, "sated");
+  assert.equal(vital("hunger", "甜点吃得太多", { level: "full" }).visual, "full");
+  assert.equal(vital("sleep", "眼皮有点打架", { level: "sleepy" }).visual, "sleepy");
+  assert.equal(vital("sleep", "整晚翻来覆去", { level: "restless" }).visual, "restless");
+  assert.equal(specialState("sleep", "整晚翻来覆去", { level: "restless" }), true);
+  assert.equal(vital("sleep", "神清气爽", { level: "awake" }).visual, "awake");
+  assert.equal(specialState("busy", "手头堆了一堆琴谱要整理", { level: "busy" }), true);
+  assert.equal(specialState("busy", "在客厅里翻着书发呆", { level: "free" }), false);
+
+  // 2. 真实睡眠执行回执始终优先于模拟 sleep_level
+  const sleepingItem = vital("sleep", "清醒", { sleeping: true, level: "awake" });
+  assert.equal(sleepingItem.visual, "sleeping");
+  assert.equal(specialState("sleep", "翻来覆去", { sleeping: true, level: "restless" }), false);
+
+  // 3. 缺省或未知枚举时无缝回退至第二层中文否定分析器
+  const fallbackWell = vital("health", "睡饱后浑身暖和舒展，没有什么酸沉或病痛不适", { level: "unknown_enum" });
+  assert.equal(fallbackWell.visual, "well");
+  assert.equal(fallbackWell.label, "良好");
+  const fallbackStrained = vital("health", "不怎么舒服", { level: "" });
+  assert.equal(fallbackStrained.visual, "strained");
+  assert.equal(fallbackStrained.label, "不适");
+
+  // 4. renderState 端到端投影 values.*_level 并驱动首页展示与仅特殊状态过滤
+  const state = makeStatus({
+    energy: 82,
+    health: "胃部像一团小小的棉花",
+    health_level: "well",
+    hunger: "胃里比刚才更空一些，想找点热乎东西吃",
+    hunger_level: "hungry",
+    busy: "在客厅里翻着书发呆",
+    busy_level: "free",
+    sleep: "清醒",
+    sleep_level: "awake",
+  }, {
+    home_show_cycle: false,
+    home_show_location: false,
+    home_show_mood: false,
+    home_only_special_health: true,
+    home_only_special_hunger: true,
+    home_only_special_busy: true,
+  });
+  const html = renderState({ now: NOW, state, life: makeLife() });
+  assert.doesNotMatch(html, /data-state-kind="health"/, "health_level=well 在仅特殊状态模式下不展示");
+  assert.doesNotMatch(html, /data-state-kind="busy"/, "busy_level=free 在仅特殊状态模式下不展示");
+  assert.match(html, /data-state-kind="hunger" data-visual="hungry" data-tone="warn"/);
+  assert.match(html, /data-state-kind="hunger"[\s\S]*?<strong>饿了<\/strong>/);
+
+  // 关闭仅特殊状态时，health_level=well 以心率图标+良好展示
+  state.settings.home_only_special_health = false;
+  const fullHtml = renderState({ now: NOW, state, life: makeLife() });
+  assert.match(fullHtml, /data-state-kind="health" data-visual="well" data-tone="ok"/);
+  assert.match(fullHtml, /data-state-kind="health"[\s\S]*?data-lucide="heart-pulse"/);
+  assert.match(fullHtml, /data-state-kind="health"[\s\S]*?<strong>良好<\/strong>/);
+});
+
 test("Issue #1: home-sidebar 宽行判断按渲染标签长度而非原文长度计算", () => {
   const { renderState } = loadHomeSidebar();
   const state = makeStatus({

@@ -283,7 +283,25 @@ window.CompanionHomeSidebar = (() => {
     }
     return {hasPositive, hasNegated, hasUncertain};
   }
-  function vital(kind, raw, {sleeping=false, disabled=false, loading=false, unreadable=false}={}) {
+  const STRUCTURED_VITALS = {
+    health: {
+      well: ["well","heart-pulse","良好","ok"],
+      recovering: ["recovering","heart-handshake","恢复中","ok"],
+      strained: ["strained","heart-crack","不适","warn"],
+    },
+    hunger: {
+      sated: ["sated","utensils","不饿","ok"],
+      hungry: ["hungry","soup","饿了","warn"],
+      full: ["full","utensils-crossed","偏饱","warn"],
+    },
+    sleep: {
+      awake: ["awake","sun","清醒","ok"],
+      sleepy: ["sleepy","moon","困倦","warn"],
+      restless: ["restless","cloud-moon","睡不好","warn"],
+      rest: ["rest","moon","休息感受","rest"],
+    },
+  };
+  function vital(kind, raw, {sleeping=false, disabled=false, loading=false, unreadable=false, level=null}={}) {
     const icons = {energy:"battery",health:"heart-pulse",hunger:"utensils",sleep:"moon",mood:"heart",
       cycle:"calendar-heart",busy:"briefcase-business",location:"map-pin"};
     const item = (visual,icon,label,tone="quiet") => ({visual,icon,label,tone});
@@ -298,6 +316,11 @@ window.CompanionHomeSidebar = (() => {
     if (loading && (raw == null || raw === "")) return item("loading",icons[kind],"读取中","loading");
     if (!raw) return item("unknown",icons[kind],unreadable ? "待读取" : "未记录");
     if (/^(未知|不清楚|未记录|暂无|尚未记录|未设置|待确认)$/.test(raw)) return item("unknown",icons[kind],"未知");
+    // 第一层：优先采用后端状态维护 LLM 同步产出的结构化定性枚举，避免对文学化措辞二次猜测。
+    const structuredKey = text(level).toLowerCase();
+    const structured = structuredKey && STRUCTURED_VITALS[kind]?.[structuredKey];
+    if (structured) return item(...structured);
+    // 第二层：旧记录或缺省枚举时，回退至分句级中文否定作用域分析器精准兜底。
     if (kind === "health") {
       if (/^(稳定|正常|健康|良好|状态良好|无不适|没有不适|身体无不适)$/.test(raw)) return item("well","heart-pulse","良好","ok");
       if (analyzeNegation(raw, STATUS_PATTERNS.healthRecovering).hasPositive) return item("recovering","heart-handshake","恢复中","ok");
@@ -321,10 +344,17 @@ window.CompanionHomeSidebar = (() => {
     // 自由文字不能可靠归类时保留原文，不推断成正常或异常。
     return item("recorded",icons[kind],raw);
   }
-  function specialState(kind, raw, {timeline, sleeping=false}={}) {
+  function specialState(kind, raw, {timeline, sleeping=false, level=null}={}) {
     if (kind === "cycle") return timeline?.applicability === "applicable" && timeline.phase === "menstrual";
     if (kind === "sleep" && sleeping) return false;
-    if (!raw || /(?:可能|或许|也许|不确定|担心|会不会)/.test(raw)) return false;
+    if (!raw) return false;
+    const structuredKey = text(level).toLowerCase();
+    if (kind === "busy" && (structuredKey === "busy" || structuredKey === "free")) return structuredKey === "busy";
+    if (structuredKey && STRUCTURED_VITALS[kind]?.[structuredKey]) {
+      const visual = STRUCTURED_VITALS[kind][structuredKey][0];
+      return kind === "health" ? visual === "strained" : kind === "hunger" ? visual === "hungry" : kind === "sleep" ? visual === "restless" : false;
+    }
+    if (/(?:可能|或许|也许|不确定|担心|会不会)/.test(raw)) return false;
     if (kind === "busy") return analyzeNegation(raw, STATUS_PATTERNS.busyPos, STATUS_PATTERNS.busyNeg).hasPositive;
     const visual = vital(kind, raw).visual;
     return kind === "health" ? visual === "strained" : kind === "hunger" ? visual === "hungry" : kind === "sleep" ? visual === "restless" : false;
@@ -382,11 +412,17 @@ window.CompanionHomeSidebar = (() => {
       ["sleep","睡眠",sleeping ? "睡眠中 · 活动确认" : text(values.sleep) || rhythmLabels[rhythm?.phase],settings.sleep_enabled===false],
       ["cycle","生理期",cycle,settings.cycle_enabled===false],["busy","忙碌",text(values.busy),settings.busy_enabled===false],
       ["location","位置",text(values.location),settings.location_enabled===false]];
+    const levels = {
+      health: text(values.health_level),
+      hunger: text(values.hunger_level),
+      sleep: text(values.sleep_level),
+      busy: text(values.busy_level),
+    };
     const visible = candidates.filter(([kind,,raw,disabled]) => settings["home_show_"+kind] !== false && settings.enabled !== false && !disabled
-      && (!settings["home_only_special_"+kind] || !unreadable && specialState(kind,raw,{timeline,sleeping})));
+      && (!settings["home_only_special_"+kind] || !unreadable && specialState(kind,raw,{timeline,sleeping,level:levels[kind]})));
     const sleepEntry = visible.find(([kind]) => kind === "sleep");
     const rows = visible.filter(([kind]) => kind !== "sleep").map(row => {
-      const options = {sleeping, disabled:row[3], loading, unreadable};
+      const options = {sleeping, disabled:row[3], loading, unreadable, level:levels[row[0]]};
       const item = vital(row[0], row[2], options);
       const compactLimit = row[0] === "cycle" ? 13 : row[0] === "location" ? 10 : 6;
       return {row, options, wide: ["mood","busy"].includes(row[0]) || item.label.length > compactLimit};

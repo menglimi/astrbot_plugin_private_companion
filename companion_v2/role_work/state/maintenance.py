@@ -58,7 +58,7 @@ energy 是 0 到 100 的主观精力。结合 previous_simulation 及 updated_at
 busy 描述注意力，不决定是否拒答。共享状态只写角色自己的概括感受与活动，不写对象、他人位置或私人日程。当前窗口没新消息不表示不忙、情绪归零或状态结束；没有变化依据时保留有效状态或 null。
 临时影响使用含时区的合理 expires_at，表示下次复核时点，不是固定康复时刻；到期后重新评估当前感受，既不自动痊愈也不无依据续期。共享字段只写角色自己的概括感受，不记录聊天对象、私人互动原文或他人情况。presence 是公开 QQ 短状态，最多 8 个字符，写泛化活动（如阅读中、休息中）。
 online_mode 是会实际改变 QQ 账号的在线状态，away 会触发 QQ 原生离开自动回复，busy 也会改变账号对外表现；本插件不会自动设置 away 或 busy。不能用这些模式表达普通困倦、待休息、看书、注意力变化或窗口暂时没有消息。这些生活感受写在 sleep/busy/presence 中。正常接话、近期仍在连续互动时保持 online；previous_simulation 中过时的 away/busy 不因沿用旧状态而续期，旧值也应通过在线状态恢复。隐身仍只在明确配置时使用。online_mode 通常只输出 online/invisible/null；null 只表示本轮不改变平台状态。
-仅输出 JSON：energy 为 0 到 100 的整数或 null；hunger、health、sleep、busy、mood、location、cycle、presence、online_mode 通常为简短文字或 null，mood/cycle 按本轮各自结构协议；conditions 是 kind/text/expires_at 对象数组，kind 选 hunger/health/sleep/busy/mood/cycle/other，无临时变化填空数组。
+仅输出 JSON：energy 为 0 到 100 的整数或 null；hunger、health、sleep、busy、mood、location、cycle、presence、online_mode 通常为简短文字或 null，mood/cycle 按本轮各自结构协议；conditions 是 kind/text/expires_at 对象数组，kind 选 hunger/health/sleep/busy/mood/cycle/other，无临时变化填空数组；可选附带与对应文字语义一致的结构化定性枚举（无明确倾向或对应项为 null 时可省略或填 null）：health_level（well/recovering/strained）、hunger_level（sated/hungry/full）、sleep_level（awake/sleepy/restless/rest）、busy_level（free/busy）。
 """
 STATE_INTERVENTION_INSTRUCTION = (
     "\n本轮是获授权私聊引发的角色状态复核。将 intervention_dialogue 作为连续互动，结合角色设定、previous_simulation、近期状态和实际回执，判断是否存在合理的状态变化；不要求特定说法或角色复述。"
@@ -867,6 +867,50 @@ class StateMaintenance:
             self.pending.pop(key, None)
             self.committed.discard(key)
 
+    _STATUS_LEVEL_ALIASES = {
+        "health_level": {
+            "well": "well", "good": "well", "normal": "well", "fine": "well", "healthy": "well", "ok": "well",
+            "良好": "well", "正常": "well", "健康": "well",
+            "recovering": "recovering", "improving": "recovering", "恢复中": "recovering", "好转中": "recovering",
+            "strained": "strained", "unwell": "strained", "mild": "strained", "bad": "strained",
+            "sick": "strained", "discomfort": "strained", "不适": "strained",
+        },
+        "hunger_level": {
+            "sated": "sated", "not_hungry": "sated", "normal": "sated", "ok": "sated", "不饿": "sated", "适中": "sated",
+            "hungry": "hungry", "starving": "hungry", "mild_hunger": "hungry", "饿了": "hungry", "饥饿": "hungry",
+            "full": "full", "overfull": "full", "stuffed": "full", "偏饱": "full", "吃撑": "full",
+        },
+        "sleep_level": {
+            "awake": "awake", "alert": "awake", "clear": "awake", "清醒": "awake",
+            "sleepy": "sleepy", "drowsy": "sleepy", "tired": "sleepy", "困倦": "sleepy", "犯困": "sleepy",
+            "restless": "restless", "insomnia": "restless", "poor": "restless", "睡不好": "restless", "失眠": "restless",
+            "rest": "rest", "resting": "rest", "sleeping": "rest", "休息": "rest", "休息感受": "rest",
+        },
+        "busy_level": {
+            "free": "free", "idle": "free", "relaxed": "free", "not_busy": "free", "空闲": "free", "不忙": "free",
+            "busy": "busy", "occupied": "busy", "focused": "busy", "忙碌": "busy", "忙": "busy",
+        },
+    }
+
+    @classmethod
+    def _sanitize_status_levels(cls, data):
+        """Normalize optional LLM status levels and drop malformed ones without failing the round."""
+        if type(data) is not dict:
+            return
+        for level_key, aliases in cls._STATUS_LEVEL_ALIASES.items():
+            if level_key not in data:
+                continue
+            raw_level = data.get(level_key)
+            if raw_level is None:
+                data.pop(level_key, None)
+                continue
+            if type(raw_level) is str:
+                normalized = aliases.get(raw_level.strip().lower())
+                if normalized is not None:
+                    data[level_key] = normalized
+                    continue
+            data.pop(level_key, None)
+
     def _retain_previous_mood(self, job, data):
         """Isolate a malformed mood field so it cannot discard the rest of a valid round."""
         if not job["settings"]["mood_enabled"] or type(data) is not dict or "mood" not in data:
@@ -943,6 +987,7 @@ class StateMaintenance:
                 run.validate()
                 if self.foreground_busy(context):
                     raise TaskError("state_foreground_active", "defer state changes while an original reply is using them")
+                self._sanitize_status_levels(data)
                 mood_error = self._retain_previous_mood(job, data)
                 run.begin_effect()
                 receipt = self.service.write(context, data=data, expected_revision=job["revision"],
