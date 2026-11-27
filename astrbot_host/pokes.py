@@ -245,31 +245,16 @@ def _has_conflicting_core_reply(controller, context, instruction, observed_at: d
                             "group_participation", None)
     if participation is None:
         return False
-    admission = getattr(participation, "admission", None)
-    if admission is None:
+    check = getattr(getattr(participation, "admission", None), "core_reply_conflict", None)
+    if not callable(check):
         return False
     try:
-        live_map = getattr(admission, "_live_core_events", None)
-        if isinstance(live_map, Mapping) and live_map.get(admission._key(context)):
-            return True
-        turns = admission._current_core_turns(context, instruction, at)
+        return bool(check(context, instruction, observed_at=observed_at, at=at,
+                          inflight_seconds=INFLIGHT_CONFLICT_WINDOW_SECONDS,
+                          returned_seconds=CONFLICT_LOOKBACK_SECONDS))
     except Exception:
+        logger.debug("[CompanionV2][poke-context] 主群聊回复冲突检测不可用", exc_info=True)
         return False
-    conflict_floor = observed_at - timedelta(seconds=CONFLICT_LOOKBACK_SECONDS)
-    inflight_floor = observed_at - timedelta(seconds=INFLIGHT_CONFLICT_WINDOW_SECONDS)
-    for turn in turns:
-        state = turn.get("state")
-        send_state = turn.get("send_state")
-        if state in ("admitted", "inflight"):
-            when = parse_moment(turn.get("inflight_at") or turn.get("admitted_at"))
-            if when is not None and when >= inflight_floor:
-                return True
-            continue
-        if send_state in ("started", "returned", "unknown") or turn.get("send_returns", 0) > 0:
-            when = parse_moment(turn.get("returned_at") or turn.get("admitted_at"))
-            if when is not None and when >= conflict_floor:
-                return True
-    return False
 
 
 def _spawn_context_stream(controller, route, context, instruction, event_key, happened_at, poker_label):

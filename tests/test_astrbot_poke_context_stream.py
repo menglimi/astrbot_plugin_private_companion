@@ -236,6 +236,15 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         all_obs = [item for bucket in admission.observations.values() for item in bucket]
         self.assertEqual(len(all_obs), 1)
         self.assertEqual(all_obs[0]["speaker_id"], "201")
+        # Bot replies land in their own bounded ledgers instead.
+        runtime = self.controller.session.runtime
+        ledger = runtime.read_all("SELECT key, value FROM runtime_metadata WHERE key LIKE ?",
+                                  ("conversation.group_poke_replies.v1:%",))
+        self.assertEqual(len(ledger), 1)
+        sources = [item["source"] for item in __import__("json").loads(ledger[0]["value"])["items"]]
+        self.assertEqual(sources, ["poke_a", "poke_b"])
+        self.assertEqual(len(runtime.read_all("SELECT key FROM runtime_metadata WHERE key LIKE ?",
+                                              ("conversation.group_poke_watermark.v1:%",))), 1)
 
         # Second poke 10s later with no new human message -> zero LLM calls
         self.clock.advance(timedelta(seconds=10))

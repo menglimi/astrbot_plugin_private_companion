@@ -1,6 +1,7 @@
 """Model-free group candidates and lightweight AstrBot core reply records."""
 
 from collections import deque
+from datetime import timedelta
 import json
 
 from companion_v2.execution.models import TaskError, digest, stamp
@@ -93,6 +94,33 @@ class GroupReplyAdmission:
     def has_concurrent_or_newer_core_turn(self, context, event_id):
         live = self._live_core_events.get(self._key(context), ())
         return any(other != event_id for other in live)
+
+    def core_reply_conflict(self, context, instruction, *, observed_at, at,
+                            inflight_seconds=15, returned_seconds=2):
+        """Whether a core group reply is live, or was sent around ``observed_at``.
+
+        Side channels (for example a poke follow-up) use this to yield to the
+        main reply path instead of answering the same moment a second time.
+        An admitted/inflight turn counts when it started within
+        ``inflight_seconds`` before ``observed_at``; a sent turn counts when it
+        returned no earlier than ``returned_seconds`` before ``observed_at``.
+        """
+        if self._live_core_events.get(self._key(context)):
+            return True
+        inflight_floor = observed_at - timedelta(seconds=inflight_seconds)
+        returned_floor = observed_at - timedelta(seconds=returned_seconds)
+        for turn in self._current_core_turns(context, instruction, at):
+            if turn.get("state") in ("admitted", "inflight"):
+                when = parse_moment(turn.get("inflight_at") or turn.get("admitted_at"))
+                if when is not None and when >= inflight_floor:
+                    return True
+                continue
+            if (turn.get("send_state") in ("started", "returned", "unknown")
+                    or turn.get("send_returns", 0) > 0):
+                when = parse_moment(turn.get("returned_at") or turn.get("admitted_at"))
+                if when is not None and when >= returned_floor:
+                    return True
+        return False
 
     def _sample(self, context, reason, probability, event_id, at, text):
         # Repeat observations of one event must keep the same decision. Include
