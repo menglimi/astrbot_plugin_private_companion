@@ -61,3 +61,25 @@ def test_laya_commands_and_store_read_never_emit_extended_path_prefix():
     assert "\\\\?\\" not in snapshot["install_command"]
     assert "\\\\?\\" not in snapshot["remote_install_command"]
     assert "\\\\?\\" not in snapshot["remote_start_command"]
+
+
+def test_torch_install_command_never_emits_extended_path_prefix():
+    from astrbot_host.laya_client import _torch_install_command
+
+    class _ExtendedPath:
+        def __init__(self, text: str):
+            self._text = text
+
+        def resolve(self):
+            return self
+
+        def __str__(self):
+            return self._text
+
+    fake_exe = _ExtendedPath(r"\\?\D:\AstrBot\backend\python\python.exe")
+    with patch("astrbot_host.laya_client.Path", return_value=fake_exe):
+        command = _torch_install_command()
+
+    assert "\\\\?\\" not in command
+    assert r"D:\AstrBot\backend\python\python.exe" in command
+    assert "download.pytorch.org/whl/cu128" in command

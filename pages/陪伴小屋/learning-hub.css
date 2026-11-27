@@ -483,7 +483,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-reject{min-height:36px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
 .learning-review-workspace .lh-review-reject:hover:not(:disabled){border-color:var(--t-risk);background:var(--t-risk-quiet);color:var(--t-risk-ink)}
 .learning-review-workspace .lh-review-reject:disabled{opacity:.42;cursor:default}
-.learning-review-workspace .lh-review-detail-actions .lh-command{min-height:36px;padding:var(--sp-1) var(--sp-4);border-radius:var(--r-pill)}
+.learning-review-workspace .lh-review-detail-actions .lh-command{min-height:36px;padding:var(--sp-1) var(--sp-4);border-radius:var(--r-sm)}
 .learning-review-workspace .lh-review-detail-actions .lh-command.is-primary{border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid)}
 .learning-review-workspace .lh-review-detail-actions .lh-command.is-primary:hover:not(:disabled){border-color:var(--t-accent-solid-hover);background:var(--t-accent-solid-hover)}
 .learning-review-workspace .lh-review-detail-empty{display:grid;place-items:center;min-height:300px;border:1px dashed var(--t-line);border-radius:var(--r-md);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-tiny)}
@@ -505,7 +505,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-empty-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--sp-2);margin-top:var(--sp-2)}
 .learning-review-workspace .lh-review-empty-btn{
   display:inline-flex;align-items:center;justify-content:center;min-height:34px;
-  padding:var(--sp-1) var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-pill);
+  padding:var(--sp-1) var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
   background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:500;
   text-decoration:none;cursor:pointer;transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease,color var(--dur-fast) ease;
 }

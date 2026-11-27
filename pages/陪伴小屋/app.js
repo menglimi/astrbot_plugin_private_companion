@@ -4479,8 +4479,10 @@ function outputConfigView(kind,overrides={}){
   return {note:'',navigationLimit:0,helps:Object.fromEntries(Object.keys(definition.helps||{}).map(key=>[key,''])),...overrides};
 }
 let learningPolicyDockCleanup=null;
+let budgetStatusCleanup=null;
 function unmountConfigEditors(){
   if(learningPolicyDockCleanup){learningPolicyDockCleanup();learningPolicyDockCleanup=null;}
+  if(budgetStatusCleanup){budgetStatusCleanup();budgetStatusCleanup=null;}
   for(const mount of configEditorMounts)mount?.unmount?.();
   configEditorMounts=[];
   roleProfileConfigMount=null;
@@ -4593,6 +4595,7 @@ function renderConfigEditors(){
   }));
   if($('#reactionConfigWorkspace'))configEditorMounts.push(mountConfigEditor('reactionConfigWorkspace',['reaction']));
   if($('#budgetConfigWorkspace')){
+    if(budgetStatusCleanup){budgetStatusCleanup();budgetStatusCleanup=null;}
     const budgetHost=$('#budgetConfigWorkspace');
     let savedBudgetEnabled=false;
     const updateBudgetBadge=(enabled,dirty=false)=>{
@@ -4606,6 +4609,9 @@ function renderConfigEditors(){
       const toggle=budgetHost.querySelector('input[data-wb-field="enable_daily_token_soft_limit"]');
       if(toggle)updateBudgetBadge(toggle.checked,toggle.checked!==savedBudgetEnabled);
     };
+    const onWorkbenchState=event=>{
+      if(!event?.detail?.group||event.detail.group==='budget')syncBudgetDraft();
+    };
     configEditorMounts.push(mountConfigEditor('budgetConfigWorkspace',['budget'],{
       budget:{onStatus:value=>{
         savedBudgetEnabled=Boolean(value?.settings?.enable_daily_token_soft_limit);
@@ -4613,9 +4619,11 @@ function renderConfigEditors(){
       }},
     }));
     budgetHost.addEventListener('change',syncBudgetDraft);
-    budgetHost.addEventListener('click',event=>{
-      if(event.target?.closest?.('[data-wb-reset],[data-wb-discard]'))setTimeout(syncBudgetDraft,0);
-    });
+    window.addEventListener('companion:workbench-state',onWorkbenchState);
+    budgetStatusCleanup=()=>{
+      budgetHost.removeEventListener('change',syncBudgetDraft);
+      window.removeEventListener('companion:workbench-state',onWorkbenchState);
+    };
   }
   if($('#busyGateWorkspace'))configEditorMounts.push(mountConfigEditor('busyGateWorkspace',['busy_gate']));
   if($('#recallConfigWorkspace'))configEditorMounts.push(mountConfigEditor('recallConfigWorkspace',['recall']));

@@ -342,9 +342,74 @@ test("Laya 下半区采用双栏调试日志工作台 + 可折叠部署抽屉，
   assert.ok(!copied[0].includes("\\\\?\\"), "复制到剪贴板的命令不应包含 \\\\?\\ 前缀");
   assert.match(copied[0], /D:\\AstrBot\\backend\\python\\python\.exe/);
 
-  // 切换至本地模式且未安装时，清空显式开关后默认展开以便即时引导安装
+  // 再次点击可平滑收起部署抽屉
   node.fire("click", "[data-laya-deploy-toggle]", {});
   assert.match(node.innerHTML, /data-laya-deploy-toggle aria-expanded="false"/);
+  window.CompanionModelsPage.unmount();
+
+  // 全新实例：本地模式且未安装 laya 包时，部署抽屉应默认展开以即时引导安装
+  const localRequests = [];
+  const localWindow = {
+    CompanionProduct: {
+      hosted: () => true,
+      role: () => ({model_api: "/astrbot_plugin_private_companion/model"}),
+      identity: () => ({installation_id: "inst-laya-local-uninstalled", operator_id: "operator"}),
+      bridgeNow: () => localWindow.AstrBotPluginPage,
+      bridgeFor: () => ({then: resolve => resolve(localWindow.AstrBotPluginPage)}),
+    },
+    AstrBotPluginPage: {
+      apiGet: (route, params) => new Promise((resolve, reject) => localRequests.push({method: "GET", route, params, resolve, reject})),
+      apiPost: (route, values) => new Promise((resolve, reject) => localRequests.push({method: "POST", route, values, resolve, reject})),
+    },
+    sessionStorage: {getItem: () => null, setItem() {}, removeItem() {}},
+    crypto: {randomUUID: () => "local-id-" + localRequests.length},
+  };
+  vm.runInNewContext(readPage("workbench-page.js"), {window: localWindow, setTimeout, clearTimeout});
+  vm.runInNewContext(readPage("models-page.js"), {window: localWindow, navigator, crypto: localWindow.crypto, AbortController, setTimeout, clearTimeout});
+  const localHandlers = {};
+  const localNode = {
+    isConnected: true,
+    innerHTML: "",
+    addEventListener(type, fn) { localHandlers[type] = fn; },
+    removeEventListener(type) { delete localHandlers[type]; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    fire(type, selector, dataset) {
+      localHandlers[type]({
+        type,
+        target: {
+          dataset: dataset || {},
+          matches: s => s === selector,
+          closest: s => (s === selector ? {dataset} : null),
+        },
+      });
+    },
+  };
+  localWindow.CompanionModelsPage.mount(localNode);
+  localRequests[0].resolve({tasks: [], providers: [], host_state: "running"});
+  await flush();
+  localNode.fire("click", "[data-model-tab]", {modelTab: "laya"});
+  localRequests.find(r => r.route === "model/laya").resolve({
+    enabled: false,
+    mode: "local",
+    request_format: "native",
+    endpoint: "",
+    api_key_set: false,
+    proxy: "",
+    local_model_path: "",
+    default_model: "multilingual",
+    timeout_seconds: 20,
+    followup_confidence_threshold: 0,
+    package_installed: false,
+    install_command: "& 'D:\\AstrBot\\python.exe' -m pip install --no-deps 'laya==0.4.0'",
+    decision_fields: {reply_style: true},
+    revision: "rev-local-1",
+  });
+  localRequests.find(r => r.route === "model/laya/logs").resolve({events: []});
+  await flush();
+  assert.match(localNode.innerHTML, /class="model-card model-laya-deploy-card is-open"/, "本地模式未安装时部署抽屉应默认展开");
+  assert.match(localNode.innerHTML, /data-laya-deploy-toggle aria-expanded="true"/);
+  localWindow.CompanionModelsPage.unmount();
 
   // 校验 CSS 契约：标签行高 28px 消除 4.8px 偏移、全宽部署抽屉与双栏工作台、现代后台任务预算卡片
   const modelsCss = readPage("models-page.css");
@@ -362,8 +427,35 @@ test("Laya 下半区采用双栏调试日志工作台 + 可折叠部署抽屉，
   const appJs = readPage("app.js");
   assert.match(appJs, /class="models-budget-head"/);
   assert.match(appJs, /data-budget-status="off"/);
+  assert.match(appJs, /companion:workbench-state/, "预算徽标应监听 companion:workbench-state 以同步 reset/inherit 重绘");
+  assert.match(appJs, /if\(budgetStatusCleanup\)\{budgetStatusCleanup\(\);budgetStatusCleanup=null;\}/, "unmountConfigEditors 必须清理预算徽标事件监听");
+});
 
-  window.CompanionModelsPage.unmount();
+test("学习与反思审阅中心操作栏按钮圆角统一为 --r-sm（消灭采纳建议大胶囊与相邻按钮割裂）", () => {
+  const hubCss = readPage("learning-hub.css");
+  const detailPrimary = /\.learning-review-workspace \.lh-review-detail-actions \.lh-command\{([^}]*)\}/.exec(hubCss);
+  assert.ok(detailPrimary, "应存在审阅详情操作栏主按钮规则");
+  assert.match(detailPrimary[1], /border-radius:var\(--r-sm\)/);
+  assert.doesNotMatch(detailPrimary[1], /--r-pill|999px/);
+
+  const detailReject = /\.learning-review-workspace \.lh-review-reject\{([^}]*)\}/.exec(hubCss);
+  assert.ok(detailReject);
+  assert.match(detailReject[1], /border-radius:var\(--r-sm\)/);
+
+  const detailNav = /\.learning-review-workspace \.lh-review-nav-btn\{([^}]*)\}/.exec(hubCss);
+  assert.ok(detailNav);
+  assert.match(detailNav[1], /border-radius:var\(--r-sm\)/);
+
+  const bulkAccept = /\.learning-review-workspace \.lh-review-bulk-accept\{([^}]*)\}/.exec(hubCss);
+  const bulkReject = /\.learning-review-workspace \.lh-review-bulk-reject\{([^}]*)\}/.exec(hubCss);
+  assert.ok(bulkAccept && bulkReject);
+  assert.match(bulkAccept[1], /border-radius:var\(--r-sm\)/);
+  assert.match(bulkReject[1], /border-radius:var\(--r-sm\)/);
+
+  const emptyBtn = /\.learning-review-workspace \.lh-review-empty-btn\{([^}]*)\}/.exec(hubCss);
+  assert.ok(emptyBtn);
+  assert.match(emptyBtn[1], /border-radius:var\(--r-sm\)/);
+  assert.doesNotMatch(emptyBtn[1], /--r-pill|999px/);
 });
 
 test("配置工作台将超大数字上限人性化格式化（如 0 – 1 万亿）且保留小中范围原貌", async () => {
