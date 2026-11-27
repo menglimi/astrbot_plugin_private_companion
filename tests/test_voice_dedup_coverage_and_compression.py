@@ -308,6 +308,14 @@ class VoiceSemanticCoverageTests(unittest.IsolatedAsyncioTestCase):
 class VoiceCompressionAndFaultIsolationTests(unittest.IsolatedAsyncioTestCase):
     """WAV->MP3 auto compression, 300s timeout, duration chunking, and chunk fault isolation."""
 
+    def require_pyav_mp3(self):
+        try:
+            import av
+        except ImportError:
+            self.skipTest("PyAV is not installed")
+        if "libmp3lame" not in av.codecs_available:
+            self.skipTest("PyAV has no libmp3lame encoder")
+
     def test_timeout_upper_bound_raised_to_300(self):
         policy = VoiceReplyPolicy(timeout_seconds=300)
         self.assertEqual(policy.timeout_seconds, 300)
@@ -326,6 +334,7 @@ class VoiceCompressionAndFaultIsolationTests(unittest.IsolatedAsyncioTestCase):
             validate_reply_settings({**base, "voice_timeout_seconds": 301})
 
     async def test_large_real_wav_compresses_to_mp3_via_pyav_and_passes_render(self):
+        self.require_pyav_mp3()
         # ~95s mono 44.1kHz 16-bit WAV = ~8.38 MB (> old 8 MB limit, > 2 MB compression threshold)
         raw_wav = _synth_wav_bytes(95.0)
         self.assertGreater(len(raw_wav), 8_000_000)
@@ -337,8 +346,12 @@ class VoiceCompressionAndFaultIsolationTests(unittest.IsolatedAsyncioTestCase):
             context = NS(get_using_tts_provider=lambda _: provider)
             task = NS(scope=NS(kind=ScopeKind.PRIVATE, platform="test", session_id="200"))
 
-            with patch("astrbot_host.voice.get_astrbot_temp_path", return_value=tmp):
+            with (
+                patch("astrbot_host.voice.get_astrbot_temp_path", return_value=tmp),
+                patch("astrbot_host.voice._compress_wav_to_mp3_ffmpeg") as ffmpeg,
+            ):
                 result = await NativeVoiceReply(context).render(task, "长语音测试")
+            ffmpeg.assert_not_called()
 
         self.assertIsNotNone(result)
         encoded = base64.b64decode(result["data"]["file"].removeprefix("base64://"))
@@ -349,6 +362,7 @@ class VoiceCompressionAndFaultIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(len(encoded), 2_500_000)
 
     def test_adaptive_bitrate_and_oversize_raises_named_error(self):
+        self.require_pyav_mp3()
         # ~12s WAV (~1.06 MB): test adaptive bitrate stepping down when max_bytes forces 96k/64k
         wav_data = _synth_wav_bytes(12.0)
         mp3_128 = _prepare_audio_bytes(wav_data, max_bytes=1_000_000, compress_threshold=100_000)
@@ -364,6 +378,22 @@ class VoiceCompressionAndFaultIsolationTests(unittest.IsolatedAsyncioTestCase):
             _prepare_audio_bytes(wav_data, max_bytes=10_000, compress_threshold=100_000)
         self.assertEqual(ctx.exception.audio_format, "mp3")
         self.assertGreater(ctx.exception.actual_bytes, 10_000)
+
+    def test_unavailable_encoder_keeps_fitting_wav_and_reports_oversize(self):
+        wav_data = _synth_wav_bytes(0.2)
+        with (
+            patch("astrbot_host.voice._compress_wav_to_mp3_pyav", side_effect=ImportError),
+            patch("astrbot_host.voice._compress_wav_to_mp3_ffmpeg", return_value=None),
+        ):
+            self.assertEqual(
+                _prepare_audio_bytes(wav_data, max_bytes=len(wav_data), compress_threshold=100),
+                wav_data,
+            )
+            with self.assertLogs("astrbot_host.voice", level="WARNING"):
+                with self.assertRaises(VoiceAudioTooLargeError) as ctx:
+                    _prepare_audio_bytes(wav_data, max_bytes=1000, compress_threshold=100)
+        self.assertEqual(ctx.exception.audio_format, "wav")
+        self.assertEqual(ctx.exception.detail, "compression_unavailable")
 
     async def test_oversize_error_in_render_never_falls_back_to_mimo(self):
         with TemporaryDirectory(prefix="companion-v2-too-big-") as tmp:
