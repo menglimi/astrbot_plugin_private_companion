@@ -896,22 +896,28 @@ window.CompanionSemanticPage = (() => {
   async function analyzePending() {
     if(busy||!current())return;
     const ticket=++generation;
-    const candidates=new Map((state?.items||[]).filter(pendingAnalysis).map(item=>[item.id,item]));
+    const fullRescan=Boolean(collectionFilter&&collectionFilter!=="all");
+    const candidates=new Map(fullRescan?[]:(state?.items||[]).filter(pendingAnalysis).map(item=>[item.id,item]));
     const seen=new Set();
-    let cursor=after.reaction||"";
+    let cursor=fullRescan?"":(after.reaction||"");
+    let hasMore=fullRescan||Boolean(cursor);
     busy=true;conflict=false;message="正在扫描全部表情素材…";render();
     try{
       // The catalog is cursor-paginated. Reading only state.items misses all
-      // unloaded pages, including when page one has no pending entries.
-      while(cursor){
+      // unloaded pages, including when page one has no pending entries; when a
+      // non-"all" filter tab is active, scan the unfiltered catalog from page 1.
+      while(hasMore){
         if(!active(ticket))return;
-        if(seen.has(cursor))throw new Error("semantic_pagination_loop");
-        seen.add(cursor);
-        const page=await api("GET",{...selection(),kind:"reaction",after:cursor});
+        if(cursor){
+          if(seen.has(cursor))throw new Error("semantic_pagination_loop");
+          seen.add(cursor);
+        }
+        const page=await api("GET",{...selection(),kind:"reaction",...(cursor?{after:cursor}:{})});
         if(!active(ticket))return;
         if(!Array.isArray(page?.items))throw new Error("semantic_pagination_invalid");
         for(const item of page.items)if(pendingAnalysis(item))candidates.set(item.id,item);
         cursor=page.next_after||"";
+        hasMore=Boolean(cursor);
         message="正在扫描全部表情素材，已发现 "+candidates.size+" 张待补全…";render();
       }
     }catch(error){

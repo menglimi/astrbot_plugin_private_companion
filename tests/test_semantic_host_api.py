@@ -313,6 +313,67 @@ class PrivateSemanticAPITests(SemanticRequests, unittest.IsolatedAsyncioTestCase
         self.assertEqual(batch_reject["data"]["rejected_count"], 1)
         self.assertEqual(batch_reject["data"]["rejected_ids"], [fourth["id"]])
 
+        # Guard: confirm_reaction / reject_reaction and batch variants must never
+        # delete enabled items or re-enable manually disabled items.
+        enabled_current = (await self.semantic_request(
+            self.selection, kind="reaction", id=enabled_item["id"],
+        ))["data"]["item"]
+        disabled_current = (await self.semantic_request(
+            self.selection, kind="reaction", id=disabled_item["id"],
+        ))["data"]["item"]
+
+        reject_enabled = await self.semantic_request(
+            self.selection, action="reject_reaction",
+            id=enabled_current["id"], revision=enabled_current["revision"],
+        )
+        self.assertEqual(reject_enabled["data"]["code"], "semantic_conflict")
+        reject_disabled = await self.semantic_request(
+            self.selection, action="reject_reaction",
+            id=disabled_current["id"], revision=disabled_current["revision"],
+        )
+        self.assertEqual(reject_disabled["data"]["code"], "semantic_conflict")
+        confirm_disabled = await self.semantic_request(
+            self.selection, action="confirm_reaction",
+            id=disabled_current["id"], revision=disabled_current["revision"],
+        )
+        self.assertEqual(confirm_disabled["data"]["code"], "semantic_conflict")
+
+        batch_reject_ids = await self.semantic_request(
+            self.selection, action="batch_reject_reactions",
+            ids=[enabled_current["id"], disabled_current["id"]],
+        )
+        self.assertEqual(batch_reject_ids["status"], "ok", batch_reject_ids)
+        self.assertEqual(batch_reject_ids["data"]["rejected_count"], 0)
+        self.assertEqual(set(batch_reject_ids["data"]["conflicts"]),
+                         {enabled_current["id"], disabled_current["id"]})
+
+        batch_reject_items = await self.semantic_request(
+            self.selection, action="batch_reject_reactions",
+            items=[{"id": enabled_current["id"], "revision": enabled_current["revision"]}],
+        )
+        self.assertEqual(batch_reject_items["status"], "ok", batch_reject_items)
+        self.assertEqual(batch_reject_items["data"]["rejected_count"], 0)
+        self.assertEqual(batch_reject_items["data"]["conflicts"], [enabled_current["id"]])
+
+        batch_confirm_ids = await self.semantic_request(
+            self.selection, action="batch_confirm_reactions",
+            ids=[disabled_current["id"], enabled_current["id"]],
+        )
+        self.assertEqual(batch_confirm_ids["status"], "ok", batch_confirm_ids)
+        self.assertEqual(batch_confirm_ids["data"]["confirmed_count"], 0)
+        self.assertEqual(set(batch_confirm_ids["data"]["conflicts"]),
+                         {disabled_current["id"], enabled_current["id"]})
+
+        # Verify enabled and manually disabled items remain intact with unchanged state.
+        still_enabled = (await self.semantic_request(
+            self.selection, kind="reaction", id=enabled_current["id"],
+        ))["data"]["item"]
+        still_disabled = (await self.semantic_request(
+            self.selection, kind="reaction", id=disabled_current["id"],
+        ))["data"]["item"]
+        self.assertTrue(still_enabled["enabled"])
+        self.assertFalse(still_disabled["enabled"])
+
         # Record failed collection run + open breaker, then reset_collection_failures via API.
         service.store.record_reaction_collection(
             owner, "ev-fail-api", "private_capture", "failed",

@@ -1064,6 +1064,56 @@ class SemanticConversationTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ok_res["state"], "passed")
         self.assertEqual(self.semantic.reactions._vision_review_consecutive_timeouts, 0)
 
+        # When wired to NativeSemanticModels (which accepts fallback_identifier & timeout_seconds),
+        # _call_analyze delegates directly so default_analysis == fallback deduplicates by identity.
+        from unittest.mock import AsyncMock
+        from astrbot_host.semantic_models import NativeSemanticModels
+
+        default_vision = SimpleNamespace(
+            provider_config={"id": "default-vision", "modalities": ["text", "image"]},
+            text_chat=AsyncMock(side_effect=TimeoutError("timed out")),
+        )
+        backup_vision = SimpleNamespace(
+            provider_config={"id": "backup-vision", "modalities": ["text", "image"]},
+            text_chat=AsyncMock(return_value=SimpleNamespace(completion_text='{"fit":true,"reason":"ok"}')),
+        )
+        native_port = NativeSemanticModels(
+            SimpleNamespace(
+                get_provider_by_id=lambda ident: {
+                    "default-vision": default_vision, "backup-vision": backup_vision,
+                }.get(ident),
+                get_all_providers=lambda: [default_vision, backup_vision],
+            ),
+            default_analysis="default-vision",
+        )
+        self.semantic.gateway.port = native_port
+        cur = self.semantic.store.settings()
+        self.semantic.store.configure({
+            "analysis_provider": "",
+            "vision_review_provider": "",
+            "vision_review_fallback_provider": "default-vision",
+            "vision_review_timeout_seconds": 12,
+        }, cur["revision"])
+        dedup_res = await self.semantic.reactions._review(
+            None, review_settings, candidate, item, "打招呼",
+        )
+        self.assertEqual(dedup_res["state"], "unavailable")
+        default_vision.text_chat.assert_awaited_once()
+
+        # Switching fallback to a distinct provider fails over cleanly through NativeSemanticModels.
+        default_vision.text_chat.reset_mock()
+        cur = self.semantic.store.settings()
+        self.semantic.store.configure({
+            "vision_review_fallback_provider": "backup-vision",
+        }, cur["revision"])
+        failover_res = await self.semantic.reactions._review(
+            None, review_settings, candidate, item, "打招呼",
+        )
+        self.assertEqual(failover_res["state"], "passed")
+        default_vision.text_chat.assert_awaited_once()
+        backup_vision.text_chat.assert_awaited_once()
+        self.assertEqual(backup_vision.text_chat.await_args.kwargs["max_tokens"], 256)
+
     async def test_reaction_collection_circuit_breaker_backoff_and_recovery(self):
         from unittest.mock import patch
 

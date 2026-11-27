@@ -82,3 +82,14 @@ class NativeSemanticAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["suitable"])
         primary.text_chat.assert_awaited_once()
         fallback.text_chat.assert_not_awaited()
+
+    async def test_analyze_deduplicates_empty_primary_matching_default_fallback(self):
+        default_vision = provider("default-vision", ["text", "image"])
+        default_vision.text_chat = AsyncMock(side_effect=TimeoutError("upstream timed out"))
+        models = self.models([default_vision], default="default-vision")
+        with self.assertRaises(TimeoutError):
+            await models.analyze(
+                "", "review sticker", ("data:image/png;base64,AA==",),
+                max_tokens=256, fallback_identifier="default-vision", timeout_seconds=5,
+            )
+        default_vision.text_chat.assert_awaited_once()

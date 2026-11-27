@@ -411,15 +411,23 @@ class SemanticWebAPI:
             db.execute("DELETE FROM vectors WHERE owner=? AND kind='slang'", (slang_owner,))
         service.gateway.clear()
 
+    @staticmethod
+    def _is_awaiting_confirmation(item):
+        payload = item.get("payload") if isinstance(item, dict) else None
+        return (isinstance(payload, dict)
+                and payload.get("collection_state") == "awaiting_confirmation"
+                and not item.get("enabled"))
+
     def _confirm_reaction_sync(self, service, owner, data, validate):
         item_id, revision = data.get("id"), data.get("revision")
         if type(item_id) is not str or not 0 < len(item_id) <= 200 or type(revision) is not int:
             raise ValueError("reaction ID and revision required")
         validate()
         item = service.store.get(owner, "reaction", item_id)
+        if item["revision"] != revision or not self._is_awaiting_confirmation(item):
+            raise TaskError("semantic_conflict", "reaction is not awaiting confirmation")
         payload = dict(item["payload"])
-        if payload.get("collection_state") == "awaiting_confirmation":
-            payload["collection_state"] = "confirmed"
+        payload["collection_state"] = "confirmed"
         updated = service.store.put(owner, "reaction", item["id"], payload, expected=revision, enabled=True)
         return {"item": self.public(updated), "confirmed": True}
 
@@ -428,6 +436,9 @@ class SemanticWebAPI:
         if type(item_id) is not str or not 0 < len(item_id) <= 200 or type(revision) is not int:
             raise ValueError("reaction ID and revision required")
         validate()
+        item = service.store.get(owner, "reaction", item_id)
+        if item["revision"] != revision or not self._is_awaiting_confirmation(item):
+            raise TaskError("semantic_conflict", "reaction is not awaiting confirmation")
         result = service.store.delete(owner, "reaction", item_id, expected=revision)
         return {**result, "rejected": True, "id": item_id}
 
@@ -486,13 +497,18 @@ class SemanticWebAPI:
                         missing.append(item_id)
                         continue
                     raise
+                if not self._is_awaiting_confirmation(current):
+                    conflicts.append(item_id)
+                    continue
                 candidates.append((current["id"], current["revision"]))
         for item_id, revision in candidates:
             try:
                 item = service.store.get(owner, "reaction", item_id)
+                if item["revision"] != revision or not self._is_awaiting_confirmation(item):
+                    conflicts.append(item_id)
+                    continue
                 payload = dict(item["payload"])
-                if payload.get("collection_state") == "awaiting_confirmation":
-                    payload["collection_state"] = "confirmed"
+                payload["collection_state"] = "confirmed"
                 service.store.put(owner, "reaction", item["id"], payload, expected=revision, enabled=True)
                 confirmed_ids.append(item_id)
             except TaskError as error:
@@ -528,9 +544,16 @@ class SemanticWebAPI:
                         missing.append(item_id)
                         continue
                     raise
+                if not self._is_awaiting_confirmation(current):
+                    conflicts.append(item_id)
+                    continue
                 candidates.append((current["id"], current["revision"]))
         for item_id, revision in candidates:
             try:
+                item = service.store.get(owner, "reaction", item_id)
+                if item["revision"] != revision or not self._is_awaiting_confirmation(item):
+                    conflicts.append(item_id)
+                    continue
                 service.store.delete(owner, "reaction", item_id, expected=revision)
                 rejected_ids.append(item_id)
             except TaskError as error:

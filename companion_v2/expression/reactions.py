@@ -68,16 +68,29 @@ class ReactionLibrary:
                             max_tokens=None, fallback_provider=""):
         analyze_fn = self.service.gateway.port.analyze
         kwargs = {}
-        if max_tokens is not None:
-            try:
-                params = inspect.signature(analyze_fn).parameters
-                if "max_tokens" in params or any(
-                        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-                    kwargs["max_tokens"] = max_tokens
-            except (TypeError, ValueError):
-                pass
+        supports_fallback = False
+        supports_timeout = False
+        try:
+            params = inspect.signature(analyze_fn).parameters
+            has_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+            if max_tokens is not None and ("max_tokens" in params or has_var_kw):
+                kwargs["max_tokens"] = max_tokens
+            if "fallback_identifier" in params or has_var_kw:
+                supports_fallback = True
+            if "timeout_seconds" in params or has_var_kw:
+                supports_timeout = True
+        except (TypeError, ValueError):
+            pass
         primary = str(provider_id or "").strip()
         fallback = str(fallback_provider or "").strip()
+        if supports_fallback:
+            if fallback:
+                kwargs["fallback_identifier"] = fallback
+            if supports_timeout:
+                kwargs["timeout_seconds"] = timeout_seconds
+                return await analyze_fn(primary, prompt, urls, **kwargs)
+            outer_timeout = timeout_seconds * 2 if fallback else timeout_seconds
+            return await asyncio.wait_for(analyze_fn(primary, prompt, urls, **kwargs), outer_timeout)
         try:
             return await asyncio.wait_for(analyze_fn(primary, prompt, urls, **kwargs), timeout_seconds)
         except Exception as primary_exc:

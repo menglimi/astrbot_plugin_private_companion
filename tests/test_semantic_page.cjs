@@ -1101,3 +1101,81 @@ test('batch confirm and batch reject actions submit selected items from awaiting
   assert.match(node.innerHTML, /已批量拒绝并删除 1 张表情素材/);
   page.unmount();
 });
+
+test('batch analysis scans full unfiltered catalog from page 1 when a non-all filter tab is active', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+
+  const awaitingItem = {
+    id: 'await-1', kind: 'reaction', revision: 1, enabled: false,
+    payload: {name: '已审核待确认', analysis: 'auto_reviewed', collection_state: 'awaiting_confirmation'},
+  };
+  const pending1 = {
+    id: 'pending-1', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '第一页待补全', analysis: 'pending'},
+  };
+  const pending2 = {
+    id: 'pending-2', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '第二页待补全', analysis: 'pending'},
+  };
+  requests[0].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 3, enabled: 2, disabled: 1, pending: 2, awaiting_confirmation: 1}},
+    items: [awaitingItem],
+    next_after: null,
+  });
+  await flush();
+
+  // Switch to awaiting_confirmation tab (single page, 0 pending items visible, after.reaction is "").
+  node.click('[data-semantic-filter]', {semanticFilter: 'awaiting_confirmation'});
+  assert.equal(requests[1].values.collection_filter, 'awaiting_confirmation');
+  requests[1].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 3, enabled: 2, disabled: 1, pending: 2, awaiting_confirmation: 1}},
+    items: [awaitingItem],
+    next_after: null,
+  });
+  await flush();
+
+  // Trigger analyze-pending while filtered: must scan unfiltered catalog from page 1 without collection_filter.
+  node.click('[data-semantic]', {semantic: 'analyze-pending'});
+  assert.equal(requests[2].method, 'GET');
+  assert.equal(requests[2].values.kind, 'reaction');
+  assert.equal(requests[2].values.collection_filter, undefined);
+  assert.equal(requests[2].values.after, undefined);
+  requests[2].resolve({...settingsCatalog(), items: [awaitingItem, pending1], next_after: 'cursor-p2'});
+  await flush();
+
+  assert.equal(requests[3].method, 'GET');
+  assert.equal(requests[3].values.kind, 'reaction');
+  assert.equal(requests[3].values.collection_filter, undefined);
+  assert.equal(requests[3].values.after, 'cursor-p2');
+  requests[3].resolve({...settingsCatalog(), items: [pending2], next_after: null});
+  await flush();
+
+  assert.equal(requests[4].method, 'POST');
+  assert.equal(requests[4].values.action, 'analyze');
+  assert.equal(requests[4].values.id, 'pending-1');
+  requests[4].resolve({item: {...pending1, payload: {...pending1.payload, analysis: 'analyzed'}}});
+  await flush();
+
+  assert.equal(requests[5].method, 'POST');
+  assert.equal(requests[5].values.action, 'analyze');
+  assert.equal(requests[5].values.id, 'pending-2');
+  requests[5].resolve({item: {...pending2, payload: {...pending2.payload, analysis: 'analyzed'}}});
+  await flush();
+
+  // Final refresh restores the active awaiting_confirmation filter view.
+  assert.equal(requests[6].method, 'GET');
+  assert.equal(requests[6].values.collection_filter, 'awaiting_confirmation');
+  requests[6].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 3, enabled: 2, disabled: 1, pending: 0, awaiting_confirmation: 1}},
+    items: [awaitingItem],
+    next_after: null,
+  });
+  await flush();
+  assert.match(node.innerHTML, /已识别 2 张/);
+  page.unmount();
+});
