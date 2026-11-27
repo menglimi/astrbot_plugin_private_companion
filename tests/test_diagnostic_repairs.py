@@ -275,6 +275,21 @@ class DiagnosticRepairTests(DiagnosticFixture):
         # Now 11aa uniquely matches the remaining pending proposal
         self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "11aa").unwrap(), "repair-gamma-11aa")
 
+    def test_expired_pending_row_does_not_collide_with_fresh_same_suffix(self):
+        self.proposal(proposal_id="repair-old-ab12", lifetime_seconds=10).unwrap()
+        self.clock.advance(timedelta(seconds=20))
+        fresh = self.proposal(proposal_id="repair-new-ab12", lifetime_seconds=900).unwrap()
+        self.assertEqual(self.repairs.resolve_proposal_id(self.important_context, "ab12").unwrap(), fresh.proposal_id)
+
+    def test_shared_identity_and_grant_revision_changes_invalidate_basis_token(self):
+        from unittest.mock import patch
+
+        proposal = self.proposal(proposal_id="repair-shared-55cc").unwrap()
+        with patch("companion_v2.relationships.account_link_identity.effective",
+                   return_value={"enabled": True, "tier": "core", "permissions": {}}):
+            stale = self.repairs.read(self.important_context, proposal_id=proposal.proposal_id).unwrap()
+            self.assertEqual(stale.state, "stale")
+
 
 if __name__ == "__main__":
     unittest.main()

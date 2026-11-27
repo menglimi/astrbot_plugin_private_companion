@@ -325,6 +325,40 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         await self.wait_context_tasks()
         self.assertEqual(calls, 1)
 
+    async def test_new_poke_during_inflight_generation_does_not_cancel_or_duplicate_reply(self):
+        """A poke arriving after stream B left its delay sleep must never cancel the
+        in-flight generation/send, and once the first finishes, the second sees the
+        updated watermark and skips without duplicating."""
+        self.configure(context_reply=True, delay=0, trigger=0.0)
+        await self.start_host()
+        await self.seed_group_observation(text="今晚看什么电影", speaker="201", identifier="seed-inflight")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def gated_model(payload, tools):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await release.wait()
+            return completion(final_text("看部轻松点的动画电影吧。"))
+
+        self.native.provider.client.state.behavior = gated_model
+        t0 = int(self.clock.now().timestamp())
+        (await self.controller.receive_notice(
+            poke_notice(self.group_event(identifier="707", sender="201"), time=t0))).unwrap()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        # Second poke arrives while first stream B is mid-generation
+        (await self.controller.receive_notice(
+            poke_notice(self.group_event(identifier="708", sender="202"), time=t0 + 1))).unwrap()
+        release.set()
+        await self.wait_context_tasks()
+        self.assertEqual(calls, 1)
+        api = self.native.platform.client._api._wsr_api
+        self.assertEqual([action for action, _ in api.calls], ["send_group_msg"])
+        self.assertEqual(api.calls[0][1]["message"], [{"type": "text",
+            "data": {"text": "看部轻松点的动画电影吧。"}}])
+
     async def test_private_poke_never_runs_the_stream(self):
         self.configure(context_reply=True)
         await self.start_host()

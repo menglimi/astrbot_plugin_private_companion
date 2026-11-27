@@ -54,9 +54,14 @@ class DiagnosticCommandFastPathTests(MultiFixture, unittest.IsolatedAsyncioTestC
         target = ConfigTarget(context.scope.installation_id, ConfigLayer.ROLE,
                               context.role_binding.role, bot_id=context.scope.bot_id)
         identity = self.diagnostics.identity
+        existing_grants = identity.grants_for_subject(context.actor.subject)
         for index, capability in enumerate(("configuration.read", "configuration.write"), start=1):
-            gid = f"diag-cmd-grant-{proposal_id}-{index}"
-            if not any(g.grant_id == gid for g in identity.grants_for_subject(context.actor.subject)):
+            has_active = any(
+                g.capability == capability and g.scope == target.authorization_scope and g.revoked_at is None
+                for g in existing_grants
+            )
+            if not has_active:
+                gid = f"diag-cmd-grant-{proposal_id}-{index}"
                 identity.issue_grant(
                     grant_id=gid, subject=context.actor.subject,
                     scope=target.authorization_scope, capability=capability,
@@ -130,6 +135,48 @@ class DiagnosticCommandFastPathTests(MultiFixture, unittest.IsolatedAsyncioTestC
             context.actor, target=target, group_id="conversation.presentation", observed_at=self.clock.now()
         ).unwrap()
         self.assertTrue(after.values["conversation.presentation.group_wakeup_enabled"])
+
+    async def test_confirm_reports_config_revision_conflict_and_enforces_write_permission_on_expired(self):
+        from datetime import timedelta
+        from companion_v2.foundation.refs import OperationRef, VersionRef
+
+        context, target, proposal = await self._seed_proposal("repair-conflict-8c3d", new_value=False)
+        # 1) Mutate target config directly -> confirm must report configuration_revision_conflict, not evidence changed
+        snapshot = self.diagnostics.configuration.read(
+            context.actor, target=target, group_id="conversation.presentation", observed_at=self.clock.now()
+        ).unwrap()
+        op = OperationRef("external-edit-1", "conversation.presentation", target.authorization_scope,
+                          VersionRef("external-edit-1", 1), "external-edit-1")
+        self.diagnostics.configuration.patch(
+            context.actor, target=target, group_id="conversation.presentation", operation=op,
+            expected_edit_token=snapshot.edit_token,
+            changes={"conversation.presentation.group_wakeup_enabled": False},
+            observed_at=self.clock.now(),
+        ).unwrap()
+        conflict_event = self._private_message("cmd-conflict", "陪伴 答疑确认 8c3d")
+        res = (await receive_diagnostic_command(self.controller, conflict_event)).unwrap()
+        self.assertIn("目标配置在生成建议后已变化", res["text"])
+
+        # 2) Revoke write grant + expire proposal -> confirm must deny permission, not leak expiry
+        context2, target2, _proposal2 = await self._seed_proposal("repair-perm-9f1e", new_value=True)
+        identity = self.diagnostics.identity
+        for grant in identity.grants_for_subject(context2.actor.subject):
+            if grant.capability == "configuration.write" and grant.scope == target2.authorization_scope:
+                identity.revoke_grant(grant.grant_id, revoked_at=self.clock.now(), expected_revision=identity.revision)
+        self.clock.advance(timedelta(minutes=30))
+        denied_event = self._private_message("cmd-denied-expired", "陪伴 答疑确认 9f1e")
+        denied = (await receive_diagnostic_command(self.controller, denied_event)).unwrap()
+        self.assertIn("权限", denied["text"])
+        self.assertNotIn("已过期", denied["text"])
+
+    async def test_bare_list_disambiguates_colliding_four_char_suffixes(self):
+        await self._seed_proposal("repair-first-aaaa", new_value=False)
+        await self._seed_proposal("repair-second-aaaa", new_value=False)
+        list_event = self._private_message("cmd-collide-list", "陪伴 答疑确认")
+        listed = (await receive_diagnostic_command(self.controller, list_event)).unwrap()
+        self.assertIn("[rst-aaaa]", listed["text"])
+        self.assertIn("[ond-aaaa]", listed["text"])
+        self.assertNotIn("[aaaa]", listed["text"])
 
 
 if __name__ == "__main__":

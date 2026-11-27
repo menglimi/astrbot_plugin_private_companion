@@ -151,6 +151,18 @@ class RepairProposalService:
         except (DiagnosticError, ConfigurationError) as error:
             return Outcome.failed(error.code, str(error))
 
+    def _live_pending_view(self, context: DiagnosticContext, row) -> RepairProposal | None:
+        if row["state"] != "pending":
+            return None
+        try:
+            data = json.loads(row["record_json"])
+            snapshot = self._authorize(context, restore_target(data["target"]), data["group_id"], write=False)
+            _, basis = self.diagnostics.collect(context, DiagnosticQuery.restore(data["basis_query"]))
+            view = self._view(row, data, current_edit_token=snapshot.edit_token, current_basis_token=basis)
+        except (DiagnosticError, ConfigurationError, ValueError, TypeError, KeyError):
+            return None
+        return view if view.state == "pending" else None
+
     def list_pending(self, context: DiagnosticContext, *, limit: int = 10) -> Outcome[tuple[RepairProposal, ...]]:
         """List currently actionable pending proposals for this caller context (newest first)."""
         try:
@@ -165,14 +177,8 @@ class RepairProposalService:
                 )
                 pending = []
                 for row in rows:
-                    try:
-                        data = json.loads(row["record_json"])
-                        snapshot = self._authorize(context, restore_target(data["target"]), data["group_id"], write=False)
-                        _, basis = self.diagnostics.collect(context, DiagnosticQuery.restore(data["basis_query"]))
-                        view = self._view(row, data, current_edit_token=snapshot.edit_token, current_basis_token=basis)
-                    except (DiagnosticError, ConfigurationError, ValueError, TypeError, KeyError):
-                        continue
-                    if view.state == "pending":
+                    view = self._live_pending_view(context, row)
+                    if view is not None:
                         pending.append(view)
                         if len(pending) >= bounded:
                             break
@@ -197,22 +203,27 @@ class RepairProposalService:
                 lower = needle.lower()
                 if len(lower) >= 4 and all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in lower):
                     rows = self.runtime.read_all(
-                        """SELECT proposal_id, state FROM diagnostic_repair_proposals
+                        """SELECT * FROM diagnostic_repair_proposals
                            WHERE origin_key = ? ORDER BY rowid DESC LIMIT 64""",
                         (context.key,),
                     )
-                    pending_matches = [row["proposal_id"] for row in rows
-                                       if row["state"] == "pending" and row["proposal_id"].lower().endswith(lower)]
-                    if len(pending_matches) == 1:
-                        return Outcome.success(pending_matches[0])
-                    if len(pending_matches) > 1:
+                    actionable_pending = []
+                    inactive_matches = []
+                    for row in rows:
+                        if not row["proposal_id"].lower().endswith(lower):
+                            continue
+                        if self._live_pending_view(context, row) is not None:
+                            actionable_pending.append(row["proposal_id"])
+                        else:
+                            inactive_matches.append(row["proposal_id"])
+                    if len(actionable_pending) == 1:
+                        return Outcome.success(actionable_pending[0])
+                    if len(actionable_pending) > 1:
                         raise DiagnosticError("repair_proposal_ambiguous",
                             "multiple pending proposals share that short suffix; provide more characters or the full ID")
-                    other_matches = [row["proposal_id"] for row in rows
-                                     if row["state"] != "pending" and row["proposal_id"].lower().endswith(lower)]
-                    if len(other_matches) == 1:
-                        return Outcome.success(other_matches[0])
-                    if len(other_matches) > 1:
+                    if len(inactive_matches) == 1:
+                        return Outcome.success(inactive_matches[0])
+                    if len(inactive_matches) > 1:
                         raise DiagnosticError("repair_proposal_ambiguous",
                             "multiple proposals share that short suffix; provide more characters or the full ID")
                 raise DiagnosticError("repair_proposal_unavailable", "original proposal is unavailable in this context")

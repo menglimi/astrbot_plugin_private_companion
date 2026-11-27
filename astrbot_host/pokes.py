@@ -257,14 +257,31 @@ def _has_conflicting_core_reply(controller, context, instruction, observed_at: d
         return False
 
 
+def _group_context_lock(application, group_key) -> asyncio.Lock:
+    locks = getattr(application, "poke_context_locks", None)
+    if not isinstance(locks, dict):
+        locks = {}
+        try:
+            setattr(application, "poke_context_locks", locks)
+        except Exception:
+            return asyncio.Lock()
+    lock = locks.get(group_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[group_key] = lock
+    return lock
+
+
 def _spawn_context_stream(controller, route, context, instruction, event_key, happened_at, poker_label):
     """Schedule the bounded context stream B after a configurable delay.
 
     Stream A stays exactly on the release path.  Stream B never raises: a
     skipped context reply is dropped, and a failed one is logged with its stable
     code, without touching the poke receipt, the stream A outcome, or the native
-    acknowledgement. Rapid repeated pokes in the same group coalesce so only the
-    latest pending stream B runs.
+    acknowledgement. Rapid repeated pokes in the same group coalesce only while
+    the earlier task is still in its delay sleep; once a task enters generation
+    or delivery it runs to completion and updates the watermark under a
+    per-group lock so later pokes never duplicate or abort an in-flight send.
     """
     policy = controller.poke_policy
     if (not policy.context_reply_enabled or route.kind is not ScopeKind.GROUP
@@ -283,10 +300,10 @@ def _spawn_context_stream(controller, route, context, instruction, event_key, ha
         previous = pending.get(group_key)
         if previous is not None and not previous.done():
             previous.cancel()
-            logger.info("[CompanionV2][poke-context] 合并同群连续戳一戳，取消较早待执行的流B group=%s", route.peer)
+            logger.info("[CompanionV2][poke-context] 合并同群连续戳一戳，取消较早等待中的流B group=%s", route.peer)
     logger.info("[CompanionV2][poke-context] 流B 已启动，延迟 %d 秒", policy.context_delay_seconds)
     task = asyncio.create_task(_poke_context_stream(controller, route, context, instruction,
-        event_key + ":context", happened_at, policy.context_delay_seconds, poker_label))
+        event_key + ":context", happened_at, policy.context_delay_seconds, poker_label, group_key, pending))
     if pending is not None:
         pending[group_key] = task
 
@@ -301,52 +318,61 @@ def _spawn_context_stream(controller, route, context, instruction, event_key, ha
         task.add_done_callback(applications.discard)
 
 
-async def _poke_context_stream(controller, route, context, instruction, event_key, happened_at, delay, poker_label):
+async def _poke_context_stream(controller, route, context, instruction, event_key, happened_at,
+                               delay, poker_label, group_key=None, pending=None):
     try:
         await asyncio.sleep(delay)
+        # Detach from the debounce map as soon as the delay finishes so later
+        # pokes can never cancel an in-flight model call or platform send.
+        if pending is not None and group_key is not None:
+            current_task = asyncio.current_task()
+            if pending.get(group_key) is current_task:
+                pending.pop(group_key, None)
         application = controller.session.application
-        if (controller._terminated or application.state != "running"
-                or not controller.poke_policy.enabled or not controller.poke_policy.context_reply_enabled):
-            return
-        observed_at = datetime.fromtimestamp(happened_at, timezone.utc)
-        now = controller.now()
-        if _has_conflicting_core_reply(controller, context, instruction, observed_at, now):
-            logger.info("[CompanionV2][poke-context] 检测到主群聊回复正在处理或刚完成，跳过流B group=%s", route.peer)
-            return
-        # Reuse the poke-time context verbatim: the task ledger rejects a
-        # re-authorized context whose authority inputs changed during the
-        # delay, and re-authenticating here would rebuild exactly that.
-        recent_lines, watermark_meta = _bounded_recent_lines(
-            controller, context, instruction, now,
-            observed_at=observed_at, poker_id=route.sender, poker_label=poker_label,
-        )
-        if not recent_lines:
-            logger.info("[CompanionV2][poke-context] 近期窗口内无未回复新消息，跳过流B模型调用 group=%s", route.peer)
-            return
-        generated = await application.poke_reply_model.reply(
-            context, instruction, event_key, mode="context",
-            recent_context=recent_lines, poker_label=poker_label)
-        if not generated or not generated.strip():
-            _write_context_watermark(controller.session.runtime, context, **watermark_meta)
-            logger.info("[CompanionV2][poke-context] 模型判断无需接话（[SKIP]），保持安静")
-            return
-        if _has_conflicting_core_reply(controller, context, instruction, observed_at, controller.now()):
-            _write_context_watermark(controller.session.runtime, context, **watermark_meta)
-            logger.info("[CompanionV2][poke-context] 模型生成期间主群聊已接管回复，放弃发送流B group=%s", route.peer)
-            return
-        api = _transport(controller, route)
-        clean_reply = generated.strip()
-        try:
-            await api.call_action("send_group_msg", self_id=route.login,
-                **{"group_id": int(route.peer)},
-                message=[{"type": "text", "data": {"text": clean_reply}}])
-            _record_poke_reply(controller.session.runtime, context,
-                               text=clean_reply, sent_at=controller.now(), source="poke_b")
-            _write_context_watermark(controller.session.runtime, context, **watermark_meta)
-            logger.info("[CompanionV2][poke-context] 已发送接话回复: %s", clean_reply[:60])
-        except Exception as send_error:
-            logger.warning("[CompanionV2][poke-context] 发送失败: %s", send_error)
-            return
+        key = group_key or (route.platform_id, route.login, route.peer)
+        async with _group_context_lock(application, key):
+            if (controller._terminated or application.state != "running"
+                    or not controller.poke_policy.enabled or not controller.poke_policy.context_reply_enabled):
+                return
+            observed_at = datetime.fromtimestamp(happened_at, timezone.utc)
+            now = controller.now()
+            if _has_conflicting_core_reply(controller, context, instruction, observed_at, now):
+                logger.info("[CompanionV2][poke-context] 检测到主群聊回复正在处理或刚完成，跳过流B group=%s", route.peer)
+                return
+            # Reuse the poke-time context verbatim: the task ledger rejects a
+            # re-authorized context whose authority inputs changed during the
+            # delay, and re-authenticating here would rebuild exactly that.
+            recent_lines, watermark_meta = _bounded_recent_lines(
+                controller, context, instruction, now,
+                observed_at=observed_at, poker_id=route.sender, poker_label=poker_label,
+            )
+            if not recent_lines:
+                logger.info("[CompanionV2][poke-context] 近期窗口内无未回复新消息，跳过流B模型调用 group=%s", route.peer)
+                return
+            generated = await application.poke_reply_model.reply(
+                context, instruction, event_key, mode="context",
+                recent_context=recent_lines, poker_label=poker_label)
+            if not generated or not generated.strip():
+                _write_context_watermark(controller.session.runtime, context, **watermark_meta)
+                logger.info("[CompanionV2][poke-context] 模型判断无需接话（[SKIP]），保持安静")
+                return
+            if _has_conflicting_core_reply(controller, context, instruction, observed_at, controller.now()):
+                _write_context_watermark(controller.session.runtime, context, **watermark_meta)
+                logger.info("[CompanionV2][poke-context] 模型生成期间主群聊已接管回复，放弃发送流B group=%s", route.peer)
+                return
+            api = _transport(controller, route)
+            clean_reply = generated.strip()
+            try:
+                await api.call_action("send_group_msg", self_id=route.login,
+                    **{"group_id": int(route.peer)},
+                    message=[{"type": "text", "data": {"text": clean_reply}}])
+                _record_poke_reply(controller.session.runtime, context,
+                                   text=clean_reply, sent_at=controller.now(), source="poke_b")
+                _write_context_watermark(controller.session.runtime, context, **watermark_meta)
+                logger.info("[CompanionV2][poke-context] 已发送接话回复: %s", clean_reply[:60])
+            except Exception as send_error:
+                logger.warning("[CompanionV2][poke-context] 发送失败: %s", send_error)
+                return
     except asyncio.CancelledError:
         return
     except TaskError as stream_error:

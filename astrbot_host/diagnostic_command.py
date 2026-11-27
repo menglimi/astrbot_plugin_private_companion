@@ -38,7 +38,9 @@ _FAILURE_TEXT = {
     "diagnostic_evidence_changed": "相关运行证据在生成建议后已变化，原建议已失效，请重新检查并生成新建议。",
     "core_access_required": "当前账号缺少核心管理员权限，无法应用该配置修复。",
     "authorization_denied": "当前账号缺少所需配置权限，无法执行该操作。",
+    "authorization_revoked": "当前账号的配置修改权限已被撤销，无法执行该操作。",
     "authorization_expired": "当前配置授权已过期，请重新授权后再试。",
+    "authorization_not_active": "当前配置授权尚未生效，暂时无法执行该操作。",
     "binding_revoked": "当前身份授权已撤销，未执行。",
     "binding_rebound": "当前身份绑定已变化，未执行。",
     "role_binding_changed": "当前角色绑定已变化，原建议已失效，请重新检查。",
@@ -122,6 +124,22 @@ def _failure_text(code: str, fallback: str = "") -> str:
     return "未执行：" + _FAILURE_TEXT.get(code, fallback or f"操作未完成（{code}）。")
 
 
+def _display_codes(items) -> dict[str, str]:
+    """Assign each listed proposal a concise, collision-free suffix for copy/paste."""
+    ids = [item.proposal_id for item in items]
+    result = {}
+    for proposal_id in ids:
+        chosen = proposal_id
+        for width in (4, 8, 12, 16):
+            candidate = proposal_id[-width:] if len(proposal_id) >= width else proposal_id
+            needle = candidate.lower()
+            if sum(1 for other in ids if other.lower().endswith(needle)) == 1:
+                chosen = candidate
+                break
+        result[proposal_id] = chosen
+    return result
+
+
 def _execute(command: DiagnosticControlCommand, context, application) -> str:
     diagnostics = getattr(getattr(application, "tools", None), "diagnostics", None)
     if diagnostics is None:
@@ -138,10 +156,11 @@ def _execute(command: DiagnosticControlCommand, context, application) -> str:
         if not items:
             return "当前没有待确认的答疑修复建议。如需排查配置，请先发送「陪伴 答疑 <问题>」。"
         now = diagnostics.now()
+        display_codes = _display_codes(items)
         lines = [f"当前有 {len(items)} 条待确认的答疑修复建议："]
         for index, item in enumerate(items, start=1):
             review = json.loads(item.review_json)
-            code = repairs.short_code(item.proposal_id)
+            code = display_codes[item.proposal_id]
             summary = _summarize_delta(review)
             remaining = _remaining_text(review, now)
             rationale = str(review.get("rationale") or "").strip()[:60]
@@ -150,10 +169,10 @@ def _execute(command: DiagnosticControlCommand, context, application) -> str:
             if rationale:
                 lines.append(f"   说明：{rationale}")
         if len(items) == 1:
-            code = repairs.short_code(items[0].proposal_id)
+            code = display_codes[items[0].proposal_id]
             lines.append(f"回复「陪伴 答疑确认 {code}」立即应用，或「陪伴 答疑取消 {code}」取消。")
         else:
-            lines.append("回复「陪伴 答疑确认 <后4位短码>」应用对应建议，或「陪伴 答疑取消 <后4位短码>」取消。")
+            lines.append("回复「陪伴 答疑确认 <短码>」应用对应建议，或「陪伴 答疑取消 <短码>」取消。")
         return "\n".join(lines)
 
     if len(argument.split()) != 1:
@@ -171,10 +190,8 @@ def _execute(command: DiagnosticControlCommand, context, application) -> str:
     review = json.loads(proposal.review_json)
 
     if command.action == "confirm":
-        if proposal.state == "expired":
-            return _failure_text("repair_proposal_expired")
-        if proposal.state == "stale":
-            return _failure_text("diagnostic_evidence_changed")
+        # Delegate straight to repairs.confirm() so _finish() enforces the exact
+        # authoritative order: write permission -> expiry -> config revision -> evidence.
         finished = repairs.confirm(
             original,
             proposal_id=proposal.proposal_id,
