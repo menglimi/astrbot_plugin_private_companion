@@ -204,6 +204,7 @@ from companion_v2.host.tick_offload import (
     uses_default_method,
 )
 from companion_v2.proactive.configuration import ContactConfigurationOwner, GROUP as CONTACT_GROUP, with_contact_fields
+from companion_v2.proactive.rhythm_configuration import migrate_legacy_intensity
 from companion_v2.proactive.service import ProactiveContacts
 from companion_v2.proactive.scheduling import ContactSchedule
 
@@ -311,6 +312,7 @@ class CompanionApplication:
         if extra:
             registry = FieldRegistry(version=registry.version, fields=tuple(registry.fields.values()) + extra)
         reference_configuration_owner = ReferenceConfigurationOwner(runtime)
+        migrate_legacy_intensity(configuration_runtime)
         self.configuration = ConfigurationService(runtime, with_contact_fields(registry), store=configuration_runtime,
             owners=(ContactConfigurationOwner(runtime), GrowthConfigurationOwner(runtime),
                 SkillConfigurationOwner(runtime), RoleProfileConfigurationOwner(runtime),
