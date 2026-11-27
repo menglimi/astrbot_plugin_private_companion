@@ -39,6 +39,19 @@ test("persona hub trims redundant mode cards and guide bar into a single slim st
   };
   const tabButtons = ["questionnaire", "create", "optimize"].map(id =>
     makeButton({personaRecreation: id, personaSwitch: id}, {"aria-selected": String(id === "questionnaire")}));
+  const guideCards = ["questionnaire", "create", "optimize"].map(id => {
+    const badge = {hidden: id !== "questionnaire"};
+    const cta = {textContent: ""};
+    const btn = makeButton({personaGuidePick: id}, {"aria-pressed": String(id === "questionnaire")});
+    btn.querySelector = sel => sel === ".persona-helper-current" ? badge : sel === ".persona-helper-card-cta" ? cta : null;
+    btn._badge = badge;
+    btn._cta = cta;
+    return btn;
+  });
+  const guideToggle = makeButton({}, {"aria-expanded": "false"});
+  let toggleFocused = 0;
+  guideToggle.focus = () => { toggleFocused++; };
+  const guideStrip = {hidden: true, querySelectorAll: sel => sel === "[data-persona-guide-pick]" ? guideCards : []};
   const panel = {attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }};
   let mounted = 0;
 
@@ -61,6 +74,8 @@ test("persona hub trims redundant mode cards and guide bar into a single slim st
       },
       getElementById(id) {
         if (id === "persona-workspace-panel") return panel;
+        if (id === "persona-helper-strip") return guideStrip;
+        if (id === "persona-guide-toggle") return guideToggle;
         return null;
       },
     },
@@ -74,10 +89,29 @@ test("persona hub trims redundant mode cards and guide bar into a single slim st
   assert.match(html, /role="tab" id="persona-mode-questionnaire"[^>]*aria-selected="true"/);
   assert.doesNotMatch(html, /role="tab"[^>]*aria-pressed/);
   assert.doesNotMatch(html, /persona-mode-grid/);
-  assert.doesNotMatch(html, /persona-guide/);
-  assert.match(html, /class="persona-helper"/);
+  assert.doesNotMatch(html, /persona-guide"/);
+  assert.doesNotMatch(html, /<details class="persona-helper"/);
+  assert.match(html, /id="persona-guide-toggle"[^>]*data-persona-guide-toggle[^>]*aria-controls="persona-helper-strip"/);
+  // Guide strip must sit outside <header class="persona-hub-bar"> so opening it never distorts the topbar.
+  const barEnd = html.indexOf("</header>");
+  const stripStart = html.indexOf('id="persona-helper-strip"');
+  assert.ok(barEnd > 0 && stripStart > barEnd, "guide strip must render outside the sticky topbar");
+  assert.match(html, /data-persona-guide-pick="questionnaire"/);
+  assert.match(html, /data-persona-guide-pick="create"/);
+  assert.match(html, /data-persona-guide-pick="optimize"/);
+  assert.match(html, /绝不会直接覆盖正在使用的线上人设/);
 
-  // Restoring an optimize draft from the designer iframe updates aria-selected and aria-labelledby cleanly.
+  // Opening and closing the guide strip toggles hidden + aria-expanded cleanly without remounting.
+  ctx.setPersonaGuideOpen(true);
+  assert.equal(guideStrip.hidden, false);
+  assert.equal(guideToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(mounted, 0);
+  ctx.setPersonaGuideOpen(false, {focusTrigger: true});
+  assert.equal(guideStrip.hidden, true);
+  assert.equal(guideToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggleFocused, 1);
+
+  // Restoring an optimize draft from the designer iframe updates aria-selected, aria-labelledby, and guide cards cleanly.
   listeners["companion:persona-mode-change"]({detail: {mode: "optimize"}});
   assert.equal(vm.runInContext("personaRecreationMode", ctx), "optimize");
   const optTab = tabButtons.find(b => b.dataset.personaRecreation === "optimize");
@@ -87,10 +121,15 @@ test("persona hub trims redundant mode cards and guide bar into a single slim st
   assert.equal(qTab.getAttribute("aria-selected"), "false");
   assert.equal(qTab.getAttribute("tabindex"), "-1");
   assert.equal(panel.attrs["aria-labelledby"], "persona-mode-optimize");
+  const optCard = guideCards.find(c => c.dataset.personaGuidePick === "optimize");
+  assert.equal(optCard.getAttribute("aria-pressed"), "true");
+  assert.equal(optCard._badge.hidden, false);
 
-  // Cross-mode handoff from designer switches back to questionnaire cleanly.
+  // Switching mode auto-closes an open guide strip.
+  ctx.setPersonaGuideOpen(true);
   listeners["companion:persona-handoff"]({detail: {text: "人设草稿"}});
   assert.equal(vm.runInContext("personaRecreationMode", ctx), "questionnaire");
+  assert.equal(vm.runInContext("personaGuideOpen", ctx), false);
   assert.equal(mounted, 1);
 });
 
@@ -177,6 +216,7 @@ test("persona workshop beginner UX: embedded dedup, no emoji lock, modern picker
 
 test("persona designer beginner UX: auto model select, optimize quick chips, localStorage sync, and workshop handoff", () => {
   const html = read("pages/新的她/workspace.html");
+  const css = read("pages/新的她/style.css");
   const js = read("pages/新的她/app.js");
   const mem = read("pages/陪伴小屋/persona-designer-memory.js");
 
@@ -184,6 +224,19 @@ test("persona designer beginner UX: auto model select, optimize quick chips, loc
   assert.match(html, /id="persona-card-grid"/);
   assert.match(html, /id="quick-reset"/);
   assert.match(html, /id="send-to-workshop"/);
+  // Balanced single-row toolbar, single-line ellipsis model pill, zero trailing comma regression
+  assert.match(html, /class="designer-toolbar"/);
+  assert.match(html, /id="choose-model-name" class="model-pill-name"/);
+  assert.match(css, /\.model-pill-name\{[^}]*text-overflow:ellipsis;white-space:nowrap/);
+  assert.doesNotMatch(html, /留档，/);
+  assert.doesNotMatch(js, /留档，/);
+  // Optimize source panel defaults to collapsed ready summary strip with toggle + switch actions
+  assert.match(html, /id="source-summary-bar"/);
+  assert.match(html, /id="toggle-source-editor"[^>]*aria-controls="source-editor-body"/);
+  assert.match(html, /id="source-editor-body"[^>]*hidden/);
+  assert.doesNotMatch(html, /<details id="source-panel"[^>]*open/);
+  // Clicking stages must never inject hardcoded prompt strings into user input
+  assert.doesNotMatch(js, /doc\(\)\.input\s*=\s*"我们先聊/);
   for (const chip of ["说话太像 AI 客服", "回复太啰嗦", "人设容易崩", "口吻再自然点"]) {
     assert.ok(js.includes(chip), `optimize starter should include chip: ${chip}`);
   }

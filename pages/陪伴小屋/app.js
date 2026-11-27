@@ -80,6 +80,7 @@ function savePersonaRecreationMode(mode){
   try{if(typeof localStorage!=='undefined'&&localStorage)localStorage.setItem('companion.persona-mode',mode);}catch{}
 }
 let personaRecreationMode=readPersonaRecreationMode();
+let personaGuideOpen=false;
 let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
@@ -4722,13 +4723,43 @@ function renderConfigEditors(){
 }
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
 const PERSONA_HUB_MODES=[
-  {id:'questionnaire',label:'规范人格',kicker:'结构化核对',icon:'notebook-pen',
-    summary:'已有完整人设，一键按标准结构整理并逐段对照。'},
-  {id:'create',label:'创建人格',kicker:'从零共创',icon:'sparkles',
-    summary:'只有一个想法，通过对话从零一起聊出完整人设。'},
-  {id:'optimize',label:'拟人优化',kicker:'痛点微调',icon:'sliders-horizontal',
-    summary:'已有人设但口吻像 AI 或容易崩，针对痛点逐段微调。'},
+  {id:'questionnaire',label:'规范人格',subtitle:'整理已有设定',kicker:'结构化核对',icon:'notebook-pen',
+    summary:'手里已有完整人设，想一键理清结构并逐段对照修改。'},
+  {id:'create',label:'创建人格',subtitle:'从零聊出角色',kicker:'从零共创',icon:'sparkles',
+    summary:'脑子里只有一个模糊想法，像聊天一样 5 步捏出完整人设。'},
+  {id:'optimize',label:'拟人优化',subtitle:'去 AI 味更像真人',kicker:'痛点微调',icon:'sliders-horizontal',
+    summary:'已有设定但觉得说话像机器或容易 OOC，点选痛点逐段微调。'},
 ];
+function syncPersonaGuideUI(mode=personaRecreationMode){
+  const strip=document.getElementById('persona-helper-strip');
+  const toggle=document.getElementById('persona-guide-toggle');
+  if(toggle){
+    toggle.setAttribute('aria-expanded',String(personaGuideOpen));
+    toggle.classList.toggle('is-open',personaGuideOpen);
+  }
+  if(strip){
+    strip.hidden=!personaGuideOpen;
+    strip.querySelectorAll?.('[data-persona-guide-pick]')?.forEach(card=>{
+      const active=card.dataset.personaGuidePick===mode;
+      card.classList.toggle('is-current',active);
+      card.setAttribute('aria-pressed',String(active));
+      const badge=card.querySelector?.('.persona-helper-current');
+      if(badge)badge.hidden=!active;
+      const cta=card.querySelector?.('.persona-helper-card-cta');
+      if(cta){
+        const info=PERSONA_HUB_MODES.find(item=>item.id===card.dataset.personaGuidePick);
+        cta.textContent=active?'正在使用此模式':(info?`切换到「${info.label}」`:'切换到此模式');
+      }
+    });
+  }
+}
+function setPersonaGuideOpen(open,{focusTrigger=false}={}){
+  personaGuideOpen=Boolean(open);
+  syncPersonaGuideUI(personaRecreationMode);
+  if(!personaGuideOpen&&focusTrigger){
+    document.getElementById('persona-guide-toggle')?.focus?.({preventScroll:true});
+  }
+}
 function syncPersonaModeUI(mode){
   if(!PERSONA_MODE_IDS.includes(mode))return;
   document.querySelectorAll('[role="tab"][data-persona-recreation]').forEach(button=>{
@@ -4739,9 +4770,11 @@ function syncPersonaModeUI(mode){
   });
   const panel=document.getElementById('persona-workspace-panel');
   if(panel)panel.setAttribute('aria-labelledby','persona-mode-'+mode);
+  syncPersonaGuideUI(mode);
 }
 function switchPersonaMode(mode,focusSelector){
   if(!PERSONA_MODE_IDS.includes(mode))return;
+  personaGuideOpen=false;
   personaRecreationMode=mode;
   savePersonaRecreationMode(mode);
   paintPanel();
@@ -4755,7 +4788,18 @@ function renderPersonaPage(){
     const active=mode.id===current.id;
     return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-bar-tab${active?' is-active':''}" data-persona-recreation="${mode.id}" data-persona-switch="${mode.id}" aria-selected="${active}" tabindex="${active?'0':'-1'}" aria-controls="persona-workspace-panel">${I(mode.icon)}<span>${mode.label}</span></button>`;
   }).join('');
-  const helperItems=PERSONA_HUB_MODES.map(mode=>`<li><strong>${mode.label}</strong><span>${mode.summary}</span></li>`).join('');
+  const guideCards=PERSONA_HUB_MODES.map(mode=>{
+    const active=mode.id===current.id;
+    return `<button type="button" class="persona-helper-card${active?' is-current':''}" data-persona-guide-pick="${mode.id}" aria-pressed="${active}">
+      <div class="persona-helper-card-top">
+        <span class="persona-helper-card-ico" aria-hidden="true">${I(mode.icon)}</span>
+        <div class="persona-helper-card-titles"><strong>${mode.label}</strong><span>${mode.subtitle}</span></div>
+        <span class="persona-helper-current"${active?'':' hidden'}>${I('check')}<span>当前模式</span></span>
+      </div>
+      <p class="persona-helper-card-desc">${mode.summary}</p>
+      <span class="persona-helper-card-foot"><span class="persona-helper-card-cta">${active?'正在使用此模式':`切换到「${mode.label}」`}</span>${I('arrow-right')}</span>
+    </button>`;
+  }).join('');
   return `<div class="persona-hub">
     <header class="persona-hub-bar" aria-label="人格处理导航">
       <div class="persona-hub-bar-lead">
@@ -4765,9 +4809,17 @@ function renderPersonaPage(){
       </div>
       <div class="persona-hub-bar-controls">
         <div class="persona-bar-switch" role="tablist" aria-label="人格处理方式">${modeTabs}</div>
-        <details class="persona-helper"><summary>${I('help-circle')}<span>怎么选</span></summary><div class="persona-helper-body"><ul class="persona-helper-list">${helperItems}</ul><p class="persona-helper-note">三种模式都只生成可编辑草稿，不会直接覆盖 AstrBot 线上人设。</p></div></details>
+        <button type="button" id="persona-guide-toggle" class="persona-helper-trigger${personaGuideOpen?' is-open':''}" data-persona-guide-toggle aria-expanded="${personaGuideOpen}" aria-controls="persona-helper-strip">${I('help-circle')}<span>怎么选</span></button>
       </div>
     </header>
+    <section id="persona-helper-strip" class="persona-helper-strip" aria-label="人格处理模式选择向导"${personaGuideOpen?'':' hidden'}>
+      <div class="persona-helper-strip-head">
+        <div class="persona-helper-strip-title"><strong>不知道选哪个？按你手头的情况直接点一张卡片</strong><span>点击任意卡片即可立即切换并收起向导</span></div>
+        <button type="button" class="persona-helper-close" data-persona-guide-close aria-label="收起模式选择向导">${I('x')}<span>收起</span></button>
+      </div>
+      <div class="persona-helper-cards">${guideCards}</div>
+      <p class="persona-helper-note">${I('shield-check')}<span>三种模式都只生成可编辑草稿，绝不会直接覆盖正在使用的线上人设。</span></p>
+    </section>
     <section class="persona-workspace" id="persona-workspace-panel" role="tabpanel" aria-labelledby="persona-mode-${current.id}">${workspace}</section>
   </div>`;
 }
@@ -7113,6 +7165,23 @@ document.addEventListener('click',event=>{
     }
     if(scrollToPageAnchor(hash)){event.preventDefault();return;}
   }
+  if(el.dataset.personaGuideToggle!==undefined){
+    setPersonaGuideOpen(!personaGuideOpen);
+    return;
+  }
+  if(el.dataset.personaGuideClose!==undefined){
+    setPersonaGuideOpen(false,{focusTrigger:true});
+    return;
+  }
+  if(el.dataset.personaGuidePick){
+    const nextMode=el.dataset.personaGuidePick;
+    if(nextMode===personaRecreationMode){
+      setPersonaGuideOpen(false,{focusTrigger:true});
+    }else{
+      switchPersonaMode(nextMode,'[role="tab"][data-persona-recreation="'+nextMode+'"]');
+    }
+    return;
+  }
   if(el.dataset.personaRecreation){
     switchPersonaMode(el.dataset.personaRecreation,'[data-persona-recreation="'+el.dataset.personaRecreation+'"]');
     return;
@@ -7521,6 +7590,14 @@ document.addEventListener('keydown',event=>{
       chooseMemoryRoute(tabs[next].dataset.memoryRoute);
     }
     return;
+  }
+  if(event.key==='Escape'&&personaGuideOpen){
+    const strip=document.getElementById('persona-helper-strip');
+    if(strip&&!strip.hidden){
+      event.preventDefault();
+      setPersonaGuideOpen(false,{focusTrigger:true});
+      return;
+    }
   }
   /* Esc：从配置分区回到小屋。只在没有弹窗打开时接管——
      搜索与详情弹窗自己的 Esc 关闭优先，否则用户按 Esc 想关弹窗，

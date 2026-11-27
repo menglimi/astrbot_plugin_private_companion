@@ -6,25 +6,32 @@
   <title>新的她 · 人格处理</title>
   <link rel="stylesheet" href="style.css">
   <script src="/api/plugin/page/bridge-sdk.js" defer></script>
-  <script src="app.js?v=persona-actions-20261127" defer></script>
+  <script src="app.js?v=persona-actions-20261127b" defer></script>
 </head>
 <body>
   <main class="designer">
     <header class="workbench-head">
       <div class="heading"><span class="mark" aria-hidden="true">她</span><div><h1>新的她</h1><p class="muted">一起推敲她的性格、来历，以及说话的方式。</p></div></div>
-      <div class="actions">
-        <button id="choose-model" class="button small" type="button">选择模型</button>
+    </header>
+    <section class="designer-toolbar" aria-label="模型与草稿操作">
+      <div class="toolbar-left">
+        <div class="mode-switch" role="group" aria-label="设计模式" hidden><button type="button" data-mode="optimize" aria-pressed="true">拟人优化</button><button type="button" data-mode="create" aria-pressed="false">创建人格</button></div>
+        <button id="choose-model" class="button small model-pill" type="button" title="选择用于人设设计的文本模型">
+          <svg class="model-pill-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l1.6 3.7 3.7 1.6-3.7 1.6L8 12.8 6.4 9.1 2.7 7.5l3.7-1.6z"/></svg>
+          <span class="model-pill-kicker">模型</span>
+          <span id="choose-model-name" class="model-pill-name">选择模型</span>
+          <svg class="model-pill-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg>
+        </button>
+        <span class="autosave-chip memory-note" title="编辑进度按模式自动暂存，刷新不丢失；建议定期「保存草稿」留档。"><span class="autosave-dot" aria-hidden="true"></span><span>已自动暂存</span><span class="autosave-sub">刷新不丢失</span></span>
+      </div>
+      <div class="toolbar-actions actions">
         <button id="open-drafts" class="button small" type="button">已存草稿</button>
         <button id="retry-save" class="button small" type="button" hidden>确认上次保存</button>
         <button id="save-draft" class="button small" type="button">保存草稿</button>
-        <button id="quick-reset" class="button small" type="button">清空重来</button>
+        <button id="quick-reset" class="button small quiet-danger" type="button">清空重来</button>
       </div>
-    </header>
+    </section>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-    <div class="mode-row">
-      <div class="mode-switch" role="group" aria-label="设计模式" hidden><button type="button" data-mode="optimize" aria-pressed="true">拟人优化</button><button type="button" data-mode="create" aria-pressed="false">创建人格</button></div>
-      <span class="memory-note">编辑进度按模式自动暂存，刷新不丢失；建议定期「保存草稿」留档。</span>
-    </div>
     <nav class="stages" aria-label="共创阶段">
       <button type="button" data-stage="positioning"><span>01</span>定位与关系</button>
       <button type="button" data-stage="personality"><span>02</span>性格与反差</button>
@@ -34,14 +41,32 @@
     </nav>
     <div class="workbench">
       <section class="conversation-column" aria-label="讨论人设">
-        <details id="source-panel" class="card source-panel" open>
-          <summary>作为起点的人设 <small id="source-count">0 字</small></summary>
-          <div class="card-body"><div class="section-heading"><p class="muted">已自动载入当前人设，也可切换或直接修改起点文本。</p><button id="choose-persona" class="button small" type="button">切换人设</button></div><label class="sr-only" for="source-text">原人设文本</label><textarea id="source-text" rows="7" maxlength="30000" placeholder="把想优化的人设放在这里。先说说哪里觉得不像，再一起逐段微调。"></textarea><small id="source-label" class="muted">可以直接编辑这份起点文本。</small></div>
-        </details>
+        <section id="source-panel" class="card source-panel" aria-label="作为起点的人设">
+          <div id="source-summary-bar" class="source-summary-bar">
+            <div class="source-summary-info">
+              <span id="source-status-dot" class="source-status-dot" data-state="empty" aria-hidden="true"></span>
+              <span id="source-label" class="source-summary-label">尚未载入起点人设</span>
+              <span class="source-summary-sep" aria-hidden="true">·</span>
+              <span id="source-count" class="source-summary-count">0 字</span>
+            </div>
+            <div class="source-summary-actions">
+              <button id="toggle-source-editor" class="button small quiet-btn" type="button" aria-expanded="false" aria-controls="source-editor-body">展开查看/编辑</button>
+              <button id="choose-persona" class="button small" type="button">切换人设</button>
+            </div>
+          </div>
+          <div id="source-editor-body" class="source-editor-body" hidden>
+            <p class="source-editor-hint muted">可直接修改下方起点文本；这里仅作优化起点，不会改动 AstrBot 线上人设。</p>
+            <label class="sr-only" for="source-text">原人设文本</label>
+            <textarea id="source-text" rows="7" maxlength="30000" placeholder="把想优化的人设粘贴在这里，或点右上角「切换人设」一键载入。"></textarea>
+          </div>
+        </section>
         <section class="card dialogue">
           <div class="section-heading"><h2>一起设计</h2><span id="generation-state" class="muted" role="status"></span></div>
           <div id="messages" class="messages" role="log" aria-label="人设设计对话" aria-live="polite" aria-relevant="additions"></div>
-          <div id="suggestions" class="suggestions" role="group" aria-label="可选回答"></div>
+          <div id="suggestions-wrap" class="suggestions-wrap" hidden>
+            <span id="suggestions-label" class="suggestions-label"></span>
+            <div id="suggestions" class="suggestions" role="group" aria-label="可选回答"></div>
+          </div>
           <form id="composer"><label class="sr-only" for="chat-input">你的想法</label><textarea id="chat-input" rows="3" maxlength="8000" placeholder="说说想保留或改变的地方，或直接点上方快捷胶囊开局。"></textarea><div class="composer-foot"><small class="muted">可随时改主意，或说“这部分你决定”。Ctrl / ⌘ + Enter 发送</small><div class="actions"><button id="retry-turn" class="button small" type="button" hidden>重试本轮</button><button id="stop-turn" class="button small" type="button" hidden>停止生成</button><button id="send-turn" class="button primary" type="submit" disabled>开始共创</button></div></div></form>
         </section>
       </section>

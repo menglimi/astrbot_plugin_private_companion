@@ -4,6 +4,48 @@
   const $ = id => document.getElementById(id);
   const STAGES = ["positioning", "personality", "voice", "background", "review"];
   const LABELS = {optimize: "拟人优化", create: "创建人格"};
+  const STAGE_META = {
+    positioning: {
+      num: "01",
+      title: "定位与关系",
+      createLead: "她可以从一个很小的念头开始",
+      createDesc: "先定下她是谁、和你是什么关系（比如青梅、合租搭档或安静的同事），想到什么就说什么。",
+      createPlaceholder: "例如：想做一个嘴硬心软的图书馆学姐，平时会提醒我别熬夜…（也可直接点上方卡片开聊）",
+      optimizePlaceholder: "例如：觉得她回复太像客服，希望语气更松弛自然一点…（也可直接点上方痛点胶囊）",
+    },
+    personality: {
+      num: "02",
+      title: "性格与反差",
+      createLead: "聊聊她的性格底色和可爱反差",
+      createDesc: "说说她平时给人的第一印象、藏起来的小缺点，或者熟悉之后才会露出的另一面。",
+      createPlaceholder: "例如：表面冷静克制，但对方真的低落时会笨拙地关心人…",
+      optimizePlaceholder: "说说她在性格表达或情绪反应上哪里容易崩（OOC）…",
+    },
+    voice: {
+      num: "03",
+      title: "说话方式",
+      createLead: "定下她平时聊天说话的味道",
+      createDesc: "决定她偏短句还是爱吐槽、喜不喜欢用语气词，以及绝对不要出现的机械话术。",
+      createPlaceholder: "例如：像微信日常聊天一样多用短句，不写括号动作旁白，少用反问…",
+      optimizePlaceholder: "说说哪些口吻或句式读起来像机器，希望改成怎样的聊天节奏…",
+    },
+    background: {
+      num: "04",
+      title: "背景与偏好",
+      createLead: "补一点日常习惯与喜欢的事",
+      createDesc: "加上她的生活作息、偏爱的小事或一两段过往经历，聊起来会更有活人感。",
+      createPlaceholder: "例如：喜欢雨天听琴声和黑咖啡，讨厌被敷衍应付…",
+      optimizePlaceholder: "说说哪些背景细节想保留、精简，或挪到「单独保留的背景」里…",
+    },
+    review: {
+      num: "05",
+      title: "审核与试演",
+      createLead: "检查设定并试聊几句看看像不像她",
+      createDesc: "确认右侧已记录的设定无误后，点「整理成稿」或「情景试演」感受实际说话效果。",
+      createPlaceholder: "说说最后还想微调的地方，或直接点击右侧「整理成稿」…",
+      optimizePlaceholder: "说说还需要收口微调的地方，或点右侧「对照原文」「情景试演」检查效果…",
+    },
+  };
   const LOCAL_PREFIX = "companion.persona-designer.v1.";
   const OPTIMIZE_QUICK_CHIPS = [
     "说话太像 AI 客服",
@@ -11,11 +53,12 @@
     "人设容易崩",
     "口吻再自然点",
   ];
-  const CREATE_QUICK_CHIPS = [
-    "我有一个大致的角色想法",
-    "还没想好，先帮我找方向",
-    "从我熟悉的性格出发",
+  const CREATE_STARTER_CARDS = [
+    {text: "我有一个大致的角色想法", hint: "直接描述身份、关系或第一印象"},
+    {text: "还没想好，先帮我找方向", hint: "先给几个具体灵感选项让我挑"},
+    {text: "从我熟悉的性格出发", hint: "先定反差感，再慢慢补全细节"},
   ];
+  const STALE_STAGE_INPUT_RE = /^我们先聊“([^”]+)”这一部分。$/;
   const errors = {
     dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开此页。",
     core_access_required: "当前账号没有管理本安装的权限。",
@@ -53,6 +96,7 @@
   let bridge, root = fresh(), options = {models: [], personas: [], persona_summaries: {}}, loaded = false, disposed = false;
   let working = false, nextBefore = null, pollTimer, loadingDrafts = false, polling = false;
   let pendingPersonaId = "", entryMode = "", pickerFilter = "", autoPreloading = false;
+  let sourceExpandedOverride = null;
   const session = () => root.sessions[root.activeMode];
   const doc = () => session().document;
   const generating = () => Object.values(root.sessions).some(s => s.pending);
@@ -74,6 +118,9 @@
     }
     if (Array.isArray(raw.options)) {
       base.options = raw.options.filter(v => typeof v === "string" && v.trim()).slice(0, 3).map(v => v.slice(0, 300));
+    }
+    if (!base.messages.length && STALE_STAGE_INPUT_RE.test(base.input.trim())) {
+      base.input = "";
     }
     return base;
   }
@@ -155,32 +202,98 @@
     $("copy-draft").disabled = !d.draft;
     $("copy-lorebook").disabled = !d.lorebook;
     if ($("send-to-workshop")) $("send-to-workshop").disabled = !(d.draft.trim() || d.source_text.trim());
-    $("source-count").textContent = Array.from(d.source_text).length + " 字";
-    $("draft-count").textContent = Array.from(d.draft).length + " 字";
+    $("source-count").textContent = Array.from(d.source_text).length.toLocaleString("zh-CN") + " 字";
+    $("draft-count").textContent = Array.from(d.draft).length.toLocaleString("zh-CN") + " 字";
     document.querySelectorAll("[data-stage]").forEach(el => el.disabled = ownBusy);
     document.querySelectorAll("#suggestions button").forEach(el => el.disabled = anyBusy || working || !modelAvailable);
   }
+  function isSourceExpanded(d) {
+    if (sourceExpandedOverride !== null) return sourceExpandedOverride;
+    if (!loaded || autoPreloading) return false;
+    return !String(d.source_text || "").trim();
+  }
+  function paintSourcePanel(d) {
+    const hasSource = Boolean(String(d.source_text || "").trim());
+    const expanded = isSourceExpanded(d);
+    const dot = $("source-status-dot");
+    if (dot) dot.dataset.state = hasSource ? "ready" : "empty";
+    const labelEl = $("source-label");
+    if (labelEl) {
+      if (hasSource && d.source_persona_id) {
+        labelEl.textContent = "已载入起点人设：" + d.source_persona_id;
+        labelEl.title = "起点来自：" + d.source_persona_id + " · 点右侧「展开查看/编辑」可随时微调";
+      } else if (hasSource) {
+        labelEl.textContent = "已准备起点人设文本";
+        labelEl.title = "点右侧「展开查看/编辑」可查看或修改起点文本";
+      } else if (!loaded || autoPreloading) {
+        labelEl.textContent = "正在读取当前起点人设…";
+        labelEl.title = "正在读取当前人设，请稍候";
+      } else {
+        labelEl.textContent = "尚未载入起点人设";
+        labelEl.title = "请选择人设或直接在下方粘贴起点文本";
+      }
+    }
+    const body = $("source-editor-body");
+    if (body) body.hidden = !expanded;
+    const toggle = $("toggle-source-editor");
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.textContent = expanded ? "收起文本" : "展开查看/编辑";
+    }
+  }
   function render() {
     const d = doc();
+    const stageMeta = STAGE_META[d.stage] || STAGE_META.positioning;
     document.querySelectorAll("[data-mode]").forEach(el => el.setAttribute("aria-pressed", String(el.dataset.mode === root.activeMode)));
     document.querySelectorAll("[data-stage]").forEach(el => {
       if (el.dataset.stage === d.stage) el.setAttribute("aria-current", "step");
       else el.removeAttribute("aria-current");
     });
     $("source-panel").hidden = d.mode !== "optimize";
+    if (d.mode === "optimize") paintSourcePanel(d);
     for (const [id, key] of [["source-text", "source_text"], ["chat-input", "input"], ["confirmed", "confirmed"], ["draft-text", "draft"], ["lorebook", "lorebook"]]) {
       if ($(id).value !== d[key]) $(id).value = d[key];
     }
-    $("source-label").textContent = d.source_persona_id ? "起点来自：" + d.source_persona_id + " · 可在此编辑" : "可以直接编辑这份起点文本。";
+    $("chat-input").placeholder = d.mode === "optimize" ? stageMeta.optimizePlaceholder : stageMeta.createPlaceholder;
     const model = options.models.find(m => m.id === d.provider_id);
-    $("choose-model").textContent = model ? "模型 · " + model.name : d.provider_id ? "模型已不可用 · 重新选择" : "选择模型";
-    $("choose-model").title = d.provider_id || "仅用于此页的人设设计";
+    const modelLabel = model ? model.name : d.provider_id ? "模型已不可用 · 重新选择" : "选择模型";
+    const modelNameEl = $("choose-model-name");
+    if (modelNameEl) modelNameEl.textContent = modelLabel;
+    else $("choose-model").textContent = model ? "模型 · " + model.name : modelLabel;
+    $("choose-model").title = model ? `当前模型：${model.name}（${model.id}）` : (d.provider_id || "选择用于人设设计的文本模型");
     const log = $("messages");
     log.replaceChildren();
+    log.classList.toggle("has-chat", d.messages.length > 0);
     if (!d.messages.length) {
-      const empty = node("div", undefined, "empty-message");
-      empty.append(node("strong", d.mode === "optimize" ? "直接点下方常见痛点，或说说哪里不像她。" : "她可以从一个很小的念头开始。"),
-        node("p", d.mode === "optimize" ? "已自动预选模型并准备人设起点，点一个快捷胶囊即可开始针对性优化。" : "描述一种性格、一段关系或几句你喜欢的话；点下方开场胶囊也能立刻开聊。"));
+      const empty = node("div", undefined, "empty-guide");
+      const hasSource = Boolean(String(d.source_text || "").trim());
+      if (d.mode === "optimize") {
+        empty.append(
+          node("span", "拟人优化 · 痛点直达", "empty-stage-pill"),
+          node("strong", hasSource ? "已就绪起点人设，直接点下方痛点或说说哪里不像她" : "先载入或粘贴人设起点，再告诉我哪里读起来像机器"),
+          node("p", hasSource ? "模型与起点文本都已自动备好；挑一个最贴近的痛点胶囊，或在下方随便说一句就能开始逐段微调。" : "可点上方「切换人设」读取 AstrBot 现有人设，或直接粘贴文本后开始微调。"),
+        );
+        const steps = node("ol", undefined, "empty-steps");
+        for (const [num, text] of [["1", "点选常见痛点"], ["2", "逐段微调口吻"], ["3", "对照原文复制落地"]]) {
+          const li = node("li");
+          li.append(node("span", num, "step-num"), node("span", text));
+          steps.append(li);
+        }
+        empty.append(steps);
+      } else {
+        empty.append(
+          node("span", `当前阶段 · ${stageMeta.num} ${stageMeta.title}`, "empty-stage-pill"),
+          node("strong", stageMeta.createLead),
+          node("p", stageMeta.createDesc),
+        );
+        const steps = node("ol", undefined, "empty-steps");
+        for (const [num, text] of [["1", "随便聊一句灵感"], ["2", "右侧实时记下设定"], ["3", "一键整理成人设稿"]]) {
+          const li = node("li");
+          li.append(node("span", num, "step-num"), node("span", text));
+          steps.append(li);
+        }
+        empty.append(steps);
+      }
       log.append(empty);
     }
     for (const message of d.messages) {
@@ -190,16 +303,43 @@
     }
     log.scrollTop = log.scrollHeight;
     const suggestions = $("suggestions");
+    const suggestionsWrap = $("suggestions-wrap");
+    const suggestionsLabel = $("suggestions-label");
     suggestions.replaceChildren();
+    const isCreateStarter = !d.options.length && d.mode === "create" && !d.messages.length;
     const isOptimizeStarter = !d.options.length && d.mode === "optimize" && !d.messages.length;
-    const choices = d.options.length ? d.options
-      : d.mode === "create" && !d.messages.length ? CREATE_QUICK_CHIPS
-      : isOptimizeStarter ? OPTIMIZE_QUICK_CHIPS : [];
-    for (const choice of choices) {
-      const button = node("button", choice, "button small" + (isOptimizeStarter ? " chip-pain" : ""));
-      button.type = "button";
-      button.addEventListener("click", () => sendTurn("chat", choice));
-      suggestions.append(button);
+    suggestions.classList.toggle("is-starter-cards", isCreateStarter);
+    if (isCreateStarter) {
+      if (suggestionsLabel) suggestionsLabel.textContent = "不知道怎么开头？点一张卡片立刻开聊";
+      for (const item of CREATE_STARTER_CARDS) {
+        const button = node("button", undefined, "button small starter-card");
+        button.type = "button";
+        button.append(node("strong", item.text), node("small", item.hint));
+        button.addEventListener("click", () => sendTurn("chat", item.text));
+        suggestions.append(button);
+      }
+      if (suggestionsWrap) suggestionsWrap.hidden = false;
+    } else if (isOptimizeStarter) {
+      if (suggestionsLabel) suggestionsLabel.textContent = "常见痛点，点一下直接开始优化";
+      for (const choice of OPTIMIZE_QUICK_CHIPS) {
+        const button = node("button", choice, "button small chip-pain");
+        button.type = "button";
+        button.addEventListener("click", () => sendTurn("chat", choice));
+        suggestions.append(button);
+      }
+      if (suggestionsWrap) suggestionsWrap.hidden = false;
+    } else if (d.options.length) {
+      if (suggestionsLabel) suggestionsLabel.textContent = "也可以直接选一个方向继续";
+      for (const choice of d.options) {
+        const button = node("button", choice, "button small");
+        button.type = "button";
+        button.addEventListener("click", () => sendTurn("chat", choice));
+        suggestions.append(button);
+      }
+      if (suggestionsWrap) suggestionsWrap.hidden = false;
+    } else {
+      if (suggestionsLabel) suggestionsLabel.textContent = "";
+      if (suggestionsWrap) suggestionsWrap.hidden = true;
     }
     controls();
   }
@@ -318,11 +458,13 @@
       if (result.id === targetId && typeof result.text === "string" && result.text.trim()) {
         optDoc.source_persona_id = targetId;
         optDoc.source_text = result.text;
+        sourceExpandedOverride = null;
         await persist();
         render();
       }
     } catch {} finally {
       autoPreloading = false;
+      if (!disposed) render();
     }
   }
   let optionsBusy = false, optionsSeq = 0;
@@ -383,7 +525,13 @@
     if (generating() || working) return;
     const current = session(), d = doc();
     if (!options.models.some(m => m.id === d.provider_id)) { $("model-dialog").showModal(); return; }
-    if (d.mode === "optimize" && !d.source_text.trim()) { notice(errors.persona_designer_source_required, true); $("source-text").focus(); return; }
+    if (d.mode === "optimize" && !d.source_text.trim()) {
+      sourceExpandedOverride = true;
+      render();
+      notice(errors.persona_designer_source_required, true);
+      $("source-text").focus();
+      return;
+    }
     if (action === "tryout" && !d.draft.trim()) { notice(errors.persona_designer_draft_required, true); return; }
     const user = text || (action === "draft" ? "请根据已经确认的内容，整理一份可编辑的人设稿。"
       : action === "tryout" ? "请按当前人设稿进行日常聊天、工具结果转述、被指出疏漏三组情景试演。"
@@ -487,6 +635,7 @@
             const d = saved.state;
             if (!["optimize", "create"].includes(d?.mode) || !Array.isArray(d.messages)) throw new Error("persona_designer_response_invalid");
             root.sessions[d.mode] = {document: d}; root.activeMode = d.mode;
+            sourceExpandedOverride = null;
             await persist();
             if (entryMode && entryMode !== d.mode) {
               entryMode = d.mode;
@@ -516,6 +665,7 @@
   function selectMode(mode) {
     const provider = doc().provider_id; root.activeMode = mode;
     if (!doc().provider_id) doc().provider_id = provider;
+    sourceExpandedOverride = null;
   }
   document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => {
     selectMode(button.dataset.mode);
@@ -524,11 +674,25 @@
   }));
   document.querySelectorAll("[data-stage]").forEach(button => button.addEventListener("click", () => {
     doc().stage = button.dataset.stage;
-    if (!doc().input) doc().input = "我们先聊“" + button.textContent.replace(/^\d+/, "").trim() + "”这一部分。";
     persist(); render(); $("chat-input").focus();
   }));
+  if ($("toggle-source-editor")) {
+    $("toggle-source-editor").addEventListener("click", () => {
+      const nextExpanded = !isSourceExpanded(doc());
+      sourceExpandedOverride = nextExpanded;
+      paintSourcePanel(doc());
+      if (nextExpanded) $("source-text").focus();
+    });
+  }
   for (const [id, key] of [["source-text", "source_text"], ["chat-input", "input"], ["confirmed", "confirmed"], ["draft-text", "draft"], ["lorebook", "lorebook"]]) {
-    $(id).addEventListener("input", () => { doc()[key] = $(id).value; persist(); controls(); });
+    $(id).addEventListener("input", () => {
+      doc()[key] = $(id).value;
+      if (key === "source_text") {
+        sourceExpandedOverride = true;
+        paintSourcePanel(doc());
+      }
+      persist(); controls();
+    });
   }
   document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
   $("composer").addEventListener("submit", event => { event.preventDefault(); sendTurn("chat"); });
@@ -595,6 +759,7 @@
         current.document.source_text = result.text;
         delete current.manuallyCleared;
       }
+      sourceExpandedOverride = null;
       await persist(); $("persona-dialog").close(); $("switch-persona-dialog").close();
       notice("已载入人设，可以直接点下方快捷痛点或输入想调整的地方。"); render();
     } catch (error) {
@@ -629,6 +794,7 @@
     const provider = doc().provider_id;
     root.sessions[mode] = {document: newDocument(mode), manuallyCleared: true};
     doc().provider_id = provider;
+    sourceExpandedOverride = null;
     syncLocalDraft(mode, null);
     persist(); $("reset-dialog").close(); notice("已清空当前模式进度，可重新开始。"); render();
   });
@@ -677,6 +843,12 @@
       entryMode = ["create", "optimize"].includes(context?.tab) ? context.tab : "";
       const cached = await api("GET", "designer/client-state", {});
       root = cached.state?.version === 1 ? cached.state : fresh();
+      for (const mode of ["optimize", "create"]) {
+        const currentDoc = root.sessions?.[mode]?.document;
+        if (currentDoc && !currentDoc.messages?.length && STALE_STAGE_INPUT_RE.test(String(currentDoc.input || "").trim())) {
+          currentDoc.input = "";
+        }
+      }
       await restoreLocalModes();
       if (entryMode) selectMode(entryMode);
       document.documentElement.classList.toggle("has-entry-mode", !!entryMode);

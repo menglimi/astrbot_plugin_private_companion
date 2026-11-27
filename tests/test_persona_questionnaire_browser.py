@@ -210,6 +210,44 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertEqual(self.frame.locator('[data-pair="raw"] [data-side="right"]').input_value(), "")
         self.assertFalse(self.browser_errors, self.browser_errors)
 
+    def test_persona_hub_guide_strip_locks_topbar_height_and_switches_mode_on_card_click(self):
+        topbar = self.page.locator(".persona-hub-bar")
+        toggle = self.page.locator("#persona-guide-toggle")
+        strip = self.page.locator("#persona-helper-strip")
+        topbar.wait_for(state="visible")
+        before_height = topbar.bounding_box()["height"]
+        self.assertFalse(strip.is_visible())
+
+        # Clicking "怎么选" opens the full-width 3-column guide strip BELOW the topbar without stretching the topbar.
+        toggle.click()
+        strip.wait_for(state="visible")
+        after_height = topbar.bounding_box()["height"]
+        self.assertLessEqual(abs(after_height - before_height), 2,
+                             f"topbar height must stay locked when guide opens: before={before_height}, after={after_height}")
+        self.assertEqual(toggle.get_attribute("aria-expanded"), "true")
+        self.assertEqual(strip.locator(".persona-helper-card").count(), 3)
+        self.assertIn("绝不会直接覆盖正在使用的线上人设", strip.inner_text())
+        # Verify active mode card highlights current mode with badge.
+        q_card = strip.locator('[data-persona-guide-pick="questionnaire"]')
+        self.assertEqual(q_card.get_attribute("aria-pressed"), "true")
+        self.assertTrue(q_card.locator(".persona-helper-current").is_visible())
+
+        # Pressing Escape closes the guide strip without exiting the persona workspace.
+        self.page.keyboard.press("Escape")
+        strip.wait_for(state="hidden")
+        self.assertEqual(toggle.get_attribute("aria-expanded"), "false")
+        self.assertTrue(topbar.is_visible())
+
+        # Re-open and click the "拟人优化" guide card -> switches mode cleanly and auto-closes strip.
+        toggle.click()
+        strip.wait_for(state="visible")
+        strip.locator('[data-persona-guide-pick="optimize"]').click()
+        strip.wait_for(state="hidden")
+        self.page.locator('[data-persona-recreation="optimize"][aria-selected="true"]').wait_for()
+        designer = self.page.frame_locator('[data-workspace="designer"] iframe')
+        designer.locator("#source-summary-bar").wait_for(state="visible")
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
 
 if __name__ == "__main__":
     unittest.main()

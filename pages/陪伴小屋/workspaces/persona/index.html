@@ -16,20 +16,25 @@
       <div class="head-actions"><button id="back-self" class="button secondary small" type="button">返回自我页</button></div>
     </header>
 
-    <section class="pw-context-bar" aria-label="当前底稿状态">
-      <div class="ctx-item ctx-persona">
-        <span class="ctx-label">当前底稿</span>
-        <strong id="persona-name">—</strong>
-        <span class="stat" id="persona-state">读取中</span>
+    <section class="pw-context-bar" aria-label="当前底稿状态与快捷操作">
+      <div class="ctx-left">
+        <div class="ctx-item ctx-persona">
+          <span class="ctx-label">当前底稿</span>
+          <strong id="persona-name">—</strong>
+          <span class="stat" id="persona-state">读取中</span>
+        </div>
+        <span class="ctx-autosave" title="当前整理进度自动保存在本机，刷新不丢失">已自动暂存</span>
       </div>
-      <div class="ctx-meta">
-        <span class="ctx-pill">原文 <strong id="original-count">—</strong></span>
-        <button id="load-version" class="meta-action ctx-pill" type="button" aria-label="读取已存稿" title="读取最新已存稿" disabled>已存 <strong id="version-count">0</strong> 版</button>
+      <div class="ctx-right">
+        <label class="ctx-model">
+          <span>模型</span>
+          <select id="ctx-provider" aria-label="顶部快捷选择文本模型"></select>
+        </label>
+        <div class="ctx-meta">
+          <span class="ctx-pill">原文 <strong id="original-count">—</strong></span>
+          <button id="load-version" class="meta-action ctx-pill" type="button" aria-label="读取已存稿" title="读取最新已存稿" disabled>已存 <strong id="version-count">0</strong> 版</button>
+        </div>
       </div>
-      <label class="ctx-model">
-        <span>模型</span>
-        <select id="ctx-provider" aria-label="顶部快捷选择文本模型"></select>
-      </label>
     </section>
 
     <div id="notice" role="status" aria-live="polite" hidden></div>

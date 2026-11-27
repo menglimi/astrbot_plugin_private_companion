@@ -173,6 +173,7 @@
       if (!providers.length) {
         select.append(new Option("跟随当前会话默认模型", ""));
         select.value = "";
+        select.title = "跟随当前会话默认模型";
         select.disabled = busy;
       } else {
         providers.forEach(item => {
@@ -180,6 +181,7 @@
           select.append(new Option((item.name || item.id) + suffix, item.id));
         });
         select.value = selectedProviderId;
+        select.title = select.selectedOptions?.[0]?.textContent || selectedProviderId || "选择文本模型";
         select.disabled = busy;
       }
     }
