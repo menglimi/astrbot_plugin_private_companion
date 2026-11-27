@@ -278,21 +278,23 @@ test("designer state and late replies survive remount while leaving the extensio
   assert.equal(replacement.messages.at(-1).data.state, null);
 });
 
-test("persona pickers keep in-frame listboxes without blocking parent wheel scroll chaining", () => {
+test("persona pickers use modern searchable card grids without blocking parent wheel scroll chaining", () => {
   const designerMarkup = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/designer/index.html"), "utf8");
   const designerCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/designer/style.css"), "utf8");
   const personaMarkup = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/persona/index.html"), "utf8");
   const personaCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/persona/style.css"), "utf8");
   const profileDraft = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/role-profile-draft.js"), "utf8");
   const selfCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/self-page.css"), "utf8");
-  assert.match(designerMarkup, /id="persona-select" size="8"/);
-  assert.match(personaMarkup, /id="source-persona" size="6"/);
+  assert.doesNotMatch(designerMarkup, /id="persona-select"[^>]*size=/);
+  assert.doesNotMatch(personaMarkup, /id="source-persona"[^>]*size=/);
+  assert.match(designerMarkup, /id="persona-card-grid"[^>]*class="persona-card-grid"/);
+  assert.match(personaMarkup, /id="persona-picker-grid"[^>]*class="persona-card-grid"/);
   assert.match(profileDraft, /data-role-profile-draft-persona size="6"/);
   assert.match(designerCss, /dialog\{[^}]*overflow:auto[^}]*overscroll-behavior:contain/);
   assert.doesNotMatch(designerCss, /html\s*,\s*body\{[^}]*overscroll-behavior/);
   assert.doesNotMatch(personaCss, /html\s*,\s*body\{[^}]*overscroll-behavior/);
-  assert.doesNotMatch(designerCss, /#persona-select\{[^}]*overscroll-behavior/);
-  assert.doesNotMatch(personaCss, /#source-persona\{[^}]*overscroll-behavior/);
+  assert.doesNotMatch(designerCss, /\.persona-card-grid\{[^}]*overscroll-behavior/);
+  assert.doesNotMatch(personaCss, /\.persona-card-grid\{[^}]*overscroll-behavior/);
   assert.match(selfCss, /\.role-profile-draft-persona select\{[^}]*overflow-y:auto[^}]*overscroll-behavior:contain/);
 });
 

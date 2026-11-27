@@ -1,16 +1,17 @@
 "use strict";
 (() => {
+  if (window.parent !== window) document.documentElement.classList.add("is-embedded");
   const $ = id => document.getElementById(id);
   const sectionRows = [
-    ["identity", "基本信息", "<Role_Profile>", "姓名、身份、经历、职业"],
-    ["appearance", "外貌特征", "<Role_Profile>", "外貌、衣着与标志特征"],
-    ["world", "世界设定", "<Role_Profile>", "时代、地点、组织与规则"],
-    ["personality", "性格特质", "<Role_Profile>", "底色、驱动、外显、亲疏、压力、矛盾"],
-    ["motivations", "价值、目标与关系", "<Role_Profile>", "价值、目标、关系变化"],
-    ["habits", "兴趣习惯与表达", "<Role_Profile>", "兴趣、厌恶、口头禅、社会关系"],
-    ["boundaries", "社交距离与边界", "<Output_Constraints>", "社交距离、内容限制、特殊场景"],
-    ["supplement", "长期补充条件", "# 补充条件", "有来源的长期设定；推断标为待确认"],
-  ].map(([key, title, group, hint]) => ({key, title, group, hint}));
+    ["identity", "基本信息", "<Role_Profile>", "姓名、身份、经历、职业", ["基本信息"]],
+    ["appearance", "外貌特征", "<Role_Profile>", "外貌、衣着与标志特征", ["外貌特征"]],
+    ["world", "世界设定", "<Role_Profile>", "时代、地点、组织与规则", ["世界设定"]],
+    ["personality", "性格特质", "<Role_Profile>", "底色、驱动、外显、亲疏、压力、矛盾", ["性格特质"]],
+    ["motivations", "价值、目标与关系", "<Role_Profile>", "价值、目标、关系变化", ["价值、目标与关系"]],
+    ["habits", "兴趣习惯与表达", "<Role_Profile>", "兴趣、厌恶、口头禅、社会关系", ["兴趣习惯与表达", "表达习惯与日常"]],
+    ["boundaries", "社交距离与边界", "<Output_Constraints>", "社交距离、内容限制、特殊场景", ["社交距离与边界"]],
+    ["supplement", "长期补充条件", "# 补充条件", "有来源的长期设定；推断标为待确认", ["长期补充条件"]],
+  ].map(([key, title, group, hint, aliases]) => ({key, title, group, hint, aliases}));
   const questionKeys = ["identity", "appearance", "personality", "values", "relationships", "speech", "habits", "boundaries", "world", "supplement"];
   const scenes = [
     {id: "everyday", title: "日常往来", context: "用户随口分享一件普通小事", message: "今天路上看到一只蹲在纸箱里的猫。"},
@@ -30,7 +31,7 @@
     staging_not_initialized: "角色数据尚未就绪，请先保存角色映射后重新读取。",
     staging_host_terminated: "插件已经停止，请重新打开管理页面。",
     core_access_required: "当前账号没有管理本安装的权限。",
-    host_persona_invalid: "所选人格没有可用的提示词，请先在 AstrBot 中补充内容。",
+    host_persona_invalid: "所选人格没有可用的提示词，请先在 AstrBot 中补充内容或切换到粘贴模式。",
     host_persona_unavailable: "当前人格暂不可读，请重新读取。",
     host_account_changed: "账号连接已变化，请重新读取角色与会话。",
     host_conversation_missing: "原来绑定的会话已不存在，请重新绑定。",
@@ -40,20 +41,22 @@
     persona_draft_too_large: "草稿超出单次保存的长度上限。",
     persona_draft_conflict: "草稿在编辑期间已经有新版本，已重新读取；请核对后重试。",
     persona_version_unavailable: "这一版已不在当前角色的记录里，请刷新列表。",
-    persona_workshop_scope_unsupported: "创建人格目前只适用于私聊对象。",
+    persona_workshop_scope_unsupported: "当前会话暂不支持读取独立私聊人格，可切换至「粘贴人格文本」或从管理入口继续整理。",
     persona_workshop_request_invalid: "请求与当前接口不匹配，请刷新页面后重试。",
-    persona_standardization_invalid: "问卷或模型返回内容不符合要求，请检查后重试。",
+    persona_standardization_invalid: "填写参数不符合长度或格式要求，请检查后重试。",
+    persona_model_output_invalid: "模型输出格式不规范，可重试或更换其他文本模型。",
     persona_standardization_source_too_large: "所选人格文本过长，暂时无法整理。",
-    role_profile_model_unavailable: "当前模型无法整理人格，请检查模型设置。",
-    role_profile_draft_timeout: "模型生成超时，请稍后重试。",
+    role_profile_model_unavailable: "所选模型暂时不可用，请切换其他文本模型后重试。",
+    role_profile_draft_timeout: "模型生成超时，当前内容仍保留，可稍后重试或更换响应更快的模型。",
     role_profile_source_changed: "人格、角色或模型已变化，请重新读取后生成。",
-    role_profile_draft_failed: "模型未能完成生成，请检查模型设置后重试。",
+    role_profile_draft_failed: "模型未能完成生成，请检查模型设置或换一个文本模型后重试。",
   };
-  let bridge = null, state = null, sourceId = "", sourceMode = "current", strength = "medium";
-  let activeStep = 1, unlockedStep = 1, busy = false, loadTicket = 0;
+  let bridge = null, state = null, sourceId = "", sourceMode = "current", strength = "medium", selectedProviderId = "";
+  let activeStep = 1, unlockedStep = 1, busy = false, loadTicket = 0, genTicket = 0, genTimer = null, genStartedAt = 0;
   let answers = {}, sourceSnapshot = "", rightSections = emptySections(), rightStyle = "", rightExamples = "", rightRaw = "";
   let leftSections = emptySections(), leftStyle = "", leftExamples = "", leftRaw = "", leftBaseline = null;
   let styleNotes = [], tryoutBatch = 0, tryoutRows = [], tryoutIndex = 0, tryoutSelections = {}, selectedVersion = null;
+  let lastSavedText = "", pickerFilter = "";
 
   function emptySections() { return Object.fromEntries(sectionRows.map(item => [item.key, ""])); }
   const persona = () => state && state.persona ? state.persona : {persona_id: "", name: "", text: "", resolved: false};
@@ -68,8 +71,42 @@
   };
   const when = value => value && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12: false}) : "时间未记录";
+  const defaultNoteStamp = () => {
+    const now = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    return `规范化整理 · ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  };
+  const formatElapsed = ms => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const min = String(Math.floor(total / 60)).padStart(2, "0");
+    const sec = String(total % 60).padStart(2, "0");
+    return `已用时 ${min}:${sec}`;
+  };
   function notice(message, error) {
     const box = $("notice"); box.textContent = message || ""; box.className = error ? "error" : ""; box.hidden = !message;
+  }
+  function startProgress(stages) {
+    stopProgress();
+    genStartedAt = Date.now();
+    const panel = $("gen-progress"), stageEl = $("gen-stage"), timerEl = $("gen-timer");
+    const pickStage = elapsedSec => {
+      let label = stages[0][1];
+      for (const [sec, text] of stages) if (elapsedSec >= sec) label = text;
+      return label;
+    };
+    stageEl.textContent = pickStage(0);
+    timerEl.textContent = formatElapsed(0);
+    panel.hidden = false;
+    genTimer = setInterval(() => {
+      const elapsed = Date.now() - genStartedAt;
+      stageEl.textContent = pickStage(Math.floor(elapsed / 1000));
+      timerEl.textContent = formatElapsed(elapsed);
+    }, 1000);
+  }
+  function stopProgress() {
+    if (genTimer) { clearInterval(genTimer); genTimer = null; }
+    const panel = $("gen-progress");
+    if (panel) panel.hidden = true;
   }
   function unwrap(response) {
     const wrapped = ["ok", "error"].includes(response && response.status) && response.data !== undefined ? response
@@ -101,7 +138,7 @@
   function persist() {
     const key = workspaceKey();
     const payload = JSON.stringify({
-      sourceMode, strength, answers, sourceText: $("source-text").value, reference: $("reference-material").value,
+      sourceMode, strength, selectedProviderId, answers, sourceText: $("source-text").value, reference: $("reference-material").value,
       sourceSnapshot, rightSections, rightStyle, rightExamples, rightRaw, leftSections, leftStyle, leftExamples, leftRaw,
       styleNotes, tryoutBatch, tryoutRows, tryoutIndex, tryoutSelections, speechPreference: $("speech-preference").value,
       constraintPreference: $("constraint-preference").value, activeStep, unlockedStep,
@@ -112,12 +149,50 @@
     if (!value || typeof value !== "object" || Array.isArray(value)) return Object.assign({}, fallback || {});
     return Object.fromEntries(keys.map(key => [key, typeof value[key] === "string" ? value[key].slice(0, max) : ""]));
   }
+  function paintCluesCount() {
+    const filled = questionKeys.filter(key => String(answers[key] || "").trim()).length;
+    const badge = $("clues-count");
+    if (!badge) return;
+    badge.textContent = filled + "/" + questionKeys.length;
+    badge.classList.toggle("has-filled", filled > 0);
+  }
+  function paintPasteCount() {
+    const el = $("paste-char-count");
+    if (el) el.textContent = count($("source-text").value) + " 字";
+  }
+  function paintProviderChoices() {
+    const providers = Array.isArray(state && state.providers) ? state.providers : [];
+    const defaultId = (state && typeof state.default_provider_id === "string" && state.default_provider_id) || "";
+    if (!selectedProviderId || (providers.length && !providers.some(p => p.id === selectedProviderId))) {
+      selectedProviderId = (defaultId && providers.some(p => p.id === defaultId))
+        ? defaultId : (providers[0] ? providers[0].id : "");
+    }
+    for (const select of [$("workshop-provider"), $("ctx-provider")]) {
+      if (!select) continue;
+      select.replaceChildren();
+      if (!providers.length) {
+        select.append(new Option("跟随当前会话默认模型", ""));
+        select.value = "";
+        select.title = "跟随当前会话默认模型";
+        select.disabled = busy;
+      } else {
+        providers.forEach(item => {
+          const suffix = item.id === defaultId ? "（默认）" : item.model ? ` · ${item.model}` : "";
+          select.append(new Option((item.name || item.id) + suffix, item.id));
+        });
+        select.value = selectedProviderId;
+        select.title = select.selectedOptions?.[0]?.textContent || selectedProviderId || "选择文本模型";
+        select.disabled = busy;
+      }
+    }
+  }
   function restoreLocal() {
     let saved = null;
     try { saved = JSON.parse(readStoredDraft(workspaceKey()) || "null"); } catch {}
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return resetWorkspace();
     sourceMode = ["current", "paste"].includes(saved.sourceMode) ? saved.sourceMode : "current";
     strength = ["light", "medium", "deep"].includes(saved.strength) ? saved.strength : "medium";
+    if (typeof saved.selectedProviderId === "string") selectedProviderId = saved.selectedProviderId.slice(0, 256);
     answers = cleanRecord(saved.answers, questionKeys, 4000, {});
     $("source-text").value = typeof saved.sourceText === "string" ? saved.sourceText.slice(0, 30000) : "";
     $("reference-material").value = typeof saved.reference === "string" ? saved.reference.slice(0, 4000) : "";
@@ -146,7 +221,7 @@
     });
     $("speech-preference").value = typeof saved.speechPreference === "string" ? saved.speechPreference : "";
     $("constraint-preference").value = typeof saved.constraintPreference === "string" ? saved.constraintPreference : "";
-    paintSourceMode(); paintReview(); paintTryouts(); paintStyleResult(); paintFlow();
+    paintCluesCount(); paintPasteCount(); paintProviderChoices(); paintSourceMode(); paintReview(); paintTryouts(); paintStyleResult(); paintFlow();
   }
   function resetWorkspace() {
     sourceMode = "current"; strength = "medium"; answers = {}; sourceSnapshot = persona().text || "";
@@ -155,19 +230,23 @@
     styleNotes = []; tryoutBatch = 0; tryoutRows = []; tryoutIndex = 0; tryoutSelections = {}; activeStep = 1; unlockedStep = 1;
     document.querySelectorAll("[data-answer]").forEach(field => { field.value = ""; });
     $("source-text").value = ""; $("reference-material").value = ""; $("speech-preference").value = "";
-    $("constraint-preference").value = ""; $("note").value = "";
+    $("constraint-preference").value = ""; $("note").value = ""; $("save-success-guide").hidden = true;
     document.querySelector('input[name="source-mode"][value="current"]').checked = true;
     document.querySelectorAll("[data-strength]").forEach(button => {
       const active = button.dataset.strength === "medium";
       button.classList.toggle("on", active); button.setAttribute("aria-pressed", String(active));
     });
-    paintSourceMode(); paintReview(); paintTryouts(); paintStyleResult(); paintFlow(); persist();
+    paintCluesCount(); paintPasteCount(); paintProviderChoices(); paintSourceMode(); paintReview(); paintTryouts(); paintStyleResult(); paintFlow(); persist();
   }
   function paintFlow() {
     document.querySelectorAll("[data-flow]").forEach(item => {
       const step = Number(item.dataset.flow);
-      item.classList.toggle("current", step === activeStep); item.classList.toggle("done", step < activeStep);
-      item.classList.toggle("locked", step > unlockedStep);
+      const locked = step > unlockedStep;
+      item.classList.toggle("current", step === activeStep);
+      item.classList.toggle("done", step < activeStep);
+      item.classList.toggle("locked", locked);
+      const btn = item.querySelector("[data-flow-btn]");
+      if (btn) btn.disabled = locked || busy;
       if (step === activeStep) item.setAttribute("aria-current", "step"); else item.removeAttribute("aria-current");
     });
     document.querySelectorAll("[data-seg-panel]").forEach(panel => {
@@ -181,7 +260,10 @@
     if (step === 2) paintReview();
     if (step === 3) paintTryouts();
     if (step === 4) paintStyleResult();
-    if (step === 5) paintCompareRows();
+    if (step === 5) {
+      paintCompareRows();
+      if (!$("note").value.trim()) $("note").value = defaultNoteStamp();
+    }
     paintFlow();
     const heading = document.querySelector('[data-seg-panel="' + step + '"] .step-head h2');
     if (heading) { heading.tabIndex = -1; heading.focus({preventScroll: true}); }
@@ -193,8 +275,25 @@
     const valid = sourceMode === "paste" ? Boolean($("source-text").value.trim()) : Boolean(persona().resolved && sourceId);
     $("generate-draft").disabled = busy || !valid; $("absent").hidden = persona().resolved || sourceMode === "paste";
   }
+  function toneForName(name) {
+    let hash = 0;
+    for (const ch of String(name || "")) hash = (hash * 31 + ch.codePointAt(0)) % 4;
+    return String(hash);
+  }
+  let pendingPickerFocusId = "";
+  function selectPersonaCard(value) {
+    if (!value || value === sourceId || busy) return;
+    const grid = $("persona-picker-grid");
+    if (grid && document.activeElement && grid.contains(document.activeElement)) pendingPickerFocusId = value;
+    persist();
+    sourceId = value;
+    $("source-persona").value = value;
+    selectedVersion = null;
+    void load({personaId: sourceId, force: true});
+  }
   function paintPersonaChoices() {
-    const choices = state && state.personas || [], selected = sourceId || persona().persona_id;
+    const choices = state && state.personas || [], summaries = (state && state.persona_summaries) || {};
+    const selected = sourceId || persona().persona_id;
     const select = $("source-persona"); select.replaceChildren();
     choices.forEach(item => {
       const option = node("option", item.label || item.value);
@@ -203,15 +302,85 @@
     if (!choices.length) { const option = node("option", "没有可用人格"); option.value = ""; select.append(option); }
     select.value = selected; select.disabled = choices.length < 2 || busy;
     if (!sourceId && choices.length) sourceId = choices[0].value;
+
+    const grid = $("persona-picker-grid");
+    if (!grid) return;
+    const activeEl = document.activeElement;
+    const hadGridFocus = Boolean(activeEl && grid.contains(activeEl));
+    const prevFocusedId = hadGridFocus ? (activeEl.dataset && activeEl.dataset.personaCard || "") : "";
+    grid.replaceChildren();
+    const query = pickerFilter.trim().toLowerCase();
+    const currentId = persona().persona_id;
+    const filtered = choices.filter(item => {
+      if (!query) return true;
+      const summary = summaries[item.value];
+      const hay = ((item.label || item.value) + " " + (summary && summary.preview || "")).toLowerCase();
+      return hay.includes(query);
+    });
+    const countEl = $("persona-match-count");
+    if (countEl) countEl.textContent = choices.length ? (query ? `${filtered.length}/${choices.length} 份` : `共 ${choices.length} 份`) : "";
+    if (!filtered.length) {
+      grid.append(node("p", choices.length ? "没有匹配该关键词的人格，可清空搜索重试。" : "暂无可选 AstrBot 人格，可切换到「粘贴人格文本」。", "persona-pick-empty"));
+      return;
+    }
+    const effectiveSelected = sourceId || currentId;
+    const selectedIndex = filtered.findIndex(item => item.value === effectiveSelected);
+    const tabIndexTarget = selectedIndex >= 0 ? selectedIndex : 0;
+    const renderedCards = [];
+    filtered.forEach((item, index) => {
+      const label = item.label || item.value;
+      const summary = summaries[item.value] || (item.value === currentId ? {
+        chars: count(persona().text),
+        preview: String(persona().text || "").replace(/\s+/g, " ").trim().slice(0, 120),
+        active: Boolean(persona().resolved),
+      } : null);
+      const isSelected = item.value === effectiveSelected;
+      const isActive = Boolean(summary && summary.active) || (item.value === currentId && persona().resolved);
+      const card = node("button", undefined, "persona-pick-card" + (isSelected ? " is-selected" : ""));
+      card.type = "button";
+      card.setAttribute("role", "option");
+      card.setAttribute("aria-selected", String(isSelected));
+      card.tabIndex = index === tabIndexTarget ? 0 : -1;
+      card.dataset.personaCard = item.value;
+      card.disabled = busy;
+
+      const avatar = node("span", Array.from(label)[0] || "人", "persona-pick-avatar");
+      avatar.dataset.tone = toneForName(label);
+      avatar.setAttribute("aria-hidden", "true");
+
+      const body = node("span", undefined, "persona-pick-body");
+      const head = node("span", undefined, "persona-pick-head");
+      head.append(node("span", label, "persona-pick-name"));
+      if (isActive) head.append(node("span", "使用中", "persona-pick-active"));
+      if (summary && Number.isFinite(summary.chars)) head.append(node("span", summary.chars + " 字", "persona-pick-chars"));
+      const previewText = summary && summary.preview ? summary.preview : "点击选中并载入这份人设";
+      body.append(head, node("span", previewText, "persona-pick-preview"));
+
+      card.append(avatar, body);
+      card.addEventListener("click", () => selectPersonaCard(item.value));
+      grid.append(card);
+      renderedCards.push(card);
+    });
+    if (!busy && (hadGridFocus || pendingPickerFocusId) && renderedCards.length) {
+      const targetId = pendingPickerFocusId || effectiveSelected || prevFocusedId;
+      const target = renderedCards.find(c => c.dataset.personaCard === targetId) || renderedCards[tabIndexTarget] || renderedCards[0];
+      if (target) {
+        renderedCards.forEach(c => { c.tabIndex = c === target ? 0 : -1; });
+        target.focus({preventScroll: true});
+      }
+      pendingPickerFocusId = "";
+    }
   }
   function paintScope() {
     const item = persona(), name = item.name || item.persona_id || (item.resolved ? "未命名人格" : "未选中人格");
-    $("persona-name").textContent = name; $("persona-state").textContent = item.resolved ? "已解析到人格" : "无可用人格";
-    $("persona-state").dataset.state = item.resolved ? "ready" : "empty"; $("persona-mark").textContent = Array.from(name)[0] || "设";
+    $("persona-name").textContent = name; $("persona-state").textContent = item.resolved ? "已读取" : "无可用人格";
+    $("persona-state").dataset.state = item.resolved ? "ready" : "empty";
+    if ($("persona-mark")) $("persona-mark").textContent = Array.from(name)[0] || "设";
     const versionCount = Number(state && state.count) || 0;
     $("original-count").textContent = count(item.text) + " 字"; $("version-count").textContent = String(versionCount);
     $("load-version").disabled = versionCount < 1 || busy;
-    $("history-count").textContent = String(state && state.count || 0) + " 版"; paintPersonaChoices(); paintSourceMode();
+    $("history-count").textContent = String(state && state.count || 0) + " 版";
+    paintProviderChoices(); paintPersonaChoices(); paintSourceMode();
   }
   function canonical(values, style, examples) {
     const role = ["<Role_Profile>"];
@@ -230,9 +399,15 @@
   function extractCanonical(text) {
     if (typeof text !== "string" || !text.includes("<Role_Profile>")) return null;
     const out = emptySections();
+    const allHeadingMarkers = sectionRows.flatMap(row => row.key === "supplement" ? [] : (row.aliases || [row.title]).map(title => "## " + title));
+    const fences = ["</Role_Profile>", "</Output_Constraints>", "# 对话安全", "# 补充条件", "# 初始化"];
     sectionRows.forEach(item => {
-      const marker = item.key === "supplement" ? "# 补充条件" : "## " + item.title;
-      let start = text.indexOf(marker);
+      const markers = item.key === "supplement" ? ["# 补充条件"] : (item.aliases || [item.title]).map(title => "## " + title);
+      let start = -1;
+      for (const marker of markers) {
+        const pos = text.indexOf(marker);
+        if (pos >= 0 && (start < 0 || pos < start)) start = pos;
+      }
       if (start < 0) return;
       start = text.indexOf("\n", start);
       if (start < 0) return;
@@ -242,14 +417,10 @@
         const next = text.indexOf("# 初始化", start);
         if (next >= 0) end = next;
       } else {
-        sectionRows.forEach(other => {
-          const next = text.indexOf("## " + other.title, start);
+        for (const marker of allHeadingMarkers.concat(fences)) {
+          const next = text.indexOf(marker, start);
           if (next >= 0 && next < end) end = next;
-        });
-        ["</Role_Profile>", "</Output_Constraints>", "# 对话安全", "# 补充条件", "# 初始化"].forEach(fence => {
-          const next = text.indexOf(fence, start);
-          if (next >= 0 && next < end) end = next;
-        });
+        }
       }
       out[item.key] = text.slice(start, end).replace(/^\s+|\s+$/g, "");
     });
@@ -326,7 +497,7 @@
     });
     const style = node("section", undefined, "tpl-section pending-style"), label = node("label");
     label.append(node("span", "<Output_Constraints>", "section-tag"), node("b", "对话风格"),
-      node("small", rightStyle ? "来自第 4 步，可继续编辑" : "STYLE_PENDING · 第 4 步回填"));
+      node("small", rightStyle ? "来自第 4 步，可继续编辑" : "STYLE_PENDING · 可在第 4 步回填或跳过"));
     const area = node("textarea"); area.rows = 3; area.readOnly = true; area.value = rightStyle || "[STYLE_PENDING]";
     style.append(label, area); host.append(style);
     paintReviewMetrics(); paintSkeleton(); paintChecklist();
@@ -355,7 +526,7 @@
     const summary = node("section", undefined, "review-col"); summary.dataset.tone = "info"; summary.append(node("b", "改动摘要"));
     const summaryList = node("ul");
     summaryList.append(node("li", "整理为 " + sectionRows.filter(item => rightSections[item.key].trim()).length + " 个标准分区。"));
-    summaryList.append(node("li", rightStyle ? "第 4 步风格规则已回填。" : "对话风格将在第 4 步归纳。"));
+    summaryList.append(node("li", rightStyle ? "第 4 步风格规则已回填。" : "如需归纳风格规则可继续第 3–4 步，也可直接跳至第 5 步对照保存。"));
     summary.append(summaryList); host.append(summary);
     const warnings = node("section", undefined, "review-col"); warnings.dataset.tone = "warn";
     warnings.append(node("b", "需要审核"));
@@ -366,7 +537,7 @@
     const checks = [
       ["身份信息", Boolean(rightSections.identity.trim())],
       ["外貌与世界", Boolean(rightSections.appearance.trim() || rightSections.world.trim())],
-      ["性格六层", /底色|气质/.test(rightSections.personality) && /压力|亲疏|驱动/.test(rightSections.personality)],
+      ["性格层次", /底色|气质/.test(rightSections.personality) && /压力|亲疏|驱动/.test(rightSections.personality)],
       ["相处边界", Boolean(rightSections.boundaries.trim())],
       ["待确认内容", !styleNotes.some(note => /推断|待确认/.test(note))],
     ];
@@ -478,7 +649,8 @@
   function copySide(side) { copyText(side === "left" ? leftText() : rightText(), side === "left" ? "左侧人格" : "标准化人格"); }
   function setBusy(value) {
     busy = value; $("refresh").disabled = value; $("generate-tryouts").disabled = value;
-    $("generate-style").disabled = value; $("save").disabled = value; paintPersonaChoices(); paintSourceMode();
+    $("generate-style").disabled = value; $("save").disabled = value;
+    paintProviderChoices(); paintPersonaChoices(); paintSourceMode(); paintFlow();
     $("refresh-tryouts").disabled = value || !tryoutBatch;
     const rows = tryoutRows.length ? tryoutRows : scenes;
     document.querySelectorAll("[data-tryout-nav]").forEach(button => {
@@ -539,13 +711,21 @@
     if (busy || !bridge) return;
     setBusy(true);
     try {
-      const result = await post("persona/command", Object.assign({}, payload, {persona_id: sourceId}));
+      const commandBody = Object.assign({}, payload);
+      if (sourceId) commandBody.persona_id = sourceId;
+      const result = await post("persona/command", commandBody);
       selectedVersion = result.version; await load({quiet: true, personaId: sourceId}); paintVersions();
       if (payload.action === "restore") {
         const parsed = classifySource(result.version.draft_text);
         rightSections = parsed.sections; rightStyle = parsed.style; rightExamples = parsed.examples; rightRaw = parsed.raw;
         paintReview(); paintCompareRows(); notice("已恢复到右侧，并新增一条版本记录。");
-      } else { $("note").value = ""; notice("已保存为第 " + result.version.sequence + " 版。"); }
+      } else {
+        lastSavedText = result.version.draft_text || payload.text || "";
+        $("note").value = "";
+        $("save-guide-title").textContent = "已保存为第 " + result.version.sequence + " 版底稿（" + count(lastSavedText) + " 字）";
+        $("save-success-guide").hidden = false;
+        notice("已保存为第 " + result.version.sequence + " 版。");
+      }
       persist();
     } catch (error) {
       if (error.code === "persona_draft_conflict") await load({quiet: true, personaId: sourceId});
@@ -562,39 +742,65 @@
     const original = sourceMode === "paste" ? $("source-text").value : persona().text;
     if (sourceMode === "current" && !sourceId) { notice("请选择一个 AstrBot 人格。", true); return; }
     if (!original.trim()) { notice("请先选择或粘贴人格文本。", true); return; }
-    setBusy(true); notice("正在生成标准化基础稿…");
+    const ticket = ++genTicket;
+    setBusy(true); notice("");
+    startProgress([
+      [0, "正在读取原文与整理配置…"],
+      [4, "正在按标准结构拆分人物设定…"],
+      [16, "正在核对性格层次、习惯与边界细节…"],
+      [38, "模型正在收尾生成完整基础稿（长人设通常需 30–90 秒）…"],
+    ]);
     try {
       const body = {persona_id: sourceId, answers, strength, source_mode: sourceMode, reference_material: $("reference-material").value};
       if (sourceMode === "paste") body.source_text = original;
-      const result = await post("persona/standardize", body, LONG_MODEL_TIMEOUT), draft = result.draft || {};
-      if (draft.sections) rightSections = cleanRecord(draft.sections, sectionRows.map(item => item.key), 10000, emptySections());
-      else {
+      if (selectedProviderId) body.provider_id = selectedProviderId;
+      const result = await post("persona/standardize", body, LONG_MODEL_TIMEOUT);
+      if (ticket !== genTicket) return;
+      const draft = result.draft || {};
+      if (draft.sections) {
+        rightSections = cleanRecord(draft.sections, sectionRows.map(item => item.key), 10000, emptySections());
+        rightStyle = ""; rightExamples = ""; rightRaw = "";
+      } else {
         const parsed = extractCanonical(draft.text || "");
         if (parsed) { rightSections = parsed.sections; rightStyle = parsed.style; rightExamples = parsed.examples; rightRaw = ""; }
         else { rightSections = emptySections(); rightStyle = ""; rightExamples = ""; rightRaw = draft.text || ""; }
       }
-      rightStyle = ""; rightExamples = "";
       styleNotes = Array.isArray(draft.notes) ? draft.notes.filter(item => typeof item === "string").slice(0, 30) : [];
       startComparison(original); tryoutRows = []; tryoutIndex = 0; tryoutBatch = 0; tryoutSelections = {};
-      unlockedStep = 2; activeStep = 2;
+      unlockedStep = 5; activeStep = 2;
       paintReview(); paintTryouts(); paintStyleResult(); paintCompareRows(); paintFlow(); persist();
-      notice(styleNotes.length ? "基础稿已生成，有 " + styleNotes.length + " 条内容需要确认。" : "基础稿已生成，可逐区审核。");
-    } catch (error) { notice(errorText(error), true); }
-    finally { setBusy(false); }
+      notice(styleNotes.length ? "基础稿已生成，有 " + styleNotes.length + " 条内容需要确认。" : "基础稿已生成，可逐区审核或直接跳过试答前往对照。");
+    } catch (error) {
+      if (ticket === genTicket) notice(errorText(error), true);
+    } finally {
+      if (ticket === genTicket) { stopProgress(); setBusy(false); }
+    }
   }
   async function generateTryouts() {
-    if (busy || !sourceId) return;
+    if (busy || (sourceMode === "current" && !sourceId)) return;
     if (!rightText().trim()) { notice("请先完成基础稿审核。", true); return; }
     const variation = Math.min(100, tryoutBatch);
-    setBusy(true); notice("正在生成情景试答…");
+    const ticket = ++genTicket;
+    setBusy(true); notice("");
+    startProgress([
+      [0, "正在按当前人设构思 6 组情景试答…"],
+      [10, "正在生成对比语气回复…"],
+      [25, "模型正在收尾试答结果…"],
+    ]);
     try {
-      const result = await post("persona/tryouts", {persona_id: sourceId, draft_text: rightText(), variation}, LONG_MODEL_TIMEOUT);
+      const body = {persona_id: sourceId, draft_text: rightText(), variation};
+      if (selectedProviderId) body.provider_id = selectedProviderId;
+      const result = await post("persona/tryouts", body, LONG_MODEL_TIMEOUT);
+      if (ticket !== genTicket) return;
       tryoutRows = result.scenarios || [];
       tryoutIndex = 0;
       tryoutBatch = (result.variation === undefined ? variation : result.variation) + 1;
-      tryoutSelections = {}; paintTryouts(); persist(); notice("已生成情景试答。");
-    } catch (error) { notice(errorText(error), true); }
-    finally { setBusy(false); }
+      tryoutSelections = {}; paintTryouts(); persist(); notice("已生成情景试答，选出最像她的回复吧。");
+    } catch (error) {
+      if (ticket === genTicket) notice(errorText(error), true);
+    } finally {
+      if (ticket === genTicket) { stopProgress(); setBusy(false); }
+    }
   }
   function selectedReplies() {
     return scenes.flatMap(scene => {
@@ -605,31 +811,114 @@
     });
   }
   async function generateStyle() {
-    if (busy || !sourceId) return;
-    setBusy(true); notice("正在归纳对话风格…");
+    if (busy || (sourceMode === "current" && !sourceId)) return;
+    const ticket = ++genTicket;
+    setBusy(true); notice("");
+    startProgress([
+      [0, "正在汇总已选试答与偏好线索…"],
+      [8, "正在归纳简洁可执行的对话风格规则…"],
+      [22, "模型正在生成口吻示例短句…"],
+    ]);
     try {
-      const result = await post("persona/style-rules", {
+      const body = {
         persona_id: sourceId, draft_text: rightText(), selections: selectedReplies(),
         reference_material: $("reference-material").value, speech_preference: $("speech-preference").value,
         constraint_preference: $("constraint-preference").value,
-      }, LONG_MODEL_TIMEOUT);
+      };
+      if (selectedProviderId) body.provider_id = selectedProviderId;
+      const result = await post("persona/style-rules", body, LONG_MODEL_TIMEOUT);
+      if (ticket !== genTicket) return;
       rightStyle = result.style && result.style.text || ""; rightExamples = result.style && result.style.examples || "";
       $("style-text").value = rightStyle; $("style-examples").value = rightExamples; $("style-result").hidden = false;
       paintReview(); paintCompareRows(); unlockedStep = 5; paintFlow(); persist(); notice("风格规则已生成，可以继续编辑。");
-    } catch (error) { notice(errorText(error), true); }
-    finally { setBusy(false); }
+    } catch (error) {
+      if (ticket === genTicket) notice(errorText(error), true);
+    } finally {
+      if (ticket === genTicket) { stopProgress(); setBusy(false); }
+    }
   }
   async function saveDraft() {
+    if (!$("note").value.trim()) $("note").value = defaultNoteStamp();
     const note = $("note").value.trim(), text = leftText();
     if (!note) { notice(errors.persona_note_invalid, true); $("note").focus(); return; }
     if (!text.trim()) { notice("左侧人格内容为空，无法保存。", true); return; }
     await runCommand({action: "save", text, original_text: sourceSnapshot, note, expected_current: expected()});
   }
+  function adoptAllRight() {
+    let changed = false;
+    sectionRows.forEach(item => {
+      if (rightSections[item.key] && rightSections[item.key].trim()) {
+        leftSections[item.key] = rightSections[item.key];
+        changed = true;
+      }
+    });
+    if (rightStyle && rightStyle.trim()) { leftStyle = rightStyle; changed = true; }
+    if (rightExamples && rightExamples.trim()) { leftExamples = rightExamples; changed = true; }
+    if (rightRaw && rightRaw.trim() && !Object.values(rightSections).some(v => v.trim())) {
+      leftRaw = rightRaw; changed = true;
+    } else if (changed) {
+      leftRaw = "";
+    }
+    paintCompareRows(); persist();
+    notice(changed ? "已将右侧全部建议采用到左侧，可以直接保存或继续微调。" : "右侧暂无可采用的建议内容。");
+  }
+  function restoreAllLeft() {
+    const base = leftBaseline || classifySource(sourceSnapshot);
+    leftSections = Object.assign(emptySections(), base.sections);
+    leftStyle = base.style || "";
+    leftExamples = base.examples || "";
+    leftRaw = base.raw || "";
+    paintCompareRows(); persist();
+    notice("已将左侧全部还原为本次整理前的原文。");
+  }
+  function applyHandoff(handoff) {
+    if (!handoff || typeof handoff.text !== "string" || !handoff.text.trim()) return;
+    sourceMode = "paste";
+    document.querySelector('input[name="source-mode"][value="paste"]').checked = true;
+    $("source-text").value = handoff.text.slice(0, 30000);
+    activeStep = 1;
+    paintPasteCount(); paintSourceMode(); paintFlow(); persist();
+    notice("已从「新的她」带入人设草稿，选好整理强度后点「一键开始整理」即可逐段规范核对。");
+  }
+
+  $("cancel-generation").addEventListener("click", () => {
+    ++genTicket;
+    stopProgress();
+    setBusy(false);
+    notice("已取消本次等待，当前编辑内容仍保留。");
+  });
   $("refresh").addEventListener("click", () => load({personaId: sourceId}));
   $("back-self").addEventListener("click", () => {
     window.parent?.postMessage?.({channel: "companion-workspace", kind: "navigate",
       target: {tab: "selfProfile"}}, "*");
   });
+  $("persona-search").addEventListener("input", () => {
+    pickerFilter = $("persona-search").value;
+    paintPersonaChoices();
+  });
+  $("persona-picker-grid").addEventListener("keydown", event => {
+    const cards = Array.from($("persona-picker-grid").querySelectorAll(".persona-pick-card:not(:disabled)"));
+    if (!cards.length) return;
+    const current = event.target.closest(".persona-pick-card");
+    const index = cards.indexOf(current);
+    if (index < 0) return;
+    let next = -1;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % cards.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + cards.length) % cards.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = cards.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    cards.forEach((card, idx) => { card.tabIndex = idx === next ? 0 : -1; });
+    cards[next].focus();
+  });
+  for (const select of [$("workshop-provider"), $("ctx-provider")]) {
+    select.addEventListener("change", () => {
+      selectedProviderId = select.value;
+      paintProviderChoices();
+      persist();
+    });
+  }
   $("limit").addEventListener("change", () => load({personaId: sourceId}));
   $("source-persona").addEventListener("change", () => {
     persist(); sourceId = $("source-persona").value;
@@ -646,9 +935,9 @@
     persist();
   }));
   document.querySelectorAll("[data-answer]").forEach(field => field.addEventListener("input", () => {
-    answers[field.dataset.answer] = field.value; persist();
+    answers[field.dataset.answer] = field.value; paintCluesCount(); persist();
   }));
-  $("source-text").addEventListener("input", () => { paintSourceMode(); persist(); });
+  $("source-text").addEventListener("input", () => { paintPasteCount(); paintSourceMode(); persist(); });
   $("reference-material").addEventListener("input", persist);
   $("speech-preference").addEventListener("input", persist);
   $("constraint-preference").addEventListener("input", persist);
@@ -667,12 +956,21 @@
     $("skeleton-toggle").setAttribute("aria-expanded", String(!view.hidden));
     $("skeleton-toggle").textContent = view.hidden ? "查看完整骨架文本" : "收起完整骨架文本";
   });
+  document.querySelectorAll("[data-flow-btn]").forEach(button => button.addEventListener("click", () => {
+    if (busy) return;
+    showStep(Number(button.dataset.flowBtn));
+  }));
   document.querySelectorAll("[data-prev]").forEach(button => button.addEventListener("click", () => showStep(Number(button.dataset.prev))));
   document.querySelectorAll("[data-next]").forEach(button => button.addEventListener("click", () => {
-    if (activeStep === 2) unlockedStep = Math.max(unlockedStep, 3);
-    if (activeStep === 3) unlockedStep = Math.max(unlockedStep, 4);
+    if (activeStep === 2) unlockedStep = Math.max(unlockedStep, 5);
+    if (activeStep === 3) unlockedStep = Math.max(unlockedStep, 5);
     if (activeStep === 4) unlockedStep = 5;
     paintFlow(); showStep(Number(button.dataset.next));
+  }));
+  document.querySelectorAll("[data-jump]").forEach(button => button.addEventListener("click", () => {
+    const target = Number(button.dataset.jump);
+    unlockedStep = Math.max(unlockedStep, target);
+    paintFlow(); showStep(target);
   }));
   $("generate-tryouts").addEventListener("click", generateTryouts);
   $("refresh-tryouts").addEventListener("click", generateTryouts);
@@ -696,8 +994,11 @@
     rightStyle = $("style-text").value; rightExamples = $("style-examples").value; $("style-result").hidden = false;
     paintReview(); persist();
   }));
+  $("adopt-all-right").addEventListener("click", adoptAllRight);
+  $("restore-all-left").addEventListener("click", restoreAllLeft);
   $("copy-left").addEventListener("click", () => copySide("left"));
   $("copy-right").addEventListener("click", () => copySide("right"));
+  $("copy-saved-full").addEventListener("click", () => copyText(lastSavedText || leftText(), "已保存的人格全文"));
   $("save").addEventListener("click", saveDraft);
   $("note").addEventListener("keydown", event => { if (event.key === "Enter") saveDraft(); });
   $("review-sections").addEventListener("input", event => {
@@ -734,6 +1035,10 @@
   (async () => {
     bridge = window.AstrBotPluginPage;
     if (!bridge) { notice(errors.dashboard_identity_required, true); return; }
-    try { await bridge.ready(); await load(); } catch (error) { notice(errorText(error), true); }
+    try {
+      const context = await bridge.ready();
+      await load();
+      if (context && context.handoff) applyHandoff(context.handoff);
+    } catch (error) { notice(errorText(error), true); }
   })();
 })();
