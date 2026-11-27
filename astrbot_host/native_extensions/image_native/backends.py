@@ -9,8 +9,8 @@ from urllib.parse import urlsplit
 from .comfyui_workflows import WorkflowError, ancestors
 from .image_native_client import NativeClient, NativeRejected
 from .image_preparation_task import PreparationError
-from .types import (BackendResult, ImageInvocation, NativeImageError, ReferenceImage, document, fingerprint,
-                    validate_masked_inputs)
+from .types import (BackendResult, ImageInvocation, NativeImageError, ReferenceImage,
+                    aspect_ratio_dimensions, document, fingerprint, validate_masked_inputs)
 
 
 _ERROR_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,95}")
@@ -163,6 +163,16 @@ class NativeTransportBackend:
             parameters.update(shared)
             parameters.update(configured.get(operation, {}))
             parameters.update(invocation.parameters)
+            requested_ratio = parameters.pop("aspect_ratio", None)
+            if (requested_ratio is not None
+                    and "width" not in invocation.parameters
+                    and "height" not in invocation.parameters):
+                width, height = aspect_ratio_dimensions(
+                    requested_ratio,
+                    base_width=parameters.get("width", 768),
+                    base_height=parameters.get("height", 768),
+                )
+                parameters["width"], parameters["height"] = width, height
             if parameters.keys() - {"width", "height", "steps", "cfg_scale", "seed", "batch_size", "sampler_name", "scheduler", "denoising_strength"}:
                 raise NativeImageError("unsupported_image_parameter", unconfirmed=False)
             if invocation.operation == "edit" and len(references) != 1:
@@ -238,7 +248,22 @@ class NativeTransportBackend:
                     raise NativeImageError("native_workflow_reference_role_mismatch", unconfirmed=False)
             bindings = [{"slot": name, "input_id": ref.reference_id, "role": ref.role}
                         for (name, _), ref in zip(images, references)]
-        plan = {"operation": invocation.operation, **route, "parameters": dict(invocation.parameters),
+        plan_parameters = dict(invocation.parameters)
+        requested_ratio = plan_parameters.pop("aspect_ratio", None)
+        if (requested_ratio is not None
+                and "width" not in plan_parameters
+                and "height" not in plan_parameters):
+            configured = self.config.get("parameters", {})
+            shared = {key: value for key, value in configured.items()
+                      if key not in {"generate", "edit", "mask_edit"}}
+            merged = {**shared, **configured.get(invocation.operation, {})}
+            width, height = aspect_ratio_dimensions(
+                requested_ratio,
+                base_width=merged.get("width", 1024),
+                base_height=merged.get("height", 1024),
+            )
+            plan_parameters["width"], plan_parameters["height"] = width, height
+        plan = {"operation": invocation.operation, **route, "parameters": plan_parameters,
                 "reference_bindings": bindings}
         if invocation.operation == "mask_edit":
             reference_by_role = {item.role: item.reference_id for item in references}

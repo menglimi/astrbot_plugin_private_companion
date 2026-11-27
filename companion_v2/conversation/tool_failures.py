@@ -6,6 +6,7 @@ _INPUT_CODES = frozenset({
     "qzone_scene_invalid", "qzone_topic_confidence_invalid", "qzone_request_invalid",
     "qzone_image_invalid",
     "missing_edit_source", "native_reference_missing", "invalid_image_arguments",
+    "invalid_aspect_ratio",
     "invalid_prompt", "invalid_negative_prompt", "invalid_reference_ids",
     "invalid_reference_indices", "invalid_reference_roles", "invalid_mask_reference_indices",
     "native_reference_index_unavailable", "native_reference_id_unavailable",
