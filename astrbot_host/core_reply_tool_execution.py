@@ -137,6 +137,38 @@ class CoreReplyToolExecutor:
         self.external.admit(provider.descriptor, spec.context, at)
         return True
 
+    def _turn_image_limit(self, session):
+        from companion_v2.conversation.media.output_settings import (
+            DEFAULT_MAX_CALLS_PER_TURN,
+            effective_settings,
+        )
+        try:
+            settings = effective_settings(self.runtime, session.context)
+            limit = settings.get("max_calls_per_turn", DEFAULT_MAX_CALLS_PER_TURN)
+        except Exception:
+            limit = DEFAULT_MAX_CALLS_PER_TURN
+        return limit if type(limit) is int else DEFAULT_MAX_CALLS_PER_TURN
+
+    def _enforce_turn_image_limit(self, session, limit):
+        if type(limit) is not int or limit < 0:
+            return
+        placeholders = ",".join("?" for _ in IMAGE_ACTIONS)
+        row = self.runtime.read_one(
+            f"""SELECT COUNT(*) AS n FROM runtime_metadata
+            WHERE key LIKE ?
+              AND json_extract(value, '$.origin_key') = ?
+              AND json_extract(value, '$.turn_id') = ?
+              AND json_extract(value, '$.action') IN ({placeholders})
+              AND json_extract(value, '$.state') IN ('queued', 'running', 'succeeded', 'unknown')""",
+            (PREFIX + "%", session.context.key, session.turn_id, *IMAGE_ACTIONS),
+        )
+        used = int(row["n"]) if row is not None and row["n"] is not None else 0
+        if used >= limit:
+            raise TaskError(
+                "image_turn_limit_reached",
+                f"this turn has already reached the image generation limit ({limit})",
+            )
+
     async def execute(self, session, call_id, action, arguments):
         if self._closed:
             raise TaskError("core_tool_owner_closed", "native tool ownership has closed")
@@ -144,6 +176,7 @@ class CoreReplyToolExecutor:
         provider = self.providers.get(action)
         if provider is None:
             raise TaskError("core_external_unavailable", "this action requires an unavailable native adapter")
+        turn_image_limit = self._turn_image_limit(session) if action in IMAGE_ACTIONS else None
         with self.runtime.transaction():
             self.external.admit(provider.descriptor, session.context, self.tasks.now())
             identifier, prior = self._existing(session, call_id, action, arguments, external=True)
@@ -154,6 +187,7 @@ class CoreReplyToolExecutor:
                 return prior
             now = self.tasks.now()
             if action in IMAGE_ACTIONS:
+                self._enforce_turn_image_limit(session, turn_image_limit)
                 self.application.messages.image_quota.admit_native(session.context, now)
             deadline = now + timedelta(seconds=provider.descriptor.timeout_seconds)
             row = {"invocation_id": identifier, "origin_key": session.context.key, "turn_id": session.turn_id,
@@ -278,12 +312,13 @@ class CoreReplyToolExecutor:
         provider = self.providers[row["action"]]
         self.external.admit(provider.descriptor, context, self.tasks.now())
         result = dict(row.get("result") or {"state": "unknown", "effect": row["effect"], "invocation_id": row["invocation_id"]})
-        if result.get("state") != "succeeded" and not result.get("code"):
-            result["code"] = ("external_not_started" if result.get("state") == "failed"
-                              else "external_result_unknown")
-        if result.get("retry_disposition") is None:
-            result["retry_disposition"] = retry_disposition_for(result.get("code"), result["state"])
-        result.update(failure_guidance(result.get("code"), result["state"], action=row["action"]))
+        if result.get("state") != "succeeded":
+            if not result.get("code"):
+                result["code"] = ("external_not_started" if result.get("state") == "failed"
+                                  else "external_result_unknown")
+            if result.get("retry_disposition") is None:
+                result["retry_disposition"] = retry_disposition_for(result.get("code"), result["state"])
+            result.update(failure_guidance(result.get("code"), result["state"], action=row["action"]))
         if row["state"] == "succeeded":
             task = require(self.tasks.read(context, row["task_id"]))
             task_row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?",
@@ -308,7 +343,34 @@ class CoreReplyToolExecutor:
                     authorizer=_SourceAccess(self.external, provider.descriptor, context), at=self.tasks.now())
             except TaskError as error:
                 return {**result, "material_state": "unavailable", "code": error.code}
-            return {**result, "payload": source.payload, "_images": images}
+            clean = {key: value for key, value in result.items()
+                     if not (key in ("code", "retry_disposition") and value is None)}
+            clean["ok"] = True
+            clean["payload"] = source.payload
+            clean["_images"] = images
+            if row["action"] in IMAGE_ACTIONS:
+                artifact_ids = []
+                try:
+                    parsed_payload = json.loads(source.payload) if isinstance(source.payload, str) else source.payload
+                    if isinstance(parsed_payload, dict):
+                        native_doc = parsed_payload.get("native")
+                        if isinstance(native_doc, dict) and isinstance(native_doc.get("artifacts"), list):
+                            artifact_ids = [
+                                item["artifact_id"]
+                                for item in native_doc["artifacts"]
+                                if isinstance(item, dict) and isinstance(item.get("artifact_id"), str) and item["artifact_id"]
+                            ]
+                except (TypeError, ValueError):
+                    artifact_ids = []
+                image_count = len(images) or len(artifact_ids)
+                clean["image_count"] = image_count
+                if artifact_ids:
+                    clean["artifact_ids"] = artifact_ids
+                clean["status_summary"] = (
+                    f"图片已成功生成并缓存（共 {image_count} 张）。请勿重复调用生图工具；"
+                    "如需发送给当前会话，请直接把缓存路径传给 send_message_to_user。"
+                )
+            return clean
         return result
 
     async def close(self):

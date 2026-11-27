@@ -619,9 +619,14 @@ class AstrBotTextProvider:
         # 因此分成两个 code；reason 只带配置数值，不带提示词正文。
         if estimated > self.maximum_input_estimate:
             raise TaskError("host_model_limit_input",
-                            f"input limit exceeded: estimated={estimated} maximum={self.maximum_input_estimate}",
+                            f"input limit exceeded: estimated={estimated} maximum={self.maximum_input_estimate} "
+                            f"(inline_images={wire.image_count}, inline_image_bytes={wire.image_bytes}, "
+                            f"omitted_images={wire.omitted_image_count})",
                             details={"estimated_input_tokens": estimated,
-                                     "provider_max_input_tokens": self.maximum_input_estimate})
+                                     "provider_max_input_tokens": self.maximum_input_estimate,
+                                     "inline_image_count": wire.image_count,
+                                     "inline_image_bytes": wire.image_bytes,
+                                     "omitted_image_count": wire.omitted_image_count})
         if (type(envelope.max_output_tokens) is not int
                 or not 1 <= envelope.max_output_tokens <= self.maximum_output_tokens):
             raise TaskError("host_model_limit_output",

@@ -20,6 +20,7 @@ PLUGIN_ID = "astrbot_plugin_private_companion.image"
 PROVIDER_ID = "image.native"
 REFERENCE_ROLES = frozenset((*EDIT_REFERENCE_ROLES, "edit_mask"))
 IMAGE_OPERATIONS = ("generate", "edit", "mask_edit")
+SUBJECT_MODES = ("character", "scene_only", "edit_preserve")
 
 
 def scope_key(context: dict) -> str:
@@ -68,7 +69,20 @@ class NativeImageProvider:
         self._live()
         tools = []
         for operation in IMAGE_OPERATIONS:
-            properties = {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}}
+            properties = {
+                "prompt": {"type": "string"},
+                "negative_prompt": {"type": "string"},
+                "subject_mode": {
+                    "type": "string",
+                    "enum": list(SUBJECT_MODES),
+                    "description": (
+                        "可选：明确画面主体模式。"
+                        "character=角色本人入镜/自拍/合照（默认应用角色固定提示词与参考）；"
+                        "scene_only=纯风景/纯静物/空场景或无角色主体（跳过角色固定提示词，也不自动补塞角色参考）；"
+                        "edit_preserve=基于已有图片做局部修改/换风格/微调并优先保持原图构图与画风。"
+                    ),
+                },
+            }
             required = ["prompt"]
             if operation == "edit":
                 properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不能填写路径。"}
@@ -129,7 +143,7 @@ class NativeImageProvider:
                 raise NativeImageError("invalid_native_context", unconfirmed=False)
             args = value["arguments"]
             operation = value["action"].split(".", 1)[1]
-            allowed = {"prompt", "negative_prompt"}
+            allowed = {"prompt", "negative_prompt", "subject_mode"}
             if operation == "edit":
                 allowed.update(("artifact_id", "reference_ids", "reference_indices", "reference_roles"))
             elif operation == "mask_edit":
@@ -139,6 +153,9 @@ class NativeImageProvider:
             require_text(args["prompt"], "prompt")
             if not isinstance(args.get("negative_prompt", ""), str):
                 raise NativeImageError("invalid_negative_prompt", unconfirmed=False)
+            if "subject_mode" in args:
+                if type(args["subject_mode"]) is not str or args["subject_mode"] not in SUBJECT_MODES:
+                    raise NativeImageError("invalid_subject_mode", unconfirmed=False)
             if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
                 require_text(args["artifact_id"], "artifact_id")
                 if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
@@ -366,6 +383,15 @@ class NativeImageProvider:
                     or any(not isinstance(nai_prompt[key], str) for key in ("positive", "negative"))):
                 raise NativeImageError("invalid_image_prompt_preferences", unconfirmed=False)
             envelope["nai_prompt"] = nai_prompt
+        image_intent = value.get("image_intent")
+        if image_intent is not None:
+            if (not isinstance(image_intent, dict)
+                    or set(image_intent) != {"subject_mode", "preserve_source_style", "allow_fallback_references"}
+                    or image_intent["subject_mode"] not in SUBJECT_MODES
+                    or type(image_intent["preserve_source_style"]) is not bool
+                    or type(image_intent["allow_fallback_references"]) is not bool):
+                raise NativeImageError("invalid_image_intent", unconfirmed=False)
+            envelope["image_intent"] = dict(image_intent)
         try:
             invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
                                          operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),

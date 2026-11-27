@@ -19,6 +19,7 @@ from companion_v2.sources.repositories import SourceRepository
 
 from .budget import BudgetDeferral, BudgetLedger
 from .failures import ModelFailure
+from .media_budget import ImageHistoryBudgetPolicy
 from .models import (MAX_MODEL_OUTPUT_TOKENS, MAX_TOOL_CATALOG, Amount, LocalProvider, ModelCompletion,
                      ModelEnvelope, ProviderResponse, ToolSpec)
 from .refusal import matches_refusal_text
@@ -153,16 +154,21 @@ def _redact_prompt_media(value):
 
 class LocalModelGateway:
     def __init__(self, router: ModelRouter, ledger: BudgetLedger, tasks: TaskSupervisor, *,
-                 ceiling_retry: CeilingRetryPolicy | None = None):
+                 ceiling_retry: CeilingRetryPolicy | None = None,
+                 image_history_budget: ImageHistoryBudgetPolicy | None = None):
         if router.configuration.runtime is not tasks.runtime or ledger.runtime is not tasks.runtime:
             raise ValueError("gateway components must share the original runtime")
         policy = CeilingRetryPolicy() if ceiling_retry is None else ceiling_retry
         if not isinstance(policy, CeilingRetryPolicy):
             raise ValueError("ceiling retry policy must be explicit")
+        image_budget = ImageHistoryBudgetPolicy() if image_history_budget is None else image_history_budget
+        if not isinstance(image_budget, ImageHistoryBudgetPolicy):
+            raise ValueError("image history budget policy must be explicit")
         self.router = router
         self.ledger = ledger
         self.tasks = tasks
         self.ceiling_retry = policy
+        self.image_history_budget = image_budget
         self.runtime = tasks.runtime
         self.role_reference = TaskRoleReference(self.runtime)
 
@@ -234,7 +240,8 @@ class LocalModelGateway:
         provider = plan.providers[0]
         ceiling = provider.maximum_input_estimate
         try:
-            provider.reserve(replace(plan.envelope, provider_capabilities=provider.capabilities))
+            provider.reserve(replace(plan.envelope, provider_capabilities=provider.capabilities,
+                                     image_history_budget=self.image_history_budget))
         except Exception:
             logger.debug("[CompanionV2][开发者追踪] 预检未通过模型档案 task=%s provider=%s",
                          run.task.task_id, provider.binding, exc_info=True)
@@ -410,7 +417,8 @@ class LocalModelGateway:
         for provider_position, provider in providers:
             provider_envelope = replace(envelope,
                 model_override=envelope.model_override if provider_position == 0 else "",
-                provider_capabilities=provider.capabilities)
+                provider_capabilities=provider.capabilities,
+                image_history_budget=self.image_history_budget)
             position = round_no * 2 + provider_position
             before_dispatch()
             logger.debug("[CompanionV2][开发者追踪] 模型网关回合开始 task=%s round=%d provider=%s position=%d output_format=%s",
