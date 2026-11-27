@@ -993,7 +993,7 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                             {
                                 "success": True,
                                 "data": {
-                                    "system_name": "STA1N",
+                                    "system_name": "Credit Relay",
                                     "quota_display_type": "CUSTOM",
                                     "quota_per_unit": 500000,
                                     "custom_currency_symbol": "🍪",
@@ -1018,16 +1018,16 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                 _, _, _, tok = svc.store.upsert_station(
                     tok,
                     {
-                        "id": "sta1n",
-                        "name": "sta1n",
+                        "id": "relay-credit",
+                        "name": "Credit Relay",
                         "adapter_id": "newapi",
-                        "base_url": "https://sta1n.example.test",
-                        "auth_token": "secret-sta1n-tok",
+                        "base_url": "https://credit-relay.example.test",
+                        "auth_token": "secret-credit-relay-tok",
                         "participate_in_awareness": True,
                     },
                 )
-                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "sta1n"})
-                await svc.refresh_station("sta1n")
+                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "relay-credit"})
+                await svc.refresh_station("relay-credit")
 
                 api = ModelWebAPI(ctrl)
                 route_paths = {path for path, _h, _m, _d in api.routes()}
@@ -1042,9 +1042,9 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     self.assertEqual(res_bal["status"], "ok")
                     bal = res_bal["data"]
                     self.assertTrue(bal["available"])
-                    self.assertEqual(bal["station_id"], "sta1n")
+                    self.assertEqual(bal["station_id"], "relay-credit")
                     cc = bal["currency_context"]
-                    self.assertEqual(cc["scope_key"], "station:sta1n")
+                    self.assertEqual(cc["scope_key"], "station:relay-credit")
                     self.assertEqual(cc["available_units"], ["native", "cny", "usd"])
                     self.assertEqual(cc["preferred_unit"], "native")
                     self.assertAlmostEqual(cc["usd_cny_rate"], 6.68, places=2)
@@ -1056,17 +1056,17 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     hits_before = upstream_hits[0]
                     req_unit = _FakeRequest(body={"display_unit_mode": "usd"})
                     with patch("astrbot_host.quota_api.request", req_unit):
-                        res_u = await api._quota_api.save_station_display_unit(station_id="sta1n")
+                        res_u = await api._quota_api.save_station_display_unit(station_id="relay-credit")
                     self.assertEqual(res_u["status"], "ok")
                     self.assertEqual(res_u["data"]["display_unit_mode"], "usd")
                     self.assertEqual(upstream_hits[0], hits_before, "Display unit update must not hit upstream")
                     stored, _, _ = svc.store.read()
                     self.assertEqual(stored[0].display_unit_mode, "usd")
-                    self.assertEqual(stored[0].auth_token, "secret-sta1n-tok")
+                    self.assertEqual(stored[0].auth_token, "secret-credit-relay-tok")
 
                     # Reject unknown extra fields & invalid mode
                     with patch("astrbot_host.quota_api.request", _FakeRequest(body={"display_unit_mode": "cny", "auth_token": "hack"})):
-                        res_bad = await api._quota_api.save_station_display_unit(station_id="sta1n")
+                        res_bad = await api._quota_api.save_station_display_unit(station_id="relay-credit")
                     self.assertEqual(res_bad["status"], "error")
                     self.assertEqual(res_bad["data"]["code"], "quota_request_invalid")
 

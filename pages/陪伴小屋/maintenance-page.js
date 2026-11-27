@@ -3426,7 +3426,10 @@ window.CompanionMaintenancePage = (() => {
       ? state.balanceUnitOverride.unit
       : "";
     const cachedUnit = helper.getCachedUnit(views.scope_key);
-    const desired = overrideUnit || cachedUnit || views.preferred_unit;
+    // For server-persisted stations (views.station_id present), server preferred_unit is authoritative over stale localStorage.
+    const desired = views.station_id
+      ? (overrideUnit || views.preferred_unit || cachedUnit)
+      : (overrideUnit || cachedUnit || views.preferred_unit);
     const activeUnit = helper.normalizeUnit(desired, views.available_units, views.inferred_fiat_currency, views.display_type);
     return { views, activeUnit, helper };
   }
@@ -4461,14 +4464,28 @@ window.CompanionMaintenancePage = (() => {
     render();
     current.balanceUnitAnim = false;
     if (views.station_id) {
+      const stationId = views.station_id;
+      current.balanceUnitSavingIds ||= new Set();
+      current.balanceUnitPendingModes ||= new Map();
+      current.balanceUnitPendingModes.set(stationId, normalized);
+      if (current.balanceUnitSavingIds.has(stationId)) return;
+      current.balanceUnitSavingIds.add(stationId);
       try {
-        await api("POST", modelPath() + "/quota/stations/" + encodeURIComponent(views.station_id) + "/display-unit", {
-          display_unit_mode: normalized,
-        });
-      } catch (_) {
-        /* Local preference stays active even if background persistence fails. */
+        while (current.balanceUnitPendingModes.has(stationId)) {
+          const desiredMode = current.balanceUnitPendingModes.get(stationId);
+          current.balanceUnitPendingModes.delete(stationId);
+          try {
+            await api("POST", modelPath() + "/quota/stations/" + encodeURIComponent(stationId) + "/display-unit", {
+              display_unit_mode: desiredMode,
+            });
+          } catch (_) {
+            /* Local preference stays active even if background persistence fails. */
+          }
+          if (ticket !== generation || state !== current) return;
+        }
+      } finally {
+        current.balanceUnitSavingIds.delete(stationId);
       }
-      if (ticket !== generation || state !== current) return;
     }
   }
 

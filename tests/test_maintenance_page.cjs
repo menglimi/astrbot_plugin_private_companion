@@ -2934,3 +2934,140 @@ test('balance card supports 3-way [🍪|¥|$] and 2-way [¥|$] currency switchin
   window.CompanionMaintenancePage.unmount();
   assert.equal(winListeners.get('companion:balance-unit-change')?.size || 0, 0, 'unmount must remove cross-page unit sync listener');
 });
+
+test('balance card honors server preferred_unit over stale localStorage and serializes rapid display-unit POSTs', async () => {
+  const today = localDay();
+  const baseMaint = {
+    generated_at: today + 'T12:00:00',
+    summary: daily(today, {calls: 1, tokens: 500}),
+    totals: daily(today, {calls: 1, tokens: 500}),
+    daily: [daily(today, {calls: 1, tokens: 500})],
+    history: [daily(today, {calls: 1, tokens: 500})],
+    recent: [], budget: {},
+  };
+  const winListeners = new Map();
+  const storeMap = new Map();
+  // Pre-seed stale browser cache saying "usd", while server says "native" for station:st-cookie
+  storeMap.set('companion.balance_unit.v1', JSON.stringify({'station:st-cookie': 'usd'}));
+  const localStorage = {
+    getItem: k => (storeMap.has(k) ? storeMap.get(k) : null),
+    setItem: (k, v) => { storeMap.set(k, String(v)); },
+    removeItem: k => { storeMap.delete(k); },
+  };
+  const pendingPosts = [];
+  const bridge = {
+    apiGet: async rawRoute => {
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      if (route.endsWith('/maintenance')) return baseMaint;
+      if (route.endsWith('/balance')) {
+        return {
+          configured: true,
+          available: true,
+          provider: 'multi_station',
+          provider_label: '多站点额度看板',
+          source_kind: 'quota_dashboard',
+          station_id: 'st-cookie',
+          station_name: '饼干中转站',
+          awareness_mode: 'primary',
+          is_primary_explicit: true,
+          participating_count: 1,
+          currency_symbol: '🍪',
+          currency_label: 'CREDIT',
+          amount: '636.06',
+          observed_at: new Date().toISOString(),
+          state: 'available',
+          currency_context: {
+            scope_key: 'station:st-cookie',
+            station_id: 'st-cookie',
+            display_type: 'CREDIT',
+            native_symbol: '🍪',
+            native_unit: 'CREDIT',
+            native_amount: 636.06,
+            fiat_currency: 'CNY',
+            fiat_symbol: '¥',
+            fiat_per_base_unit: 0.1,
+            cny_amount: 63.606,
+            usd_amount: 8.8342,
+            usd_cny_rate: 7.2,
+            preferred_unit: 'native',
+            available_units: ['native', 'cny', 'usd'],
+          },
+        };
+      }
+      if (route.endsWith('/voice')) return {providers: []};
+      if (route.endsWith('/image')) return {actions: []};
+      if (route === '/model') return {tasks: [], providers: []};
+      return {};
+    },
+    apiPost: (rawRoute, body) => new Promise(resolve => {
+      pendingPosts.push({route: rawRoute, body, resolve});
+    }),
+  };
+  class CustomEventMock {
+    constructor(type, init = {}) { this.type = type; this.detail = init.detail || null; }
+  }
+  const window = {
+    navigate() {},
+    localStorage,
+    CustomEvent: CustomEventMock,
+    addEventListener(type, fn) {
+      if (!winListeners.has(type)) winListeners.set(type, new Set());
+      winListeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) { winListeners.get(type)?.delete(fn); },
+    dispatchEvent() { return true; },
+    CompanionProduct: {
+      role: () => ({model_api: '/astrbot_plugin_private_companion/model', config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
+      bridgeNow: () => bridge,
+    },
+    lucide: {createIcons() {}},
+    setTimeout: (cb, delay = 0) => { if (!delay) { cb(); return 0; } return 1; },
+    clearTimeout() {},
+  };
+  const rootListeners = {};
+  const root = {
+    innerHTML: '',
+    addEventListener(type, handler) { rootListeners[type] = handler; },
+    removeEventListener(type) { delete rootListeners[type]; },
+    querySelector() { return null; },
+  };
+  const ctx = {
+    window,
+    document: {createElement: () => ({click() {}})},
+    localStorage,
+    CustomEvent: CustomEventMock,
+    Intl, Date, Number, Object, String, Math, Array, Set, Map, Promise, URLSearchParams,
+  };
+  vm.runInNewContext(currencySource, ctx);
+  vm.runInNewContext(source, ctx);
+
+  window.CompanionMaintenancePage.mount(root);
+  await flush();
+
+  // 1) Server preferred_unit ("native") MUST beat stale localStorage ("usd") for server-persisted station!
+  assert.match(root.innerHTML, /role="radio" aria-checked="true" class="is-active" data-balance-unit="native"/);
+  assert.match(root.innerHTML, /636\.06 🍪/);
+
+  // 2) Rapid clicks cny -> usd serialize POST /display-unit (never concurrent)
+  rootListeners.click({
+    stopPropagation() {},
+    target: {closest: sel => (sel === '[data-balance-unit]' ? {dataset: {balanceUnit: 'cny'}} : null)},
+  });
+  rootListeners.click({
+    stopPropagation() {},
+    target: {closest: sel => (sel === '[data-balance-unit]' ? {dataset: {balanceUnit: 'usd'}} : null)},
+  });
+  await flush();
+  assert.equal(pendingPosts.length, 1, 'rapid unit switches must serialize to 1 in-flight POST at a time');
+  assert.equal(pendingPosts[0].body.display_unit_mode, 'cny');
+
+  // Resolve 1st POST -> queued final mode ("usd") flushes immediately
+  pendingPosts[0].resolve({saved: true, station_id: 'st-cookie', display_unit_mode: 'cny'});
+  await flush();
+  assert.equal(pendingPosts.length, 2, 'queued latest unit must flush after first POST settles');
+  assert.equal(pendingPosts[1].body.display_unit_mode, 'usd');
+  pendingPosts[1].resolve({saved: true, station_id: 'st-cookie', display_unit_mode: 'usd'});
+  await flush();
+
+  window.CompanionMaintenancePage.unmount();
+});

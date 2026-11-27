@@ -292,7 +292,7 @@ class QuotaDomainTests(unittest.TestCase):
             preferred_unit="fiat",
             custom_exchange_rate=10.0,
             fiat_per_base_unit=1.0,
-            station_id="sta1n",
+            station_id="relay-credit",
         )
         self.assertEqual(v_cookie["available_units"], ["native", "cny", "usd"])
         self.assertEqual(v_cookie["preferred_unit"], "cny")
@@ -343,22 +343,22 @@ class QuotaDomainTests(unittest.TestCase):
             created, _, _, _ = store.upsert_station(
                 tok0,
                 {
-                    "id": "sta1n",
-                    "name": "STA1N",
+                    "id": "relay-credit",
+                    "name": "Credit Relay",
                     "adapter_id": "newapi",
-                    "base_url": "https://cookie.example.test",
+                    "base_url": "https://credit-relay.example.test",
                     "auth_token": "secret-must-survive-999",
                     "proxy_url": "http://u:pw@127.0.0.1:7890",
                 },
             )
             self.assertEqual(created.display_unit_mode, "native")
-            updated, _, _, _ = store.update_station_display_unit("sta1n", "usd")
+            updated, _, _, _ = store.update_station_display_unit("relay-credit", "usd")
             self.assertEqual(updated.display_unit_mode, "usd")
             self.assertEqual(updated.auth_token, "secret-must-survive-999")
             self.assertEqual(updated.proxy_url, "http://u:pw@127.0.0.1:7890")
 
             with self.assertRaises(QuotaSettingsError) as bad_unit:
-                store.update_station_display_unit("sta1n", "btc")
+                store.update_station_display_unit("relay-credit", "btc")
             self.assertEqual(bad_unit.exception.code, "quota_config_invalid")
             with self.assertRaises(QuotaSettingsError) as missing_st:
                 store.update_station_display_unit("no-such-station", "cny")
