@@ -354,8 +354,13 @@ test("视觉打磨 P1 回归：模型页签不拆字、感知时钟单行不折�
   );
   assert.match(
     modelsCss,
-    /\.model-tabs-sep\s*\{[^}]*width:\s*1px/,
-    "models-page.css 应提供模型能力与计价/额度分组微分隔线 .model-tabs-sep",
+    /\.model-tabs-group\.is-ops\s*\{[^}]*margin-inline-start:\s*auto/,
+    "models-page.css 应在宽容器下用 .model-tabs-group.is-ops 均衡右对齐计价/额度分组",
+  );
+  assert.match(
+    modelsCss,
+    /\[data-quota-notice-host\]:empty\s*\{\s*display:\s*none\s*\}/,
+    "models-page.css 应隐藏空的 [data-quota-notice-host] 以避免双倍间距",
   );
   assert.match(
     modelsCss,

@@ -1478,13 +1478,20 @@
   font-size: var(--fs-micro);
   font-weight: 500;
   cursor: pointer;
+  transition: background .2s var(--t-tab-ease), color .2s var(--t-tab-ease), border-color .2s var(--t-tab-ease), box-shadow .2s var(--t-tab-ease);
+}
+
+.pw-day-pill:hover:not(.on) {
+  background: var(--t-tab-hover-bg);
+  color: var(--t-text-strong);
 }
 
 .pw-day-pill.on {
-  border-color: var(--t-accent);
-  background: var(--t-accent-solid);
-  color: var(--t-on-solid);
-  font-weight: 600;
+  border-color: var(--t-tab-active-border);
+  background: var(--t-tab-active-bg);
+  color: var(--t-tab-active-fg);
+  font-weight: 650;
+  box-shadow: var(--t-tab-active-shadow);
 }
 
 .pw-time-range {
