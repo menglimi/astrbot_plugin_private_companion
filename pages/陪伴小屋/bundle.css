@@ -14590,34 +14590,38 @@ body.room-editing .product-scope{display:none}
 #homeShell:is([data-section="phone"], [data-section="mobile"]) .stage-region { display: none; }
 #homeShell[data-section="mobile"] .role-context-badge { display: none; }
 #homeShell:is([data-section="phone"], [data-section="mobile"]) .shell-panel-body { padding-bottom: var(--sp-6); scroll-padding-bottom: 0; }
-#homeShell[data-section="phone"] .wb-actions { position: static; margin-inline: 0; padding-inline: 0; }
+#homeShell[data-section="phone"] .wb-actions { position: static; margin-inline: 0; }
 .phone-setup { display: grid; align-content: start; gap: var(--sp-4); width: 100%; max-width: none; box-sizing: border-box; padding: var(--sp-4); border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-raised); box-shadow: var(--t-shadow); }
 .phone-setup [hidden] { display: none !important; }
-.phone-setup-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); }
-.phone-setup-head h3 { margin: 0; color: var(--t-text-strong); font-size: var(--fs-title); }
+.phone-setup-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--sp-2) var(--sp-3); }
+.phone-setup-head-copy { display: grid; gap: var(--sp-1); min-width: 0; }
+.phone-setup-head h3 { margin: 0; color: var(--t-text-strong); font-size: var(--fs-title); line-height: 1.35; }
+.phone-setup-head-copy p { margin: 0; color: var(--t-text-faint); font-size: var(--fs-micro); line-height: 1.55; }
 .phone-setup-head span { display: inline-flex; align-items: center; padding: var(--sp-1) var(--sp-3); border: 1px solid var(--t-line); border-radius: var(--r-pill); background: var(--t-surface-soft); color: var(--t-text-soft); font-size: var(--fs-micro); flex: none; }
 .phone-setup-head span.is-enabled { border-color: color-mix(in srgb, var(--t-ok) 35%, var(--t-line)); background: var(--t-ok-quiet); color: var(--t-ok-ink); }
 .phone-setup-modes { display: flex; flex-wrap: wrap; gap: var(--sp-1); justify-self: start; padding: var(--sp-1); border: 1px solid var(--t-line); border-radius: var(--r-sm); background: var(--t-surface-soft); }
-.phone-setup-modes button { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 36px; padding: var(--sp-1) var(--sp-3); border: 1px solid transparent; border-radius: var(--r-xs); background: transparent; color: var(--t-text-soft); font: inherit; font-size: var(--fs-tiny); cursor: pointer; }
-.phone-setup-modes button[aria-pressed="true"] { color: var(--t-accent-ink); background: var(--t-surface-raised); border-color: var(--t-line-firm); font-weight: 600; }
-.phone-setup-modes button:hover, .phone-wireless-option summary:hover, .phone-advanced summary:hover { color: var(--t-accent-ink); }
+.phone-setup-modes button { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 36px; padding: var(--sp-1) var(--sp-3); border: 1px solid transparent; border-radius: var(--r-xs); background: transparent; color: var(--t-text-soft); font: inherit; font-size: var(--fs-tiny); cursor: pointer; transition: color var(--dur-fast) ease, background var(--dur-fast) ease, border-color var(--dur-fast) ease; }
+.phone-setup-modes button[aria-pressed="true"] { color: var(--t-accent-ink); background: var(--t-surface-raised); border-color: var(--t-line-firm); box-shadow: var(--t-shadow); font-weight: 600; }
+.phone-setup-modes button:hover, .phone-wireless-option summary:hover, .phone-advanced > summary:hover { color: var(--t-accent-ink); }
 .phone-setup svg, .phone-advanced > summary svg { width: 1rem; height: 1rem; flex-shrink: 0; }
-.phone-setup-usb, .phone-setup-wireless { display: grid; justify-items: start; align-items: start; gap: var(--sp-3); }
+.phone-setup-usb, .phone-setup-wireless { display: grid; justify-items: start; align-items: start; gap: var(--sp-3); width: 100%; box-sizing: border-box; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--t-line); border-radius: var(--r-sm); background: var(--t-surface-soft); }
 .phone-setup p { margin: 0; color: var(--t-text-soft); font-size: var(--fs-body); line-height: 1.7; }
+.phone-setup-head-copy p { color: var(--t-text-faint); font-size: var(--fs-micro); line-height: 1.55; }
 .phone-debug-help { color: var(--t-text-faint); font-size: var(--fs-tiny); }
 .phone-debug-help summary { cursor: pointer; }
 .phone-debug-help p { margin-top: var(--sp-2); }
 .phone-wireless-option { width: 100%; padding-block: var(--sp-2); border-bottom: 1px solid var(--t-line); }
+.phone-wireless-option:last-child { border-bottom: 0; padding-bottom: 0; }
 .phone-wireless-option > summary, .phone-advanced > summary { display: flex; align-items: center; gap: var(--sp-2); min-height: 44px; color: var(--t-text-strong); cursor: pointer; list-style: none; }
 .phone-wireless-option > summary::-webkit-details-marker, .phone-advanced > summary::-webkit-details-marker { display: none; }
-.phone-wireless-option > summary::after, .phone-advanced > summary::after { content: ""; width: .45rem; height: .45rem; margin: 0 var(--sp-1) .18rem auto; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
-.phone-wireless-option[open] > summary::after, .phone-advanced[open] > summary::after { transform: rotate(-135deg); margin-bottom: -.18rem; }
+.phone-wireless-option > summary::after, .phone-advanced > summary::after { content: ""; width: .48rem; height: .48rem; margin: 0 var(--sp-1) var(--sp-1) auto; border-right: 2px solid var(--t-text-faint); border-bottom: 2px solid var(--t-text-faint); transform: rotate(45deg); transition: transform var(--dur-fast) ease; flex: none; }
+.phone-wireless-option[open] > summary::after, .phone-advanced[open] > summary::after { transform: rotate(-135deg); margin-bottom: 0; margin-top: var(--sp-1); }
 .phone-wireless-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3); margin: var(--sp-2) 0 var(--sp-3); }
 .phone-wireless-form label { flex: 0 1 19rem; display: grid; min-width: 0; gap: var(--sp-1); color: var(--t-text-strong); font-size: var(--fs-tiny); }
 .phone-wireless-form label:has(input[name="code"]) { flex-basis: 9rem; }
 .phone-wireless-form input { box-sizing: border-box; width: 100%; min-height: 40px; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--t-line-firm); border-radius: var(--r-sm); background: var(--t-surface); color: var(--t-text-strong); font: inherit; }
 .phone-wireless-form button { min-height: 40px; }
-.phone-setup :is(button, input, summary):focus-visible, .phone-advanced > summary:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
+.phone-setup :is(button, input, summary):focus-visible, .phone-advanced > summary:focus-visible, .phone-action-chip:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
 .phone-setup-results { width: 100%; }
 .phone-setup-results ul { margin: 0; padding: 0; list-style: none; }
 .phone-setup-results li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; padding: var(--sp-3) 0; border-top: 1px solid var(--t-line); }
@@ -14629,16 +14633,98 @@ body.room-editing .product-scope{display:none}
 .phone-setup-notice:empty { display: none; }
 .phone-setup .phone-setup-notice.is-error { color: var(--t-risk-ink); }
 .phone-setup-download { justify-self: start; }
-.phone-advanced { min-width: 0; padding: 0 var(--sp-4); border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-raised); }
-.phone-advanced > summary { font-weight: 600; }
-.phone-advanced[open] { padding-bottom: var(--sp-4); }
-.phone-advanced[open] > summary { margin-bottom: var(--sp-2); border-bottom: 1px solid var(--t-line); }
-.phone-usage-page [data-wb-group="master"] .wb-fields { grid-template-columns: minmax(0, 1fr); }
-@container phone-page (min-width: 780px) {
-  .phone-usage-page .wb-card-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: var(--sp-5); align-items: start; }
-  .phone-usage-page .wb-card-body > :not(.wb-group) { grid-column: 1 / -1; }
-  .phone-usage-page [data-wb-group="master"] { grid-row: span 2; }
-  .phone-usage-page [data-wb-group="typing"] { margin-top: 0; padding-top: 0; border-top: 0; }
+/* 高级设置外框对齐「手机端连接」的通栏白卡分段语言：摘要条即一张卡片，展开后下方呈现独立全宽分组白卡。 */
+.phone-advanced { min-width: 0; padding: 0; border: 0; background: transparent; }
+.phone-advanced > summary { justify-content: space-between; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-raised); box-shadow: var(--t-shadow); font-weight: 600; }
+.phone-advanced > summary::after { margin-left: var(--sp-1); }
+.phone-advanced-summary-main { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; flex: 1; }
+.phone-advanced-summary-main > svg { width: 18px; height: 18px; color: var(--t-accent); }
+.phone-advanced-summary-copy { display: grid; gap: 2px; min-width: 0; }
+.phone-advanced-summary-copy strong { color: var(--t-text-strong); font-size: var(--fs-body); font-weight: 600; line-height: 1.35; }
+.phone-advanced-summary-copy small { color: var(--t-text-faint); font-size: var(--fs-micro); font-weight: 400; line-height: 1.45; }
+.phone-advanced-summary-meta { display: inline-flex; align-items: center; gap: var(--sp-2); flex: none; margin-left: auto; }
+.phone-advanced[open] > #phoneAdbWorkspace { margin-top: var(--sp-3); }
+/* 手机使用页配置工作台：全宽分组圆角白卡 + 卡内等高 2 列浅底子卡，彻底消除不对称双栏大空白。 */
+.phone-usage-page .wb { gap: var(--sp-3); }
+.phone-usage-page .wb-card-head { display: none; }
+.phone-usage-page .wb-card-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); padding: 0; }
+.phone-usage-page .wb-group { margin: 0; padding: 0; border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-raised); box-shadow: var(--t-shadow); overflow: hidden; }
+.phone-usage-page .wb-group + .wb-group,
+.phone-usage-page .wb-card:not(.wb-journal):not(.wb-policy) .wb-group + .wb-group { margin-top: 0; }
+.phone-usage-page .wb-group:not(:has(> .wb-group-header)) + .wb-group:not(:has(> .wb-group-header)) { padding-top: 0; border-top: 1px solid var(--t-line); }
+.phone-usage-page .wb-group > .wb-group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); margin: 0; padding: var(--sp-3) var(--sp-4) 0; color: var(--t-text-strong); font-size: var(--fs-body); font-weight: 600; }
+.phone-usage-page .wb-group > .wb-group-header .wb-group-head { margin: 0; padding: 0; }
+.phone-usage-page .wb-group > .wb-help { margin: 0; padding: var(--sp-1) var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--t-line); color: var(--t-text-faint); font-size: var(--fs-micro); line-height: 1.55; }
+.phone-group-count { display: inline-flex; align-items: center; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--t-line); border-radius: var(--r-pill); background: var(--t-surface-soft); color: var(--t-text-soft); font-size: var(--fs-micro); font-weight: 500; line-height: 1.25; white-space: nowrap; flex: none; }
+.phone-usage-page .wb-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+.phone-usage-page .wb-group:has(> .wb-group-header) > .wb-fields { padding: 0; }
+.phone-usage-page .wb-field { display: grid; grid-template-columns: 4px minmax(0, 1fr); align-items: start; gap: var(--sp-2) var(--sp-3); margin: 0; padding: var(--sp-3); border: 1px solid var(--t-line); border-radius: var(--r-sm); background: var(--t-surface-soft); box-sizing: border-box; }
+.phone-usage-page .wb-field:where(:has(>.wb-field-side:not(:empty))) { grid-template-columns: 4px minmax(0, 1fr); }
+.phone-usage-page .wb-field > .wb-field-side { grid-column: 2; justify-self: start; padding-top: 0; }
+.phone-usage-page .wb-field:hover { background: var(--t-surface-soft); border-color: var(--t-line-firm); }
+.phone-usage-page .wb-field.is-dirty { border-color: color-mix(in srgb, var(--t-accent) 42%, var(--t-line)); }
+.phone-usage-page .wb-field > .wb-rail { width: 4px; height: 22px; min-height: 22px; align-self: start; padding-top: 2px; gap: 2px; }
+.phone-usage-page .wb-field > .wb-rail .wb-node { border-radius: var(--r-pill); transform: none; }
+.phone-usage-page .wb-field > .wb-rail .wb-node.is-source { transform: none; }
+.phone-usage-page .wb-field > .wb-field-main { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; row-gap: var(--sp-2); column-gap: var(--sp-3); min-width: 0; height: 100%; }
+.phone-usage-page .wb-field > .wb-field-main > .wb-label,
+.phone-usage-page .wb-field > .wb-field-main > .wb-help,
+.phone-usage-page .wb-field > .wb-field-main > .wb-control,
+.phone-usage-page .wb-field > .wb-field-main > .wb-field-error { grid-column: 1; grid-row: auto; }
+.phone-usage-page .wb-field > .wb-field-main > .wb-control { justify-self: stretch; justify-content: flex-start; width: 100%; max-width: none; margin-top: 0; }
+.phone-usage-page .wb-field > .wb-field-main > .wb-control > .wb-number { width: 100%; justify-content: flex-start; }
+.phone-usage-page .wb-field > .wb-field-main > .wb-control > .wb-number input { flex: 0 1 132px; min-width: 96px; }
+.phone-usage-page .wb-field:has(.wb-switch) > .wb-field-main { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.phone-usage-page .wb-field:has(.wb-switch) > .wb-field-main > .wb-label { grid-column: 1; grid-row: 1; }
+.phone-usage-page .wb-field:has(.wb-switch) > .wb-field-main > .wb-control { grid-column: 2; grid-row: 1; width: auto; justify-self: end; }
+.phone-usage-page .wb-field:has(.wb-switch) > .wb-field-main > .wb-help { grid-column: 1 / -1; grid-row: 2; }
+.phone-usage-page .wb-field:has(.wb-switch) > .wb-field-main > .wb-field-error { grid-column: 1 / -1; grid-row: 3; }
+/* 「输入方式与步数上限」：中文输入方式横跨首行（分段开关右对齐），两个数值项组成完美对称第二行。 */
+.phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] { grid-column: 1 / -1; }
+.phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-label { grid-column: 1; grid-row: 1; }
+.phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-control { grid-column: 2; grid-row: 1; width: auto; justify-self: end; }
+.phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-help { grid-column: 1 / -1; grid-row: 2; }
+.phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-field-error { grid-column: 1 / -1; grid-row: 3; }
+/* 「操作授权与访问范围」：允许的动作与允许使用的对象在桌面端并排等高，彻底消除空白空洞。 */
+.phone-usage-page [data-wb-group="scope"] .wb-field:has(textarea) { grid-column: auto; }
+.phone-usage-page [data-wb-group="scope"] .wb-field.is-span-full { grid-column: auto; }
+.phone-usage-page [data-wb-row="allowed_actions"] > .wb-field-main > .wb-control { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); align-content: start; }
+.phone-usage-page [data-wb-row="allowed_subjects"] > .wb-field-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; align-content: stretch; height: 100%; }
+.phone-usage-page [data-wb-row="allowed_subjects"] > .wb-field-main > .wb-control { display: grid; grid-template-columns: minmax(0, 1fr); align-self: stretch; height: 100%; }
+.phone-usage-page [data-wb-row="allowed_subjects"] .wb-textarea-wrap { display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100%; }
+.phone-usage-page [data-wb-row="allowed_subjects"] textarea { height: 100%; min-height: 120px; }
+/* 可视化动作胶囊选择器 */
+.phone-action-picker { display: grid; gap: var(--sp-2); min-width: 0; }
+.phone-action-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-1) var(--sp-2); }
+.phone-action-bar-title { color: var(--t-text-soft); font-size: var(--fs-micro); font-weight: 600; }
+.phone-action-summary { display: inline-flex; align-items: center; padding: 2px var(--sp-2); border: 1px solid var(--t-line); border-radius: var(--r-pill); background: var(--t-surface-raised); color: var(--t-text-soft); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.phone-action-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); min-width: 0; }
+.phone-action-chip { display: inline-flex; align-items: center; gap: var(--sp-1); min-height: 34px; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--t-line-firm); border-radius: var(--r-sm); background: var(--t-surface-raised); color: var(--t-text-soft); font: inherit; font-size: var(--fs-tiny); line-height: 1.3; cursor: pointer; transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease, color var(--dur-fast) ease, box-shadow var(--dur-fast) ease; }
+.phone-action-chip:hover:not(:disabled) { border-color: var(--t-accent); color: var(--t-accent-ink); }
+.phone-action-chip.is-on { border-color: color-mix(in srgb, var(--t-accent) 52%, var(--t-line)); background: var(--t-accent-quiet); color: var(--t-accent-ink); font-weight: 600; }
+.phone-action-chip.is-required.is-on { border-color: color-mix(in srgb, var(--t-accent) 36%, var(--t-line)); cursor: default; }
+.phone-action-chip.is-caution { border-style: dashed; }
+.phone-action-chip.is-caution:hover:not(:disabled) { border-color: var(--t-warn); color: var(--t-warn-ink); }
+.phone-action-chip.is-caution.is-on { border-style: solid; border-color: color-mix(in srgb, var(--t-warn) 56%, var(--t-line)); background: var(--t-warn-quiet); color: var(--t-warn-ink); }
+.phone-action-chip:disabled { opacity: .55; cursor: not-allowed; }
+.phone-action-chip-label { white-space: nowrap; }
+.phone-action-chip-code { font-family: var(--numeric-font); font-size: var(--fs-micro); font-weight: 400; opacity: .78; }
+.phone-action-chip-tag { padding: 1px var(--sp-1); border-radius: var(--r-pill); font-size: var(--fs-micro); font-weight: 500; line-height: 1.2; white-space: nowrap; }
+.phone-action-chip-tag.is-required { background: color-mix(in srgb, var(--t-accent) 14%, var(--t-surface-raised)); color: var(--t-accent-ink); }
+.phone-action-chip-tag.is-caution { background: var(--t-warn-quiet); color: var(--t-warn-ink); }
+.phone-action-warn { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border: 1px solid color-mix(in srgb, var(--t-warn) 45%, var(--t-line)); border-radius: var(--r-sm); background: var(--t-warn-quiet); color: var(--t-warn-ink); font-size: var(--fs-micro); line-height: 1.5; }
+.phone-action-warn[hidden] { display: none; }
+.phone-action-raw-label { color: var(--t-text-faint); font-size: var(--fs-micro); line-height: 1.4; }
+.phone-usage-page [data-wb-row="allowed_actions"] textarea { min-height: 64px; font-family: var(--numeric-font); font-size: var(--fs-tiny); line-height: 1.6; }
+/* 底部保存条对齐「手机端连接」独立圆角白卡 */
+.phone-usage-page .wb-actions { margin: 0; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--t-line); border-radius: var(--r-md); background: var(--t-surface-raised); box-shadow: var(--t-shadow); }
+@container phone-page (max-width: 720px) {
+  .phone-usage-page .wb-fields { grid-template-columns: minmax(0, 1fr); }
+  .phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main { grid-template-columns: minmax(0, 1fr); }
+  .phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-control { grid-column: 1; grid-row: auto; width: 100%; justify-self: stretch; }
+  .phone-usage-page [data-wb-group="typing"] [data-wb-row="unicode_input"] > .wb-field-main > .wb-help { grid-row: auto; }
+  .phone-usage-page [data-wb-row="allowed_subjects"] textarea { min-height: 88px; }
 }
 .mobile-connection-page { min-width: 0; container: mobile-page / inline-size; }
 .is-mobile-connection { display: grid; gap: var(--sp-5); padding-bottom: var(--sp-6); }
@@ -15204,6 +15290,16 @@ body.room-editing .product-scope{display:none}
   .is-mobile-connection .native-extension-savebar { margin: var(--sp-4) 0 0; padding: var(--sp-3); }
   .mobile-config-heading .native-extension-search.is-mobile-search { margin-bottom: 0; }
   .mobile-config-section-body { padding: var(--sp-3); }
+  .phone-setup { padding: var(--sp-3); }
+  .phone-setup-usb, .phone-setup-wireless { padding: var(--sp-3); }
+  .phone-setup-modes button { min-height: 44px; }
+  .phone-advanced > summary { padding: var(--sp-3); }
+  .phone-usage-page .wb-group > .wb-group-head { padding: var(--sp-3) var(--sp-3) 0; }
+  .phone-usage-page .wb-group > .wb-help { padding: var(--sp-1) var(--sp-3) var(--sp-3); }
+  .phone-usage-page .wb-fields { grid-template-columns: minmax(0, 1fr); padding: var(--sp-3); }
+  .phone-usage-page .wb-group:has(> .wb-group-header) > .wb-fields { padding: 0; }
+  .phone-action-chip { min-height: 40px; }
+  .phone-usage-page .wb-actions { padding: var(--sp-3); }
   .native-management-qr { flex-direction: column; align-items: flex-start; }
   .native-management-bottom { flex-direction: column; align-items: flex-start; }
 }
@@ -15235,8 +15331,20 @@ body.room-editing .product-scope{display:none}
 }
 @media (prefers-reduced-motion: reduce) {
   .mobile-config-chevron,
-  .mobile-config-heading .native-extension-search.is-mobile-search { transition: none; }
+  .mobile-config-heading .native-extension-search.is-mobile-search,
+  .phone-setup-modes button,
+  .phone-wireless-option > summary::after,
+  .phone-advanced > summary::after,
+  .phone-action-chip { transition: none; }
 }
+:root[data-motion="off"] .phone-setup-modes button,
+:root[data-motion="low"] .phone-setup-modes button,
+:root[data-motion="off"] .phone-wireless-option > summary::after,
+:root[data-motion="low"] .phone-wireless-option > summary::after,
+:root[data-motion="off"] .phone-advanced > summary::after,
+:root[data-motion="low"] .phone-advanced > summary::after,
+:root[data-motion="off"] .phone-action-chip,
+:root[data-motion="low"] .phone-action-chip { transition: none; }
 
 /* semantic-page.css */
 .semantic-section{border-top:1px solid var(--t-text-soft);padding:var(--sp-5) 0;margin-top:var(--sp-4)}

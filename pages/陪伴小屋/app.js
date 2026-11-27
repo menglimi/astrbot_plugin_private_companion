@@ -4477,7 +4477,7 @@ function renderPhoneUsage(){
   const guide=typeof product.role()?.config_api==='string'?'':pageNeedsTarget('手机使用');
   return `<div class="phone-usage-page">${guide||
     `<section id="phoneSetupWorkspace" class="phone-setup" aria-labelledby="phoneSetupTitle"></section>
-    <details class="phone-advanced"><summary>${I('sliders-horizontal')}高级设置</summary>
+    <details class="phone-advanced"><summary><span class="phone-advanced-summary-main">${I('sliders-horizontal')}<span class="phone-advanced-summary-copy"><strong>高级设置</strong><small>设备路径、中文输入方式、步数上限与操作授权</small></span></span><span class="phone-advanced-summary-meta"><span class="mobile-config-count">3 组 · 9 项</span></span></summary>
       <section id="phoneAdbWorkspace" aria-label="手机使用设置">${consoleLoading('正在读取手机使用设置…')}</section>
     </details>`}</div>`;
 }
@@ -4761,11 +4761,13 @@ function renderConfigEditors(){
   }));
   if($('#phoneAdbWorkspace')){
     const setup=$('#phoneSetupWorkspace');
+    const adbRoot=$('#phoneAdbWorkspace');
     const editor=mountConfigEditor('phoneAdbWorkspace',['device.phone'],{
       'device.phone':{navigationLimit:0,onStatus:status=>setup?.phoneSetup?.syncStatus(status)}
     });
     if(editor)configEditorMounts.push(editor);
-    window.CompanionPhoneSetup?.mount(setup,{editor});
+    const phoneSetup=window.CompanionPhoneSetup?.mount(setup,{editor,adbRoot});
+    if(phoneSetup)configEditorMounts.push(phoneSetup);
   }
    /* proactive.contact（160 项、四层）同样长期是「编辑器与声明都在、却没有挂载点」
       的缺口——它连编辑器与声明都没有。主动联系页保留完整直接配置；感知页按来源

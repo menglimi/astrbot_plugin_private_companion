@@ -17,6 +17,251 @@ window.CompanionPhoneSetup = (() => {
   };
   const states = {device:"已连接", unauthorized:"待手机授权", offline:"已离线"};
   const sourceLabels = {role_config:"角色层", "phone.json":"旧版 phone.json", default:"默认自动查找"};
+  const ACTION_CATALOG = Object.freeze([
+    {key:"launch", label:"启动应用", desc:"按包名打开目标应用"},
+    {key:"tap_text", label:"点文字", desc:"按屏幕可见文字点击（优先推荐）"},
+    {key:"tap", label:"点击坐标", desc:"按截图位置点击图标或无字区域"},
+    {key:"swipe", label:"滑动", desc:"上下左右滑动或翻页"},
+    {key:"type", label:"输入文字", desc:"向当前聚焦输入框输入文本"},
+    {key:"key", label:"按键", desc:"发送返回、主页等系统按键"},
+    {key:"wait_text", label:"等待文字", desc:"等待指定文字出现在屏幕"},
+    {key:"done", label:"完成", desc:"标记任务已完成（系统必选，不可移除）", required:true},
+    {key:"fail", label:"失败", desc:"无法继续时安全中止（系统必选，不可移除）", required:true},
+    {key:"force_stop", label:"强制停止", desc:"强行结束卡死应用（谨慎开启，默认关闭）", caution:true},
+  ]);
+  const ACTION_BY_KEY = Object.fromEntries(ACTION_CATALOG.map(item => [item.key, item]));
+  const REQUIRED_ACTIONS = ACTION_CATALOG.filter(item => item.required).map(item => item.key);
+  const KNOWN_ACTION_KEYS = ACTION_CATALOG.map(item => item.key);
+  const ACTION_TOKEN_SPLIT = /[,，\r\n]+/;
+
+  function parseAllowedActions(rawValue) {
+    const tokens = [];
+    const seen = Object.create(null);
+    const parts = String(rawValue ?? "").split(ACTION_TOKEN_SPLIT);
+    for (const part of parts) {
+      const token = part.trim();
+      if (!token || seen[token]) continue;
+      seen[token] = true;
+      tokens.push(token);
+    }
+    return tokens;
+  }
+
+  function analyzeAllowedActions(rawValue) {
+    const rawParts = String(rawValue ?? "").split(ACTION_TOKEN_SPLIT)
+      .map(part => part.trim()).filter(Boolean);
+    const tokens = parseAllowedActions(rawValue);
+    const selected = Object.create(null);
+    for (const token of tokens) selected[token] = true;
+    const missingRequired = REQUIRED_ACTIONS.filter(key => !selected[key]);
+    const customTokens = tokens.filter(token => !ACTION_BY_KEY[token]);
+    const hasDuplicates = rawParts.length !== tokens.length;
+    return {tokens, selected, missingRequired, customTokens, hasDuplicates};
+  }
+
+  function toggleAllowedAction(rawValue, actionKey) {
+    const key = String(actionKey ?? "").trim();
+    if (!key) return String(rawValue ?? "");
+    const tokens = parseAllowedActions(rawValue);
+    const index = tokens.indexOf(key);
+    const meta = ACTION_BY_KEY[key];
+    if (meta?.required) {
+      if (index >= 0) return tokens.join(",");
+      tokens.push(key);
+      return tokens.join(",");
+    }
+    if (index >= 0) {
+      tokens.splice(index, 1);
+      return tokens.join(",");
+    }
+    const firstRequired = tokens.findIndex(token => ACTION_BY_KEY[token]?.required);
+    if (firstRequired >= 0) tokens.splice(firstRequired, 0, key);
+    else tokens.push(key);
+    return tokens.join(",");
+  }
+
+  function restoreRequiredActions(rawValue) {
+    const tokens = parseAllowedActions(rawValue);
+    for (const key of REQUIRED_ACTIONS) {
+      if (!tokens.includes(key)) tokens.push(key);
+    }
+    return tokens.join(",");
+  }
+
+  function emitFieldInput(field) {
+    if (!field || typeof field.dispatchEvent !== "function") return;
+    if (typeof Event === "function") {
+      field.dispatchEvent(new Event("input", {bubbles:true}));
+    } else {
+      field.dispatchEvent({type:"input", bubbles:true, target:field});
+    }
+  }
+
+  function buildActionChipButton(item, active, disabled) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `phone-action-chip${active ? " is-on" : ""}${item.required ? " is-required" : ""}${item.caution ? " is-caution" : ""}`;
+    chip.dataset.phoneActionKey = item.key;
+    if (item.required) chip.dataset.phoneActionRequired = "true";
+    if (item.caution) chip.dataset.phoneActionCaution = "true";
+    chip.setAttribute("aria-pressed", String(active));
+    chip.title = `${item.label}（${item.key}）：${item.desc}`;
+    chip.disabled = Boolean(disabled);
+    const label = document.createElement("span");
+    label.className = "phone-action-chip-label";
+    label.textContent = item.label;
+    const code = document.createElement("code");
+    code.className = "phone-action-chip-code";
+    code.textContent = item.key;
+    chip.append(label, code);
+    if (item.required || item.caution) {
+      const badge = document.createElement("span");
+      badge.className = `phone-action-chip-tag${item.caution ? " is-caution" : " is-required"}`;
+      badge.textContent = item.required ? "必选" : "谨慎";
+      chip.append(badge);
+    }
+    return chip;
+  }
+
+  function syncActionPicker(picker, rawValue, disabled = false) {
+    if (!picker) return;
+    const info = analyzeAllowedActions(rawValue);
+    const isDisabled = Boolean(disabled);
+    picker.querySelectorAll("[data-phone-action-key]").forEach(button => {
+      const key = button.dataset.phoneActionKey;
+      const on = Boolean(info.selected[key]);
+      const pressed = String(on);
+      if (button.classList.contains("is-on") !== on) button.classList.toggle("is-on", on);
+      if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
+      if (button.disabled !== isDisabled) button.disabled = isDisabled;
+    });
+    const summary = picker.querySelector("[data-phone-action-summary]");
+    if (summary) {
+      const knownCount = KNOWN_ACTION_KEYS.filter(key => info.selected[key]).length;
+      const customNote = info.customTokens.length ? ` · 含 ${info.customTokens.length} 项自定义` : "";
+      const nextSummary = `已选 ${knownCount} / ${KNOWN_ACTION_KEYS.length} 项${customNote}`;
+      if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
+    }
+    const warn = picker.querySelector("[data-phone-action-warn]");
+    if (warn) {
+      const missing = info.missingRequired;
+      const shouldHide = !missing.length;
+      if (warn.hidden !== shouldHide) warn.hidden = shouldHide;
+      const copy = warn.querySelector("[data-phone-action-warn-text]");
+      if (copy) {
+        const nextCopy = missing.length
+          ? `缺少必选动作：${missing.join("、")}（保存时后端会校验它们必须保留）`
+          : "";
+        if (copy.textContent !== nextCopy) copy.textContent = nextCopy;
+      }
+      const restoreBtn = warn.querySelector("[data-phone-action-restore]");
+      if (restoreBtn && restoreBtn.disabled !== isDisabled) restoreBtn.disabled = isDisabled;
+    }
+  }
+
+  function enhanceActionField(adbRoot) {
+    if (!adbRoot || typeof adbRoot.querySelector !== "function" || typeof document?.createElement !== "function") return;
+    const row = adbRoot.querySelector('[data-wb-row="allowed_actions"]');
+    const textarea = row?.querySelector?.('textarea[data-wb-field="allowed_actions"]');
+    const control = row?.querySelector?.(".wb-control");
+    if (!row || !textarea || !control) return;
+    let picker = control.querySelector("[data-phone-action-picker]");
+    if (!picker) {
+      picker = document.createElement("div");
+      picker.className = "phone-action-picker";
+      picker.dataset.phoneActionPicker = "allowed_actions";
+
+      const bar = document.createElement("div");
+      bar.className = "phone-action-bar";
+      const barTitle = document.createElement("span");
+      barTitle.className = "phone-action-bar-title";
+      barTitle.textContent = "快捷勾选动作";
+      const summary = document.createElement("span");
+      summary.className = "phone-action-summary";
+      summary.dataset.phoneActionSummary = "";
+      bar.append(barTitle, summary);
+
+      const grid = document.createElement("div");
+      grid.className = "phone-action-chips";
+      grid.setAttribute("role", "group");
+      grid.setAttribute("aria-label", "允许的手机操作动作");
+      const initial = analyzeAllowedActions(textarea.value);
+      for (const item of ACTION_CATALOG) {
+        grid.append(buildActionChipButton(item, Boolean(initial.selected[item.key]), textarea.disabled));
+      }
+
+      const warn = document.createElement("div");
+      warn.className = "phone-action-warn";
+      warn.dataset.phoneActionWarn = "";
+      warn.hidden = true;
+      const warnText = document.createElement("span");
+      warnText.dataset.phoneActionWarnText = "";
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "button small";
+      restore.dataset.phoneActionRestore = "";
+      restore.textContent = "补回必选项";
+      warn.append(warnText, restore);
+
+      const rawLabel = document.createElement("span");
+      rawLabel.className = "phone-action-raw-label";
+      rawLabel.textContent = "原始逗号清单（高级编辑 · 与上方按钮双向同步）";
+
+      picker.append(bar, grid, warn, rawLabel);
+      picker.addEventListener("click", event => {
+        if (textarea.disabled) return;
+        const restoreBtn = event.target?.closest?.("[data-phone-action-restore]");
+        if (restoreBtn) {
+          const next = restoreRequiredActions(textarea.value);
+          if (next !== textarea.value) {
+            textarea.value = next;
+            syncActionPicker(picker, next, textarea.disabled);
+            emitFieldInput(textarea);
+          }
+          return;
+        }
+        const chip = event.target?.closest?.("[data-phone-action-key]");
+        if (!chip) return;
+        const next = toggleAllowedAction(textarea.value, chip.dataset.phoneActionKey);
+        if (next !== textarea.value) {
+          textarea.value = next;
+          syncActionPicker(picker, next, textarea.disabled);
+          emitFieldInput(textarea);
+        }
+      });
+
+      const wrap = control.querySelector(".wb-textarea-wrap") || textarea;
+      control.insertBefore(picker, wrap);
+    }
+    if (!textarea.dataset.phoneActionBound) {
+      textarea.dataset.phoneActionBound = "1";
+      textarea.addEventListener("input", () => {
+        syncActionPicker(control.querySelector("[data-phone-action-picker]"), textarea.value, textarea.disabled);
+      });
+    }
+    syncActionPicker(picker, textarea.value, textarea.disabled);
+  }
+
+  function enhanceAdvancedWorkspace(adbRoot) {
+    if (!adbRoot || typeof adbRoot.querySelectorAll !== "function") return;
+    if (typeof document?.createElement === "function") {
+      adbRoot.querySelectorAll(".wb-group").forEach(group => {
+        const head = group.querySelector(".wb-group-head");
+        if (!head || group.querySelector(".phone-group-count, .wb-group-count")) return;
+        const count = group.querySelectorAll(".wb-field:not([hidden])").length;
+        if (!count) return;
+        const pill = document.createElement("span");
+        pill.className = "phone-group-count";
+        pill.textContent = `${count} 项`;
+        head.append(pill);
+      });
+    }
+    const subjects = adbRoot.querySelector('textarea[data-wb-field="allowed_subjects"]');
+    if (subjects && !subjects.getAttribute("placeholder")) {
+      subjects.setAttribute("placeholder", "例如：onebot-user:10001, onebot-user:10002（留空表示所有私聊对象可用）");
+    }
+    enhanceActionField(adbRoot);
+  }
 
   function adbNotFoundMessage(diag) {
     if (!diag || typeof diag !== "object") return messages.adb_not_found;
@@ -46,7 +291,7 @@ window.CompanionPhoneSetup = (() => {
   }
 
   function markup() {
-    return `<header class="phone-setup-head"><h3 id="phoneSetupTitle">连接 Android 手机</h3><span data-phone-enabled hidden></span></header>
+    return `<header class="phone-setup-head"><div class="phone-setup-head-copy"><h3 id="phoneSetupTitle">连接 Android 手机</h3><p>让当前角色通过 USB 或无线 ADB 操作指定的 Android 手机。</p></div><span data-phone-enabled hidden></span></header>
       <div class="phone-setup-modes" role="group" aria-label="连接方式">
         <button type="button" aria-pressed="true" data-phone-mode="usb">${icon("usb")}USB 连接</button>
         <button type="button" aria-pressed="false" data-phone-mode="wireless">${icon("wifi")}无线连接</button>
@@ -80,23 +325,67 @@ window.CompanionPhoneSetup = (() => {
       <a class="text-button phone-setup-download" data-phone-download href="https://developer.android.com/tools/releases/platform-tools" target="_blank" rel="noopener noreferrer" hidden>下载 Android Platform-Tools</a>`;
   }
 
-  function mount(root, {editor, configApi = editor?.endpoint}) {
+  function mount(root, {editor, configApi = editor?.endpoint, adbRoot = null}) {
     if (!root) return null;
     if (typeof configApi !== "string" || !configApi.startsWith(prefix) || !editor) {
       root.textContent = "当前角色的手机设置不可用。";
       return null;
     }
     const nextEndpoint = configApi.slice(prefix.length) + "/phone-connection";
+    const resolvedAdbRoot = adbRoot || root.parentElement?.querySelector?.("#phoneAdbWorkspace") || null;
     if (root.phoneSetup) {
-      root.phoneSetup.rebind({configApi, endpoint: nextEndpoint, editor});
+      root.phoneSetup.rebind({configApi, endpoint: nextEndpoint, editor, adbRoot: resolvedAdbRoot});
       return root.phoneSetup;
     }
     let mode = "usb", busy = false, devices = [], activation = null;
-    const binding = {configApi, endpoint: nextEndpoint, editor};
+    let observer = null, observedRoot = null, enhancing = false;
+    const binding = {configApi, endpoint: nextEndpoint, editor, adbRoot: resolvedAdbRoot};
     const one = selector => root.querySelector(selector);
     const handle = () => binding.editor.state.instances[0];
     root.innerHTML = markup();
     const results = one("[data-phone-results]"), noticeNode = one("[data-phone-notice]");
+
+    function unmount() {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      observedRoot = null;
+    }
+
+    function runEnhance() {
+      if (root.isConnected === false) {
+        unmount();
+        return;
+      }
+      const target = binding.adbRoot || root.parentElement?.querySelector?.("#phoneAdbWorkspace") || null;
+      if (!target || enhancing) return;
+      enhancing = true;
+      if (observer) observer.disconnect();
+      try {
+        enhanceAdvancedWorkspace(target);
+      } finally {
+        enhancing = false;
+        if (observer && observedRoot === target && root.isConnected !== false) {
+          observer.observe(target, {childList:true, subtree:true});
+        }
+      }
+    }
+
+    function watchAdvanced() {
+      if (root.isConnected === false) {
+        unmount();
+        return;
+      }
+      const target = binding.adbRoot || root.parentElement?.querySelector?.("#phoneAdbWorkspace") || null;
+      if (target === observedRoot) { runEnhance(); return; }
+      if (observer) { observer.disconnect(); observer = null; }
+      observedRoot = target;
+      if (target && typeof MutationObserver === "function" && typeof target.nodeType === "number") {
+        observer = new MutationObserver(() => { runEnhance(); });
+      }
+      runEnhance();
+    }
 
     function notice(message, code = "", diag = null) {
       noticeNode.textContent = message;
@@ -120,6 +409,7 @@ window.CompanionPhoneSetup = (() => {
       const enabled = status?.settings?.enabled === true;
       label.textContent = enabled ? "已启用" : "未启用";
       label.classList.toggle("is-enabled", enabled);
+      watchAdvanced();
     }
 
     function rebind(next) {
@@ -127,6 +417,7 @@ window.CompanionPhoneSetup = (() => {
       binding.configApi = next.configApi;
       binding.endpoint = next.endpoint;
       binding.editor = next.editor;
+      binding.adbRoot = next.adbRoot || root.parentElement?.querySelector?.("#phoneAdbWorkspace") || binding.adbRoot;
       if (changed) {
         devices = [];
         activation = null;
@@ -259,8 +550,17 @@ window.CompanionPhoneSetup = (() => {
     });
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
     syncStatus();
-    root.phoneSetup = {syncStatus, rebind, get endpoint() { return binding.endpoint; }};
+    root.phoneSetup = {syncStatus, rebind, enhance: runEnhance, unmount, get endpoint() { return binding.endpoint; }};
     return root.phoneSetup;
   }
-  return {mount, adbNotFoundMessage};
+  return {
+    mount,
+    adbNotFoundMessage,
+    ACTION_CATALOG,
+    parseAllowedActions,
+    analyzeAllowedActions,
+    toggleAllowedAction,
+    restoreRequiredActions,
+    enhanceAdvancedWorkspace,
+  };
 })();
