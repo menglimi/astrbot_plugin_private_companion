@@ -9,7 +9,7 @@ from companion_v2.conversation.quotes.models import message_number
 from companion_v2.adapters.astrbot.native import NativeAudioLocator, NativeVideoLocator
 from companion_v2.execution.models import TaskError
 
-from .history import extract_history_messages
+from .history import fetch_onebot_history_record, parse_signed_int
 from .native import NativeImageLocator, account_number
 
 
@@ -88,22 +88,49 @@ async def read_private_quote(locator, *, client, scope, reverse_api_type, image_
         # get_friend_msg_history selects the peer separately and uses
         # getMsgsIncludeSelf. Verify the requested ID in its single result;
         # never fall back to unscoped get_msg, another account or a wider page.
-        result = await api.call_action("get_friend_msg_history", self_id=scope.account_id,
-            user_id=scope.native_scope_id, message_seq=message_number(locator.message_id), count=1,
-            reverse_order=False, parse_mult_msg=True)
-        current()
-        records = extract_history_messages(result)
-        if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+        # Support both NapCat (message_seq) and SnowLuma (integer message_id).
+        expected_id = message_number(locator.message_id)
+        peer_int = parse_signed_int(scope.native_scope_id)
+        msg_int = parse_signed_int(expected_id)
+        primary_params = {
+            "self_id": scope.account_id,
+            "user_id": scope.native_scope_id,
+            "message_seq": expected_id,
+            "count": 1,
+            "reverse_order": False,
+            "parse_mult_msg": True,
+        }
+        fallback_params = {
+            "self_id": scope.account_id,
+            "user_id": peer_int if peer_int is not None else scope.native_scope_id,
+            "message_id": msg_int if msg_int is not None else expected_id,
+            "count": 1,
+            "reverse_order": False,
+        }
+
+        async def _call_history(action, params):
+            return await api.call_action(action, **params)
+
+        raw, _records = await fetch_onebot_history_record(
+            _call_history,
+            "get_friend_msg_history",
+            expected_message_id=expected_id,
+            primary_params=primary_params,
+            fallback_params=fallback_params,
+            after_call=current,
+        )
+        if not isinstance(raw, dict):
             raise TaskError("host_quote_unavailable", "peer-directed history did not return one original message")
-        raw = records[0]
         if (raw.get("message_type") != "private" or raw.get("group_id") not in (None, "", 0, "0")
                 or raw.get("sub_type", "friend") != "friend"
-                or account_number(raw.get("self_id")) != scope.account_id
-                or message_number(raw.get("message_id")) != locator.message_id):
+                or (raw.get("self_id") is not None and account_number(raw["self_id"]) != scope.account_id)
+                or message_number(raw.get("message_id")) != expected_id):
             raise TaskError("host_quote_scope_mismatch", "quote is not the requested original private message")
         sender = account_number(raw.get("sender", {}).get("user_id"))
         if (sender not in (scope.native_scope_id, scope.account_id)
-                or (raw.get("user_id") is not None and account_number(raw["user_id"]) != sender)):
+                or (raw.get("user_id") is not None and account_number(raw["user_id"]) != sender)
+                or (sender == scope.account_id and raw.get("target_id") is not None
+                    and account_number(raw["target_id"]) != scope.native_scope_id)):
             raise TaskError("host_quote_scope_mismatch", "quote sender does not belong to this private exchange")
         at = raw.get("time")
         sent_at = at if type(at) is int and 0 < at <= 253402300799 else None

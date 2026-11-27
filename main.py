@@ -1736,6 +1736,13 @@ class PrivateCompanionV2StagingPlugin(Star):
             return
         event.is_wake = True
         event.is_at_or_wake_command = True
+        if application is not None:
+            try:
+                from .astrbot_host.core_reply_media import repair_quoted_bot_generated_images
+                await repair_quoted_bot_generated_images(event, prepared, application=application)
+            except Exception as error:
+                logger.debug("[CompanionV2] 引用自发图本地补齐跳过 event_ref=%s error_type=%s",
+                             event_ref, type(error).__name__)
         if (channel == "private" and not guard_outcome.get("had_active_turn")
                 and event_will_enter_astrbot_llm(event)
                 and (plain_text is not None or bool(str(prepared.get("text") or "").strip()))):
