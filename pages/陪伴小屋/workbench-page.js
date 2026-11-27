@@ -2020,6 +2020,19 @@ window.CompanionWorkbench = (() => {
       syncSourceIndeterminate(control);
     }
 
+    function syncActionsBar() {
+      const actions = mountPoint()?.querySelector(".wb-actions");
+      if (actions) {
+        const note = actions.querySelector(".wb-actions-note");
+        if (note) note.textContent = dirty() ? "有未保存的改动" : "与已保存一致";
+        const reset = actions.querySelector('[data-wb-action="reset"]');
+        if (reset) reset.disabled = !dirty();
+        actions.classList?.toggle?.("is-dirty", dirty() || state.stale || Object.keys(state.conflicts).length > 0 || state.busy);
+      }
+      updateSectionCounts();
+      emitState();
+    }
+
     function onInput(event) {
       const el = event.target;
       /* Native choice controls emit `input` before `change`. Repainting here
@@ -2074,6 +2087,7 @@ window.CompanionWorkbench = (() => {
         const row = el.closest(".wb-field");
         if (row) row.classList.toggle("is-dirty", state.base && result.value !== state.base[name]);
         applySourceValue(control, result.value);
+        syncActionsBar();
         return;
       }
       if (item.input === "identity-checklist" && el.type === "checkbox") {
@@ -2087,6 +2101,7 @@ window.CompanionWorkbench = (() => {
         if (row) row.classList.toggle("is-dirty", state.base && raw !== state.base[name]);
         const count = control?.querySelector(".wb-source-count");
         if (count) count.textContent = `已选 ${selected.length} 项`;
+        syncActionsBar();
         return;
       }
       const raw = item.kind === "bool" ? el.checked
@@ -2147,16 +2162,7 @@ window.CompanionWorkbench = (() => {
           if (noticeNode) noticeNode.textContent = state.notice;
         }
       }
-      const actions = mountPoint()?.querySelector(".wb-actions");
-      if (actions) {
-        const note = actions.querySelector(".wb-actions-note");
-        if (note) note.textContent = dirty() ? "有未保存的改动" : "与已保存一致";
-        const reset = actions.querySelector('[data-wb-action="reset"]');
-        if (reset) reset.disabled = !dirty();
-        actions.classList?.toggle?.("is-dirty", dirty() || state.stale || Object.keys(state.conflicts).length > 0 || state.busy);
-      }
-      updateSectionCounts();
-      emitState();
+      syncActionsBar();
     }
 
     function onClick(event) {

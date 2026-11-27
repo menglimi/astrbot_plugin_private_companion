@@ -397,6 +397,10 @@
   border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line-firm));
   box-shadow:var(--t-shadow-lift);
 }
+/* 外层已自带卡片壳的专题嵌入区（如预算卡）：去重内层分组卡、动作条外框并保留胶囊图例内边距。 */
+.models-budget-section .wb-card:not(.wb-journal):not(.wb-policy) .wb-group{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.models-budget-section .wb-card .wb-actions,.models-budget-section .wb-card .wb-actions.is-dirty{position:static;bottom:auto;padding:var(--sp-3) 0 0;border:0;border-top:1px solid var(--t-line);border-radius:0;background:transparent;box-shadow:none}
+.models-budget-section .wb-card .wb-rail-legend{padding:var(--sp-1) var(--sp-3);margin:0 0 var(--sp-2)}
 /* 面板右下角还有那间小屋子（见 shell.css 的画中画）：动作条把文字让开，
    按钮始终在左边，不会被它压住。 */
 @media (min-width:761px){
