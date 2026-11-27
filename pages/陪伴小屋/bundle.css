@@ -9997,9 +9997,10 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   --m-shadow:var(--t-shadow);
   --m-ease-out:cubic-bezier(0.22,1,0.36,1);
   --m-ease-in:cubic-bezier(0.4,0,1,1);
-  min-width:0;color:var(--m-ink);display:grid;gap:var(--sp-3);font-size:var(--fs-body);line-height:1.6}
+  min-width:0;color:var(--m-ink);display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);font-size:var(--fs-body);line-height:1.6}
 .model-workspace{container-type:inline-size;container-name:model-workspace}
-.model-workspace-main{display:grid;gap:var(--sp-3);min-width:0}
+.model-workspace-main{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);min-width:0}
+.model-workspace-main>:where([data-quota-tabs-host],[data-quota-notice-host],[data-quota-mount]){min-width:0;max-width:100%}
 .model-workspace .model-hint{margin:var(--sp-2) 2px 0;font-size:var(--fs-tiny);color:var(--m-amber)}
 .model-workspace .model-mono{font-family:ui-monospace,Consolas,monospace;font-size:var(--fs-tiny);color:var(--m-ink2);overflow-wrap:anywhere}
 .model-workspace .model-grow{flex:1}
@@ -10031,7 +10032,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 .model-subtab-copy small{overflow:hidden;color:var(--m-ink3);font-size:var(--fs-micro);font-weight:400;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}
 .model-subtabs button.on .model-subtab-icon{background:var(--m-accent2);color:var(--t-on-solid)}
 @media(max-width:760px){.model-subtabs{grid-template-columns:minmax(0,1fr)}.model-subtab-copy small{white-space:normal}}
-.model-subpane{display:grid;gap:var(--sp-3);min-width:0}
+.model-subpane{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);min-width:0}
 /* ---- 通用件 ---- */
 .model-workspace .model-seg{display:inline-flex;background:var(--m-card2);border:1px solid var(--m-line);border-radius:var(--r-sm);padding:3px;gap:2px}
 .model-workspace .model-seg button{border:0;background:transparent;border-radius:var(--r-xs);padding:var(--sp-1) var(--sp-3);font-size:var(--fs-body);color:var(--m-ink2);cursor:pointer;transition:background-color 160ms ease,color 160ms ease,box-shadow 160ms ease}
@@ -10069,7 +10070,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 .model-alert{border:1px solid transparent;background:var(--m-amber-bg);color:var(--m-amber);border-radius:var(--r-sm);padding:var(--sp-2) var(--sp-3);font-size:var(--fs-tiny);line-height:1.6}
 .model-laya-cmd{display:block;margin-top:var(--sp-2);padding:var(--sp-2);border-radius:var(--r-xs);background:var(--m-card);white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-micro)}
 .model-alert small{display:block;margin-top:var(--sp-1);color:var(--m-ink3)}
-.model-card{background:var(--m-card);border:1px solid var(--m-line);border-radius:var(--m-r);box-shadow:var(--m-shadow);padding:var(--sp-4) var(--sp-4);display:grid;gap:var(--sp-3)}
+.model-card{background:var(--m-card);border:1px solid var(--m-line);border-radius:var(--m-r);box-shadow:var(--m-shadow);padding:var(--sp-4) var(--sp-4);display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);min-width:0}
 .model-phead{display:flex;align-items:flex-start;gap:var(--sp-3);flex-wrap:wrap}
 .model-phead .model-grow{flex:1;min-width:0}
 .model-phead h3{margin:var(--sp-1) 0 0;font-size:var(--fs-lead);font-weight:600}
@@ -10844,7 +10845,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 .model-adv.is-open>.model-adv-shell,.model-adv[open]>.model-adv-shell{grid-template-rows:1fr;opacity:1;pointer-events:auto;transition:grid-template-rows 260ms var(--m-ease-out),opacity 200ms ease-out}
 .model-adv-inner{overflow:hidden;min-height:0}
 .model-adv.is-open:not(.is-animating)>.model-adv-shell>.model-adv-inner,.model-adv[open]:not(.is-animating)>.model-adv-shell>.model-adv-inner{overflow:visible}
-.model-adv-body{display:grid;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4) var(--sp-4);border-top:1px solid var(--m-line)}
+.model-adv-body{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);min-width:0;padding:var(--sp-3) var(--sp-4) var(--sp-4);border-top:1px solid var(--m-line)}
 .model-inspector textarea{min-height:180px;width:100%}
 .model-char-count{font-size:var(--fs-micro);color:var(--m-ink3);font-family:var(--numeric-font);text-align:right}
 .model-policy-link{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;padding:var(--sp-3) var(--sp-4);border:1px solid var(--m-line);border-radius:var(--r-md);background:var(--m-card2)}
@@ -12768,6 +12769,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   container-type: inline-size;
   container-name: quota-wb;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-3);
   min-width: 0;
 }
@@ -12803,6 +12805,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 /* ---------- 顶部英雄区与 4 枚 KPI 轻卡 ---------- */
 .qw-hero {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-3);
   padding: var(--sp-4);
   border: 1px solid var(--t-line);
@@ -12818,10 +12821,12 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   justify-content: space-between;
   gap: var(--sp-3);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .qw-hero-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
   min-width: 0;
   flex: 1 1 260px;
@@ -12854,7 +12859,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .qw-btn {
@@ -13004,6 +13011,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 .qw-kpi {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
   align-content: start;
   padding: var(--sp-3);
@@ -13052,7 +13060,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 /* 陪伴余额感知策略条 */
 .qw-awareness-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-3);
+  min-width: 0;
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid color-mix(in srgb, var(--t-accent) 26%, var(--t-line));
   border-radius: var(--r-sm);
@@ -13126,9 +13136,11 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 .qw-empty {
   grid-column: 1 / -1;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   text-align: center;
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-6) var(--sp-4);
   border: 1px dashed var(--t-line-firm);
   border-radius: var(--r-md);
@@ -13268,6 +13280,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   min-width: 0;
   flex: 1 1 auto;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 
@@ -13364,7 +13377,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 /* 余额数字与进度条 */
 .qw-balance-block {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
+  min-width: 0;
 }
 
 .qw-balance-row {
@@ -13468,7 +13483,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 .qw-progress-wrap {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
+  min-width: 0;
 }
 
 .qw-progress-track {
@@ -13558,7 +13575,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 /* 诊断与一键修复卡 */
 .qw-error-box {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid color-mix(in srgb, var(--t-risk) 30%, var(--t-line));
   border-radius: var(--r-xs);
@@ -13854,7 +13873,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 .qw-provider-option {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
+  min-width: 0;
   text-align: left;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--t-line);
@@ -13935,6 +13956,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 /* 表单字段 */
 .qw-field {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-1);
   min-width: 0;
 }
@@ -14046,7 +14068,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 /* 测试结果预览卡 */
 .qw-test-preview {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
+  min-width: 0;
   padding: var(--sp-3);
   border-radius: var(--r-sm);
   border: 1px solid color-mix(in srgb, var(--t-ok) 32%, var(--t-line));
@@ -14088,6 +14112,7 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 
 .perception-quota-bridge-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   min-width: 0;
   flex: 1 1 220px;
@@ -14114,6 +14139,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 }
 
 @container quota-wb (max-width: 520px) {
+  .qw-toolbar {
+    width: 100%;
+  }
   .qw-kpis {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -14124,6 +14152,10 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
     padding: var(--sp-3);
   }
   .qw-card-head {
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  .qw-card-foot {
     flex-wrap: wrap;
     gap: var(--sp-2);
   }
@@ -14211,9 +14243,11 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   .qw-foot-actions {
     flex-wrap: wrap;
   }
+  .qw-btn,
+  .qw-toggle-pill,
   .qw-btn.small,
   .qw-chip-check {
-    min-height: 34px;
+    min-height: 44px;
   }
 }
 
@@ -25179,29 +25213,30 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
     max-width: 100%;
   }
   #homeShell .rail {
-    position: static;
+    position: sticky;
+    top: 0;
+    left: auto;
+    right: auto;
+    bottom: auto;
     height: auto;
+    width: auto;
     flex-direction: row;
     align-items: center;
-    /* 瀵艰埅鏈韩鏄í鍚戞粴鍔ㄦ潯锛堣涓嬮潰鐨?#shellNav锛夛紝宸︽爮涓嶅啀鏁翠綋婊氬姩锛?       鍚﹀垯鍝佺墝涓庢悳绱細璺熺潃涓€璧锋粦璧般€?*/
+    gap: var(--sp-1);
     overflow: visible;
-    padding:var(--sp-1) var(--sp-2);
+    padding: max(var(--sp-1), env(safe-area-inset-top)) var(--sp-2) var(--sp-1);
     border-right: 0;
     border-bottom: 1px solid var(--t-line);
-    /* styles.css 鍦ㄧ獎灞忔妸 .rail 鏀规垚璐村簳鐨勬í鏉★紙top:auto;bottom:0;left:0;
-       right:0;height:76px锛夈€傜壒寮傛€т笂鎴戜滑璧紝浣?bottom/right 杩欎簺
-       灞呬腑瀵归綈鐨勬棫鍊艰鏄惧紡娓呮帀锛屽惁鍒?sticky 涔嬪悗浠嶄細琚畠浠媺鍋忋€?*/
-    inset: auto;
-    width: auto;
-    z-index: 2;
+    background: color-mix(in srgb, var(--t-surface) 92%, transparent);
+    backdrop-filter: blur(10px);
+    z-index: 20;
   }
-  /* 鎵嬫満涓婂鑸浘缁忔帓鎴愪笁琛屽浘鏍囷細涓変釜鍒嗙粍鏄€愪釜鍫嗗彔鐨勫潡绾?flex锛?     姣忎釜 .shell-nav-link 鍙堝甫 width:100%锛?7 涓叆鍙ｅ悆鎺?126px 楂樺害
-     锛?90脳844 鐨?15%锛夛紝鍝佺墝鍚嶈鎸ゆ垚涓夎绔栨帓銆?     鐜板湪鍘嬫垚涓€鏉?48px 鐨勬í鍚戞粴鍔ㄦ潯锛氬搧鐗屽彧鐣欏浘鏍囷紝姣忕粍涔嬮棿涓€鏉＄珫鍒嗛殧绾匡紝
-     婊戝姩鏌ョ湅鍏ㄩ儴鍏ュ彛锛屾粴鍔ㄦ潯闅愯棌銆?*/
   #homeShell .rail-brand {
-    justify-content:center;
-    min-width:44px;min-height:44px;
-    padding:0 var(--sp-1);
+    flex: none;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 var(--sp-1);
   }
   #homeShell .rail-brand > span:not(.brand-symbol) { display: none; }
   #shellNav {
@@ -25210,30 +25245,28 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
     align-items: center;
     flex: 1 1 auto;
     min-width: 0;
-    gap:calc(var(--sp-1) * .5);
+    gap: calc(var(--sp-1) * .5);
     overflow-x: auto;
     overflow-y: hidden;
     overscroll-behavior-x: contain;
     scrollbar-width: none;
   }
   #shellNav::-webkit-scrollbar { display: none; }
-  /* 鍙崇紭娣″嚭锛屾彁绀恒€岃繕鑳藉線鍙虫粦銆嶁€斺€?7 涓叆鍙ｆ斁涓嶈繘 390px銆?*/
   #shellNav {
     -webkit-mask-image: linear-gradient(to right, black 0, black calc(100% - 18px), transparent 100%);
     mask-image: linear-gradient(to right, black 0, black calc(100% - 18px), transparent 100%);
   }
-  .shell-nav-group { flex-direction: row; gap:calc(var(--sp-1) * .5); }
-  .shell-nav-group + .shell-nav-group { margin:0 0 0 var(--sp-1); padding:0 0 0 var(--sp-1); border-top: 0; border-left: 1px solid var(--t-line); }
+  .shell-nav-group { flex-direction: row; gap: calc(var(--sp-1) * .5); }
+  .shell-nav-group + .shell-nav-group { margin: 0 0 0 var(--sp-1); padding: 0 0 0 var(--sp-1); border-top: 0; border-left: 1px solid var(--t-line); }
   .shell-nav-title { display: none; }
-  /* 鎵嬫満涓婃槸鍥炬爣 + 鏂囧瓧涓よ锛屼笉鍐嶅彧鐣欏浘鏍囷細19 涓叆鍙ｉ噷鏈夈€屼簨瀹炰笌缁忓巻銆?     銆屾ā鍨嬩笌杩炴帴銆嶈繖绫昏嚜閫夊浘鏍囷紝鍙粰鍥炬爣绛変簬璁╀汉鐚溿€傚搴︽寜鏈€闀挎爣绛?     锛堛€屽瑙備笌璁剧疆銆? 涓瓧锛夌暀锛屾暣鏉′粛鍙í鍚戞粦鍔ㄣ€?*/
   .shell-nav-link {
     flex: 0 0 auto;
     flex-direction: column;
     width: auto;
-    min-width: 58px;
-    min-height: 52px;
+    min-width: 54px;
+    min-height: 48px;
     justify-content: center;
-    gap:calc(var(--sp-1) * .5);
+    gap: calc(var(--sp-1) * .5);
     padding: var(--sp-1) var(--sp-2);
   }
   .shell-nav-link span {
@@ -25243,8 +25276,38 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
     white-space: nowrap;
   }
   .shell-nav-link i { width: 18px; height: 18px; }
-  .rail-foot { margin:0 0 0 var(--sp-1); flex-direction: row; border-top: 0; padding: 0 0 0 var(--sp-1); border-left: 1px solid var(--t-line); }
-  .rail-foot .shell-nav-link { width: auto; justify-content: center; }
+  .rail-foot {
+    margin: 0 0 0 var(--sp-1);
+    flex-direction: row;
+    flex: none;
+    gap: var(--sp-1);
+    border-top: 0;
+    padding: 0 0 0 var(--sp-1);
+    border-left: 1px solid var(--t-line);
+  }
+  .rail-foot .shell-nav-link {
+    position: relative;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+    align-items: center;
+    border-radius: var(--r-sm);
+  }
+  .rail-foot .shell-nav-link > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .rail-foot .shell-nav-link :is(i, svg) { width: 19px; height: 19px; }
   .rail-foot .rail-note { display: none; }
 
   /* 棣栭〉淇℃伅椤哄簭锛氬皬灞?鈫?姝ゅ埢鐨勭姸鎬佷笌浠婃棩瀹夋帓 鈫?瀹跺叿鐩綍銆?     閫熻鏉″睘浜庛€岄€涘鍏枫€嶏紝鎺掑湪鐘舵€佷箣鍓嶄細鎶婃渶璇ョ湅鐨勫唴瀹规帹鍒颁袱灞忎箣鍚庛€?     .stage-region 鐢?display:contents 鎷嗗紑锛岃瀹冪殑涓夊潡鐩存帴鎴愪负鏍呮牸椤癸紝
@@ -25273,18 +25336,17 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   .stage-furniture-strip::-webkit-scrollbar { display: none; }
   .stage-furniture-strip button {
     flex: 0 0 auto;
-    min-height:38px;
-    scroll-snap-align:start;
+    min-height: 44px;
+    scroll-snap-align: start;
   }
-  /* 鎵嬫満涓婄殑鎿嶄綔鎸夐挳鑷冲皯缁欏埌鎺ヨ繎 40px 鐨勭旱鍚戣Е鎺ч潰锛涙í鍚戜粛淇濇寔绱у噾銆?*/
-  .stage-overlay-button { min-height:38px; }
-  #shellPanel .button.small { min-height:38px; }
-  .search-scope button { min-height:36px; }
+  .stage-overlay-button { min-height: 44px; }
+  #shellPanel .button.small { min-height: 44px; }
+  .search-scope button { min-height: 44px; }
   .rail-brand,
   .rail-foot .shell-nav-link,
   .stage-overlay-button,
   .stage-furniture-strip button,
-  #shellPanel .button.small { touch-action:manipulation; }
+  #shellPanel .button.small { touch-action: manipulation; }
 
 
 }
@@ -25309,7 +25371,41 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   display: flex;
   flex-direction: column;
 }
-#homeShell[data-away="true"] .shell-panel-body { flex: 1 1 auto; }
+#homeShell[data-away="true"] .shell-panel-body { flex: 1 1 auto; min-width: 0; }
+/* 全局防溢出护栏：零优先级为单列结构性 Grid 与动态挂载宿主锁死 minmax(0, 1fr) 与 min-width: 0，
+   不覆盖任何显式多列布局，彻底阻断内部宽内容反向撑爆网格轨道。 */
+#homeShell .shell-panel-body > :where(*) { min-width: 0; max-width: 100%; }
+:where(
+  .maint-board,
+  .action-page,
+  .ap-page,
+  .decision-page,
+  .expression-page,
+  .perception-config-workspace,
+  .output-page,
+  .pw-root,
+  .self-page,
+  .perception-page,
+  .storage-dashboard,
+  .tuning-dashboard,
+  .understanding-page,
+  .phone-usage-page,
+  .phone-setup,
+  .host-options-panel,
+  .care,
+  .model-workspace,
+  .model-workspace-main,
+  .qw-main,
+  .qw-hero,
+  .setup-progress,
+  .wb-source-picker,
+  .wb-source-documents,
+  .wb-line-list-editor,
+  .wb-chipset
+) {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
 
 /* 缩略时关闭 3D 操作，由卡片处理返回、角色切换和拖动。 */
 #homeShell[data-away="true"] .stage-region .voxel-room { pointer-events: none; }
@@ -25501,6 +25597,7 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
 /* 鏍囬涓庤鏄庢槸涓€缁勶紝璇存槑涓嶈琚彸渚ф搷浣滄寜閽尋鎴愪竴琛岀渷鐣ュ彿銆?*/
 .shell-panel-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap:calc(var(--sp-1) * .5);
   flex: 1 1 auto;
   min-width: 0;
@@ -25605,7 +25702,7 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
 .life-routine-config { margin-top:var(--sp-5); padding-top:var(--sp-5); border-top: 1px solid var(--t-line); }
 
 /* 瀹跺叿璇存槑瑙嗗浘锛氫笉鐢ㄩ厤缃帶浠讹紝鑰屾槸涓€娈佃鏄庡姞鍑犱釜鐪熷疄鍏ュ彛銆?*/
-.furniture-brief { display: grid; gap:var(--sp-3); }
+.furniture-brief { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); min-width: 0; }
 .furniture-brief-lead {
   display: flex;
   gap:var(--sp-3);
@@ -25829,12 +25926,24 @@ body.room-editing-exit .shell-side { pointer-events: none; }
   background: transparent;
 }
 
-/* 缩略卡片的角色名始终可见；空白区域保留返回小屋和拖动行为。 */
+/* 缩略卡片的角色名始终可见；空白区域保留返回小屋和拖动行为。
+   桌面端维持 176×104 画中画；手机端（<=760px）离家默认收起为 44px 迷你胶囊，
+   点击丝滑展开 160×104 预览且带显式 44×44 收起按钮，收起态清空 --shell-pip-w/h。 */
 .stage-role-card-heading { display: none; }
+.stage-role-card-actions { display: inline-flex; align-items: center; gap: var(--sp-1); flex: none; }
+.stage-role-card-collapse { display: none; }
+.stage-role-card-pill { display: none; }
 .stage-role-card-menu[hidden] { display: none; }
 body:not(.room-editing) #homeShell[data-away="true"] {
-  --shell-pip-w: 176px;
-  --shell-pip-h: 104px;
+  --shell-pip-card-w: 176px;
+  --shell-pip-card-h: 104px;
+  --shell-pip-w: var(--shell-pip-card-w);
+  --shell-pip-h: var(--shell-pip-card-h);
+}
+body:not(.room-editing) #homeShell[data-away="true"][data-pip-collapsed="true"],
+body:not(.room-editing) #homeShell[data-away="true"]:has(.stage-region[data-role-card-docked="true"]) {
+  --shell-pip-w: 0px;
+  --shell-pip-h: 0px;
 }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   position: fixed;
@@ -25842,8 +25951,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   top: var(--role-card-top, auto);
   right: var(--role-card-right, var(--shell-pad));
   bottom: var(--role-card-bottom, var(--shell-pad));
-  width: min(var(--shell-pip-w), var(--role-card-max-width, 100vw));
-  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  width: min(var(--shell-pip-card-w), var(--role-card-max-width, 100vw));
+  height: min(var(--shell-pip-card-h), var(--role-card-max-height, 100dvh));
   gap: 0;
   z-index: 15;
   visibility: visible;
@@ -25852,8 +25961,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   transition: opacity var(--dur-fast, .16s ease);
 }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
-  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
-  min-height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  height: min(var(--shell-pip-card-h), var(--role-card-max-height, 100dvh));
+  min-height: min(var(--shell-pip-card-h), var(--role-card-max-height, 100dvh));
   margin: 0;
   border-radius: var(--r-md);
   border-color: var(--t-line-firm, var(--t-line));
@@ -25868,8 +25977,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-heading {
   justify-content: space-between;
   position: absolute;
   z-index: 4;
-  inset: 6px 6px auto;
-  gap: 4px;
+  inset: calc(var(--sp-1) * 1.5) calc(var(--sp-1) * 1.5) auto;
+  gap: var(--sp-1);
   pointer-events: none;
 }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region:hover,
@@ -25878,12 +25987,22 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within 
   padding-bottom: calc(var(--sp-6) + max(var(--shell-pip-h, 118px), 118px) + var(--shell-pad));
   scroll-padding-bottom: calc(var(--sp-6) + max(var(--shell-pip-h, 118px), 118px) + var(--shell-pad));
 }
+#homeShell[data-away="true"][data-pip-collapsed="true"] .shell-panel-body,
+#homeShell[data-away="true"]:has(.stage-region[data-role-card-docked="true"]) .shell-panel-body {
+  padding-bottom: calc(var(--sp-6) + var(--sp-4));
+  scroll-padding-bottom: calc(var(--sp-6) + var(--sp-4));
+}
+#homeShell[data-away="true"][data-pip-collapsed="true"] .self-page:not(.is-questionnaire-focus),
+#homeShell[data-away="true"]:has(.stage-region[data-role-card-docked="true"]) .self-page:not(.is-questionnaire-focus) {
+  padding-bottom: var(--sp-6);
+  scroll-padding-bottom: var(--sp-6);
+}
 .stage-role-card-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 3px 6px;
+  padding: calc(var(--sp-1) * .75) calc(var(--sp-1) * 1.5);
   border-radius: var(--r-sm);
   color: var(--t-text);
   background: color-mix(in srgb, var(--t-surface) 92%, transparent);
@@ -25898,7 +26017,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within 
   flex: 0 0 28px;
   width: 28px;
   height: 28px;
-  padding: 5px;
+  padding: calc(var(--sp-1) * 1.25);
   border: 1px solid var(--t-line);
   border-radius: var(--r-sm);
   background: var(--t-surface);
@@ -25908,7 +26027,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within 
   pointer-events: none;
   transition: opacity var(--dur-fast, .16s ease);
 }
-.stage-role-card-switch :is(i, svg) { width: 16px; height: 16px; pointer-events: none; }
+.stage-role-card-switch :is(i, svg),
+.stage-role-card-collapse :is(i, svg) { width: 16px; height: 16px; pointer-events: none; }
 .stage-region:hover .stage-role-card-switch,
 .stage-region:has(:focus-visible) .stage-role-card-switch,
 .stage-role-card-switch[aria-expanded="true"] {
@@ -25917,11 +26037,13 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within 
 }
 .stage-role-card-switch:hover { color: var(--t-accent-ink); border-color: var(--t-accent); }
 .stage-role-card-switch:focus-visible,
+.stage-role-card-collapse:focus-visible,
+.stage-role-card-pill:focus-visible,
 .stage-role-card-reset:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dragging="true"] .room-stage { cursor: grabbing; }
 .stage-role-card-menu {
   position: fixed;
-  z-index: 16;
+  z-index: 22;
   box-sizing: border-box;
   width: min(300px, calc(100vw - 16px));
   padding: var(--sp-3);
@@ -25937,19 +26059,171 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .stage-role-card-status { margin: var(--sp-2) 0; color: var(--t-text-soft); line-height: 1.6; }
 .stage-role-card-reset {
   border: 0;
-  padding: 4px 0;
+  padding: var(--sp-1) 0;
   background: transparent;
   color: var(--t-accent-ink);
   font: inherit;
   cursor: pointer;
 }
+
+/* 移动端悬浮小屋迷你胶囊（收起态） */
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-collapsed="true"] {
+  left: auto;
+  top: auto;
+  right: max(var(--shell-pad), env(safe-area-inset-right));
+  bottom: max(var(--shell-pad), env(safe-area-inset-bottom));
+  width: auto;
+  height: auto;
+  opacity: 1;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-collapsed="true"] .room-stage {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: var(--shell-pip-card-w);
+  height: var(--shell-pip-card-h);
+  min-height: var(--shell-pip-card-h);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: scale(.86) translateY(8px);
+  transform-origin: bottom right;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-pill:not([hidden]) {
+  position: relative;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  height: 44px;
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-1);
+  border: 1px solid color-mix(in srgb, var(--t-accent) 28%, var(--t-line-firm));
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--t-surface-raised) 94%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--t-shadow-lift);
+  color: var(--t-text-strong);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  transition: transform var(--dur-fast) ease, border-color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.stage-role-card-pill:hover {
+  border-color: var(--t-accent);
+  background: var(--t-surface-raised);
+}
+.stage-role-card-pill:active { transform: scale(.96); }
+.stage-role-card-pill-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: var(--r-pill);
+  border: 1px solid color-mix(in srgb, var(--t-accent) 28%, var(--t-line));
+  background: var(--t-accent-quiet);
+  color: var(--t-accent-ink);
+  font-size: var(--fs-tiny);
+  font-weight: 700;
+  line-height: 1;
+}
+.stage-role-card-pill-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--t-ok);
+  box-shadow: 0 0 0 2px var(--t-surface-raised);
+}
+.stage-role-card-pill-label {
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--t-text-strong);
+}
+
 @media (max-width: 760px) {
-  body:not(.room-editing) #homeShell[data-away="true"] { --shell-pip-w: 160px; --shell-pip-h: 98px; }
+  body:not(.room-editing) #homeShell[data-away="true"] {
+    --shell-pip-card-w: 160px;
+    --shell-pip-card-h: 104px;
+    --shell-pip-w: var(--shell-pip-card-w);
+    --shell-pip-h: var(--shell-pip-card-h);
+  }
+  body:not(.room-editing) #homeShell[data-away="true"][data-pip-collapsed="true"],
+  body:not(.room-editing) #homeShell[data-away="true"]:has(.stage-region[data-role-card-docked="true"]) {
+    --shell-pip-w: 0px;
+    --shell-pip-h: 0px;
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-heading {
+    inset: 0 0 auto;
+    gap: 0;
+    align-items: flex-start;
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-name {
+    margin: var(--sp-1) 0 0 var(--sp-1);
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-actions { gap: 0; }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-switch,
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-collapse {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: var(--sp-2);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--t-text-soft);
+    opacity: 1;
+    pointer-events: auto;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-switch::before,
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-collapse::before {
+    content: "";
+    position: absolute;
+    inset: var(--sp-1);
+    border: 1px solid var(--t-line);
+    border-radius: var(--r-sm);
+    background: color-mix(in srgb, var(--t-surface) 92%, transparent);
+    z-index: -1;
+    transition: border-color var(--dur-fast) ease, background var(--dur-fast) ease;
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-switch:hover::before,
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-collapse:hover::before {
+    border-color: var(--t-accent);
+    background: var(--t-surface);
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-collapse:hover {
+    color: var(--t-accent-ink);
+  }
+  body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-handle:not([hidden]) {
+    width: 36px;
+  }
+  .stage-role-card-menu select,
+  .stage-role-card-reset { min-height: 44px; }
 }
 @media (hover: none), (pointer: coarse) {
   .stage-role-card-switch { opacity: 1; pointer-events: auto; }
   #homeShell[data-away="true"] .stage-region .room-stage::after { opacity: 1; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .stage-role-card-pill { transition: none; }
+}
+:root:is([data-motion="low"], [data-motion="off"]) .stage-role-card-pill { transition: none; }
 
 /* 两侧贴靠只留下把手；裁剪移动中的场景，避免遮挡导航或制造横向滚动。 */
 .stage-role-card-handle { display:none; }

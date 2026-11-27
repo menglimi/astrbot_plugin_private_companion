@@ -387,9 +387,14 @@
         <div class="room-stage" id="stageScene">
           <div class="stage-role-card-heading" aria-label="当前小屋角色">
             <span class="stage-role-card-name" data-role-card-name>尚未选择角色</span>
-            <button class="stage-role-card-switch" type="button" data-role-card-switch aria-expanded="false" aria-controls="roleCardMenu" title="切换小屋角色">
-              <i data-lucide="repeat-2" aria-hidden="true"></i><span class="sr-only">切换小屋角色</span>
-            </button>
+            <div class="stage-role-card-actions">
+              <button class="stage-role-card-switch" type="button" data-role-card-switch aria-expanded="false" aria-controls="roleCardMenu" title="切换小屋角色">
+                <i data-lucide="repeat-2" aria-hidden="true"></i><span class="sr-only">切换小屋角色</span>
+              </button>
+              <button class="stage-role-card-collapse" type="button" data-role-card-collapse aria-label="收起小屋预览" title="收起为迷你胶囊">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg><span class="sr-only">收起小屋预览</span>
+              </button>
+            </div>
           </div>
           <div id="stageRole" class="stage-role" aria-live="polite"><h2 class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>陪伴的小屋</span></h2></div>
           <div class="voxel-room" data-voxel-room role="group" aria-label="可旋转、可点选家具的体素小屋"></div>
@@ -406,7 +411,14 @@
         </div>
         <div class="stage-furniture-strip home-only" id="stageFurniture" aria-label="小屋家具"></div>
         <button class="stage-role-card-handle" type="button" data-role-card-handle hidden aria-label="展开小屋卡片" title="点击展开小屋卡片">
-          <i data-lucide="chevron-left" aria-hidden="true"></i><span class="sr-only">展开小屋卡片</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span class="sr-only">展开小屋卡片</span>
+        </button>
+        <button class="stage-role-card-pill" type="button" data-role-card-pill hidden aria-label="展开小屋预览" aria-expanded="false" aria-controls="stageScene" title="展开小屋预览">
+          <span class="stage-role-card-pill-avatar" aria-hidden="true">
+            <span class="stage-role-card-pill-initial" data-role-card-pill-initial>屋</span>
+            <span class="stage-role-card-pill-dot"></span>
+          </span>
+          <span class="stage-role-card-pill-label">小屋</span>
         </button>
         <div id="roleCardMenu" class="stage-role-card-menu" role="dialog" aria-label="切换小屋角色" hidden>
           <label for="roleCardChoice">切换小屋角色</label>

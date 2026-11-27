@@ -313,7 +313,10 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     assert.deepEqual(await page.evaluate(() => CompanionProduct.browserPreferences().room_card_position), saved);
     await page.reload();
     await page.waitForFunction(() => window.CompanionRoleCard);
+    await page.locator("[data-role-card-pill]").click();
+    await page.waitForFunction(() => !document.querySelector(".stage-region").hasAttribute("data-role-card-settling"));
     await expectLeft();
+    await page.evaluate(() => { try { sessionStorage.removeItem("companion-mobile-pip-state.v1"); } catch (_) {} });
     await page.setViewportSize({width:1000, height:700});
     await expectLeft();
     await moveCard("right");
@@ -456,6 +459,10 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.reload();
     await page.waitForFunction(() => window.CompanionRoleCard);
     assert.equal(await page.locator("[data-role-card-handle]").isVisible(), false);
+    assert.equal(await page.locator(".stage-region").getAttribute("data-role-card-collapsed"), "true");
+    assert.equal(await page.locator("[data-role-card-pill]").isVisible(), true);
+    await page.locator("[data-role-card-pill]").click();
+    await settled(page);
     const card = await page.locator("#stageScene").boundingBox();
     assert.ok(card.x >= 8 && card.x + card.width <= 392);
     await page.setViewportSize({width: 1000, height: 700});
@@ -534,13 +541,34 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.setViewportSize({width:1000, height:700});
   });
 
-  await t.test("触摸设备显示入口，点击切换不返回小屋", async () => {
+  await t.test("触摸设备默认迷你胶囊不挡内容，点击展开 160×104 与 44×44 收起/切换键，拖动停靠正常", async () => {
     const mobile = await browser.newContext({viewport: {width: 390, height: 700}, isMobile: true, hasTouch: true});
     const phone = await mobile.newPage();
     await phone.goto(url);
+    await phone.locator("[data-role-card-pill]").waitFor({state: "visible"});
+    await phone.waitForFunction(() => document.querySelector("[data-role-card-pill-initial]")?.textContent === "角");
+    assert.equal(await phone.locator(".stage-region").getAttribute("data-role-card-collapsed"), "true");
+    assert.equal(await phone.locator("#homeShell").getAttribute("data-pip-collapsed"), "true");
+    assert.equal(await phone.locator("[data-role-card-pill]").isVisible(), true);
+    assert.equal(await phone.locator("[data-role-card-pill-initial]").textContent(), "角");
+    const pillBox = await phone.locator("[data-role-card-pill]").boundingBox();
+    assert.ok(pillBox.height >= 44, `迷你胶囊高度应 >= 44px，实际 ${pillBox.height}`);
+    assert.equal(await phone.evaluate(() => getComputedStyle(document.querySelector("#homeShell")).getPropertyValue("--shell-pip-h").trim()), "0px");
+    assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+
+    await phone.locator("[data-role-card-pill]").tap();
+    await settled(phone);
     await phone.locator("[data-role-card-name]").getByText("角色甲",{exact:true}).waitFor();
+    assert.equal(await phone.locator(".stage-region").getAttribute("data-role-card-collapsed"), "false");
+    assert.equal(await phone.locator("#homeShell").getAttribute("data-pip-collapsed"), "false");
     assert.equal(await phone.locator("#stageScene").isVisible(), true);
+    const collapseBox = await phone.locator("[data-role-card-collapse]").boundingBox();
+    const switchBox = await phone.locator("[data-role-card-switch]").boundingBox();
+    assert.ok(collapseBox.width >= 44 && collapseBox.height >= 44, "收起按钮热区应 >= 44×44px");
+    assert.ok(switchBox.width >= 44 && switchBox.height >= 44, "切换按钮热区应 >= 44×44px");
     let box = await phone.locator("#stageScene").boundingBox();
+    assert.ok(Math.abs(box.width - 160) <= 1 && Math.abs(box.height - 104) <= 1, `手机展开预览应为 160×104，实际 ${box.width}×${box.height}`);
+
     await phone.mouse.move(box.x + 50, box.y + 70);
     await phone.mouse.down();
     await phone.mouse.move(0, 0, {steps: 5});
@@ -584,6 +612,12 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await phone.locator("[data-role-card-handle]").waitFor({state:"hidden",timeout:5000});
     await settled(phone);
     assert.equal(await phone.locator("[data-role-card-handle]").isVisible(), false);
+
+    await phone.locator("[data-role-card-collapse]").tap();
+    assert.equal(await phone.locator(".stage-region").getAttribute("data-role-card-collapsed"), "true");
+    assert.equal(await phone.locator("[data-role-card-pill]").isVisible(), true);
+    assert.equal(await phone.locator("[data-role-card-pill-initial]").textContent(), "角");
+    assert.equal(await phone.evaluate(() => window.homeClicks), 0);
     await mobile.close();
   });
 
