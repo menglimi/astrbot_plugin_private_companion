@@ -287,11 +287,41 @@ window.CompanionSelfReviewPage = (() => {
     root.innerHTML=`<div class="sr-toolbar"><span>${data.sources.length} 个记录归属${data.loading?" · 正在读取":""}</span>
       <span class="refresh-cluster">${data.refreshedAt?`<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>`:""}<button class="lh-refresh${data.refreshing?" is-refreshing":""}" type="button" data-review-refresh aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing?"true":"false"}" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></span></div>
       ${blind?failed:read}
-      ${!blind&&data.sources.some(source=>source.next)?`<div class="sr-more"><button class="button small" type="button" data-review-more ${data.loading?"disabled":""}>加载更多</button></div>`:""}`;
+      ${!blind&&(window.CompanionAutoScroll
+        ? (data.sources.some(source=>source.next)||data.items.length||data.stopped.length ? `<div class="sr-more" data-self-review-autoscroll></div>` : "")
+        : (data.sources.some(source=>source.next) ? `<div class="sr-more"><button class="button small" type="button" data-review-more ${data.loading?"disabled":""}>加载更多</button></div>` : ""))}`;
+    syncAutoLoader();
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
     restoreView(view);
   }
   let loadGeneration = 0;
+  let autoLoader = null, appendError = false;
+  function destroyAutoLoader() {
+    try { autoLoader?.destroy?.(); } catch (_) {}
+    autoLoader = null;
+  }
+  function syncAutoLoader() {
+    const host = root?.querySelector?.("[data-self-review-autoscroll]");
+    if (!host || !window.CompanionAutoScroll || !data) { destroyAutoLoader(); return; }
+    if (!autoLoader) {
+      autoLoader = window.CompanionAutoScroll.mount({
+        host,
+        hasMore: () => Boolean(data?.sources?.some(source => Boolean(source.next))),
+        isLoading: () => Boolean(data?.loading || data?.writing),
+        hasError: () => appendError,
+        errorMessage: () => appendError ? (data?.notice || "加载更多复盘记录失败，已保留已加载内容。") : "",
+        loadedCount: () => (data?.items?.length || 0) + (data?.stopped?.length || 0),
+        cursor: () => (data?.sources || []).map(source => `${source.key}:${source.next || ""}`).sort(),
+        itemLabel: "条复盘",
+        manualButtonAttrs: () => ({"data-review-more": "", ...(data?.loading ? {disabled: ""} : {})}),
+        manualButtonLabel: "加载更多",
+        onLoadMore: () => load({mode: "append"}),
+        onRetry: () => { appendError = false; return load({mode: "append"}); },
+      });
+    } else {
+      autoLoader.refresh(host);
+    }
+  }
   /* refresh 的重读页数有上限：已加载页数会被「加载更多」一路抬高，
      而刷新是写操作之后的常见路径，不能按页数无上限地串行发请求。 */
   const MAX_REFRESH_PAGES = 8;
@@ -314,9 +344,13 @@ window.CompanionSelfReviewPage = (() => {
     if (reset) {
       data.items = []; data.stopped = []; data.expired = 0; data.sourceErrors = []; data.policy = null;
       data.status = null; data.phase = "loading"; data.refreshedAt = ""; note("");
+      appendError = false; autoLoader?.reset?.();
       data.sources.forEach(source => { source.next = ""; source.pages = 0; });
     } else if (manual) {
+      appendError = false;
       note("");
+    } else if (append) {
+      appendError = false;
     }
     render();
     const targets = append ? data.sources.filter(source => source.next) : data.sources;
@@ -413,9 +447,14 @@ window.CompanionSelfReviewPage = (() => {
     /* 只要有任意一个归属真的读到了，这一页就是 ready；整轮读不到才是 failed。
        空列表只有读成功之后才能说成「暂无复盘记录」。 */
     if (targets.length) data.phase = succeeded ? "ready" : "failed";
-    if (failures.length) note(succeeded
-      ? `部分记录归属暂不可读（${failedLabels.join("、")}，${failures.length}/${targets.length}）；已显示其余记录并保留失败归属旧项。`
-      : `复盘记录暂时无法读取：${failures[0]}`, true);
+    if (failures.length) {
+      if (append) appendError = true;
+      note(succeeded
+        ? `部分记录归属暂不可读（${failedLabels.join("、")}，${failures.length}/${targets.length}）；已显示其余记录并保留失败归属旧项。`
+        : `复盘记录暂时无法读取：${failures[0]}`, true);
+    } else {
+      appendError = false;
+    }
     data.loading = false;
     data.refreshing = false;
     if (manual && !failures.length) data.refreshedAt = formatClock();
@@ -517,6 +556,8 @@ window.CompanionSelfReviewPage = (() => {
     }
   }
   function unmount() {
+    destroyAutoLoader();
+    appendError = false;
     generation++;
     loadGeneration++;
     if (root) root.removeEventListener("click", onClick);

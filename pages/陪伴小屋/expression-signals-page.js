@@ -102,6 +102,44 @@ window.CompanionExpressionSignalsPage = (() => {
   let kindFilter = "all";
   let sourceFilter = "all";
   let pendingUpdate = false;
+  let autoLoader = null;
+  let appendError = false;
+  let lastVisibleCount = 0;
+  let lastActiveTotal = 0;
+  let lastRemainingCount = 0;
+  function destroyAutoLoader() {
+    try { autoLoader?.destroy?.(); } catch (_) {}
+    autoLoader = null;
+  }
+  function syncAutoLoader(visibleCount, activeTotal, remainingCount) {
+    lastVisibleCount = visibleCount;
+    lastActiveTotal = activeTotal;
+    lastRemainingCount = remainingCount;
+    const host = root?.querySelector?.("[data-signal-autoscroll]");
+    if (!host || !window.CompanionAutoScroll) { destroyAutoLoader(); return; }
+    if (!autoLoader) {
+      autoLoader = window.CompanionAutoScroll.mount({
+        host,
+        hasMore: () => hasMore(),
+        isLoading: () => Boolean(busy || writing),
+        hasError: () => appendError,
+        errorMessage: () => appendError ? (notice || "加载更多失败，已保留当前规则。") : "",
+        loadedCount: () => lastVisibleCount,
+        totalCount: () => lastActiveTotal,
+        cursor: () => Object.entries(pages).map(([sk, byState]) => [
+          sk,
+          Object.entries(byState || {}).map(([st, value]) => `${st}:${value.cursor || ""}:${value.done ? 1 : 0}`).sort(),
+        ]).sort(),
+        itemLabel: "条规则",
+        manualButtonAttrs: () => ({"data-signal-more": "", ...(busy ? {disabled: ""} : {})}),
+        manualButtonLabel: () => lastRemainingCount > 0 ? `加载更多（剩余 ${lastRemainingCount} 条）` : "加载更多",
+        onLoadMore: () => read(mountTicket, "append"),
+        onRetry: () => { appendError = false; return read(mountTicket, "append"); },
+      });
+    } else {
+      autoLoader.refresh(host);
+    }
+  }
 
   function normalizeSources(candidates) {
     if (!Array.isArray(candidates)) return [];
@@ -466,23 +504,29 @@ window.CompanionExpressionSignalsPage = (() => {
     const unavailableCount = unavailableIssues.length;
     const legacyRules = readIssues.filter(issue => issue.kind === "legacy")
       .reduce((total, issue) => total + (Number(issue.count) || 0), 0);
+    const appendFailed = mode === "append" && discovered.some(issue => issue.kind === "error");
     if (failedCount) {
       notice = failedCount === sources.length
         ? "全部来源都没有读取成功，请检查来源配置后重新读取。"
         : `${sources.length} 个来源中 ${failedCount} 个读取失败，已显示可用记录。`;
       error = true;
+      if (appendFailed) appendError = true;
     } else if (legacyRules) {
       notice = `${legacyRules} 条旧版群规则保存在旧作用域，暂未生效。`;
       error = false;
+      appendError = false;
     } else if (unavailableCount) {
       /* 全部来源都不可读时没有「其他来源」可言，别给一句自相矛盾的提示。 */
       notice = unavailableCount === sources.length
         ? "全部来源都还没有可读取的表达学习记录。"
         : formatUnavailableNotice(unavailableIssues);
       error = false;
+      appendError = false;
     } else if (!reset) {
       /* 刷新成功后把上一轮的失败提示收掉。 */
-      notice = ""; error = false;
+      notice = ""; error = false; appendError = false;
+    } else {
+      appendError = false;
     }
     if (manual && failedCount === 0) refreshedAt = formatClock();
     render();
@@ -696,7 +740,9 @@ window.CompanionExpressionSignalsPage = (() => {
     const cleanup = unavailablePending
       ? `<button type="button" class="lh-command" data-signal-cleanup ${busy || writing ? "disabled" : ""}>清理失效候选</button>` : "";
     const remainingCount = Math.max(0, activeTotal - visible.length);
-    const more = hasMore() ? `<button type="button" class="lh-signal-more lh-command" data-signal-more ${busy ? "disabled" : ""}>${remainingCount > 0 ? `加载更多（剩余 ${remainingCount} 条）` : "加载更多"}</button>` : "";
+    const more = window.CompanionAutoScroll
+      ? (hasMore() || visible.length > 0 ? `<div data-signal-autoscroll></div>` : "")
+      : (hasMore() ? `<button type="button" class="lh-signal-more lh-command" data-signal-more ${busy ? "disabled" : ""}>${remainingCount > 0 ? `加载更多（剩余 ${remainingCount} 条）` : "加载更多"}</button>` : "");
     const capacitySourceCount = Object.keys(capacityBySource).length;
     const capacityScopeNote = capacitySourceCount > 1 ? `（${capacitySourceCount} 个来源合计上限）` : "";
     const cap = capacity ? `待审与启用 ${capacity.active} / ${capacity.limit}${capacityScopeNote}${rotatedRules > 0 ? ` · 另有 ${rotatedRules} 条仅原会话窗口` : ""}` : `${items.length} 条`;
@@ -725,6 +771,7 @@ window.CompanionExpressionSignalsPage = (() => {
       ${renderEditor()}
       ${notice ? `<div class="lh-inline-status ${error ? "is-error" : ""}" role="status"><span>${e(notice)}</span>${issueList}</div>` : ""}
       ${rows || `<div class="lh-signal-empty">${busy ? "正在读取…" : kindFilter!=="all"||sourceFilter!=="all"?"当前筛选下没有表达规则":stateFilter === "pending" ? "还没有待审候选" : stateFilter === "retired" ? "还没有停用的表达规则" : stateFilter==="rejected"?"还没有拒绝的表达规则":"还没有已启用表达规则"}</div>`}${more}</section>`;
+    syncAutoLoader(visible.length, activeTotal, remainingCount);
     window.lucide?.createIcons({attrs: {"aria-hidden": "true"}});
   }
   /* 动作成功后就地把这条从它所在的状态页里摘掉：动作本身已经把它移出这个状态桶了。
@@ -991,9 +1038,9 @@ window.CompanionExpressionSignalsPage = (() => {
     if (event.target.closest("[data-share-copy]")) { void copyExport(); return; }
     if (event.target.closest("[data-share-download]")) { downloadExport(); return; }
     const stateButton = event.target.closest("[data-signal-state]");
-    if (stateButton) { const next = STATE_FILTERS.some(([key]) => key === stateButton.dataset.signalState) ? stateButton.dataset.signalState : "active"; if (next !== stateFilter) { stateFilter = next; void read(mountTicket); } return; }
+    if (stateButton) { const next = STATE_FILTERS.some(([key]) => key === stateButton.dataset.signalState) ? stateButton.dataset.signalState : "active"; if (next !== stateFilter) { stateFilter = next; appendError = false; autoLoader?.reset?.(); void read(mountTicket); } return; }
     const kindButton = event.target.closest("[data-signal-kind]");
-    if (kindButton) { const next = KIND_FILTERS.some(([key]) => key === kindButton.dataset.signalKind) ? kindButton.dataset.signalKind : "all"; if (next !== kindFilter) { kindFilter = next; void read(mountTicket); } return; }
+    if (kindButton) { const next = KIND_FILTERS.some(([key]) => key === kindButton.dataset.signalKind) ? kindButton.dataset.signalKind : "all"; if (next !== kindFilter) { kindFilter = next; appendError = false; autoLoader?.reset?.(); void read(mountTicket); } return; }
     if (event.target.closest("[data-signal-refresh]")) { void read(mountTicket, {mode: "refresh", manual: true}); return; }
     if (event.target.closest("[data-signal-more]")) { void read(mountTicket, "append"); return; }
     if (event.target.closest("[data-signal-cleanup]")) { void cleanupUnavailable(); return; }
@@ -1006,9 +1053,9 @@ window.CompanionExpressionSignalsPage = (() => {
     if (writing || transferBusy) return;
     if (updateDraft(event.target)) return;
     const dimension = event.target.closest("[data-signal-dimension-filter]");
-    if (dimension) { const next = FILTERS.some(([key]) => key === dimension.value) ? dimension.value : "all"; if (next !== filter) { filter = next; void read(mountTicket); } return; }
+    if (dimension) { const next = FILTERS.some(([key]) => key === dimension.value) ? dimension.value : "all"; if (next !== filter) { filter = next; appendError = false; autoLoader?.reset?.(); void read(mountTicket); } return; }
     const source = event.target.closest("[data-rule-source-filter]");
-    if (source) {sourceFilter=source.value;rebuildItems();render();return;}
+    if (source) {sourceFilter=source.value;autoLoader?.reset?.();rebuildItems();render();return;}
     const destination=event.target.closest("[data-share-target]");
     if(destination){importSourceKey=destination.value;importPreview=null;transferNotice="";transferError=false;return;}
     const checkbox = event.target.closest("[data-signal-export]");
@@ -1102,7 +1149,7 @@ window.CompanionExpressionSignalsPage = (() => {
     window.addEventListener?.("companion-expression-updated", onUpdated); const current = ++mountTicket;
     if (sources.length) void read(current); else { notice = "没有可读取的表达规则来源。"; error = true; render(); }
   }
-  function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources = []; getSourcesFn = null; items = []; pages = {}; capacity = null; capacityBySource = {}; rotatedBySource = {}; rotatedRules = 0; countsBySource = {}; kindCountsBySource = {}; readIssues = []; busy = false; refreshing = false; refreshedAt = ""; writing = false; transferBusy = false; dedupeOpen = false; dedupeBusy = false; dedupeAction = ""; dedupePreview = null; dedupeNotice = ""; dedupeError = false; confirming = null; pendingUpdate = false; }
+  function unmount() { destroyAutoLoader(); appendError = false; lastVisibleCount = 0; lastActiveTotal = 0; lastRemainingCount = 0; mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources = []; getSourcesFn = null; items = []; pages = {}; capacity = null; capacityBySource = {}; rotatedBySource = {}; rotatedRules = 0; countsBySource = {}; kindCountsBySource = {}; readIssues = []; busy = false; refreshing = false; refreshedAt = ""; writing = false; transferBusy = false; dedupeOpen = false; dedupeBusy = false; dedupeAction = ""; dedupePreview = null; dedupeNotice = ""; dedupeError = false; confirming = null; pendingUpdate = false; }
   /* 测试专用：页内行状态的只读快照（items 只留 key 字段），不要拿它回写页面状态。 */
   function snapshotPages() {
     return Object.fromEntries(Object.entries(pages).map(([sourceKey, byState]) => [sourceKey,

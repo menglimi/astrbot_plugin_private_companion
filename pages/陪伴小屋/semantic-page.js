@@ -132,6 +132,49 @@ window.CompanionSemanticPage = (() => {
      否则用户刚填的值会被服务端旧值覆盖。 */
   let root,scope,abort,state,kind="reaction",view="all",collectionFilter="all",selectedReactionIds=new Set(),after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,refreshing=false,refreshedAt="",editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
   let drawerEl=null,drawerCloseTimer=0,drawerOpenFrame=0;
+  let autoLoader=null,appendError=false,appendErrorText="";
+  function destroyAutoLoader(){
+    try{autoLoader?.destroy?.();}catch(_){}
+    autoLoader=null;
+  }
+  function hasMoreItems(){
+    return view==="learning"?Object.values(after).some(Boolean):Boolean(state?.next_after);
+  }
+  function totalSemanticCount(){
+    const loadedCount=(state?.items||[]).length;
+    const catalog=state?.catalog||{};
+    if(view==="expression")return Math.max(loadedCount,Number(catalog.reaction?.total||0));
+    if(view==="learning"){
+      const group=target()?.scope_kind==="group";
+      const total=Number(catalog.reaction?.total||0)+(group?Number(catalog.slang?.total||0):0);
+      return Math.max(loadedCount,total);
+    }
+    const total=Number(catalog[kind]?.total||0);
+    return Math.max(loadedCount,total);
+  }
+  function syncAutoLoader(){
+    const host=root?.querySelector?.("[data-semantic-autoscroll]");
+    if(!host||!window.CompanionAutoScroll){destroyAutoLoader();return;}
+    if(!autoLoader){
+      autoLoader=window.CompanionAutoScroll.mount({
+        host,
+        hasMore:hasMoreItems,
+        isLoading:()=>busy,
+        hasError:()=>appendError,
+        errorMessage:()=>appendErrorText,
+        loadedCount:()=>(state?.items||[]).length,
+        totalCount:totalSemanticCount,
+        cursor:()=>view==="learning"?Object.entries(after).sort():(state?.next_after||""),
+        itemLabel:view==="expression"?"项素材":"条语义",
+        manualButtonAttrs:()=>({"data-semantic":"more",...(busy?{disabled:""}:{})}),
+        manualButtonLabel:"加载更多",
+        onLoadMore:()=>load("append"),
+        onRetry:()=>{appendError=false;appendErrorText="";return load("append");},
+      });
+    }else{
+      autoLoader.refresh(host);
+    }
+  }
   function reducedMotion(){
     if(typeof document==="undefined")return true;
     return document.documentElement?.dataset?.motion==="off"
@@ -207,6 +250,7 @@ window.CompanionSemanticPage = (() => {
   function commitView(mainHtml) {
     if(typeof document==="undefined"||typeof root?.insertAdjacentHTML!=="function"){
       root.innerHTML=mainHtml+(editing?editor(editing):"");
+      syncAutoLoader();
       window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
       return;
     }
@@ -246,6 +290,7 @@ window.CompanionSemanticPage = (() => {
         drawerEl.innerHTML="";
       }
     }
+    syncAutoLoader();
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
   }
   function pendingAnalysis(item) {
@@ -292,7 +337,11 @@ window.CompanionSemanticPage = (() => {
       }).join('');
       html+='<div class="semantic-list">'+rows+'</div>';
       if(!state.items?.length)html+='<p class="semantic-learning-empty">暂无语义条目</p>';
-      if(Object.values(after).some(Boolean))html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
+      if(window.CompanionAutoScroll){
+        if(Object.values(after).some(Boolean)||state.items?.length)html+='<div class="semantic-autoscroll" data-semantic-autoscroll></div>';
+      }else if(Object.values(after).some(Boolean)){
+        html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
+      }
     }
     html+='</section>';
     }
@@ -325,9 +374,9 @@ window.CompanionSemanticPage = (() => {
     if(!current())return;
     root?.classList?.toggle?.("semantic-expression-view", view === "expression");
     root?.classList?.toggle?.("semantic-learning-view", view !== "expression");
-    if(!product.hosted()){clearDrawerTimers();drawerEl=null;root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div><p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="semantic-actions"><button class="button" type="button" data-workspace-retry>重新读取</button></div>';return;}
+    if(!product.hosted()){destroyAutoLoader();clearDrawerTimers();drawerEl=null;root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div><p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="semantic-actions"><button class="button" type="button" data-workspace-retry>重新读取</button></div>';return;}
     if(!state){
-      clearDrawerTimers();drawerEl=null;
+      destroyAutoLoader();clearDrawerTimers();drawerEl=null;
       const action=busy?"":'<div class="semantic-actions"><button class="button" type="button" data-semantic="retry">重新读取</button></div>';
       root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div>'
         +'<p class="memory-notice" role="status">'+escape(message||"正在读取实际配置…")+'</p>'+action;
@@ -437,7 +486,11 @@ window.CompanionSemanticPage = (() => {
           :'<button class="button small" type="button" data-semantic-open="'+escape(item.id)+'">编辑</button>';
         return '<article class="semantic-row'+(awaiting?' is-awaiting-card':'')+'" data-semantic-open="'+escape(item.id)+'"><div class="semantic-row-media">'+checkBox+media+'<span class="semantic-row-state '+stateClass+'">'+stateText+'</span></div><div class="semantic-row-body"><strong>'+escape(title)+'</strong><p>'+escape(detail)+'</p><small>'+escape(collectionState||source)+' · '+escape(analysis)+(item.source_valid===false?" · 来源已失效":"")+'</small></div>'+actions+'</article>';}).join("")+'</div>';
       if(!state.items?.length)html+='<p class="memory-notice">'+(kind==="reaction"&&collectionFilter==="awaiting_confirmation"?"当前没有待人工确认的表情素材。":"当前没有素材。")+'</p>';
-      if(state.next_after)html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
+      if(window.CompanionAutoScroll){
+        if(state.next_after||state.items?.length)html+='<div class="semantic-autoscroll" data-semantic-autoscroll></div>';
+      }else if(state.next_after){
+        html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
+      }
       }
       html+='</div>';
     }
@@ -576,8 +629,9 @@ window.CompanionSemanticPage = (() => {
     const previous = state;
     const oldItems = previous?.items || [];
     const scrollTop = (append || refresh) ? rememberScroll() : null;
-    if (!append && !refresh) { message = ""; refreshedAt = ""; }
-    else if (manual) { message = ""; conflict = false; }
+    if (!append && !refresh) { message = ""; refreshedAt = ""; appendError = false; appendErrorText = ""; autoLoader?.reset?.(); }
+    else if (manual) { message = ""; conflict = false; appendError = false; appendErrorText = ""; }
+    else if (append) { appendError = false; appendErrorText = ""; }
     busy = true; refreshing = refresh;
     if (!append && !refresh) state = null;
     render();
@@ -604,6 +658,7 @@ window.CompanionSemanticPage = (() => {
       if (!fresh) {
         /* 一页都没读到：旧内容原地保留，只提示这次没读到（保留具体错误码的翻译）。 */
         message = failure ? localized(failure, "读取失败，请重试。") : localized({code:"invalid_response"}, "读取失败，请重试。");
+        if (append) { appendError = true; appendErrorText = message; }
         return;
       }
       const rowsByKind = type => oldItems.filter(item => (item.kind || kind) === type);
@@ -639,11 +694,18 @@ window.CompanionSemanticPage = (() => {
       if (anyFailed || failure) {
         const detail = failure ? localized(failure, "") : "";
         message = detail ? `部分素材读取失败：${detail}` : "部分素材读取失败，已显示其余内容。";
-      } else if (manual) {
-        refreshedAt = formatClock();
+        if (append) { appendError = true; appendErrorText = message; }
+      } else {
+        appendError = false; appendErrorText = "";
+        if (manual) refreshedAt = formatClock();
       }
     }
-    catch (error) { if (active(ticket)) message = localized(error, "读取失败，请重试。"); }
+    catch (error) {
+      if (active(ticket)) {
+        message = localized(error, "读取失败，请重试。");
+        if (append) { appendError = true; appendErrorText = message; }
+      }
+    }
     finally { if (active(ticket)) { busy = false; refreshing = false; render(); if (scrollTop !== null) restoreScroll(scrollTop); } }
   }
   async function run(action,payload={}){
@@ -990,7 +1052,7 @@ window.CompanionSemanticPage = (() => {
     });
   }
   function shownValue(id){return (draft?{...state.settings,...draft}:state.settings)[id];}
-  function unmount(){clearDrawerTimers();drawerEl=null;if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;collectionFilter="all";selectedReactionIds=new Set();editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
+  function unmount(){destroyAutoLoader();appendError=false;appendErrorText="";clearDrawerTimers();drawerEl=null;if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;collectionFilter="all";selectedReactionIds=new Set();editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
   /* 页面级未保存守卫（page-guards.js）：草稿存在就说明有未提交的改法。
      unmount 已经把 draft 之外的引用清掉，这里跟着 root 一起判断。 */
   function isDirty(){return !!draft&&!!root;}

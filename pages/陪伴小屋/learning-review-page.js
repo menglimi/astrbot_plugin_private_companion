@@ -31,6 +31,37 @@ window.CompanionLearningReviewPage = (() => {
   const relative = value => typeof value === "string" && value.startsWith(PREFIX) ? value.slice(PREFIX.length) : "";
   const MAX_REFRESH_PAGES = 10;
   let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, pages = [], data = null, lastRenderedSelected = "";
+  let autoLoader = null, appendError = false;
+  function destroyAutoLoader() {
+    try { autoLoader?.destroy?.(); } catch (_) {}
+    autoLoader = null;
+  }
+  function hasMoreReviews() {
+    return pages.some(page => Boolean(page.next));
+  }
+  function syncAutoLoader() {
+    const host = root?.querySelector?.("[data-review-autoscroll]");
+    if (!host || !window.CompanionAutoScroll || !data) { destroyAutoLoader(); return; }
+    if (!autoLoader) {
+      autoLoader = window.CompanionAutoScroll.mount({
+        host,
+        hasMore: hasMoreReviews,
+        isLoading: () => Boolean(data?.loading || data?.writing),
+        hasError: () => appendError,
+        errorMessage: () => appendError ? "加载更多待批阅记录失败，已保留已加载记录。" : "",
+        loadedCount: () => (data?.items || []).length,
+        cursor: () => pages.map(page => `${page.source?.key || ""}:${page.type}:${page.next || ""}`).sort(),
+        itemLabel: "条待批阅",
+        manualButtonAttrs: () => ({"data-review-more": "", ...(data?.loading || data?.writing ? {disabled: ""} : {})}),
+        manualButtonLabel: "加载更多",
+        scrollTopTarget: () => root?.querySelector?.(".lh-review-queue"),
+        onLoadMore: () => read(ticket, "append"),
+        onRetry: () => { appendError = false; return read(ticket, "append"); },
+      });
+    } else {
+      autoLoader.refresh(host);
+    }
+  }
   const live = current => root?.isConnected && current === ticket;
   function routeFor(source, base, suffix) {
     return base + suffix;
@@ -154,12 +185,15 @@ window.CompanionLearningReviewPage = (() => {
     if (!append && !refresh) {
       const previousNotice = data?.notice || "";
       const previousError = !!data?.error;
+      appendError = false;
+      autoLoader?.reset?.();
       data = {loading:true, refreshing:false, writing:false, items:[], selected:"", checked:new Set(), filter:data?.filter || "all",
         notice:previousNotice, error:previousError, confirming:null, errors:0, failedLabels:[], refreshedAt:""};
       pages = buildPages();
     } else {
       data.loading = true;
       data.refreshing = refresh;
+      appendError = false;
       if (manual) { data.notice = ""; data.error = false; }
     }
     render({resetScroll: !append && !refresh});
@@ -209,6 +243,7 @@ window.CompanionLearningReviewPage = (() => {
       page.loaded = true;
     });
     data.failedLabels = [...failedLabels];
+    appendError = append && data.errors > 0;
     const seen = new Set();
     data.items = pages.flatMap(page => page.items).filter(item => {
       const key = keyFor(item); if (seen.has(key)) return false; seen.add(key); return true;
@@ -450,7 +485,9 @@ window.CompanionLearningReviewPage = (() => {
         <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
         <div class="lh-review-queue-list">${list}</div>
         <footer class="lh-review-queue-foot"><span>显示 ${visible.length} / ${data.items.length} 条</span>
-          ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</footer></section>
+          ${window.CompanionAutoScroll
+            ? (hasMoreReviews() || visible.length ? `<div class="lh-review-autoscroll" data-review-autoscroll></div>` : "")
+            : (hasMoreReviews() ? `<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>` : "")}</footer></section>
         ${detail}</div>`;
     root.innerHTML = `<header class="lh-review-head"><div class="lh-review-head-copy">
         <h2>审阅中心</h2>
@@ -474,6 +511,7 @@ window.CompanionLearningReviewPage = (() => {
       const detailNode = detailBodyNode();
       if (detailNode) detailNode.scrollTop = savedDetailScroll;
     }
+    syncAutoLoader();
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
 
@@ -635,7 +673,7 @@ window.CompanionLearningReviewPage = (() => {
   function onClick(event) {
     if(!data||data.writing)return;
     const filter = event.target.closest("[data-review-filter]");
-    if (filter) { data.filter=filter.dataset.reviewFilter; data.confirming=null; render({resetScroll:true}); return; }
+    if (filter) { data.filter=filter.dataset.reviewFilter; data.confirming=null; autoLoader?.reset?.(); render({resetScroll:true}); return; }
     if (event.target.closest("[data-review-refresh]")) { void read(ticket, {mode: "refresh", manual: true}); return; }
     if (event.target.closest("[data-review-more]")) { void read(ticket, "append"); return; }
     if (event.target.closest("[data-review-prev]")) { selectStep(-1); return; }
@@ -685,6 +723,6 @@ window.CompanionLearningReviewPage = (() => {
     const current=++ticket;
     if (sources.length) void read(current); else render();
   }
-  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null;lastRenderedSelected=""; }
+  function unmount() { destroyAutoLoader(); appendError=false; ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null;lastRenderedSelected=""; }
   return {mount,unmount,get state(){return data;}};
 })();
