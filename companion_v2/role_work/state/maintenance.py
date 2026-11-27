@@ -237,6 +237,7 @@ class StateMaintenance:
     def __init__(self, runtime):
         self.runtime = runtime
         self.pending, self.committed, self.workers, self.results, self.worker_schedules = {}, set(), {}, {}, {}
+        self._pending_reaped = []
         self.closed = False
         self.bindings = {}
         self.patrol_results = {}
@@ -1004,12 +1005,17 @@ class StateMaintenance:
 
     def collect_reaped_workers(self):
         """Reap completed background workers on the owning event loop."""
-        updates = []
+        updates = list(self._pending_reaped)
+        self._pending_reaped.clear()
         for key, worker in tuple(self.workers.items()):
             if not worker.done():
                 continue
             del self.workers[key]
-            schedule_key = self.worker_schedules.pop(key, None)
+            schedule_ref = self.worker_schedules.pop(key, None)
+            if isinstance(schedule_ref, tuple) and len(schedule_ref) >= 2:
+                schedule_key, expected_revision = schedule_ref[0], schedule_ref[1]
+            else:
+                schedule_key, expected_revision = schedule_ref, None
             if worker.cancelled():
                 continue
             error = worker.exception()
@@ -1020,27 +1026,79 @@ class StateMaintenance:
                 result = {**result, "retryable": True}
             self.results[key] = result
             if schedule_key is not None:
-                updates.append((schedule_key, encode(self.results[key]), failed))
-        return updates
+                updates.append((schedule_key, encode(self.results[key]), failed, expected_revision))
+        return tuple(updates)
+
+    def requeue_reaped_workers(self, updates):
+        """Restore unpersisted reaped updates so a transient lock or abort never drops them."""
+        if not updates:
+            return
+        self._pending_reaped = list(updates) + self._pending_reaped
 
     def persist_reaped_workers(self, updates):
-        """Persist reaped worker results, pulling failed schedules forward by 5 minutes."""
+        """Persist reaped worker results, pulling failed schedules forward by 5 minutes.
+
+        When the worker captured the schedule revision at dispatch time, stale
+        reaps cannot overwrite a newer manual ``queued`` request or push an
+        already-earlier ``next_at`` backward.
+        """
         if not updates:
             return
         with self.runtime.transaction() as connection:
-            for schedule_key, encoded_result, failed in updates:
+            for item in updates:
+                if len(item) >= 4:
+                    schedule_key, encoded_result, failed, expected_revision = item[:4]
+                else:
+                    schedule_key, encoded_result, failed = item
+                    expected_revision = None
+                if expected_revision is not None:
+                    if failed:
+                        retry_at = stamp(self.tasks.now() + timedelta(minutes=5))
+                        connection.execute(
+                            """UPDATE role_state_schedules
+                            SET result_json = ?,
+                                next_at = CASE WHEN next_at > ? THEN ? ELSE next_at END
+                            WHERE context_key = ? AND revision = ?""",
+                            (encoded_result, retry_at, retry_at, schedule_key, expected_revision))
+                    else:
+                        connection.execute(
+                            "UPDATE role_state_schedules SET result_json = ? WHERE context_key = ? AND revision = ?",
+                            (encoded_result, schedule_key, expected_revision))
+                    continue
+                row = connection.execute(
+                    "SELECT result_json FROM role_state_schedules WHERE context_key = ?",
+                    (schedule_key,)).fetchone()
+                if row is None:
+                    continue
+                if row["result_json"]:
+                    try:
+                        current_result = json.loads(row["result_json"])
+                    except (TypeError, ValueError):
+                        current_result = None
+                    if isinstance(current_result, dict) and current_result.get("state") == "queued":
+                        continue
                 if failed:
                     retry_at = stamp(self.tasks.now() + timedelta(minutes=5))
                     connection.execute(
-                        "UPDATE role_state_schedules SET result_json = ?, next_at = ? WHERE context_key = ?",
-                        (encoded_result, retry_at, schedule_key))
+                        """UPDATE role_state_schedules
+                        SET result_json = ?,
+                            next_at = CASE WHEN next_at > ? THEN ? ELSE next_at END
+                        WHERE context_key = ?""",
+                        (encoded_result, retry_at, retry_at, schedule_key))
                 else:
                     connection.execute(
                         "UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
                         (encoded_result, schedule_key))
 
     def _reap_completed_workers(self):
-        self.persist_reaped_workers(self.collect_reaped_workers())
+        updates = self.collect_reaped_workers()
+        if not updates:
+            return
+        try:
+            self.persist_reaped_workers(updates)
+        except BaseException:
+            self.requeue_reaped_workers(updates)
+            raise
 
     def advance(self):
         if self.closed:
@@ -1141,7 +1199,7 @@ class StateMaintenance:
                 worker = asyncio.create_task(self.run(context, instruction,
                     "state-period-" + digest([context.key, row["revision"], row["next_at"]])))
                 self.workers[context.key] = worker
-                self.worker_schedules[context.key] = row["context_key"]
+                self.worker_schedules[context.key] = (row["context_key"], row["revision"])
                 worker.add_done_callback(lambda done: self.app.notify())
                 return
             except TaskError as error:

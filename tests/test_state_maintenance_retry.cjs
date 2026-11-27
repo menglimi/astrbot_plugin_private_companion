@@ -54,7 +54,7 @@ test('home sidebar translates provider_request_failed with HTTP status, provider
           state: 'failed',
           code: 'provider_request_failed',
           http_status: 429,
-          provider: 'sta1n/gemini-flash',
+          provider: 'provider-a/example-model',
           fallback_attempted: false,
         },
         next_review_at: '2026-09-30T10:00:00Z',
@@ -62,7 +62,7 @@ test('home sidebar translates provider_request_failed with HTTP status, provider
     },
     life: { activities: [], config: { diary_enabled: false } },
   });
-  assert.match(html, /当日规划未完成：模型额度或频次受限（HTTP 429 · sta1n\/gemini-flash）/);
+  assert.match(html, /当日规划未完成：模型额度或频次受限（HTTP 429 · provider-a\/example-model）/);
   const htmlFallback = renderSchedule({
     now: Date.parse('2026-09-30T04:00:00Z'),
     state: {

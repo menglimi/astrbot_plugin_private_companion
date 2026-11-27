@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import sqlite3
 import unittest
+from unittest.mock import patch
 
 from companion_v2.agenda import planning_observation
 from companion_v2.execution.models import encode, stamp
-from companion_v2.host.tick_offload import advance_state_maintenance_async
+from companion_v2.host.tick_offload import advance_state_maintenance_async, stage_state_maintenance
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import Amount, ProviderResponse
 from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics
@@ -113,6 +115,15 @@ class StateBoardAndOffloadTests(StateFixture, unittest.IsolatedAsyncioTestCase):
     async def test_offloaded_state_maintenance_reaps_failure_with_5min_retry_backoff(self):
         _, app, context, _ = await self._ready_state()
         schedule_key = role_schedule_key(context)
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE role_state_schedules SET next_at = ? WHERE context_key = ?",
+                (stamp(self.clock.now() + timedelta(minutes=30)), schedule_key),
+            )
+        row_before = self.runtime.read_one(
+            "SELECT revision FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
 
         async def fail_run(*_args, **_kwargs):
             return {
@@ -121,14 +132,14 @@ class StateBoardAndOffloadTests(StateFixture, unittest.IsolatedAsyncioTestCase):
                 "reason": "worker_error",
                 "code": "provider_request_failed",
                 "http_status": 429,
-                "provider": "sta1n/test-primary",
+                "provider": "provider-a/primary",
                 "fallback_attempted": False,
             }
 
         worker = asyncio.create_task(fail_run())
         await worker
         app.state_maintenance.workers[context.key] = worker
-        app.state_maintenance.worker_schedules[context.key] = schedule_key
+        app.state_maintenance.worker_schedules[context.key] = (schedule_key, row_before["revision"])
 
         await advance_state_maintenance_async(app.state_maintenance)
 
@@ -142,11 +153,138 @@ class StateBoardAndOffloadTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(saved["retryable"])
         self.assertEqual(saved["code"], "provider_request_failed")
         self.assertEqual(saved["http_status"], 429)
-        self.assertEqual(saved["provider"], "sta1n/test-primary")
+        self.assertEqual(saved["provider"], "provider-a/primary")
         self.assertFalse(saved["fallback_attempted"])
         expected_retry = self.clock.now() + timedelta(minutes=5)
         actual_next = datetime.fromisoformat(row["next_at"])
         self.assertEqual(actual_next, expected_retry)
+
+    async def test_stale_failed_worker_reap_preserves_newer_manual_queued_maintain(self):
+        _, app, context, manager = await self._ready_state()
+        schedule_key = role_schedule_key(context)
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE role_state_schedules SET next_at = ? WHERE context_key = ?",
+                (stamp(self.clock.now() + timedelta(minutes=30)), schedule_key),
+            )
+        row_before = self.runtime.read_one(
+            "SELECT revision FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
+
+        async def fail_run(*_args, **_kwargs):
+            return {
+                "task_id": "state-task-stale",
+                "state": "failed",
+                "reason": "worker_error",
+                "code": "provider_request_failed",
+                "http_status": 503,
+                "provider": "provider-a/primary",
+                "fallback_attempted": True,
+            }
+
+        worker = asyncio.create_task(fail_run())
+        await worker
+        app.state_maintenance.workers[context.key] = worker
+        app.state_maintenance.worker_schedules[context.key] = (schedule_key, row_before["revision"])
+
+        # While the old worker is finishing, operator triggers manual "立即更新".
+        status = manager.status(self.core).unwrap()["state"]
+        cmd = manager.command(
+            self.core,
+            {
+                "action": "maintain",
+                "operation_key": "manual-while-worker-failing",
+                "expected_revision": status["revision"],
+                "view_token": status["maintain_token"],
+            },
+        )
+        self.assertTrue(cmd.is_success, cmd.failure)
+        queued_row = self.runtime.read_one(
+            "SELECT next_at, revision, result_json FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
+        self.assertEqual(queued_row["revision"], row_before["revision"] + 1)
+
+        # Reaping the stale worker must NOT overwrite state="queued" or push next_at to +5 min.
+        reaped = app.state_maintenance.collect_reaped_workers()
+        app.state_maintenance.persist_reaped_workers(reaped)
+
+        after = self.runtime.read_one(
+            "SELECT next_at, revision, result_json FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
+        self.assertEqual(after["revision"], queued_row["revision"])
+        self.assertEqual(after["next_at"], queued_row["next_at"])
+        self.assertEqual(json.loads(after["result_json"])["state"], "queued")
+
+    async def test_offload_stage_cleanup_and_external_ownership_preserve_reaped_updates_for_retry(self):
+        _, app, context, _ = await self._ready_state()
+        schedule_key = role_schedule_key(context)
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE role_state_schedules SET next_at = ? WHERE context_key = ?",
+                (stamp(self.clock.now() + timedelta(minutes=30)), schedule_key),
+            )
+        row_before = self.runtime.read_one(
+            "SELECT revision FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
+
+        async def fail_run(*_args, **_kwargs):
+            return {
+                "task_id": "state-task-retry",
+                "state": "failed",
+                "reason": "worker_error",
+                "code": "provider_request_failed",
+                "http_status": 429,
+                "provider": "provider-a/primary",
+                "fallback_attempted": False,
+            }
+
+        worker = asyncio.create_task(fail_run())
+        await worker
+        app.state_maintenance.workers[context.key] = worker
+        app.state_maintenance.worker_schedules[context.key] = (schedule_key, row_before["revision"])
+
+        # 1) Simulate batch abort / transient SQLite lock: stage pops worker, then cleanup rolls back updates.
+        plan = stage_state_maintenance(app.state_maintenance)
+        self.assertIsNotNone(plan)
+        self.assertIsNotNone(plan.cleanup)
+        self.assertEqual(app.state_maintenance.workers, {})
+        with patch.object(
+            app.state_maintenance, "persist_reaped_workers", side_effect=sqlite3.OperationalError("database is locked")
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                plan.scan()
+        plan.cleanup()
+
+        # 2) Simulate external_ownership active causing early exit in scan(); apply() requeues updates.
+        class _ActiveExternalOwner:
+            def active(self, _domain):
+                return "external-owner"
+
+        with patch("companion_v2.external_ownership.registry_for", return_value=_ActiveExternalOwner()):
+            plan2 = stage_state_maintenance(app.state_maintenance)
+            scanned = plan2.scan()
+            plan2.apply(scanned)
+        row_mid = self.runtime.read_one(
+            "SELECT result_json FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
+        self.assertIsNone(row_mid["result_json"])
+
+        # 3) Once lock & external ownership clear, the queued reaped failure and +5 min backoff persist intact.
+        await advance_state_maintenance_async(app.state_maintenance)
+        row_final = self.runtime.read_one(
+            "SELECT next_at, result_json FROM role_state_schedules WHERE context_key = ?",
+            (schedule_key,),
+        )
+        saved = json.loads(row_final["result_json"])
+        self.assertEqual(saved["state"], "failed")
+        self.assertTrue(saved["retryable"])
+        self.assertEqual(saved["http_status"], 429)
+        self.assertEqual(datetime.fromisoformat(row_final["next_at"]), self.clock.now() + timedelta(minutes=5))
 
     async def test_maintain_command_survives_unrelated_policy_revision_churn_and_marks_queued(self):
         _, app, context, manager = await self._ready_state()
