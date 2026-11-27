@@ -23,6 +23,7 @@ from companion_v2.conversation.date_context import (
     CALENDAR_INSTRUCTION,
     PERSONAL_DATE_INSTRUCTION,
 )
+from companion_v2.conversation.device_context import DEVICE_CONTEXT_INSTRUCTION
 from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
 from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
 from companion_v2.conversation.life_context import LIFE_INSTRUCTION
@@ -123,6 +124,7 @@ _PRIVATE_HOISTED_RULES = tuple(sorted(set(_COMMON_HOISTED_RULES + (
     HEALTH_INSTRUCTION,
     PHONE_CONTEXT_INSTRUCTION,
     LOCATION_CONTEXT_INSTRUCTION,
+    DEVICE_CONTEXT_INSTRUCTION,
     LEGACY_MEMORY_INSTRUCTION,
 )), key=len, reverse=True))
 _GROUP_HOISTED_RULES = tuple(sorted(set(_COMMON_HOISTED_RULES + (
@@ -162,6 +164,7 @@ _PRIVATE_STATIC_CONTRACT = "\n".join((
     HEALTH_INSTRUCTION,
     PHONE_CONTEXT_INSTRUCTION,
     LOCATION_CONTEXT_INSTRUCTION,
+    DEVICE_CONTEXT_INSTRUCTION,
     LEGACY_MEMORY_INSTRUCTION,
 ))
 _GROUP_STATIC_CONTRACT = "\n".join((

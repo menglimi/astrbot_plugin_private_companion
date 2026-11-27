@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from companion_v2.conversation.device_context import project_device_context
 from companion_v2.conversation.location_context import project_location_context
 from companion_v2.conversation.phone_context import project_phone_context
 from companion_v2.conversation.screen_context import project_screen_context
@@ -46,6 +47,23 @@ def location_scene_snapshot(application, context, at):
         return project_location_context(snapshot, observed_at=at)
     except Exception as error:
         logger.warning("[CompanionV2] 核心回复手机位置降级 error_type=%s", type(error).__name__)
+        return None
+
+
+def device_scene_snapshot(application, context, at):
+    """Return a bounded mobile device status summary for private chat only.
+
+    Shares the exact private-window, role-enablement and capability-consent gate
+    used by health, location and foreground phone activity; group chats always
+    get None.
+    """
+    snapshot = authorized_mobile_snapshot(application, context)
+    if snapshot is None:
+        return None
+    try:
+        return project_device_context(snapshot, observed_at=at)
+    except Exception as error:
+        logger.warning("[CompanionV2] 核心回复手机设备状态降级 error_type=%s", type(error).__name__)
         return None
 
 
@@ -103,4 +121,9 @@ def screen_scene_snapshot(application, context, at):
         return None
 
 
-__all__ = ["location_scene_snapshot", "phone_scene_snapshot", "screen_scene_snapshot"]
+__all__ = [
+    "device_scene_snapshot",
+    "location_scene_snapshot",
+    "phone_scene_snapshot",
+    "screen_scene_snapshot",
+]
