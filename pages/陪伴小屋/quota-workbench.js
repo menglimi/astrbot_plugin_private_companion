@@ -328,6 +328,8 @@ window.CompanionQuotaWorkbench = (() => {
       autoTimer: null,
       bgSyncTimer: null,
       data: null,
+      heroCurrency: "",
+      heroUnitAnim: false,
       notice: "",
       noticeTone: "", // ok | warn | error | ""
       deleteConfirmId: "",
@@ -337,6 +339,7 @@ window.CompanionQuotaWorkbench = (() => {
       pendingFocus: "",
       wizard: null,
       _dom: null,
+      _unitSyncHandler: null,
     };
   }
 
@@ -467,31 +470,125 @@ window.CompanionQuotaWorkbench = (() => {
     return { station: autoMatch, explicit: false };
   }
 
-  function formatCompactRate(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return "";
-    return Math.abs(n - Math.round(n)) < 1e-6 ? String(Math.round(n)) : String(Number(n.toFixed(3)));
+  function currencyHelper() {
+    return typeof window !== "undefined" ? window.CompanionQuotaCurrency || null : null;
   }
 
-  function resolveDualUnitContext(station, snap) {
-    if (!snap || !snap.ok || snap.display_type !== "CREDIT") {
-      return { canToggle: false, mode: "native", fiatCurrency: "", fiatSymbol: "", nativeSymbol: snap?.symbol || "credit", rateCaption: "" };
-    }
-    const fiatCurrency = String(station?.fiat_currency || snap.inferred_fiat_currency || "").toUpperCase();
-    const validFiat = fiatCurrency === "CNY" || fiatCurrency === "USD";
-    const canToggle = Boolean(validFiat && snap.fiat_remaining != null);
-    const fiatSymbol = fiatCurrency === "USD" ? "$" : "¥";
-    const nativeSymbol = snap.symbol || "credit";
-    const mode = canToggle && station?.display_unit_mode === "fiat" ? "fiat" : "native";
+  function convertFiatFallback(amount, fromCur, toCur, rate) {
+    const n = Number(amount);
+    if (!Number.isFinite(n)) return null;
+    const src = String(fromCur || "").toUpperCase();
+    const dst = String(toCur || "").toUpperCase();
+    if ((src !== "CNY" && src !== "USD") || (dst !== "CNY" && dst !== "USD")) return null;
+    if (src === dst) return n;
+    const r = Number.isFinite(Number(rate)) && Number(rate) >= 1 && Number(rate) <= 30 ? Number(rate) : 7.2;
+    return src === "USD" ? n * r : n / r;
+  }
 
-    let rateCaption = "";
-    const customRate = Number(snap.custom_exchange_rate);
-    const pbu = Number(station?.fiat_per_base_unit || snap.site_recharge_price);
-    if (validFiat && Number.isFinite(customRate) && customRate > 0 && Number.isFinite(pbu) && pbu > 0) {
-      const perFiat = formatCompactRate(customRate / pbu);
-      if (perFiat) rateCaption = `${perFiat} ${nativeSymbol} = ${fiatSymbol}1`;
+  function resolveStationCurrency(station, snap, summary) {
+    const rate = Number(summary?.usd_cny_rate || 7.2);
+    const helper = currencyHelper();
+    if (helper) {
+      const views = helper.buildStationViews(station, snap, rate);
+      if (!views) return null;
+      const activeUnit = helper.normalizeUnit(
+        station?.display_unit_mode || views.preferred_unit,
+        views.available_units,
+        views.inferred_fiat_currency,
+        views.display_type
+      );
+      return { views, activeUnit, helper };
     }
-    return { canToggle, mode, fiatCurrency, fiatSymbol, nativeSymbol, rateCaption };
+    if (!snap || !snap.ok) return null;
+    const dtype = String(snap.display_type || "CREDIT").toUpperCase();
+    const inferred = dtype === "CNY" || dtype === "USD"
+      ? dtype
+      : String(station?.fiat_currency || snap.inferred_fiat_currency || snap.fiat_currency || "").toUpperCase();
+    const validFiat = inferred === "CNY" || inferred === "USD";
+    const nativeSymbol = snap.symbol || (dtype === "USD" ? "$" : dtype === "CNY" ? "¥" : dtype === "TOKENS" ? "tokens" : "credit");
+    const rem = snap.remaining != null ? Number(snap.remaining) : null;
+    const fiatRem = snap.fiat_remaining != null ? Number(snap.fiat_remaining) : null;
+    let cnyAmount = null;
+    let usdAmount = null;
+    let availableUnits = ["native"];
+    if (dtype === "CNY" && rem != null) {
+      cnyAmount = rem;
+      usdAmount = convertFiatFallback(rem, "CNY", "USD", rate);
+      availableUnits = ["cny", "usd"];
+    } else if (dtype === "USD" && rem != null) {
+      usdAmount = rem;
+      cnyAmount = convertFiatFallback(rem, "USD", "CNY", rate);
+      availableUnits = ["cny", "usd"];
+    } else if (dtype === "CREDIT" && validFiat && fiatRem != null) {
+      cnyAmount = inferred === "CNY" ? fiatRem : convertFiatFallback(fiatRem, "USD", "CNY", rate);
+      usdAmount = inferred === "USD" ? fiatRem : convertFiatFallback(fiatRem, "CNY", "USD", rate);
+      availableUnits = ["native", "cny", "usd"];
+    }
+    const rawMode = String(station?.display_unit_mode || "native").toLowerCase();
+    let activeUnit = availableUnits[0];
+    if (rawMode === "fiat") activeUnit = inferred === "USD" ? "usd" : "cny";
+    else if (availableUnits.includes(rawMode)) activeUnit = rawMode;
+    else if (dtype === "CNY") activeUnit = "cny";
+    else if (dtype === "USD") activeUnit = "usd";
+    const views = {
+      scope_key: station?.id ? `station:${station.id}` : "",
+      station_id: String(station?.id || ""),
+      display_type: dtype,
+      native_symbol: nativeSymbol,
+      native_label: "站内原值",
+      native_amount: rem,
+      cny_amount: cnyAmount,
+      usd_amount: usdAmount,
+      usd_cny_rate: rate,
+      inferred_fiat_currency: validFiat ? inferred : "",
+      rate_caption: "",
+      preferred_unit: activeUnit,
+      available_units: availableUnits,
+    };
+    return { views, activeUnit, helper: null };
+  }
+
+  function formatStationValueForUnit(amount, unit, views, { small = false } = {}) {
+    const helper = currencyHelper();
+    if (helper) return helper.formatAmount(amount, unit, views, { small });
+    const dt = unit === "usd" ? "USD" : unit === "cny" ? "CNY" : (views?.display_type || "CREDIT");
+    const sym = unit === "usd" ? "$" : unit === "cny" ? "¥" : (views?.native_symbol || "");
+    if (small) {
+      const txt = formatSmallCost(amount, dt, sym);
+      return { text: txt, num: txt, symbol: sym, prefix: sym === "¥" || sym === "$", unit };
+    }
+    const m = formatMoney(amount, dt, sym);
+    const prefix = m.unit === "¥" || m.unit === "$";
+    return { text: prefix ? m.unit + m.num : (m.unit ? `${m.num} ${m.unit}` : m.num), num: m.num, symbol: m.unit, prefix, unit };
+  }
+
+  function convertStationSecondary(nativeVal, fiatVal, views, activeUnit) {
+    const helper = currencyHelper();
+    if (helper) return helper.convertSecondaryAmount(nativeVal, fiatVal, views, activeUnit);
+    if (!views || activeUnit === "native") return nativeVal;
+    const targetCur = activeUnit === "usd" ? "USD" : "CNY";
+    if (views.display_type === "CNY" || views.display_type === "USD") {
+      return convertFiatFallback(nativeVal, views.display_type, targetCur, views.usd_cny_rate);
+    }
+    if (views.display_type === "CREDIT" && fiatVal != null && (views.inferred_fiat_currency === "CNY" || views.inferred_fiat_currency === "USD")) {
+      return convertFiatFallback(fiatVal, views.inferred_fiat_currency, targetCur, views.usd_cny_rate);
+    }
+    return nativeVal;
+  }
+
+  function unitButtonMetaFor(unit, views) {
+    const helper = currencyHelper();
+    if (helper) return helper.unitButtonMeta(unit, views);
+    if (unit === "cny") return { unit: "cny", label: "¥", title: "人民币 (CNY)", ariaLabel: "人民币 CNY" };
+    if (unit === "usd") return { unit: "usd", label: "$", title: "美元 (USD)", ariaLabel: "美元 USD" };
+    const sym = views?.native_symbol || "原值";
+    return { unit: "native", label: sym, title: `站内原值 (${sym})`, ariaLabel: `站内原值 (${sym})` };
+  }
+
+  function buildStationSubline(views, activeUnit) {
+    const helper = currencyHelper();
+    if (helper) return helper.buildSubline(views, activeUnit);
+    return { text: "", title: "" };
   }
 
   function renderHeroCore(ctx) {
@@ -520,17 +617,40 @@ window.CompanionQuotaWorkbench = (() => {
     const totalCalls = usageValues.reduce((acc, row) => acc + (Number(row?.calls) || 0), 0);
     const totalTokens = usageValues.reduce((acc, row) => acc + (Number(row?.total_tokens) || 0), 0);
 
+    const baseCur = String(summary.display_currency || "CNY").toUpperCase() === "USD" ? "USD" : "CNY";
+    const heroCur = (q.heroCurrency === "CNY" || q.heroCurrency === "USD") ? q.heroCurrency : baseCur;
+    const heroSym = heroCur === "USD" ? "$" : "¥";
+    const fxRate = Number(summary.usd_cny_rate || 7.2);
+    const convertHero = val => {
+      const n = Number(val);
+      if (!Number.isFinite(n)) return 0;
+      const helper = currencyHelper();
+      const conv = helper ? helper.convertFiat(n, baseCur, heroCur, fxRate) : convertFiatFallback(n, baseCur, heroCur, fxRate);
+      return conv != null ? conv : n;
+    };
+    const heroFiatRem = convertHero(summary.fiat_remaining);
+    const heroInclCustom = summary.fiat_remaining_including_custom != null
+      ? convertHero(summary.fiat_remaining_including_custom)
+      : null;
+
     const fiatParts = [];
     if (summary.cny_station_count > 0) fiatParts.push(`CNY ¥${Number(summary.cny_remaining).toFixed(2)}`);
     if (summary.usd_station_count > 0) fiatParts.push(`USD $${Number(summary.usd_remaining).toFixed(2)}`);
     if (summary.non_fiat_station_count > 0) {
-      const inclNote = summary.custom_converted_count > 0 && summary.fiat_remaining_including_custom != null
-        ? `（含折合共 ${summary.display_symbol}${Number(summary.fiat_remaining_including_custom).toFixed(2)}）`
+      const inclNote = summary.custom_converted_count > 0 && heroInclCustom != null
+        ? `（含折合共 ${heroSym}${Number(heroInclCustom).toFixed(2)}）`
         : "";
       fiatParts.push(`另含 ${summary.non_fiat_station_count} 站非现金积分${inclNote}`);
     }
-    const rateNote = `汇率 1 USD ≈ ¥${Number(summary.usd_cny_rate || 7.2).toFixed(2)}`;
-    const totalMoney = formatMoney(summary.fiat_remaining, summary.display_currency, summary.display_symbol);
+    const rateNote = `汇率 1 USD ≈ ¥${fxRate.toFixed(2)}`;
+    const totalMoney = formatMoney(heroFiatRem, heroCur, heroSym);
+    const altHeroCur = heroCur === "CNY" ? "USD" : "CNY";
+    const altHeroSym = altHeroCur === "USD" ? "$" : "¥";
+    const altHeroVal = convertHero(summary.fiat_remaining);
+    const altHeroConverted = (currencyHelper()?.convertFiat || convertFiatFallback)(altHeroVal, heroCur, altHeroCur, fxRate);
+    const heroSubline = altHeroConverted != null && Number.isFinite(altHeroConverted)
+      ? `≈ ${altHeroSym}${altHeroConverted.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : "";
 
     const healthDetails = [];
     if (summary.low_count > 0) healthDetails.push(`${summary.low_count} 偏低`);
@@ -545,6 +665,7 @@ window.CompanionQuotaWorkbench = (() => {
     const awMetaText = aw.mode === "primary" && effPrimary.station
       ? `${effPrimary.explicit ? "已手动指定主站" : "未手动指定，自动取首个启用感知站"}${participatingCount ? ` · 已接入 ${participatingCount} 站` : ""}`
       : (participatingCount ? `已接入 ${participatingCount} 个启用站点` : "尚未勾选参与感知的站点");
+    const heroAnimCls = q.heroUnitAnim ? " is-unit-updated" : "";
 
     return `
       <div class="qw-hero-head">
@@ -573,8 +694,15 @@ window.CompanionQuotaWorkbench = (() => {
 
       <div class="qw-kpis">
         <article class="qw-kpi is-accent">
-          <span class="qw-kpi-label"><span>折合总余额（${esc(summary.display_currency)}）</span></span>
-          <strong class="qw-kpi-value qw-num">${esc(totalMoney.unit)}${esc(totalMoney.num)}</strong>
+          <span class="qw-kpi-label">
+            <span>折合总余额（${esc(heroCur)}）</span>
+            <span class="qw-unit-switch qw-kpi-unit-switch" role="radiogroup" aria-label="折合总余额显示币种">
+              <button type="button" role="radio" aria-checked="${heroCur === "CNY"}" class="${heroCur === "CNY" ? "is-active" : ""}" data-qw-hero-currency="CNY" title="人民币 (CNY)" aria-label="人民币 CNY">¥</button>
+              <button type="button" role="radio" aria-checked="${heroCur === "USD"}" class="${heroCur === "USD" ? "is-active" : ""}" data-qw-hero-currency="USD" title="美元 (USD)" aria-label="美元 USD">$</button>
+            </span>
+          </span>
+          <strong class="qw-kpi-value qw-num${heroAnimCls}">${esc(totalMoney.unit)}${esc(totalMoney.num)}</strong>
+          ${heroSubline ? `<span class="qw-kpi-subline qw-num">${esc(heroSubline)}</span>` : ""}
           <span class="qw-kpi-meta">${esc(fiatParts.length ? `${fiatParts.join(" · ")} · ${rateNote}` : rateNote)}</span>
         </article>
         <article class="qw-kpi">
@@ -706,7 +834,7 @@ window.CompanionQuotaWorkbench = (() => {
     };
   }
 
-  function renderStationCardParts(ctx, station) {
+  function renderStationCardParts(ctx, station, { animateUnit = false } = {}) {
     const q = ctx.q;
     const data = q.data || {};
     const snap = data.snapshots?.[station.id] || null;
@@ -714,7 +842,6 @@ window.CompanionQuotaWorkbench = (() => {
     const health = summary.health_by_id?.[station.id] || (station.enabled ? "pending" : "disabled");
     const hMeta = HEALTH_META[health] || HEALTH_META.pending;
     const adapter = adapterById(q, station.adapter_id);
-    const converted = summary.converted_remaining_by_id?.[station.id];
     const providerInfo = station.astrbot_provider_id
       ? (data.astrbot_providers || []).find(p => p.id === station.astrbot_provider_id)
       : null;
@@ -733,54 +860,64 @@ window.CompanionQuotaWorkbench = (() => {
     const avatarCls = `qw-avatar${avatar.hasLogo ? " has-logo" : ""}${avatar.isBrand ? " is-brand" : ""}`;
     const avatarHtml = `<div class="${avatarCls}" data-qw-avatar="${esc(station.id)}" title="${esc(avatar.title)}">${avatar.html}</div>`;
 
-    const dual = resolveDualUnitContext(station, snap);
-    const activeDisplayType = dual.mode === "fiat" ? dual.fiatCurrency : (snap?.display_type || "CREDIT");
-    const activeSymbol = dual.mode === "fiat" ? dual.fiatSymbol : (snap?.symbol || "");
+    const cur = resolveStationCurrency(station, snap, summary);
+    const views = cur?.views || null;
+    const activeUnit = cur?.activeUnit || "native";
+    const unitAnimCls = animateUnit ? " is-unit-updated" : "";
 
     let balanceHtml = "";
     if (snap && snap.ok) {
-      if (snap.remaining != null) {
-        const displayRem = dual.mode === "fiat" && snap.fiat_remaining != null ? snap.fiat_remaining : snap.remaining;
-        const displayUsed = dual.mode === "fiat" && snap.fiat_used != null ? snap.fiat_used : snap.used;
-        const displayTotal = dual.mode === "fiat" && snap.fiat_total != null ? snap.fiat_total : snap.total;
-        const m = formatMoney(displayRem, activeDisplayType, activeSymbol);
-        const showConv = !dual.canToggle && converted != null && snap.display_type !== summary.display_currency;
+      if (snap.remaining != null && views) {
+        const mainVal = activeUnit === "cny"
+          ? views.cny_amount
+          : activeUnit === "usd"
+            ? views.usd_amount
+            : views.native_amount;
+        const m = formatStationValueForUnit(mainVal, activeUnit, views, { small: false });
         const valCls = health === "critical" ? "is-critical" : health === "low" ? "is-low" : "";
         const pct = snap.remaining_percent != null
           ? Math.max(0, Math.min(100, Number(snap.remaining_percent)))
           : (snap.total > 0 ? Math.max(0, Math.min(100, (snap.remaining / snap.total) * 100)) : null);
-        const usedM = displayUsed != null ? formatMoney(displayUsed, activeDisplayType, activeSymbol) : null;
-        const totalM = displayTotal != null ? formatMoney(displayTotal, activeDisplayType, activeSymbol) : null;
+        const displayUsed = snap.used != null ? convertStationSecondary(snap.used, snap.fiat_used, views, activeUnit) : null;
+        const displayTotal = snap.total != null ? convertStationSecondary(snap.total, snap.fiat_total, views, activeUnit) : null;
+        const usedM = displayUsed != null ? formatStationValueForUnit(displayUsed, activeUnit, views, { small: false }) : null;
+        const totalM = displayTotal != null ? formatStationValueForUnit(displayTotal, activeUnit, views, { small: false }) : null;
 
-        let dualSubHtml = "";
-        if (dual.canToggle) {
-          const altText = dual.mode === "fiat"
-            ? `${formatMoney(snap.remaining, "CREDIT", dual.nativeSymbol).num} ${dual.nativeSymbol}`
-            : `≈ ${dual.fiatSymbol}${Number(snap.fiat_remaining).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          dualSubHtml = `<span class="qw-balance-conv qw-num">${esc(altText)}</span>` +
-            `<button type="button" class="qw-unit-toggle${dual.mode === "fiat" ? " is-fiat" : ""}" data-qw-toggle-unit="${esc(station.id)}" aria-pressed="${dual.mode === "fiat"}" title="切换原币与折合法币显示">${esc(dual.nativeSymbol)} ↔ ${esc(dual.fiatSymbol)}</button>`;
+        let unitSwitchHtml = "";
+        if (views.available_units.length > 1) {
+          const btns = views.available_units.map(u => {
+            const meta = unitButtonMetaFor(u, views);
+            const active = u === activeUnit;
+            return `<button type="button" role="radio" aria-checked="${active}" class="${active ? "is-active" : ""}" data-qw-set-unit="${esc(station.id)}" data-qw-unit="${esc(u)}" title="${esc(meta.title)}" aria-label="${esc(meta.ariaLabel)}">${esc(meta.label)}</button>`;
+          }).join("");
+          unitSwitchHtml = `<div class="qw-unit-switch" role="radiogroup" aria-label="${esc(station.name)} 显示单位">${btns}</div>`;
         }
 
-        const extraText = dual.canToggle && dual.rateCaption
-          ? `${dual.mode === "fiat" ? `${formatMoney(snap.remaining, "CREDIT", dual.nativeSymbol).num} ${dual.nativeSymbol}` : `≈ ${dual.fiatSymbol}${Number(snap.fiat_remaining).toFixed(2)}`} · ${dual.rateCaption}`
+        const subline = buildStationSubline(views, activeUnit);
+        const sublineHtml = subline.text
+          ? `<div class="qw-balance-subline qw-num${unitAnimCls}"${subline.title ? ` title="${esc(subline.title)}"` : ""}>${esc(subline.text)}</div>`
+          : "";
+
+        const extraText = views.available_units.length > 1 && views.rate_caption
+          ? `站内换算 ${views.rate_caption}`
           : snap.extra;
 
         balanceHtml = `
           <div class="qw-balance-block">
             <div class="qw-balance-row">
-              <span class="qw-balance-value qw-num ${valCls}">${esc(m.unit === "¥" || m.unit === "$" ? m.unit + m.num : m.num)}</span>
-              ${m.unit !== "¥" && m.unit !== "$" ? `<span class="qw-balance-unit">${esc(m.unit)}</span>` : ""}
-              ${dualSubHtml}
-              ${showConv ? `<span class="qw-balance-conv qw-num">≈ ${esc(summary.display_symbol)}${Number(converted).toFixed(2)}</span>` : ""}
+              <span class="qw-balance-value qw-num ${valCls}${unitAnimCls}">${esc(m.prefix ? m.symbol + m.num : m.num)}</span>
+              ${!m.prefix && m.symbol ? `<span class="qw-balance-unit">${esc(m.symbol)}</span>` : ""}
+              ${unitSwitchHtml}
             </div>
+            ${sublineHtml}
             ${pct !== null ? `
               <div class="qw-progress-wrap">
                 <div class="qw-progress-track" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
                   <div class="qw-progress-fill ${valCls}" style="width:${pct.toFixed(1)}%"></div>
                 </div>
                 <div class="qw-progress-meta qw-num">
-                  <span>${usedM ? `已用 ${esc(usedM.unit === "¥" || usedM.unit === "$" ? usedM.unit + usedM.num : usedM.num)}` : ""}</span>
-                  <span>${totalM ? `总额 ${esc(totalM.unit === "¥" || totalM.unit === "$" ? totalM.unit + totalM.num : totalM.num)} · ` : ""}剩 ${pct.toFixed(1)}%</span>
+                  <span>${usedM ? `已用 ${esc(usedM.text)}` : ""}</span>
+                  <span>${totalM ? `总额 ${esc(totalM.text)} · ` : ""}剩 ${pct.toFixed(1)}%</span>
                 </div>
               </div>
             ` : ""}
@@ -810,21 +947,24 @@ window.CompanionQuotaWorkbench = (() => {
 
     const subs = Array.isArray(snap?.subscriptions) ? snap.subscriptions.filter(item => item && item.remaining != null) : [];
     let subscriptionHtml = "";
-    if (subs.length) {
+    if (subs.length && views) {
       const subRemSum = subs.reduce((acc, item) => acc + (Number(item.remaining) || 0), 0);
       const hasSubFiat = subs.every(item => item.fiat_remaining != null);
       const subFiatSum = hasSubFiat ? subs.reduce((acc, item) => acc + (Number(item.fiat_remaining) || 0), 0) : null;
-      const subNames = subs.map(item => item.name).filter(Boolean).join(" / ");
-      const subNativeM = formatMoney(subRemSum, snap.display_type, snap.symbol);
-      const subNativeStr = subNativeM.unit === "¥" || subNativeM.unit === "$"
-        ? `${subNativeM.unit}${subNativeM.num}`
-        : `${subNativeM.num} ${subNativeM.unit}`.trim();
-      const subFiatSym = dual.fiatSymbol || (snap.inferred_fiat_currency === "USD" ? "$" : "¥");
-      const subMainText = dual.canToggle && subFiatSum != null
-        ? (dual.mode === "fiat"
-            ? `${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}（${subNativeStr}）`
-            : `${subNativeStr} ≈ ${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`)
-        : subNativeStr;
+      const subNames = subs.map(item => item.name || item.title).filter(Boolean).join(" / ");
+      const subNativeStr = formatStationValueForUnit(subRemSum, "native", views).text;
+      const subActiveVal = convertStationSecondary(subRemSum, subFiatSum, views, activeUnit);
+      const subActiveStr = subActiveVal != null ? formatStationValueForUnit(subActiveVal, activeUnit, views).text : subNativeStr;
+      let subMainText = subActiveStr;
+      if (views.available_units.length > 1) {
+        if (activeUnit === "native" && subFiatSum != null) {
+          const baseFiatUnit = views.inferred_fiat_currency === "USD" ? "usd" : "cny";
+          const fiatStr = formatStationValueForUnit(subFiatSum, baseFiatUnit, views).text;
+          subMainText = `${subNativeStr} ≈ ${fiatStr}`;
+        } else if (activeUnit !== "native" && views.display_type === "CREDIT") {
+          subMainText = `${subActiveStr}（${subNativeStr}）`;
+        }
+      }
       subscriptionHtml = `
         <div class="qw-sub-strip" data-qw-subscriptions title="${esc(subNames ? "活跃订阅套餐：" + subNames : "站点活跃订阅套餐余量")}">
           <span class="qw-sub-label">订阅余量</span>
@@ -834,7 +974,12 @@ window.CompanionQuotaWorkbench = (() => {
       `;
     }
 
-    const lastCostVal = dual.mode === "fiat" && snap?.fiat_last_used_cost != null ? snap.fiat_last_used_cost : snap?.last_used_cost;
+    const lastCostVal = snap && views && (snap.last_used_cost != null || snap.fiat_last_used_cost != null)
+      ? convertStationSecondary(snap.last_used_cost, snap.fiat_last_used_cost, views, activeUnit)
+      : snap?.last_used_cost;
+    const lastCostText = lastCostVal != null
+      ? (views ? formatStationValueForUnit(lastCostVal, activeUnit, views, { small: true }).text : formatSmallCost(lastCostVal, snap?.display_type, snap?.symbol))
+      : "";
     const lastUseHtml = snap && (snap.last_used_at || snap.last_used_error)
       ? `<div class="qw-lastuse" title="${esc(snap.last_used_error ? "日志接口：" + snap.last_used_error : "来自站点自身消费日志")}">
           <span class="qw-lastuse-label">最近消费</span>
@@ -842,7 +987,7 @@ window.CompanionQuotaWorkbench = (() => {
             ? `<span class="qw-num">${esc(formatShortTime(snap.last_used_at))}</span>
                <span>· ${esc(formatAgo(snap.last_used_at))}</span>
                ${snap.last_used_model ? `<span>·</span><span class="qw-lastuse-model" title="${esc(snap.last_used_model)}">${esc(snap.last_used_model)}</span>` : ""}
-               ${lastCostVal != null ? `<span>·</span><span class="qw-lastuse-cost qw-num">${esc(formatSmallCost(lastCostVal, activeDisplayType, activeSymbol))}</span>` : ""}`
+               ${lastCostText ? `<span>·</span><span class="qw-lastuse-cost qw-num">${esc(lastCostText)}</span>` : ""}`
             : `<span>读取失败（${esc(String(snap.last_used_error).slice(0, 42))}）</span>`}
         </div>`
       : "";
@@ -1390,7 +1535,7 @@ window.CompanionQuotaWorkbench = (() => {
     }
   }
 
-  function patchSingleCardDom(ctx, stationId) {
+  function patchSingleCardDom(ctx, stationId, { animateUnit = false } = {}) {
     const dom = getLiveDom(ctx);
     if (!dom) {
       ctx.render();
@@ -1402,7 +1547,7 @@ window.CompanionQuotaWorkbench = (() => {
       syncMainDom(ctx, { includeAwareness: false });
       return;
     }
-    const parts = renderStationCardParts(ctx, st);
+    const parts = renderStationCardParts(ctx, st, { animateUnit });
     cardEl.className = parts.className;
     cardEl.innerHTML = parts.innerHtml;
   }
@@ -1817,7 +1962,36 @@ window.CompanionQuotaWorkbench = (() => {
     }
   }
 
+  function bindUnitSyncListener(ctx) {
+    const q = ctx.q;
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    if (q._unitSyncHandler) return;
+    const handler = ev => {
+      const detail = ev?.detail;
+      if (!detail || detail.source === "quota-workbench" || !q.data) return;
+      const sid = String(detail.stationId || "").trim();
+      if (!sid) return;
+      const st = (q.data.stations || []).find(item => item.id === sid);
+      if (!st) return;
+      const nextUnit = String(detail.unit || "").trim().toLowerCase();
+      if (!["native", "fiat", "cny", "usd"].includes(nextUnit) || st.display_unit_mode === nextUnit) return;
+      st.display_unit_mode = nextUnit;
+      patchSingleCardDom(ctx, sid, { animateUnit: true });
+    };
+    q._unitSyncHandler = handler;
+    window.addEventListener("companion:balance-unit-change", handler);
+  }
+
+  function unbindUnitSyncListener(q) {
+    if (!q?._unitSyncHandler) return;
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+      window.removeEventListener("companion:balance-unit-change", q._unitSyncHandler);
+    }
+    q._unitSyncHandler = null;
+  }
+
   function syncDom(ctx, mountEl, externalModalHost = null) {
+    bindUnitSyncListener(ctx);
     ensureLiveShell(ctx, mountEl, externalModalHost);
     syncMainDom(ctx, { includeAwareness: true });
     syncModalDom(ctx);
@@ -1941,6 +2115,7 @@ window.CompanionQuotaWorkbench = (() => {
       q.data = data;
       q.loaded = true;
       q.loading = false;
+      bindUnitSyncListener(ctx);
       syncAwarenessDraft(q);
       if (q.pendingFocus === "awareness") {
         q.awarenessOpen = true;
@@ -2103,17 +2278,75 @@ window.CompanionQuotaWorkbench = (() => {
     }
   }
 
-  async function toggleUnitMode(ctx, stationId) {
+  async function switchHeroCurrency(ctx, nextCurrency) {
+    const q = ctx.q;
+    if (!q.data) return;
+    const cur = String(nextCurrency || "").toUpperCase();
+    if (cur !== "CNY" && cur !== "USD") return;
+    const currentHero = (q.heroCurrency === "CNY" || q.heroCurrency === "USD")
+      ? q.heroCurrency
+      : (String(q.data.summary?.display_currency || "CNY").toUpperCase() === "USD" ? "USD" : "CNY");
+    if (cur === currentHero) return;
+    q.heroCurrency = cur;
+    q.heroUnitAnim = true;
+    const dom = getLiveDom(ctx);
+    if (dom) {
+      const coreEl = dom.heroSlot.querySelector?.("[data-qw-hero-core]");
+      if (coreEl) coreEl.innerHTML = renderHeroCore(ctx);
+      else syncMainDom(ctx, { includeAwareness: false });
+    } else {
+      ctx.render();
+    }
+    q.heroUnitAnim = false;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("companion-pricing-display.v1", JSON.stringify({
+          currency: cur,
+          usd_cny_rate: Number(q.data.summary?.usd_cny_rate || 7.2),
+        }));
+      }
+    } catch {}
+    const ticket = ctx.ticket();
+    try {
+      const pricingDoc = await ctx.api("GET", `${ctx.path}/pricing`, undefined, 8000);
+      if (!ctx.isCurrent(ticket) || !pricingDoc?.revision) return;
+      await ctx.api("POST", `${ctx.path}/pricing`, {
+        revision: pricingDoc.revision,
+        changes: { display_currency: cur },
+      }, 10000);
+    } catch {
+      /* Local Hero currency remains active even if global pricing persistence is unavailable. */
+    }
+  }
+
+  async function setStationUnitMode(ctx, stationId, targetUnit) {
     const q = ctx.q;
     if (!q.data) return;
     const st = (q.data.stations || []).find(item => item.id === stationId);
     if (!st) return;
+    const snap = q.data.snapshots?.[stationId] || null;
+    const cur = resolveStationCurrency(st, snap, q.data.summary);
+    const desired = String(targetUnit || "").trim().toLowerCase();
+    const nextMode = cur
+      ? (cur.helper
+          ? cur.helper.normalizeUnit(desired, cur.views.available_units, cur.views.inferred_fiat_currency, cur.views.display_type)
+          : (cur.views.available_units.includes(desired) ? desired : cur.activeUnit))
+      : desired;
+    if (!["native", "fiat", "cny", "usd"].includes(nextMode)) return;
+    const prevMode = cur ? cur.activeUnit : (st.display_unit_mode || "native");
+    if (nextMode === prevMode && st.display_unit_mode === nextMode) return;
+
     q.unitSavingIds ||= new Set();
     q.unitPendingModes ||= new Map();
-    const prevMode = st.display_unit_mode === "fiat" ? "fiat" : "native";
-    const nextMode = prevMode === "fiat" ? "native" : "fiat";
     st.display_unit_mode = nextMode;
-    patchSingleCardDom(ctx, stationId);
+    patchSingleCardDom(ctx, stationId, { animateUnit: true });
+    currencyHelper()?.broadcastUnitChange({
+      scopeKey: `station:${stationId}`,
+      stationId,
+      unit: nextMode,
+      source: "quota-workbench",
+    });
+
     q.unitPendingModes.set(stationId, nextMode);
     if (q.unitSavingIds.has(stationId)) return;
 
@@ -2122,40 +2355,30 @@ window.CompanionQuotaWorkbench = (() => {
     q.unitSavingIds.add(stationId);
     try {
       while (q.unitPendingModes.has(stationId)) {
-        const desiredMode = q.unitPendingModes.get(stationId);
+        const modeToSave = q.unitPendingModes.get(stationId);
         q.unitPendingModes.delete(stationId);
-        const curSt = (q.data?.stations || []).find(item => item.id === stationId);
-        if (!curSt) break;
-        const payload = {
-          ...curSt,
-          auth_token: "",
-          proxy_url: "",
-          display_unit_mode: desiredMode,
-        };
-        delete payload.has_token;
-        delete payload.has_proxy;
-        const data = await ctx.api("POST", `${ctx.path}/quota/stations`, {
-          edit_token: q.data.edit_token,
-          station: payload,
-          probe_after_save: false,
-        }, 15000);
+        const data = await ctx.api(
+          "POST",
+          `${ctx.path}/quota/stations/${encodeURIComponent(stationId)}/display-unit`,
+          { display_unit_mode: modeToSave },
+          10000
+        );
         if (!ctx.isCurrent(ticket)) return;
-        committedMode = desiredMode;
-        if (data?.edit_token) q.data.edit_token = data.edit_token;
-        if (Array.isArray(data?.stations)) q.data.stations = data.stations;
-        if (data?.summary) q.data.summary = data.summary;
-        if (q.unitPendingModes.has(stationId)) {
-          const queuedMode = q.unitPendingModes.get(stationId);
-          const refreshedSt = (q.data?.stations || []).find(item => item.id === stationId);
-          if (refreshedSt) refreshedSt.display_unit_mode = queuedMode;
-        }
+        committedMode = modeToSave;
+        if (data?.edit_token && q.data) q.data.edit_token = data.edit_token;
       }
     } catch {
       q.unitPendingModes.delete(stationId);
       if (!ctx.isCurrent(ticket)) return;
       const curSt = (q.data?.stations || []).find(item => item.id === stationId);
       if (curSt) curSt.display_unit_mode = committedMode;
-      patchSingleCardDom(ctx, stationId);
+      patchSingleCardDom(ctx, stationId, { animateUnit: false });
+      currencyHelper()?.broadcastUnitChange({
+        scopeKey: `station:${stationId}`,
+        stationId,
+        unit: committedMode,
+        source: "quota-workbench",
+      });
     } finally {
       q.unitSavingIds.delete(stationId);
     }
@@ -2606,9 +2829,16 @@ window.CompanionQuotaWorkbench = (() => {
       void setPrimaryStation(ctx, setPrimaryBtn.dataset.qwSetPrimary);
       return;
     }
-    const toggleUnitBtn = t.closest("[data-qw-toggle-unit]");
-    if (toggleUnitBtn) {
-      void toggleUnitMode(ctx, toggleUnitBtn.dataset.qwToggleUnit);
+    const heroCurBtn = t.closest("[data-qw-hero-currency]");
+    if (heroCurBtn) {
+      event.stopPropagation?.();
+      void switchHeroCurrency(ctx, heroCurBtn.dataset.qwHeroCurrency);
+      return;
+    }
+    const setUnitBtn = t.closest("[data-qw-set-unit]");
+    if (setUnitBtn) {
+      event.stopPropagation?.();
+      void setStationUnitMode(ctx, setUnitBtn.dataset.qwSetUnit, setUnitBtn.dataset.qwUnit);
       return;
     }
     const editBtn = t.closest("[data-qw-edit]");
@@ -2764,6 +2994,7 @@ window.CompanionQuotaWorkbench = (() => {
 
   function unmount(q) {
     clearAutoTimer(q);
+    unbindUnitSyncListener(q);
     detachDom(q);
   }
 

@@ -5,6 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/maintenance-page.js'), 'utf8');
+const currencySource = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/quota-currency.js'), 'utf8');
 const styles = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/maintenance-page.css'), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const localDay = value => {
@@ -133,8 +134,10 @@ function harness(responses) {
   window.URL = url;
   window.Blob = BlobMock;
   window.atob = value => Buffer.from(value, 'base64').toString('binary');
-  vm.runInNewContext(source, {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
-    Array, Set, Promise, URLSearchParams});
+  const vmCtx = {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
+    Array, Set, Map, Promise, URLSearchParams};
+  vm.runInNewContext(currencySource, vmCtx);
+  vm.runInNewContext(source, vmCtx);
   return {
     page: window.CompanionMaintenancePage, requests, root, exports: csvExports, downloads, confirmations, audioPreviews, revokedAudioUrls, navigations,
     advanceTimers: elapsed => {
@@ -461,7 +464,7 @@ test('dialogue and plugin views switch totals, rankings, cache, history, traces 
 
   h.root.click('[data-token-source]', {tokenSource: 'plugin'});
   const overview = () => h.root.innerHTML.split('data-maint-view="overview"')[1].split('data-maint-view="prompts"')[0];
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>1,300<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>1,300<\/strong>/);
   assert.match(overview(), /US\$0\.013000 已计价部分/);
   assert.match(overview(), /data-rank-key="proactive\.compose"/);
   assert.doesNotMatch(overview(), /data-task-settings-kind="conversation\.reply"|dialogue-provider/);
@@ -484,15 +487,15 @@ test('dialogue and plugin views switch totals, rankings, cache, history, traces 
   assert.match(h.exports[0], /"每日","[^"]+","1300"/);
   assert.match(h.downloads[0], /tokens-plugin-/);
   h.root.click('[data-period]', {period: 'total'});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>1,800<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>1,800<\/strong>/);
   h.root.click('[data-period]', {period: '7d'});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>1,800<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>1,800<\/strong>/);
   h.root.click('[data-select-day]', {selectDay: previous});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>500<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>500<\/strong>/);
   h.root.click('[data-period]', {period: 'today'});
   h.root.click('[data-rank-kind]', {rankKind: 'tasks', rankKey: 'proactive.compose'});
   h.root.click('[data-token-source]', {tokenSource: 'conversation'});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>11,000<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>11,000<\/strong>/);
   assert.match(overview(), /data-rank-key="conversation\.reply"/);
   assert.doesNotMatch(overview(), /data-task-settings-kind="proactive\.compose"|plugin-provider/);
   const dialogueRecent = h.root.innerHTML.split('data-maint-view="recent"')[1];
@@ -2725,4 +2728,448 @@ test('read-only upstream reconciliation foldout stays closed on mount, lazily fe
   assert.match(h.root.innerHTML, /12\.5 🍪/);
 
   h.page.unmount();
+});
+
+test('balance card supports 3-way [🍪|¥|$] and 2-way [¥|$] currency switching, stopPropagation, lightweight persistence, and cross-page sync', async () => {
+  const today = localDay();
+  const baseMaint = {
+    generated_at: today + 'T12:00:00',
+    summary: daily(today, {calls: 1, tokens: 500}),
+    totals: daily(today, {calls: 1, tokens: 500}),
+    daily: [daily(today, {calls: 1, tokens: 500})],
+    history: [daily(today, {calls: 1, tokens: 500})],
+    recent: [], budget: {},
+  };
+  const winListeners = new Map();
+  const dispatchedEvents = [];
+  const storeMap = new Map();
+  const localStorage = {
+    getItem: k => (storeMap.has(k) ? storeMap.get(k) : null),
+    setItem: (k, v) => { storeMap.set(k, String(v)); },
+    removeItem: k => { storeMap.delete(k); },
+  };
+  const requests = [];
+  const navigations = [];
+  let balancePayload = {
+    configured: true,
+    available: true,
+    provider: 'multi_station',
+    provider_label: '多站点额度看板',
+    source_kind: 'quota_dashboard',
+    station_id: 'st-cookie',
+    station_name: '饼干中转站',
+    awareness_mode: 'primary',
+    is_primary_explicit: true,
+    participating_count: 2,
+    currency_symbol: '🍪',
+    currency_label: 'CREDIT',
+    amount: '636.06',
+    observed_at: new Date().toISOString(),
+    state: 'available',
+    currency_context: {
+      station_id: 'st-cookie',
+      display_type: 'CREDIT',
+      native_symbol: '🍪',
+      native_unit: 'CREDIT',
+      native_amount: 636.06,
+      fiat_currency: 'CNY',
+      fiat_symbol: '¥',
+      fiat_per_base_unit: 0.1,
+      cny_amount: 63.606,
+      usd_amount: 8.8342,
+      usd_cny_rate: 7.2,
+      default_mode: 'native',
+      available_modes: ['native', 'cny', 'usd'],
+    },
+  };
+  const bridge = {
+    apiGet: async rawRoute => {
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      requests.push(['GET', route]);
+      if (route.endsWith('/maintenance')) return baseMaint;
+      if (route.endsWith('/balance')) return balancePayload;
+      if (route.endsWith('/voice')) return {providers: []};
+      if (route.endsWith('/image')) return {actions: []};
+      if (route === '/model') return {tasks: [], providers: []};
+      return {};
+    },
+    apiPost: async (rawRoute, body) => {
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      requests.push(['POST', route, body]);
+      return {saved: true, station_id: 'st-cookie', display_unit_mode: body?.display_unit_mode || 'native'};
+    },
+  };
+  class CustomEventMock {
+    constructor(type, init = {}) { this.type = type; this.detail = init.detail || null; }
+  }
+  const window = {
+    navigate: (...args) => navigations.push(args),
+    localStorage,
+    CustomEvent: CustomEventMock,
+    addEventListener(type, fn) {
+      if (!winListeners.has(type)) winListeners.set(type, new Set());
+      winListeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      winListeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(ev) {
+      dispatchedEvents.push(ev);
+      for (const fn of [...(winListeners.get(ev.type) || [])]) fn(ev);
+      return true;
+    },
+    CompanionProduct: {
+      role: () => ({model_api: '/astrbot_plugin_private_companion/model', config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
+      bridgeNow: () => bridge,
+    },
+    lucide: {createIcons() {}},
+    setTimeout: (cb, delay = 0) => { if (!delay) { cb(); return 0; } return 1; },
+    clearTimeout() {},
+  };
+  const rootListeners = {};
+  const root = {
+    innerHTML: '',
+    addEventListener(type, handler) { rootListeners[type] = handler; },
+    removeEventListener(type) { delete rootListeners[type]; },
+    querySelector() { return null; },
+  };
+  const ctx = {
+    window,
+    document: {createElement: () => ({click() {}})},
+    localStorage,
+    CustomEvent: CustomEventMock,
+    Intl, Date, Number, Object, String, Math, Array, Set, Promise, URLSearchParams,
+  };
+  vm.runInNewContext(currencySource, ctx);
+  vm.runInNewContext(source, ctx);
+
+  window.CompanionMaintenancePage.mount(root);
+  await flush();
+
+  // Renders 3-way [ 🍪 | ¥ | $ ] segmented capsule + conversion subline
+  assert.match(root.innerHTML, /class="maint-balance-unit-switch"/);
+  assert.match(root.innerHTML, /role="radio" aria-checked="true" class="is-active" data-balance-unit="native"/);
+  assert.match(root.innerHTML, /data-balance-unit="cny"/);
+  assert.match(root.innerHTML, /data-balance-unit="usd"/);
+  assert.match(root.innerHTML, /636\.06 🍪/);
+  assert.match(root.innerHTML, /≈ ¥63\.61 · \$8\.83/);
+
+  // Clicking [data-balance-unit="cny"] calls stopPropagation (no card jump), persists via display-unit, broadcasts event
+  let stopped = false;
+  rootListeners.click({
+    stopPropagation() { stopped = true; },
+    target: {
+      closest: sel => {
+        if (sel === '[data-balance-unit]') return {dataset: {balanceUnit: 'cny'}};
+        if (sel === '[data-balance-card-jump]') return {dataset: {balanceCardJump: 'quota'}};
+        return null;
+      },
+    },
+  });
+  await flush();
+  assert.equal(stopped, true, 'clicking unit capsule must call stopPropagation');
+  assert.equal(navigations.length, 0, 'clicking unit capsule must never trigger quota card jump');
+  assert.match(root.innerHTML, /¥63\.61/);
+  assert.match(root.innerHTML, /原值 636\.06 🍪 · ≈ \$8\.83/);
+  const persistCall = requests.find(([m, r]) => m === 'POST' && r === '/model/quota/stations/st-cookie/display-unit');
+  assert.ok(persistCall, 'must persist via lightweight POST /model/quota/stations/<id>/display-unit');
+  assert.equal(persistCall[2].display_unit_mode, 'cny');
+  assert.ok(dispatchedEvents.some(ev => ev.type === 'companion:balance-unit-change' && ev.detail?.unit === 'cny'));
+
+  // Clicking [data-balance-unit="usd"] switches to USD with rate tooltip & subline
+  rootListeners.click({
+    stopPropagation() {},
+    target: {closest: sel => (sel === '[data-balance-unit]' ? {dataset: {balanceUnit: 'usd'}} : null)},
+  });
+  await flush();
+  assert.match(root.innerHTML, /\$8\.83/);
+  assert.match(root.innerHTML, /汇率 7\.20/);
+
+  // Incoming cross-page event from quota workbench updates balance card immediately
+  window.dispatchEvent(new CustomEventMock('companion:balance-unit-change', {
+    detail: {scopeKey: 'station:st-cookie', stationId: 'st-cookie', unit: 'native', source: 'quota-workbench'},
+  }));
+  assert.match(root.innerHTML, /636\.06 🍪/);
+
+  // Refreshing balance with fiat-only (CNY) station renders 2-way [ ¥ | $ ] without native pill
+  balancePayload = {
+    configured: true,
+    available: true,
+    provider: 'multi_station',
+    provider_label: '多站点额度看板',
+    source_kind: 'quota_dashboard',
+    station_id: 'st-ds',
+    station_name: 'DeepSeek 官方',
+    awareness_mode: 'primary',
+    is_primary_explicit: true,
+    participating_count: 1,
+    currency_symbol: '¥',
+    currency_label: 'CNY',
+    amount: '144.00',
+    observed_at: new Date().toISOString(),
+    state: 'available',
+    currency_context: {
+      station_id: 'st-ds',
+      display_type: 'CNY',
+      native_symbol: '¥',
+      native_unit: 'CNY',
+      native_amount: 144.0,
+      fiat_currency: 'CNY',
+      fiat_symbol: '¥',
+      cny_amount: 144.0,
+      usd_amount: 20.0,
+      usd_cny_rate: 7.2,
+      default_mode: 'cny',
+      available_modes: ['cny', 'usd'],
+    },
+  };
+  rootListeners.click({
+    target: {closest: sel => (sel === '[data-balance-refresh]' ? {dataset: {}} : null)},
+  });
+  await flush();
+  assert.doesNotMatch(root.innerHTML, /data-balance-unit="native"/);
+  assert.match(root.innerHTML, /role="radio" aria-checked="true" class="is-active" data-balance-unit="cny"/);
+  assert.match(root.innerHTML, /data-balance-unit="usd"/);
+  assert.match(root.innerHTML, /¥144\.00/);
+  assert.match(root.innerHTML, /≈ \$20\.00/);
+
+  window.CompanionMaintenancePage.unmount();
+  assert.equal(winListeners.get('companion:balance-unit-change')?.size || 0, 0, 'unmount must remove cross-page unit sync listener');
+});
+
+test('balance card honors server preferred_unit over stale localStorage and serializes rapid display-unit POSTs', async () => {
+  const today = localDay();
+  const baseMaint = {
+    generated_at: today + 'T12:00:00',
+    summary: daily(today, {calls: 1, tokens: 500}),
+    totals: daily(today, {calls: 1, tokens: 500}),
+    daily: [daily(today, {calls: 1, tokens: 500})],
+    history: [daily(today, {calls: 1, tokens: 500})],
+    recent: [], budget: {},
+  };
+  const winListeners = new Map();
+  const storeMap = new Map();
+  // Pre-seed stale browser cache saying "usd", while server says "native" for station:st-cookie
+  storeMap.set('companion.balance_unit.v1', JSON.stringify({'station:st-cookie': 'usd'}));
+  const localStorage = {
+    getItem: k => (storeMap.has(k) ? storeMap.get(k) : null),
+    setItem: (k, v) => { storeMap.set(k, String(v)); },
+    removeItem: k => { storeMap.delete(k); },
+  };
+  const pendingPosts = [];
+  const bridge = {
+    apiGet: async rawRoute => {
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      if (route.endsWith('/maintenance')) return baseMaint;
+      if (route.endsWith('/balance')) {
+        return {
+          configured: true,
+          available: true,
+          provider: 'multi_station',
+          provider_label: '多站点额度看板',
+          source_kind: 'quota_dashboard',
+          station_id: 'st-cookie',
+          station_name: '饼干中转站',
+          awareness_mode: 'primary',
+          is_primary_explicit: true,
+          participating_count: 1,
+          currency_symbol: '🍪',
+          currency_label: 'CREDIT',
+          amount: '636.06',
+          observed_at: new Date().toISOString(),
+          state: 'available',
+          currency_context: {
+            scope_key: 'station:st-cookie',
+            station_id: 'st-cookie',
+            display_type: 'CREDIT',
+            native_symbol: '🍪',
+            native_unit: 'CREDIT',
+            native_amount: 636.06,
+            fiat_currency: 'CNY',
+            fiat_symbol: '¥',
+            fiat_per_base_unit: 0.1,
+            cny_amount: 63.606,
+            usd_amount: 8.8342,
+            usd_cny_rate: 7.2,
+            preferred_unit: 'native',
+            available_units: ['native', 'cny', 'usd'],
+          },
+        };
+      }
+      if (route.endsWith('/voice')) return {providers: []};
+      if (route.endsWith('/image')) return {actions: []};
+      if (route === '/model') return {tasks: [], providers: []};
+      return {};
+    },
+    apiPost: (rawRoute, body) => new Promise(resolve => {
+      pendingPosts.push({route: rawRoute, body, resolve});
+    }),
+  };
+  class CustomEventMock {
+    constructor(type, init = {}) { this.type = type; this.detail = init.detail || null; }
+  }
+  const window = {
+    navigate() {},
+    localStorage,
+    CustomEvent: CustomEventMock,
+    addEventListener(type, fn) {
+      if (!winListeners.has(type)) winListeners.set(type, new Set());
+      winListeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) { winListeners.get(type)?.delete(fn); },
+    dispatchEvent() { return true; },
+    CompanionProduct: {
+      role: () => ({model_api: '/astrbot_plugin_private_companion/model', config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
+      bridgeNow: () => bridge,
+    },
+    lucide: {createIcons() {}},
+    setTimeout: (cb, delay = 0) => { if (!delay) { cb(); return 0; } return 1; },
+    clearTimeout() {},
+  };
+  const rootListeners = {};
+  const root = {
+    innerHTML: '',
+    addEventListener(type, handler) { rootListeners[type] = handler; },
+    removeEventListener(type) { delete rootListeners[type]; },
+    querySelector() { return null; },
+  };
+  const ctx = {
+    window,
+    document: {createElement: () => ({click() {}})},
+    localStorage,
+    CustomEvent: CustomEventMock,
+    Intl, Date, Number, Object, String, Math, Array, Set, Map, Promise, URLSearchParams,
+  };
+  vm.runInNewContext(currencySource, ctx);
+  vm.runInNewContext(source, ctx);
+
+  window.CompanionMaintenancePage.mount(root);
+  await flush();
+
+  // 1) Server preferred_unit ("native") MUST beat stale localStorage ("usd") for server-persisted station!
+  assert.match(root.innerHTML, /role="radio" aria-checked="true" class="is-active" data-balance-unit="native"/);
+  assert.match(root.innerHTML, /636\.06 🍪/);
+
+  // 2) Rapid clicks cny -> usd serialize POST /display-unit (never concurrent)
+  rootListeners.click({
+    stopPropagation() {},
+    target: {closest: sel => (sel === '[data-balance-unit]' ? {dataset: {balanceUnit: 'cny'}} : null)},
+  });
+  rootListeners.click({
+    stopPropagation() {},
+    target: {closest: sel => (sel === '[data-balance-unit]' ? {dataset: {balanceUnit: 'usd'}} : null)},
+  });
+  await flush();
+  assert.equal(pendingPosts.length, 1, 'rapid unit switches must serialize to 1 in-flight POST at a time');
+  assert.equal(pendingPosts[0].body.display_unit_mode, 'cny');
+
+  // Resolve 1st POST -> queued final mode ("usd") flushes immediately
+  pendingPosts[0].resolve({saved: true, station_id: 'st-cookie', display_unit_mode: 'cny'});
+  await flush();
+  assert.equal(pendingPosts.length, 2, 'queued latest unit must flush after first POST settles');
+  assert.equal(pendingPosts[1].body.display_unit_mode, 'usd');
+  pendingPosts[1].resolve({saved: true, station_id: 'st-cookie', display_unit_mode: 'usd'});
+  await flush();
+
+  window.CompanionMaintenancePage.unmount();
+});
+
+test('top KPI summary cards share top-aligned 3-section flex layout, top-right unit pill, baseline-hugged Token unit, and zero trailing separator dot', async () => {
+  const today = localDay();
+  const statsWithUnconfirmed = {
+    ...daily(today, {calls: 54, tokens: 7831384, cost_microusd: 459722}),
+    unconfirmed_calls: 1,
+    cost_basis: 'estimated_local',
+  };
+  const h = harness({
+    maintenance: {
+      generated_at: today + 'T13:21:00',
+      summary: statsWithUnconfirmed,
+      totals: statsWithUnconfirmed,
+      daily: [statsWithUnconfirmed],
+      history: [statsWithUnconfirmed],
+      cost_availability: 'partial_estimated',
+      pricing: {display_currency: 'CNY', usd_cny_rate: 7.2},
+      recent: [],
+      budget: {spent_tokens: 718375, held_tokens: 0, hard_limit_enabled: false, soft_limit_enabled: false},
+    },
+    balance: {
+      configured: true,
+      available: true,
+      provider: 'multi_station',
+      provider_label: '多站点额度看板',
+      source_kind: 'quota_dashboard',
+      station_id: 'st-relay',
+      station_name: '饼干中转站',
+      awareness_mode: 'primary',
+      is_primary_explicit: true,
+      participating_count: 4,
+      currency_symbol: '🍪',
+      currency_label: 'CREDIT',
+      amount: '732.98',
+      observed_at: today + 'T13:21:00',
+      state: 'available',
+      currency_context: {
+        scope_key: 'station:st-relay',
+        station_id: 'st-relay',
+        display_type: 'CREDIT',
+        native_symbol: '🍪',
+        native_amount: 732.98,
+        inferred_fiat_currency: 'CNY',
+        cny_amount: 73.298,
+        usd_amount: 10.1803,
+        usd_cny_rate: 7.2,
+        preferred_unit: 'cny',
+        available_units: ['native', 'cny', 'usd'],
+      },
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+
+  const html = h.root.innerHTML;
+  const summaryStart = html.indexOf('maint-token-dashboard-summary');
+  const summaryEnd = html.indexOf('maint-scope-note', summaryStart);
+  const summaryHtml = html.slice(summaryStart, summaryEnd > summaryStart ? summaryEnd : undefined);
+
+  // 1) Balance card puts identity and compact unit switcher on the same top header row, with dedicated figure + anchored foot
+  assert.match(summaryHtml, /<div class="maint-balance-head"><div class="maint-balance-identity">[\s\S]*?<strong class="maint-balance-title"><span class="maint-balance-name"[^>]*>饼干中转站<\/span><span class="maint-balance-badge">主站<\/span><\/strong><small class="maint-balance-eyebrow"[^>]*>ACCOUNT BALANCE · 额度看板<\/small><\/div><\/div><div class="maint-balance-unit-switch"/);
+  assert.match(summaryHtml, /<div class="maint-balance-figure"><b class="maint-balance-val">¥73\.30<\/b><em class="maint-balance-subline"/);
+  assert.match(summaryHtml, /<div class="maint-balance-foot"><div class="maint-balance-meta"><span class="maint-balance-meta-primary">查询于 [^<]+ · 共监测 4 站<\/span><span class="maint-balance-meta-scope">不并入角色预算<\/span><\/div><div class="maint-balance-actions">/);
+
+  // 2) Confirmed Token card uses top-aligned heading + status pill, baseline-hugged Token unit, and 2-row breakdown with ZERO orphaned trailing dot
+  const usageSection = summaryHtml.split('<div class="maint-usage-total maint-token-summary-card">')[1].split('<div class="maint-budget-block')[0];
+  assert.match(usageSection, /<div class="maint-token-card-heading maint-usage-head"><span>今日 · Provider 已确认 Token<\/span><span class="maint-usage-status-pill" data-state="warn">含 1 次待确认<\/span><\/div>/);
+  assert.match(usageSection, /<div class="maint-usage-reading"><strong>7,831,384<\/strong><small>Token<\/small><\/div>/);
+  assert.match(usageSection, /<div class="maint-usage-breakdown"><div class="maint-usage-calls"><span class="maint-usage-call-item is-ok"><i><\/i>已确认 53 次<\/span><span class="maint-usage-call-item is-warn"><i><\/i>未确认 1 次<\/span><\/div><div class="maint-usage-cost-row"><span class="maint-usage-cost-label">本地费用<\/span><span class="maint-usage-cost-val">¥3\.31 本地估算 · 部分未设单价<\/span><\/div><\/div>/);
+  assert.doesNotMatch(usageSection, /maint-usage-subline/, 'middle KPI card must not rely on flex-wrap dot separators that leave orphaned trailing dots');
+  assert.doesNotMatch(usageSection, /次<\/span><i><\/i>/, 'middle KPI card must never render trailing separator dots after call counts');
+
+  // 3) CSS contract guarantees unified top-aligned flex-column cards, margin-top:auto footers, and nowrap balance header
+  assert.match(styles, /\.maint-token-dashboard-summary > \.maint-usage-total\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary > \.maint-balance-availability\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary > \.maint-budget-block\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary \.maint-balance-availability > \.maint-balance-head\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+  assert.match(styles, /\.maint-usage-breakdown\s*\{[^}]*margin-top:\s*auto;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary \.maint-balance-availability > \.maint-balance-foot\s*\{[^}]*margin-top:\s*auto;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary \.maint-soft-limit\s*\{[^}]*margin-top:\s*auto;/s);
+
+  // 4) Zero-unconfirmed case renders calm ok status pill ("53 次确认")
+  h.page.unmount();
+  const statsAllOk = {...daily(today, {calls: 53, tokens: 7831384, cost: 3.31}), known_calls: 53, unconfirmed_calls: 0};
+  const hOk = harness({
+    maintenance: {
+      generated_at: today + 'T13:21:00',
+      summary: statsAllOk,
+      totals: statsAllOk,
+      daily: [statsAllOk],
+      history: [statsAllOk],
+      recent: [],
+      budget: {},
+    },
+  });
+  hOk.page.mount(hOk.root);
+  await flush();
+  assert.match(hOk.root.innerHTML, /<span class="maint-usage-status-pill" data-state="ok">53 次确认<\/span>/);
+  hOk.page.unmount();
 });

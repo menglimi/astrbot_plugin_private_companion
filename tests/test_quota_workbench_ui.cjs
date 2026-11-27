@@ -10,6 +10,7 @@ const ROOT = path.resolve(__dirname, "..");
 const PAGE_DIR = path.join(ROOT, "pages/陪伴小屋");
 const workbenchSource = fs.readFileSync(path.join(PAGE_DIR, "workbench-page.js"), "utf8");
 const pricingSource = fs.readFileSync(path.join(PAGE_DIR, "pricing-workbench.js"), "utf8");
+const currencySource = fs.readFileSync(path.join(PAGE_DIR, "quota-currency.js"), "utf8");
 const quotaSource = fs.readFileSync(path.join(PAGE_DIR, "quota-workbench.js"), "utf8");
 const modelsSource = fs.readFileSync(path.join(PAGE_DIR, "models-page.js"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -258,6 +259,9 @@ function quotaHarness() {
     removeEventListener(type, fn) {
       winHandlers.get(type)?.delete(fn);
     },
+    dispatchEvent(ev) {
+      for (const fn of [...(winHandlers.get(ev?.type) || [])]) fn(ev);
+    },
     CompanionProduct: {
       hosted: () => true,
       role: () => ({ model_api: "/astrbot_plugin_private_companion/model" }),
@@ -299,6 +303,7 @@ function quotaHarness() {
   };
   vm.runInNewContext(workbenchSource, { ...baseGlobals });
   vm.runInNewContext(pricingSource, { ...baseGlobals });
+  vm.runInNewContext(currencySource, { ...baseGlobals });
   vm.runInNewContext(quotaSource, { ...baseGlobals });
   vm.runInNewContext(modelsSource, { ...baseGlobals });
 
@@ -1078,6 +1083,7 @@ test("Live DOM: modal shell persists (===) with zero re-animation, zero scroll j
   };
   vm.runInNewContext(workbenchSource, { ...baseGlobals });
   vm.runInNewContext(pricingSource, { ...baseGlobals });
+  vm.runInNewContext(currencySource, { ...baseGlobals });
   vm.runInNewContext(quotaSource, { ...baseGlobals });
   vm.runInNewContext(modelsSource, { ...baseGlobals });
 
@@ -1373,24 +1379,40 @@ test("Dual-unit toggle switches custom currency display in-place, persists prefe
   await flush();
 
   assert.match(h.root.innerHTML, /qw-balance-value[^>]*>636\.06<\/span>[\s\S]*?qw-balance-unit">🍪<\/span>/);
-  assert.match(h.root.innerHTML, /≈ ¥63\.61/);
-  assert.match(h.root.innerHTML, /data-qw-toggle-unit="st-cookie"/);
-  assert.match(h.root.innerHTML, /🍪 ↔ ¥/);
+  assert.match(h.root.innerHTML, /≈ ¥63\.61 · \$8\.83/);
+  assert.match(h.root.innerHTML, /data-qw-set-unit="st-cookie" data-qw-unit="native"/);
+  assert.match(h.root.innerHTML, /data-qw-set-unit="st-cookie" data-qw-unit="cny"/);
+  assert.match(h.root.innerHTML, /data-qw-set-unit="st-cookie" data-qw-unit="usd"/);
   assert.match(h.root.innerHTML, /qw-sub-strip/);
-  assert.match(h.root.innerHTML, /订阅余量[\s\S]*?5,000 🍪 ≈ ¥500/);
+  assert.match(h.root.innerHTML, /订阅余量[\s\S]*?5,000 🍪 ≈ ¥500\.00/);
   assert.match(h.root.innerHTML, /2 个套餐/);
   assert.match(h.root.innerHTML, /含折合共 ¥63\.61/);
 
-  // Toggle unit mode native -> fiat
-  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  // Switch unit mode native -> cny -> usd via lightweight display-unit endpoint
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "cny" });
   await flush();
 
   assert.match(h.root.innerHTML, /qw-balance-value[^>]*>¥63\.61<\/span>/);
-  assert.match(h.root.innerHTML, /qw-balance-conv[^>]*>636\.06 🍪<\/span>/);
-  const saveReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations");
-  assert.ok(saveReq, "Unit toggle should silently persist display_unit_mode");
-  assert.equal(saveReq.values.probe_after_save, false);
-  assert.equal(saveReq.values.station.display_unit_mode, "fiat");
+  assert.match(h.root.innerHTML, /原值 636\.06 🍪 · ≈ \$8\.83/);
+  const saveReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit");
+  assert.ok(saveReq, "Unit switch should silently persist via POST /quota/stations/<id>/display-unit");
+  assert.equal(saveReq.values.display_unit_mode, "cny");
+  saveReq.resolve({ saved: true, station_id: "st-cookie", display_unit_mode: "cny", edit_token: "tok-v2" });
+  await flush();
+
+  // Switch to USD -> updates balance, subline, subscriptions, and last-use cost together!
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "usd" });
+  await flush();
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>\$8\.83<\/span>/);
+  assert.match(h.root.innerHTML, /原值 636\.06 🍪 · ≈ ¥63\.61（汇率 7\.20）/);
+  const saveUsdReq = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit").pop();
+  assert.equal(saveUsdReq.values.display_unit_mode, "usd");
+
+  // Hero total balance card also supports in-place [ ¥ | $ ] switch!
+  h.root.click("[data-qw-hero-currency]", { qwHeroCurrency: "USD" });
+  await flush();
+  assert.match(h.root.innerHTML, /折合总余额（USD）/);
+  assert.match(h.root.innerHTML, /含折合共 \$8\.83/);
 
   h.page.unmount();
 });
@@ -1499,38 +1521,36 @@ test("Polish: openAwareness honors reduced motion, resize listener cleans up on 
   assert.equal(h.scrollCalls.length, 1);
   assert.equal(h.scrollCalls[0].opts.behavior, "auto");
 
-  // 2) Rapid double-click on toggleUnitMode: native -> fiat -> native -> ONLY 1 in-flight POST at a time,
-  //    then serializes 2nd POST with updated edit_token ("tok-u2") instead of racing with stale "tok-u1"!
-  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
-  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  // 2) Rapid clicks on setStationUnitMode: native -> cny -> usd -> ONLY 1 in-flight POST at a time,
+  //    then serializes 2nd POST cleanly via /quota/stations/<id>/display-unit!
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "cny" });
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "usd" });
   await flush();
-  const posts1 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations");
+  const posts1 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit");
   assert.equal(posts1.length, 1, "Rapid clicks must not fire concurrent POSTs");
-  assert.equal(posts1[0].values.edit_token, "tok-u1");
-  assert.equal(posts1[0].values.station.display_unit_mode, "fiat");
+  assert.equal(posts1[0].values.display_unit_mode, "cny");
 
-  // Resolve 1st POST with refreshed edit_token -> queued 2nd toggle ("native") fires automatically with "tok-u2"
-  posts1[0].resolve({
-    edit_token: "tok-u2",
-    stations: [{ ...payload.stations[0], display_unit_mode: "fiat" }],
-    summary: payload.summary,
-  });
+  // Resolve 1st POST -> queued 2nd switch ("usd") fires automatically
+  posts1[0].resolve({ saved: true, station_id: "st-cookie", display_unit_mode: "cny", edit_token: "tok-u2" });
   await flush();
-  const posts2 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations");
-  assert.equal(posts2.length, 2, "Queued second toggle should flush after first POST finishes");
-  assert.equal(posts2[1].values.edit_token, "tok-u2");
-  assert.equal(posts2[1].values.station.display_unit_mode, "native");
-  posts2[1].resolve({
-    edit_token: "tok-u3",
-    stations: [{ ...payload.stations[0], display_unit_mode: "native" }],
-    summary: payload.summary,
-  });
+  const posts2 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit");
+  assert.equal(posts2.length, 2, "Queued second switch should flush after first POST finishes");
+  assert.equal(posts2[1].values.display_unit_mode, "usd");
+  posts2[1].resolve({ saved: true, station_id: "st-cookie", display_unit_mode: "usd", edit_token: "tok-u3" });
   await flush();
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>\$1\.39<\/span>/);
+
+  // 2b) Cross-page companion:balance-unit-change event updates station card immediately
+  h.winHandlers.get("companion:balance-unit-change")?.forEach(fn => fn({
+    type: "companion:balance-unit-change",
+    detail: { scopeKey: "station:st-cookie", stationId: "st-cookie", unit: "native", source: "maintenance" },
+  }));
   assert.match(h.root.innerHTML, /qw-balance-value[^>]*>100<\/span>/);
 
-  // 3) Unmount removes window resize listener cleanly
+  // 3) Unmount removes window resize and unit-sync listeners cleanly
   h.page.unmount();
   assert.equal(h.winHandlers.get("resize")?.size || 0, 0, "unmount must remove window resize listener");
+  assert.equal(h.winHandlers.get("companion:balance-unit-change")?.size || 0, 0, "unmount must remove unit-sync listener");
 });
 
 test("Logo cache never poisons on available:false, clears backoff on manual refresh, uses localStorage L2 cache, and schedules 2.5s bg sync", async () => {

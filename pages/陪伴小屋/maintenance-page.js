@@ -3409,6 +3409,31 @@ window.CompanionMaintenancePage = (() => {
       '<div class="maint-upstream-body">' + body + '</div></details>';
   }
 
+  function quotaCurrency() {
+    return typeof window !== "undefined" ? window.CompanionQuotaCurrency || null : null;
+  }
+
+  function resolveBalanceCurrencyView() {
+    const balance = state?.balance;
+    const rawCtx = balance?.currency_context;
+    const helper = quotaCurrency();
+    if (!balance?.available || !rawCtx || !helper) return null;
+    const meta = pricingMeta(state?.data);
+    const liveRate = meta && Number.isFinite(Number(meta.usd_cny_rate)) ? Number(meta.usd_cny_rate) : null;
+    const views = helper.resolveViews(rawCtx, liveRate);
+    if (!views) return null;
+    const overrideUnit = state?.balanceUnitOverride && state.balanceUnitOverride.scopeKey === views.scope_key
+      ? state.balanceUnitOverride.unit
+      : "";
+    const cachedUnit = helper.getCachedUnit(views.scope_key);
+    // For server-persisted stations (views.station_id present), server preferred_unit is authoritative over stale localStorage.
+    const desired = views.station_id
+      ? (overrideUnit || views.preferred_unit || cachedUnit)
+      : (overrideUnit || cachedUnit || views.preferred_unit);
+    const activeUnit = helper.normalizeUnit(desired, views.available_units, views.inferred_fiat_currency, views.display_type);
+    return { views, activeUnit, helper };
+  }
+
   function balanceMarkup() {
     const balance = state.balance || {};
     const isQuotaBoard = balance.source_kind === "quota_dashboard" || balance.provider === "multi_station";
@@ -3436,8 +3461,31 @@ window.CompanionMaintenancePage = (() => {
     const status = !state.balanceLoaded ? "尚未查询" : !balance.configured ? "未配置"
       : balance.available ? "已连接" : balance.state === "configuration_invalid" ? "配置无效" : "查询失败";
 
+    const curView = resolveBalanceCurrencyView();
+    let unitSwitchHtml = "";
+    let sublineHtml = "";
     let value = status;
-    if (balance.available) {
+    if (curView) {
+      const { views, activeUnit, helper } = curView;
+      value = helper.formatUnitValue(views, activeUnit).text;
+      if (views.available_units.length > 1) {
+        const btns = views.available_units.map(u => {
+          const meta = helper.unitButtonMeta(u, views);
+          const active = u === activeUnit;
+          return '<button type="button" role="radio" aria-checked="' + (active ? "true" : "false") + '"' +
+            ' class="' + (active ? "is-active" : "") + '"' +
+            ' data-balance-unit="' + escapeHtml(u) + '"' +
+            ' title="' + escapeHtml(meta.title) + '"' +
+            ' aria-label="' + escapeHtml(meta.ariaLabel) + '">' + escapeHtml(meta.label) + '</button>';
+        }).join("");
+        unitSwitchHtml = '<div class="maint-balance-unit-switch" role="radiogroup" aria-label="账户余额显示单位">' + btns + '</div>';
+      }
+      const subline = helper.buildSubline(views, activeUnit);
+      if (subline.text) {
+        sublineHtml = '<em class="maint-balance-subline"' + (subline.title ? ' title="' + escapeHtml(subline.title) + '"' : '') + '>' +
+          escapeHtml(subline.text) + '</em>';
+      }
+    } else if (balance.available) {
       if (balance.amount == null || String(balance.amount).trim() === "") {
         value = "未提供余额";
       } else if (isQuotaBoard && (balance.currency_symbol === "¥" || balance.currency_symbol === "$")) {
@@ -3449,37 +3497,56 @@ window.CompanionMaintenancePage = (() => {
       }
     }
 
-    let detail = !state.balanceLoaded ? "读取已配置的模型服务余额；查询结果与 本插件角色预算分开显示。"
-      : !balance.configured ? "未配置余额端点；NewAPI 需要单独的用户访问令牌。"
-      : balance.available ? "查询于 " + time(balance.observed_at) + "；不会并入 本插件角色预算。"
+    const isNumericValue = Boolean(curView) || (balance.available && balance.amount != null && String(balance.amount).trim() !== "");
+    let metaPrimary = !state.balanceLoaded ? "读取已配置的模型服务余额"
+      : !balance.configured ? "未配置余额端点；NewAPI 需用户访问令牌"
+      : balance.available ? "查询于 " + time(balance.observed_at)
       : balance.state === "configuration_invalid" ? "余额查询配置无效，请检查余额查询配置。"
       : "查询失败，请检查 HTTPS 地址、访问令牌与额度单位配置。";
+    let metaScope = (!state.balanceLoaded || balance.available) ? "不并入角色预算" : "";
 
     if (isQuotaBoard && state.balanceLoaded && balance.configured) {
       if (balance.available) {
         const obsPart = "查询于 " + time(balance.observed_at);
         if (awarenessMode === "aggregate_sum" && balance.extra) {
-          detail = balance.extra + " · " + obsPart + "；不会并入本插件角色预算。";
+          metaPrimary = balance.extra + " · " + obsPart;
         } else if (balance.participating_count > 1) {
-          detail = obsPart + " · 共监测 " + balance.participating_count + " 站；不会并入本插件角色预算。";
+          metaPrimary = obsPart + " · 共监测 " + balance.participating_count + " 站";
         } else {
-          detail = obsPart + "；不会并入本插件角色预算。";
+          metaPrimary = obsPart;
         }
+        metaScope = "不并入角色预算";
       } else if (stationName) {
-        detail = "站点「" + stationName + "」余额暂不可用，点击可前往额度看板检查配置。";
+        metaPrimary = "站点「" + stationName + "」余额暂不可用，点击可前往额度看板检查配置。";
+        metaScope = "";
       }
     }
 
+    const animCls = state.balanceUnitAnim ? " is-unit-updated" : "";
+    const valCls = "maint-balance-val" + (isNumericValue ? "" : " is-status") + animCls;
     const ariaTarget = isQuotaBoard ? (stationName || "额度看板") : providerLabel;
     return '<div class="maint-balance-availability" data-balance-card-jump="quota" data-state="' + (balance.available ? "ok" : balance.configured ? "warn" : "unknown") + '">' +
-      '<div><i data-lucide="wallet-cards"></i><span><small>' + escapeHtml(eyebrow) + '</small><strong>' + escapeHtml(title) +
-      (modeBadge ? '<span class="maint-balance-badge">' + escapeHtml(modeBadge) + '</span>' : '') + '</strong></span></div>' +
-      '<p><b>' + escapeHtml(value) + '</b><span>' + escapeHtml(detail) + '</span></p>' +
-      '<div class="maint-balance-actions">' +
-      '<button class="maint-balance-query" type="button" data-balance-refresh ' + (state.balanceLoading ? "disabled" : "") +
-      ' aria-label="查询 ' + escapeHtml(ariaTarget) + ' 账户余额" title="查询账户余额"><i data-lucide="refresh-cw"></i><span>' +
-      (state.balanceLoading ? "查询中" : state.balanceLoaded ? "重新查询" : "查询余额") + '</span></button>' +
-      '<button class="maint-balance-open" type="button" data-balance-open-quota data-go="manage" data-manage="models" data-manage-subtab="quota" title="前往模型与连接 · 额度看板"><span>额度看板 ↗</span></button>' +
+      '<div class="maint-balance-head">' +
+        '<div class="maint-balance-identity">' +
+          '<span class="maint-balance-icon" aria-hidden="true"><i data-lucide="wallet-cards"></i></span>' +
+          '<div class="maint-balance-title-stack">' +
+            '<strong class="maint-balance-title"><span class="maint-balance-name" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>' +
+            (modeBadge ? '<span class="maint-balance-badge">' + escapeHtml(modeBadge) + '</span>' : '') + '</strong>' +
+            '<small class="maint-balance-eyebrow" title="' + escapeHtml(eyebrow) + '">' + escapeHtml(eyebrow) + '</small>' +
+          '</div>' +
+        '</div>' +
+        unitSwitchHtml +
+      '</div>' +
+      '<div class="maint-balance-figure"><b class="' + valCls + '">' + escapeHtml(value) + '</b>' + sublineHtml + '</div>' +
+      '<div class="maint-balance-foot">' +
+        '<div class="maint-balance-meta"><span class="maint-balance-meta-primary">' + escapeHtml(metaPrimary) + '</span>' +
+        (metaScope ? '<span class="maint-balance-meta-scope">' + escapeHtml(metaScope) + '</span>' : '') + '</div>' +
+        '<div class="maint-balance-actions">' +
+          '<button class="maint-balance-query" type="button" data-balance-refresh ' + (state.balanceLoading ? "disabled" : "") +
+          ' aria-label="查询 ' + escapeHtml(ariaTarget) + ' 账户余额" title="查询账户余额"><i data-lucide="refresh-cw"></i><span>' +
+          (state.balanceLoading ? "查询中" : state.balanceLoaded ? "重新查询" : "查询余额") + '</span></button>' +
+          '<button class="maint-balance-open" type="button" data-balance-open-quota data-go="manage" data-manage="models" data-manage-subtab="quota" title="前往模型与连接 · 额度看板"><span>额度看板 ↗</span></button>' +
+        '</div>' +
       '</div></div>';
   }
 
@@ -3570,7 +3637,27 @@ window.CompanionMaintenancePage = (() => {
       number(coreCoverage.observed_requests) + ' 次实际请求 · ' + number(coreCoverage.fallback_usage_observations) +
       ' 条汇总或最后响应。' + (coreCoverage.partial_request_observation_turns ? number(coreCoverage.partial_request_observation_turns) +
         ' 回合仅观测部分请求，含工具参数重查。' : "") + '无法观测的多轮次数保持未知，核心费用不计为零。</p>' : "";
-    return '<div class="maint-token-hero maint-token-summary maint-token-dashboard-summary">' + balanceMarkup() + '<div class="maint-usage-total maint-token-summary-card"><span>' + escapeHtml(label) + ' · Provider 已确认 Token</span><strong>' + number(stats.tokens) + '</strong><small>Token</small><div class="maint-usage-subline"><span>已确认 ' + number(stats.knownCalls) + ' 次</span><i></i><span>未确认 ' + number(stats.unconfirmed) + ' 次</span><i></i><span>' + priceNote + '</span></div></div>' + budgetMarkup(budget, spent, held, limit, budgetPct, softEnabled, softPct, softLimit, softState) + '</div>' + observationNote +
+    const usageStatusState = stats.unconfirmed > 0 ? "warn" : stats.knownCalls > 0 ? "ok" : "muted";
+    const usageStatusLabel = stats.unconfirmed > 0
+      ? ("含 " + number(stats.unconfirmed) + " 次待确认")
+      : stats.knownCalls > 0
+        ? (number(stats.knownCalls) + " 次确认")
+        : "暂无调用";
+    return '<div class="maint-token-hero maint-token-summary maint-token-dashboard-summary">' + balanceMarkup() +
+      '<div class="maint-usage-total maint-token-summary-card">' +
+        '<div class="maint-token-card-heading maint-usage-head">' +
+          '<span>' + escapeHtml(label) + ' · Provider 已确认 Token</span>' +
+          '<span class="maint-usage-status-pill" data-state="' + usageStatusState + '">' + escapeHtml(usageStatusLabel) + '</span>' +
+        '</div>' +
+        '<div class="maint-usage-reading"><strong>' + number(stats.tokens) + '</strong><small>Token</small></div>' +
+        '<div class="maint-usage-breakdown">' +
+          '<div class="maint-usage-calls">' +
+            '<span class="maint-usage-call-item is-ok"><i></i>已确认 ' + number(stats.knownCalls) + ' 次</span>' +
+            '<span class="maint-usage-call-item' + (stats.unconfirmed > 0 ? ' is-warn' : '') + '"><i></i>未确认 ' + number(stats.unconfirmed) + ' 次</span>' +
+          '</div>' +
+          '<div class="maint-usage-cost-row"><span class="maint-usage-cost-label">本地费用</span><span class="maint-usage-cost-val">' + priceNote + '</span></div>' +
+        '</div>' +
+      '</div>' + budgetMarkup(budget, spent, held, limit, budgetPct, softEnabled, softPct, softLimit, softState) + '</div>' + observationNote +
       (state.tokenSource === "companion" ? usageSplitMarkup(data) : "") +
       '<details class="maint-token-drill"><summary>更多用量指标与周期对比</summary><div class="maint-token-drill-content">' + periodComparison + '<div class="maint-token-kpis"><div><span>输入 / 输出</span><strong>' + number(stats.input) + ' / ' + number(stats.output) + '</strong></div><div><span>平均每次</span><strong>' +
       (stats.calls ? number(stats.tokens / stats.calls) : "—") + ' Token</strong></div><div><span>平均延迟</span><strong>' + (stats.latency == null ? "—" : number(stats.latency) + " ms") +
@@ -4388,6 +4475,77 @@ window.CompanionMaintenancePage = (() => {
     }
   }
 
+  async function switchBalanceUnit(nextUnit) {
+    const curView = resolveBalanceCurrencyView();
+    if (!state || !curView) return;
+    const { views, activeUnit, helper } = curView;
+    const normalized = helper.normalizeUnit(nextUnit, views.available_units, views.inferred_fiat_currency, views.display_type);
+    if (normalized === activeUnit) return;
+    const current = state;
+    const ticket = generation;
+    current.balanceUnitOverride = { scopeKey: views.scope_key, unit: normalized };
+    current.balanceUnitAnim = true;
+    if (current.balance?.currency_context) {
+      current.balance = {
+        ...current.balance,
+        currency_context: { ...current.balance.currency_context, preferred_unit: normalized },
+      };
+    }
+    helper.broadcastUnitChange({
+      scopeKey: views.scope_key,
+      stationId: views.station_id,
+      unit: normalized,
+      source: "maintenance",
+    });
+    cacheMaintenanceState();
+    render();
+    current.balanceUnitAnim = false;
+    if (views.station_id) {
+      const stationId = views.station_id;
+      current.balanceUnitSavingIds ||= new Set();
+      current.balanceUnitPendingModes ||= new Map();
+      current.balanceUnitPendingModes.set(stationId, normalized);
+      if (current.balanceUnitSavingIds.has(stationId)) return;
+      current.balanceUnitSavingIds.add(stationId);
+      try {
+        while (current.balanceUnitPendingModes.has(stationId)) {
+          const desiredMode = current.balanceUnitPendingModes.get(stationId);
+          current.balanceUnitPendingModes.delete(stationId);
+          try {
+            await api("POST", modelPath() + "/quota/stations/" + encodeURIComponent(stationId) + "/display-unit", {
+              display_unit_mode: desiredMode,
+            });
+          } catch (_) {
+            /* Local preference stays active even if background persistence fails. */
+          }
+          if (ticket !== generation || state !== current) return;
+        }
+      } finally {
+        current.balanceUnitSavingIds.delete(stationId);
+      }
+    }
+  }
+
+  function onBalanceUnitChange(event) {
+    const detail = event?.detail;
+    if (!state || !detail || detail.source === "maintenance") return;
+    const ctx = state.balance?.currency_context;
+    const helper = quotaCurrency();
+    if (!ctx || !helper) return;
+    const matchesScope = detail.scopeKey && detail.scopeKey === ctx.scope_key;
+    const matchesStation = detail.stationId && ctx.station_id && detail.stationId === ctx.station_id;
+    if (!matchesScope && !matchesStation) return;
+    const nextUnit = helper.normalizeUnit(detail.unit, ctx.available_units, ctx.inferred_fiat_currency, ctx.display_type);
+    state.balanceUnitOverride = { scopeKey: ctx.scope_key || detail.scopeKey, unit: nextUnit };
+    state.balance = {
+      ...state.balance,
+      currency_context: { ...ctx, preferred_unit: nextUnit },
+    };
+    state.balanceUnitAnim = true;
+    render();
+    state.balanceUnitAnim = false;
+  }
+
   async function refreshBalance() {
     if (!state || state.balanceLoading) return;
     const current = state;
@@ -4948,6 +5106,8 @@ window.CompanionMaintenancePage = (() => {
     const currencyBtn = target.closest("[data-currency-switch]");
     if (currencyBtn && state) { void switchCurrency(currencyBtn.dataset.currencySwitch); return; }
     if (target.closest("[data-pricing-sync-rates]")) { void syncExchangeRates(); return; }
+    const balanceUnitBtn = target.closest("[data-balance-unit]");
+    if (balanceUnitBtn && state) { event.stopPropagation?.(); void switchBalanceUnit(balanceUnitBtn.dataset.balanceUnit); return; }
     if (target.closest("[data-balance-refresh]")) { event.stopPropagation?.(); void refreshBalance(); return; }
     if (target.closest("[data-balance-open-quota]")) { return; }
     if (target.closest('[data-balance-card-jump="quota"]')) {
@@ -5155,6 +5315,7 @@ window.CompanionMaintenancePage = (() => {
     if (state?.refreshTimer) window.clearInterval?.(state.refreshTimer);
     if (state?.memoryTimer != null) window.clearTimeout?.(state.memoryTimer);
     window.removeEventListener?.("companion:scope-changed", onScopeChanged);
+    window.removeEventListener?.("companion:balance-unit-change", onBalanceUnitChange);
     clearDiagnosticExpiry(state);
     clearVoiceAudio();
     if (root) {
@@ -5184,6 +5345,7 @@ window.CompanionMaintenancePage = (() => {
       proactiveTesting: false, proactiveConfirming: false, proactiveNotice: "", proactivePurpose: "care", proactiveTest: null,
       test: null, voiceTest: null, imageTest: null, provider: "", voiceProvider: "", imageAction: "", voiceLanguage: "zh",
       storageTest: null, storageTesting: false, balance: null, balanceLoaded: false, balanceLoading: false,
+      balanceUnitOverride: null, balanceUnitAnim: false,
       upstreamOpen: false, upstreamLoading: false, upstreamLoaded: false, upstreamError: "", upstreamData: null,
       upstreamStationId: "", upstreamDays: 7, upstreamTokenName: "",
       currencyOverride: "", pricingSyncing: false, pricingNotice: "",
@@ -5217,6 +5379,7 @@ window.CompanionMaintenancePage = (() => {
     root.addEventListener("pointerover", cachePartHover);
     root.addEventListener("pointerout", cachePartHover);
     window.addEventListener?.("companion:scope-changed", onScopeChanged);
+    window.addEventListener?.("companion:balance-unit-change", onBalanceUnitChange);
     if (typeof window.setInterval === "function") {
       state.refreshTimer = window.setInterval(() => {
         if ((typeof document === "undefined" || document.visibilityState === "visible") && state && !state.loading && !state.backgroundLoading) {

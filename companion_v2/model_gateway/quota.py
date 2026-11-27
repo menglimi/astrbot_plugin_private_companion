@@ -41,7 +41,7 @@ DEFAULT_LOW_PERCENT = 10.0
 DISPLAY_TYPES = ("", "CNY", "USD", "CREDIT", "TOKENS")
 SNAPSHOT_DISPLAY_TYPES = ("CNY", "USD", "CREDIT", "TOKENS")
 FIAT_CURRENCIES = ("", "CNY", "USD")
-DISPLAY_UNIT_MODES = ("native", "fiat")
+DISPLAY_UNIT_MODES = ("native", "fiat", "cny", "usd")
 SOURCE_MODES = ("manual", "astrbot_provider")
 AWARENESS_MODES = ("primary", "aggregate_sum", "any_low")
 VALID_HEALTH_STATES = ("normal", "low", "critical", "error", "disabled", "pending")
@@ -233,6 +233,141 @@ def convert_currency_amount(
     return round(amount / rate, 6)
 
 
+def _format_compact_rate(value: float) -> str:
+    if not math.isfinite(value) or value <= 0:
+        return ""
+    if abs(value - round(value)) < 1e-6:
+        return str(int(round(value)))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def normalize_display_unit_mode(
+    mode: object,
+    available_units: Iterable[str],
+    *,
+    inferred_fiat_currency: str = "",
+    display_type: str = "",
+) -> str:
+    """Normalize a display_unit_mode (including legacy 'fiat') against available_units."""
+    avail = [str(u).strip().lower() for u in available_units if str(u).strip()]
+    if not avail:
+        avail = ["native"]
+    raw = str(mode or "").strip().lower()
+    inferred = str(inferred_fiat_currency or "").strip().upper()
+    dtype = str(display_type or "").strip().upper()
+    default_unit = "cny" if dtype == "CNY" else ("usd" if dtype == "USD" else avail[0])
+    if default_unit not in avail:
+        default_unit = avail[0]
+
+    if raw == "fiat":
+        mapped = "usd" if inferred == "USD" else ("cny" if inferred == "CNY" else default_unit)
+        return mapped if mapped in avail else default_unit
+    if raw == "native":
+        if "native" in avail:
+            return "native"
+        return default_unit
+    if raw in avail:
+        return raw
+    return default_unit
+
+
+def resolve_currency_views(
+    *,
+    remaining: float | None,
+    display_type: str,
+    symbol: str = "",
+    fiat_remaining: float | None = None,
+    inferred_fiat_currency: str = "",
+    usd_cny_rate: float = DEFAULT_FALLBACK_USD_CNY,
+    preferred_unit: str = "native",
+    custom_exchange_rate: float | None = None,
+    fiat_per_base_unit: float | None = None,
+    scope_key: str = "",
+    station_id: str = "",
+) -> dict[str, Any]:
+    """Single source of truth for native / CNY / USD balance views without outbound HTTP."""
+    dtype = str(display_type or "CREDIT").strip().upper()
+    if dtype not in SNAPSHOT_DISPLAY_TYPES:
+        dtype = "CREDIT"
+    rate = normalize_usd_cny_rate(usd_cny_rate)
+    inferred = str(inferred_fiat_currency or "").strip().upper()
+    if dtype in ("CNY", "USD"):
+        inferred = dtype
+    elif inferred not in ("CNY", "USD"):
+        inferred = ""
+
+    rem_val = round(float(remaining), 6) if (remaining is not None and not isinstance(remaining, bool) and math.isfinite(float(remaining))) else None
+    fiat_val = round(float(fiat_remaining), 6) if (fiat_remaining is not None and not isinstance(fiat_remaining, bool) and math.isfinite(float(fiat_remaining))) else None
+
+    native_sym = normalize_currency_symbol(dtype, symbol)
+    if not native_sym and dtype == "TOKENS":
+        native_sym = "tokens"
+    native_label = (
+        "人民币" if dtype == "CNY"
+        else ("美元" if dtype == "USD" else ("原始 Token" if dtype == "TOKENS" else "站内原值"))
+    )
+
+    cny_amount: float | None = None
+    usd_amount: float | None = None
+    available_units: list[str]
+    rate_caption = ""
+
+    if dtype == "CNY":
+        cny_amount = rem_val
+        usd_amount = convert_currency_amount(rem_val, "CNY", "USD", rate) if rem_val is not None else None
+        available_units = ["cny", "usd"]
+    elif dtype == "USD":
+        usd_amount = rem_val
+        cny_amount = convert_currency_amount(rem_val, "USD", "CNY", rate) if rem_val is not None else None
+        available_units = ["cny", "usd"]
+    elif dtype == "CREDIT" and fiat_val is not None and inferred in ("CNY", "USD"):
+        if inferred == "CNY":
+            cny_amount = fiat_val
+            usd_amount = convert_currency_amount(fiat_val, "CNY", "USD", rate)
+        else:
+            usd_amount = fiat_val
+            cny_amount = convert_currency_amount(fiat_val, "USD", "CNY", rate)
+        available_units = ["native", "cny", "usd"]
+        if (
+            custom_exchange_rate is not None
+            and fiat_per_base_unit is not None
+            and not isinstance(custom_exchange_rate, bool)
+            and not isinstance(fiat_per_base_unit, bool)
+            and float(custom_exchange_rate) > 0
+            and float(fiat_per_base_unit) > 0
+        ):
+            per_fiat = _format_compact_rate(float(custom_exchange_rate) / float(fiat_per_base_unit))
+            if per_fiat:
+                fiat_sym = "$" if inferred == "USD" else "¥"
+                unit_lbl = native_sym or "积分"
+                rate_caption = f"{per_fiat} {unit_lbl} = {fiat_sym}1"
+    else:
+        available_units = ["native"]
+
+    normalized_pref = normalize_display_unit_mode(
+        preferred_unit,
+        available_units,
+        inferred_fiat_currency=inferred,
+        display_type=dtype,
+    )
+
+    return {
+        "scope_key": str(scope_key or (f"station:{station_id}" if station_id else "")),
+        "station_id": str(station_id or ""),
+        "display_type": dtype,
+        "native_symbol": native_sym,
+        "native_label": native_label,
+        "native_amount": rem_val,
+        "cny_amount": cny_amount,
+        "usd_amount": usd_amount,
+        "usd_cny_rate": rate,
+        "inferred_fiat_currency": inferred,
+        "rate_caption": rate_caption,
+        "preferred_unit": normalized_pref,
+        "available_units": available_units,
+    }
+
+
 def redact_quota_text(text: object, secrets: Iterable[str] = (), *, max_len: int = MAX_ERROR_CHARS) -> str:
     """Redact credentials, proxy passwords, and control chars before returning/logging text."""
     raw = str(text or "")
@@ -363,7 +498,7 @@ class QuotaStationSpec:
 
         unit_mode = str(self.display_unit_mode or "native").strip().lower()
         if unit_mode not in DISPLAY_UNIT_MODES:
-            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native 或 fiat")
+            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native、fiat、cny 或 usd")
         object.__setattr__(self, "display_unit_mode", unit_mode)
 
         if isinstance(self.interval_sec, bool) or type(self.interval_sec) is not int:
@@ -1181,6 +1316,32 @@ class QuotaStationStore:
                 ]
 
             return self._write_unlocked(next_stations, next_awareness)
+
+    def update_station_display_unit(
+        self,
+        station_id: object,
+        display_unit_mode: object,
+        *,
+        seed_stations: tuple[QuotaStationSpec, ...] | list[QuotaStationSpec] = (),
+    ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        """Atomically persist only display_unit_mode for one station without touching secrets or other fields."""
+        sid = str(station_id or "").strip()
+        mode = str(display_unit_mode or "").strip().lower()
+        if not sid or not _STATION_ID_RE.fullmatch(sid):
+            raise QuotaSettingsError("quota_station_not_found", "未找到指定的站点")
+        if mode not in DISPLAY_UNIT_MODES:
+            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native、fiat、cny 或 usd")
+        with _STORE_LOCK:
+            stations, awareness, _current_token = self._read_unlocked()
+            if not self.exists() and seed_stations:
+                stations = list(seed_stations)
+            existing = next((st for st in stations if st.id == sid), None)
+            if existing is None:
+                raise QuotaSettingsError("quota_station_not_found", "未找到指定的站点")
+            updated = QuotaStationSpec.from_dict({**existing.to_storage_dict(), "display_unit_mode": mode})
+            next_stations = [updated if st.id == sid else st for st in stations]
+            ordered, next_awareness, next_token = self._write_unlocked(next_stations, awareness)
+            return updated, ordered, next_awareness, next_token
 
     def export_redacted_document(self) -> dict[str, Any]:
         """Return a backup-safe document with all tokens and proxy URLs stripped."""
