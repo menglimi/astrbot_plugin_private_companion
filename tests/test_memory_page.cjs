@@ -774,3 +774,142 @@ test('整理与修复：失败态不画孤立红点、单页隐藏冗余翻页�
   assert.equal(h.page.state.data.items.length, 1, '刷新失败时保留批次列表不清空');
   assert.match(h.page.state.data.notice, /已保留当前显示内容/);
 });
+
+test('刷新在途被切换批次或切换视图打断时立即解除 refreshing 锁且过期响应不覆盖现态', async () => {
+  const h = harness();
+  await boot(h, []);
+  const area = {disabled: false, id: 'memory-area-reflections', dataset: {}};
+  area.closest = () => area;
+  h.element.__inside.add(area);
+  h.element.dispatch('click', {target: area});
+  await h.settle();
+
+  const b1 = {batch_id: 'b-1', state: 'failed', state_label: '整理失败', summary: '批次一', receipts: {}, remaining_sources: 12, retryable: true};
+  const b2 = {batch_id: 'b-2', state: 'partial', state_label: '部分已保存', summary: '批次二', receipts: {}, remaining_sources: 4, retryable: true};
+  h.reply(h.requests.filter(r => r.route === 'memory/reflections').at(-1), {items: [b1, b2], next_cursor: null});
+  h.reply(h.requests.filter(r => r.route === 'memory/overview').at(-1), {local: {reflections: {total: 2, by_state: {failed: 1, partial: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  /* 发起原地刷新并让请求悬停在途 */
+  const beforeRefresh = h.requests.length;
+  const refreshBtn = {disabled: false, id: 'memory-detail-refresh', dataset: {}};
+  refreshBtn.closest = () => refreshBtn;
+  h.element.__inside.add(refreshBtn);
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+  const staleRefreshReqs = h.requests.slice(beforeRefresh);
+  assert.equal(h.page.state.data.refreshing, true);
+
+  /* 在途点击第二个批次 b-2 打断刷新 */
+  const batch2Btn = {disabled: false, id: '', dataset: {batchIndex: '1'}};
+  batch2Btn.closest = () => batch2Btn;
+  h.element.__inside.add(batch2Btn);
+  h.element.dispatch('click', {target: batch2Btn});
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false, '切换批次必须立即清理 refreshing 状态防止锁死');
+
+  /* 完成 b-2 读取，随后让迟到的旧刷新响应回来 */
+  const b2Req = h.requests.filter(r => r.route === 'memory/reflections' && r.values?.batch_id === 'b-2').at(-1);
+  assert.ok(b2Req);
+  h.reply(b2Req, {...b2, remaining_sources: 3});
+  await h.settle();
+  for (const stale of staleRefreshReqs) {
+    if (stale.route === 'memory/reflections' && stale.values?.batch_id) h.reply(stale, {...b1, remaining_sources: 99});
+    else if (stale.route === 'memory/reflections') h.reply(stale, {items: [b1, b2], next_cursor: null});
+    else h.reply(stale, {local: {reflections: {total: 2, by_state: {failed: 1, partial: 1}}}, linkage: {state: 'not_owner'}});
+  }
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false, '旧刷新结束后 refreshing 仍应为 false');
+  assert.equal(h.page.state.data.detailId, 'b-2', '过期刷新响应不得覆盖已切换的 b-2');
+
+  /* 验证刷新按钮未锁死：再次点击可正常发起新刷新，并在途切到 query 视图也能立刻清理 */
+  const beforeSecond = h.requests.length;
+  h.element.dispatch('click', {target: refreshBtn});
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, true);
+  assert.ok(h.requests.length > beforeSecond, '解除锁后应能正常再次发起原地刷新');
+  const queryArea = {disabled: false, id: 'memory-area-query', dataset: {}};
+  queryArea.closest = () => queryArea;
+  h.element.__inside.add(queryArea);
+  h.element.dispatch('click', {target: queryArea});
+  await h.settle();
+  assert.equal(h.page.state.data.refreshing, false, '切换到来源与经历视图必须立即清理 refreshing');
+  assert.equal(h.page.state.data.area, 'query');
+});
+
+test('queue() 超时进入 uncertain 及同批次登记成功时，局部刷新同步更新 #memory-recovery-slot 不死锁', async () => {
+  const h = harness();
+  await boot(h, []);
+
+  /* 挂载带真实局部槽位的 querySelector 桩，强制命中 patchReflectionsDom() 局部更新路径 */
+  const makeSlot = () => ({
+    innerHTML: '', textContent: '', hidden: false, scrollTop: 0,
+    classList: {add() {}, remove() {}, toggle() {}, contains: () => false},
+    setAttribute() {}, removeAttribute() {}, querySelectorAll: () => [],
+  });
+  const slots = {
+    '.mem-detail': makeSlot(),
+    '.mem-corpus': makeSlot(),
+    '.mem-reflection-views': makeSlot(),
+    '.mem-refl-list-bar': makeSlot(),
+    '.mem-rail-count': makeSlot(),
+    '#memory-notice-slot': makeSlot(),
+    '#memory-recovery-slot': makeSlot(),
+  };
+  h.element.querySelector = sel => slots[sel] || null;
+
+  const area = {disabled: false, id: 'memory-area-reflections', dataset: {}};
+  area.closest = () => area;
+  h.element.__inside.add(area);
+  h.element.dispatch('click', {target: area});
+  await h.settle();
+
+  const b1 = {
+    batch_id: 'b-1', state: 'failed', state_label: '整理失败',
+    summary: '需要修复未完成项', retryable: true, resumable: false,
+    receipts: {}, remaining_sources: 9,
+    continuation: {state: 'blocked', updated_at: '2026-11-26T15:54:51Z'},
+  };
+  h.reply(h.requests.filter(r => r.route === 'memory/reflections').at(-1), {items: [b1], next_cursor: null});
+  h.reply(h.requests.filter(r => r.route === 'memory/overview').at(-1), {local: {reflections: {total: 1, by_state: {failed: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  /* 点击「再次修复未完成项」并模拟桥接超时（bridge_timeout） */
+  const queueBtn = {disabled: false, id: 'memory-queue', dataset: {}};
+  queueBtn.closest = () => queueBtn;
+  h.element.__inside.add(queueBtn);
+  h.element.dispatch('click', {target: queueBtn});
+  await h.settle();
+  const queueReq = h.requests.filter(r => r.route === 'memory/reflections/queue').at(-1);
+  assert.ok(queueReq, '应发起 reflections/queue 提交');
+  queueReq.reject(Object.assign(new Error('timeout'), {code: 'bridge_timeout'}));
+  await h.settle();
+
+  assert.equal(h.page.state.data.pending?.uncertain, true);
+  assert.match(slots['#memory-notice-slot'].innerHTML, /核对上次提交/);
+  assert.match(slots['#memory-recovery-slot'].innerHTML, /id="memory-recover"/, '局部刷新必须把「核对上次提交」按钮同步进 #memory-recovery-slot');
+  assert.match(slots['#memory-recovery-slot'].innerHTML, /核对上次提交/);
+
+  /* 点击「核对上次提交」恢复并沿用原 operation_key 成功登记同批次 */
+  const recoverBtn = {disabled: false, id: 'memory-recover', dataset: {}};
+  recoverBtn.closest = () => recoverBtn;
+  h.element.__inside.add(recoverBtn);
+  h.element.dispatch('click', {target: recoverBtn});
+  await h.settle();
+  const retryQueueReq = h.requests.filter(r => r.route === 'memory/reflections/queue').at(-1);
+  assert.equal(retryQueueReq.values.operation_key, queueReq.values.operation_key, '恢复提交必须复用原幂等键');
+  h.reply(retryQueueReq, {batch_id: 'b-1', state: 'queued'});
+  await h.settle();
+
+  const queuedB1 = {...b1, continuation: {state: 'queued', updated_at: '2026-11-27T09:30:00Z'}};
+  const listAfter = h.requests.filter(r => r.route === 'memory/reflections' && !r.values?.batch_id).at(-1);
+  const detailAfter = h.requests.filter(r => r.route === 'memory/reflections' && r.values?.batch_id === 'b-1').at(-1);
+  const ovAfter = h.requests.filter(r => r.route === 'memory/overview').at(-1);
+  h.reply(listAfter, {items: [queuedB1], next_cursor: null});
+  h.reply(detailAfter, queuedB1);
+  h.reply(ovAfter, {local: {reflections: {total: 1, by_state: {failed: 1}}}, linkage: {state: 'not_owner'}});
+  await h.settle();
+
+  assert.equal(h.page.state.data.pending?.uncertain, false);
+  assert.match(slots['#memory-recovery-slot'].innerHTML, /查看上次提交/, '登记成功后 #memory-recovery-slot 必须同步切换为「查看上次提交」');
+});

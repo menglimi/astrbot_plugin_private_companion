@@ -144,7 +144,12 @@ window.CompanionMemoryPage = (() => {
     info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></svg>',
     alert:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16h.01"/></svg>',
   };
-  let root = null, bridge = null, version = 0, timer = null, data = null, backgroundLoading = false;
+  let root = null, bridge = null, version = 0, activeRefreshTicket = 0, timer = null, data = null, backgroundLoading = false;
+
+  function clearRefreshing() {
+    activeRefreshTicket = 0;
+    if (data && data.refreshing) data.refreshing = false;
+  }
 
   function blank() {
     return {catalog:null, target:-1, role:0, area:"facts", tab:"facts",
@@ -984,6 +989,10 @@ window.CompanionMemoryPage = (() => {
     return `<div id="memory-notice" class="mem-notice${data.error?" is-error":""}" role="status" aria-live="polite">${data.error?ICON.alert:ICON.info}<span>${e(data.notice)}</span></div>`;
   }
 
+  function recoveryMarkup() {
+    return `${data.pending ? `<div class="mem-recovery"><span>${data.pending.uncertain?"上次提交结果未确认。":"保留了上次提交的位置，可继续查看后台结果。"}</span>${button("memory-recover",data.pending.uncertain?"核对上次提交":"查看上次提交",data.busy || data.loading)}</div>` : ""}${data.pendingMutation ? `<div class="mem-recovery"><span>${data.pendingMutation.kind==="clear"?"上次范围清理结果未确认，请核对。":"上次事实变更结果未确认，请刷新核对。"}</span>${button("memory-pending-refresh","刷新核对",data.busy||data.loading)}${button("memory-pending-dismiss","已核对，关闭提示",data.busy||data.loading)}</div>` : ""}`;
+  }
+
   function captureScrollPositions() {
     const saved = [];
     let el = root;
@@ -1047,6 +1056,11 @@ window.CompanionMemoryPage = (() => {
     if (slot) slot.innerHTML = noticeMarkup();
   }
 
+  function syncRecoverySlot() {
+    const slot = root?.querySelector?.("#memory-recovery-slot");
+    if (slot) slot.innerHTML = recoveryMarkup();
+  }
+
   function syncRefreshIndicators(refreshing) {
     if (!root?.isConnected) return;
     const btn = root.querySelector?.("#memory-detail-refresh");
@@ -1088,6 +1102,7 @@ window.CompanionMemoryPage = (() => {
       railCount.hidden = !pendingBatches;
     }
     syncNoticeSlot();
+    syncRecoverySlot();
     restoreScrollPositions(saved);
     if (focused) root.querySelector?.("#" + CSS.escape(focused))?.focus?.({preventScroll: true});
   }
@@ -1106,6 +1121,7 @@ window.CompanionMemoryPage = (() => {
     detailEl.classList?.toggle?.("is-open", Boolean(data.selId));
     detailEl.innerHTML = factDetailMarkup();
     syncNoticeSlot();
+    syncRecoverySlot();
     restoreScrollPositions(saved);
   }
 
@@ -1124,8 +1140,7 @@ window.CompanionMemoryPage = (() => {
         ${headMarkup()}
         ${ownership?`<p class="mem-ownership" role="status">${e(ownership)}</p>`:""}
         <div id="memory-notice-slot" class="mem-notice-slot">${noticeMarkup()}</div>
-        ${data.pending ? `<div class="mem-recovery"><span>${data.pending.uncertain?"上次提交结果未确认。":"保留了上次提交的位置，可继续查看后台结果。"}</span>${button("memory-recover",data.pending.uncertain?"核对上次提交":"查看上次提交",data.busy || data.loading)}</div>` : ""}
-        ${data.pendingMutation ? `<div class="mem-recovery"><span>${data.pendingMutation.kind==="clear"?"上次范围清理结果未确认，请核对。":"上次事实变更结果未确认，请刷新核对。"}</span>${button("memory-pending-refresh","刷新核对",data.busy||data.loading)}${button("memory-pending-dismiss","已核对，关闭提示",data.busy||data.loading)}</div>` : ""}
+        <div id="memory-recovery-slot" class="mem-recovery-slot">${recoveryMarkup()}</div>
         ${!data.ready
           ? `<section class="mem-block"><div class="mem-skeleton"><i></i><i></i><i></i></div>
              <p class="mem-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看记录。"}</p></section>`
@@ -1172,7 +1187,7 @@ window.CompanionMemoryPage = (() => {
 
   async function directory() {
     const ticket = ++version;
-    stopTimer(); backgroundLoading = false;
+    stopTimer(); clearRefreshing(); backgroundLoading = false;
     data = blank(); data.loading = true; render();
     try {
       /* 归属是独立的一次读，而且**先读**：它决定这一页顶上那句话，读不到也要
@@ -1253,8 +1268,8 @@ window.CompanionMemoryPage = (() => {
     const previousSnapshot = silent ? dataSnapshot() : null;
     const prevDetailSnapshot = inPlace && data.area === "reflections" ? reflectionDiffSnapshot(data.detail) : null;
     if (silent) backgroundLoading = true;
-    else if (inPlace) { backgroundLoading = false; }
-    else { backgroundLoading = false; data.loading = true; render(); }
+    else if (inPlace) { clearRefreshing(); backgroundLoading = false; }
+    else { clearRefreshing(); backgroundLoading = false; data.loading = true; render(); }
     try {
       const path = endpoint();
       if (data.area === "facts") {
@@ -1340,6 +1355,7 @@ window.CompanionMemoryPage = (() => {
     const targetId = data.detailId;
     const prevIndex = Math.max(0, data.items.findIndex(item => item.batch_id === targetId));
     const prevSnapshot = reflectionDiffSnapshot(data.detail);
+    activeRefreshTicket = ticket;
     data.refreshing = true;
     syncRefreshIndicators(true);
     try {
@@ -1386,11 +1402,11 @@ window.CompanionMemoryPage = (() => {
         notice("");
       }
       const changed = diffReflectionSnapshots(prevSnapshot, reflectionDiffSnapshot(data.detail));
-      data.refreshing = false;
+      if (activeRefreshTicket === ticket) { activeRefreshTicket = 0; data.refreshing = false; }
       patchReflectionsDom(changed);
     } catch (error) {
       if (live(ticket)) {
-        data.refreshing = false;
+        if (activeRefreshTicket === ticket) { activeRefreshTicket = 0; data.refreshing = false; }
         if (denied.has(error?.code)) {
           failure(error);
           render();
@@ -1400,8 +1416,11 @@ window.CompanionMemoryPage = (() => {
         }
       }
     } finally {
+      if (activeRefreshTicket === ticket) {
+        activeRefreshTicket = 0;
+        if (data) data.refreshing = false;
+      }
       if (live(ticket)) {
-        data.refreshing = false;
         syncRefreshIndicators(false);
         schedule();
       }
@@ -1491,7 +1510,7 @@ window.CompanionMemoryPage = (() => {
   async function selectBatch(id, focus=true) {
     if (!id) return;
     const ticket = ++version;
-    stopTimer();
+    stopTimer(); clearRefreshing();
     const sameArea = data.area === "reflections" && Boolean(root?.querySelector?.(".mem-detail"));
     const previewItem = data.items.find(item => item.batch_id === id) || null;
     data.detailId = id;
@@ -1547,7 +1566,7 @@ window.CompanionMemoryPage = (() => {
     if (!item) return;
     const ticket = ++version;
     const sameArea = data.area === "facts" && Boolean(root?.querySelector?.(".mem-detail"));
-    stopTimer(); data.selId = id; data.revisions = []; data.sourceResult = null;
+    stopTimer(); clearRefreshing(); data.selId = id; data.revisions = []; data.sourceResult = null;
     if (sameArea) {
       const corpusEl = root.querySelector?.(".mem-corpus");
       for (const card of corpusEl?.querySelectorAll?.(".mem-card") || []) {
@@ -1882,7 +1901,7 @@ window.CompanionMemoryPage = (() => {
     });
     if (!confirmed) return;
     const ticket = ++version, target = data.detail.batch_id;
-    stopTimer();
+    stopTimer(); clearRefreshing();
     data.busy = true; notice("正在关闭本次整理…"); render();
     try {
       const receipt = await api("POST", endpoint() + "/reflections/discard",
@@ -1901,11 +1920,11 @@ window.CompanionMemoryPage = (() => {
   }
 
   async function queue(recover=false) {
-    if (data.busy || data.loading || data.refreshing || !role()?.memory_api) return;
+    if (data.busy || data.loading || !role()?.memory_api) return;
     if (!recover && (!(data.detail?.resumable || data.detail?.retryable) || data.pending?.uncertain || data.detail.continuation?.state === "queued")) return;
     if (recover && !data.pending?.uncertain) return;
     const ticket = ++version, path = endpoint();
-    stopTimer();
+    stopTimer(); clearRefreshing();
     if (!recover) data.pending = {batch_id:data.detail.batch_id, operation_key:crypto.randomUUID(), tracked_batch_id:data.detail.batch_id, uncertain:true};
     const persisted = savePending(), request = {...data.pending};
     data.busy = true; notice("正在登记后台处理…");
@@ -1938,6 +1957,7 @@ window.CompanionMemoryPage = (() => {
 
   async function switchArea(area) {
     if (data.area === area) return;
+    ++version; stopTimer(); clearRefreshing();
     data.area = area; data.tab = area;
     data.sourceResult = null; data.notice = ""; data.error = false;
     data.cursors = [""]; data.page = 0;
@@ -2164,7 +2184,7 @@ window.CompanionMemoryPage = (() => {
     });
   }
   function unmount() {
-    ++version; stopTimer(); clearTimeout(searchTimer); backgroundLoading = false;
+    ++version; stopTimer(); clearRefreshing(); clearTimeout(searchTimer); backgroundLoading = false;
     root?.removeEventListener("click",click); root?.removeEventListener("change",change);
     root?.removeEventListener("submit",submit); root?.removeEventListener("input",input);
     root?.removeEventListener("keydown",keydown); root?.removeEventListener("scroll",scroll,true);

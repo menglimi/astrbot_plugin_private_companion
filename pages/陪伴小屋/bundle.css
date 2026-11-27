@@ -1614,7 +1614,8 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 }
 
 /* ===== 通知 / 恢复条 ===== */
-.mem-notice-slot:empty{display:none}
+.mem-notice-slot:empty,.mem-recovery-slot:empty{display:none}
+.mem-recovery-slot{display:flex;flex-direction:column;gap:var(--sp-2)}
 .mem-notice{
   display:flex;align-items:flex-start;gap:var(--sp-2);margin:0;
   padding:var(--sp-3);border-radius:var(--r-sm);font-size:var(--fs-body);line-height:1.7;
