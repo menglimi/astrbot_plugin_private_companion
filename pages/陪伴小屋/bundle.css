@@ -12644,6 +12644,23 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   overflow-wrap: anywhere;
 }
 
+.qw-kpi-value.is-unit-updated,
+.qw-balance-value.is-unit-updated,
+.qw-balance-subline.is-unit-updated {
+  animation: qwUnitShift 140ms ease both;
+}
+
+.qw-kpi-subline {
+  font-size: var(--fs-micro);
+  color: var(--t-text-soft);
+  line-height: 1.35;
+}
+
+@keyframes qwUnitShift {
+  from { opacity: .35; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
 .qw-kpi-meta {
   font-size: var(--fs-micro);
   color: var(--t-text-soft);
@@ -13008,37 +13025,60 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   color: var(--t-text-faint);
 }
 
-.qw-unit-toggle {
+.qw-unit-switch {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-1) var(--sp-2);
-  border: 1px solid color-mix(in srgb, var(--t-accent) 28%, var(--t-line));
-  border-radius: var(--r-pill);
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--t-line);
+  border-radius: var(--r-sm);
   background: var(--t-surface-soft);
-  color: var(--t-accent-ink);
+  white-space: nowrap;
+}
+
+.qw-unit-switch button {
+  appearance: none;
+  min-height: 24px;
+  min-width: 26px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--t-text-faint);
   font: inherit;
   font-size: var(--fs-micro);
   font-weight: 600;
   line-height: 1.2;
   cursor: pointer;
-  transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 
-.qw-unit-toggle:hover {
-  border-color: var(--t-accent);
+.qw-unit-switch button:hover {
+  color: var(--t-text-strong);
+  background: color-mix(in srgb, var(--t-accent-quiet) 45%, transparent);
+}
+
+.qw-unit-switch button.is-active {
   background: var(--t-accent-quiet);
+  color: var(--t-accent-ink);
+  border-color: color-mix(in srgb, var(--t-accent) 32%, var(--t-line));
 }
 
-.qw-unit-toggle.is-fiat {
-  background: var(--t-accent-quiet);
-  border-color: color-mix(in srgb, var(--t-accent) 44%, var(--t-line));
-}
-
-.qw-unit-toggle:focus-visible {
+.qw-unit-switch button:focus-visible {
   outline: 2px solid var(--t-focus);
-  outline-offset: 2px;
+  outline-offset: 1px;
+}
+
+.qw-kpi-unit-switch {
+  margin-left: auto;
+}
+
+.qw-balance-subline {
+  font-size: var(--fs-micro);
+  color: var(--t-text-soft);
+  line-height: 1.4;
 }
 
 .qw-sub-strip {
@@ -13822,6 +13862,9 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   .qw-chip-check {
     min-height: 34px;
   }
+  .qw-unit-switch button {
+    min-height: 32px;
+  }
 }
 
 @media (max-width: 420px) {
@@ -13837,7 +13880,11 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
   .qw-test-preview,
   .qw-card,
   .qw-btn,
-  .qw-progress-fill {
+  .qw-progress-fill,
+  .qw-unit-switch button,
+  .qw-kpi-value.is-unit-updated,
+  .qw-balance-value.is-unit-updated,
+  .qw-balance-subline.is-unit-updated {
     animation: none !important;
     transition: none !important;
   }
@@ -13849,7 +13896,11 @@ body.reduce-motion .home-agenda-card.is-entering :is(.home-agenda-progress,.home
 :root[data-motion="off"] .qw-test-preview,
 :root[data-motion="off"] .qw-card,
 :root[data-motion="off"] .qw-btn,
-:root[data-motion="off"] .qw-progress-fill {
+:root[data-motion="off"] .qw-progress-fill,
+:root[data-motion="off"] .qw-unit-switch button,
+:root[data-motion="off"] .qw-kpi-value.is-unit-updated,
+:root[data-motion="off"] .qw-balance-value.is-unit-updated,
+:root[data-motion="off"] .qw-balance-subline.is-unit-updated {
   animation: none !important;
   transition: none !important;
 }
@@ -23758,6 +23809,96 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   font-weight:600;
   line-height:1.4;
   white-space:nowrap;
+}
+.maint-balance-head {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:var(--sp-2);
+  width:100%;
+  min-width:0;
+}
+.maint-balance-head > span {
+  min-width:0;
+}
+.maint-balance-unit-switch {
+  margin-left:auto;
+  display:inline-flex;
+  align-items:center;
+  flex:0 0 auto;
+  gap:2px;
+  padding:2px;
+  border:1px solid var(--t-line);
+  border-radius:var(--r-sm);
+  background:var(--t-surface-soft);
+  white-space:nowrap;
+}
+.maint-balance-unit-switch button {
+  appearance:none;
+  min-height:24px;
+  min-width:26px;
+  padding:0 var(--sp-2);
+  border:1px solid transparent;
+  border-radius:var(--r-xs);
+  background:transparent;
+  color:var(--t-text-faint);
+  font:inherit;
+  font-size:var(--fs-micro);
+  font-weight:600;
+  line-height:1.2;
+  cursor:pointer;
+  transition:background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.maint-balance-unit-switch button:hover {
+  color:var(--t-text-strong);
+  background:color-mix(in srgb, var(--t-accent-quiet) 45%, transparent);
+}
+.maint-balance-unit-switch button.is-active {
+  background:var(--t-accent-quiet);
+  color:var(--t-accent-ink);
+  border-color:color-mix(in srgb, var(--t-accent) 32%, var(--t-line));
+}
+.maint-balance-unit-switch button:focus-visible {
+  outline:2px solid var(--t-focus);
+  outline-offset:1px;
+}
+.maint-balance-val {
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+}
+.maint-balance-val.is-unit-updated {
+  animation:maintBalanceShift 140ms ease both;
+}
+.maint-balance-subline {
+  display:block;
+  font-style:normal;
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+  font-size:var(--fs-micro);
+  color:var(--t-text-soft);
+  line-height:1.4;
+}
+@keyframes maintBalanceShift {
+  from { opacity:.35; transform:translateY(2px); }
+  to { opacity:1; transform:none; }
+}
+@media (max-width:740px) {
+  .maint-balance-unit-switch button {
+    min-height:32px;
+    padding:0 var(--sp-2);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maint-balance-val.is-unit-updated,
+  .maint-balance-unit-switch button {
+    animation:none !important;
+    transition:none !important;
+  }
+}
+:root[data-motion="off"] .maint-balance-val.is-unit-updated,
+:root[data-motion="off"] .maint-balance-unit-switch button {
+  animation:none !important;
+  transition:none !important;
 }
 .maint-balance-actions {
   display:flex;

@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from companion_v2.model_gateway.quota import (
+    DISPLAY_UNIT_MODES,
     QuotaAwarenessPolicy,
     QuotaSettingsError,
     QuotaSnapshot,
@@ -22,7 +23,9 @@ from companion_v2.model_gateway.quota import (
     convert_currency_amount,
     evaluate_station_health,
     normalize_currency_symbol,
+    normalize_display_unit_mode,
     redact_quota_text,
+    resolve_currency_views,
     slugify_station_id,
     summarize_quota_portfolio,
 )
@@ -275,6 +278,91 @@ class QuotaDomainTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "quota_http_not_allowed")
         with self.assertRaises(QuotaSettingsError):
             QuotaStationSpec(id="s2", name="坏阈值", adapter_id="newapi", base_url="https://a.example.test", low_threshold=5.0, critical_threshold=10.0)
+
+    def test_three_way_currency_views_and_atomic_display_unit_update(self):
+        self.assertEqual(DISPLAY_UNIT_MODES, ("native", "fiat", "cny", "usd"))
+        # 1) CREDIT station with CNY fiat mapping -> 3-way [native, cny, usd]
+        v_cookie = resolve_currency_views(
+            remaining=732.98272,
+            display_type="CREDIT",
+            symbol="🍪",
+            fiat_remaining=73.298272,
+            inferred_fiat_currency="CNY",
+            usd_cny_rate=6.68,
+            preferred_unit="fiat",
+            custom_exchange_rate=10.0,
+            fiat_per_base_unit=1.0,
+            station_id="sta1n",
+        )
+        self.assertEqual(v_cookie["available_units"], ["native", "cny", "usd"])
+        self.assertEqual(v_cookie["preferred_unit"], "cny")
+        self.assertAlmostEqual(v_cookie["cny_amount"], 73.298272, places=4)
+        self.assertAlmostEqual(v_cookie["usd_amount"], 73.298272 / 6.68, places=4)
+        self.assertEqual(v_cookie["rate_caption"], "10 🍪 = ¥1")
+
+        # 2) CREDIT station with USD fiat mapping -> 3-way, legacy 'fiat' maps to 'usd'
+        v_cred_usd = resolve_currency_views(
+            remaining=100.0,
+            display_type="CREDIT",
+            symbol="★",
+            fiat_remaining=10.0,
+            inferred_fiat_currency="USD",
+            usd_cny_rate=7.2,
+            preferred_unit="fiat",
+            station_id="overseas",
+        )
+        self.assertEqual(v_cred_usd["available_units"], ["native", "cny", "usd"])
+        self.assertEqual(v_cred_usd["preferred_unit"], "usd")
+        self.assertAlmostEqual(v_cred_usd["usd_amount"], 10.0, places=4)
+        self.assertAlmostEqual(v_cred_usd["cny_amount"], 72.0, places=4)
+
+        # 3) CNY & USD native stations deduplicate to 2-way [cny, usd]
+        v_cny = resolve_currency_views(remaining=72.0, display_type="CNY", usd_cny_rate=7.2, preferred_unit="native", station_id="ds")
+        self.assertEqual(v_cny["available_units"], ["cny", "usd"])
+        self.assertEqual(v_cny["preferred_unit"], "cny")
+        self.assertAlmostEqual(v_cny["usd_amount"], 10.0, places=4)
+
+        v_usd = resolve_currency_views(remaining=10.0, display_type="USD", usd_cny_rate=7.2, preferred_unit="native", station_id="or")
+        self.assertEqual(v_usd["available_units"], ["cny", "usd"])
+        self.assertEqual(v_usd["preferred_unit"], "usd")
+        self.assertAlmostEqual(v_usd["cny_amount"], 72.0, places=4)
+
+        # 4) TOKENS & unmapped CREDIT -> single unit [native]
+        v_tok = resolve_currency_views(remaining=50000, display_type="TOKENS", usd_cny_rate=7.2, preferred_unit="usd")
+        self.assertEqual(v_tok["available_units"], ["native"])
+        self.assertEqual(v_tok["preferred_unit"], "native")
+        self.assertIsNone(v_tok["cny_amount"])
+        self.assertIsNone(v_tok["usd_amount"])
+
+        self.assertEqual(normalize_display_unit_mode("fiat", ["native", "cny", "usd"], inferred_fiat_currency="USD"), "usd")
+
+        # 5) Atomic update_station_display_unit preserves secrets and rejects bad inputs
+        with tempfile.TemporaryDirectory() as tmp:
+            store = QuotaStationStore(Path(tmp))
+            _, _, tok0 = store.read()
+            created, _, _, _ = store.upsert_station(
+                tok0,
+                {
+                    "id": "sta1n",
+                    "name": "STA1N",
+                    "adapter_id": "newapi",
+                    "base_url": "https://cookie.example.test",
+                    "auth_token": "secret-must-survive-999",
+                    "proxy_url": "http://u:pw@127.0.0.1:7890",
+                },
+            )
+            self.assertEqual(created.display_unit_mode, "native")
+            updated, _, _, _ = store.update_station_display_unit("sta1n", "usd")
+            self.assertEqual(updated.display_unit_mode, "usd")
+            self.assertEqual(updated.auth_token, "secret-must-survive-999")
+            self.assertEqual(updated.proxy_url, "http://u:pw@127.0.0.1:7890")
+
+            with self.assertRaises(QuotaSettingsError) as bad_unit:
+                store.update_station_display_unit("sta1n", "btc")
+            self.assertEqual(bad_unit.exception.code, "quota_config_invalid")
+            with self.assertRaises(QuotaSettingsError) as missing_st:
+                store.update_station_display_unit("no-such-station", "cny")
+            self.assertEqual(missing_st.exception.code, "quota_station_not_found")
 
 
 class SecurityAndLogoTests(unittest.TestCase):

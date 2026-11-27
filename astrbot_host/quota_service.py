@@ -388,6 +388,17 @@ class QuotaWatchService:
             seed_stations=self.legacy_seed_stations(),
         )
 
+    def update_station_display_unit(
+        self,
+        station_id: object,
+        display_unit_mode: object,
+    ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        return self.store.update_station_display_unit(
+            station_id,
+            display_unit_mode,
+            seed_stations=self.legacy_seed_stations(),
+        )
+
     def _effective_stations(self) -> tuple[list[QuotaStationSpec], QuotaAwarenessPolicy, str, bool]:
         """Return ``(stations, awareness, edit_token, legacy_projected)``."""
         stations, awareness, token = self.store.read_safe()

@@ -976,6 +976,108 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_display_unit_endpoint_and_balance_currency_context_for_all_modes(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                pstore = PricingSettingsStore(Path(tmp))
+                pdoc = pstore.read()
+                pstore.update(pdoc["revision"], {"display_currency": "CNY", "exchange_rate": {"mode": "manual", "manual_usd_cny": 6.68}})
+
+                upstream_hits = [0]
+
+                def router(method, url, _kw):
+                    upstream_hits[0] += 1
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "system_name": "STA1N",
+                                    "quota_display_type": "CUSTOM",
+                                    "quota_per_unit": 500000,
+                                    "custom_currency_symbol": "🍪",
+                                    "custom_currency_exchange_rate": 10,
+                                    "price": 1,
+                                },
+                            },
+                        )
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(200, {"success": True, "data": {"id": 1, "quota": 36649136, "used_quota": 500000}})
+                    if url.endswith("/api/user/topup/info"):
+                        return _FakeResponse(200, {"success": True, "data": {"price": 1, "pay_methods": [{"type": "alipay"}]}})
+                    if url.endswith("/api/subscription/self"):
+                        return _FakeResponse(404, b"")
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc.store.read()
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "sta1n",
+                        "name": "sta1n",
+                        "adapter_id": "newapi",
+                        "base_url": "https://sta1n.example.test",
+                        "auth_token": "secret-sta1n-tok",
+                        "participate_in_awareness": True,
+                    },
+                )
+                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "sta1n"})
+                await svc.refresh_station("sta1n")
+
+                api = ModelWebAPI(ctrl)
+                route_paths = {path for path, _h, _m, _d in api.routes()}
+                self.assertIn("/astrbot_plugin_private_companion/model/quota/stations/<station_id>/display-unit", route_paths)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    # 1) GET /model/balance returns legacy fields + structured 3-way currency_context
+                    res_bal = await api.balance()
+                    self.assertEqual(res_bal["status"], "ok")
+                    bal = res_bal["data"]
+                    self.assertTrue(bal["available"])
+                    self.assertEqual(bal["station_id"], "sta1n")
+                    cc = bal["currency_context"]
+                    self.assertEqual(cc["scope_key"], "station:sta1n")
+                    self.assertEqual(cc["available_units"], ["native", "cny", "usd"])
+                    self.assertEqual(cc["preferred_unit"], "native")
+                    self.assertAlmostEqual(cc["usd_cny_rate"], 6.68, places=2)
+                    self.assertAlmostEqual(cc["cny_amount"], 73.298272, places=3)
+                    self.assertAlmostEqual(cc["usd_amount"], 73.298272 / 6.68, places=3)
+                    self.assertEqual(cc["rate_caption"], "10 🍪 = ¥1")
+
+                    # 2) POST /quota/stations/<station_id>/display-unit persists without touching secrets or upstream!
+                    hits_before = upstream_hits[0]
+                    req_unit = _FakeRequest(body={"display_unit_mode": "usd"})
+                    with patch("astrbot_host.quota_api.request", req_unit):
+                        res_u = await api._quota_api.save_station_display_unit(station_id="sta1n")
+                    self.assertEqual(res_u["status"], "ok")
+                    self.assertEqual(res_u["data"]["display_unit_mode"], "usd")
+                    self.assertEqual(upstream_hits[0], hits_before, "Display unit update must not hit upstream")
+                    stored, _, _ = svc.store.read()
+                    self.assertEqual(stored[0].display_unit_mode, "usd")
+                    self.assertEqual(stored[0].auth_token, "secret-sta1n-tok")
+
+                    # Reject unknown extra fields & invalid mode
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(body={"display_unit_mode": "cny", "auth_token": "hack"})):
+                        res_bad = await api._quota_api.save_station_display_unit(station_id="sta1n")
+                    self.assertEqual(res_bad["status"], "error")
+                    self.assertEqual(res_bad["data"]["code"], "quota_request_invalid")
+
+                    # Re-reading /model/balance reflects persisted preferred_unit='usd'
+                    res_bal2 = await api.balance()
+                    self.assertEqual(res_bal2["data"]["currency_context"]["preferred_unit"], "usd")
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

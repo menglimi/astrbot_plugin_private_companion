@@ -5,6 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/maintenance-page.js'), 'utf8');
+const currencySource = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/quota-currency.js'), 'utf8');
 const styles = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/maintenance-page.css'), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const localDay = value => {
@@ -2725,4 +2726,211 @@ test('read-only upstream reconciliation foldout stays closed on mount, lazily fe
   assert.match(h.root.innerHTML, /12\.5 🍪/);
 
   h.page.unmount();
+});
+
+test('balance card supports 3-way [🍪|¥|$] and 2-way [¥|$] currency switching, stopPropagation, lightweight persistence, and cross-page sync', async () => {
+  const today = localDay();
+  const baseMaint = {
+    generated_at: today + 'T12:00:00',
+    summary: daily(today, {calls: 1, tokens: 500}),
+    totals: daily(today, {calls: 1, tokens: 500}),
+    daily: [daily(today, {calls: 1, tokens: 500})],
+    history: [daily(today, {calls: 1, tokens: 500})],
+    recent: [], budget: {},
+  };
+  const winListeners = new Map();
+  const dispatchedEvents = [];
+  const storeMap = new Map();
+  const localStorage = {
+    getItem: k => (storeMap.has(k) ? storeMap.get(k) : null),
+    setItem: (k, v) => { storeMap.set(k, String(v)); },
+    removeItem: k => { storeMap.delete(k); },
+  };
+  const requests = [];
+  const navigations = [];
+  let balancePayload = {
+    configured: true,
+    available: true,
+    provider: 'multi_station',
+    provider_label: '多站点额度看板',
+    source_kind: 'quota_dashboard',
+    station_id: 'st-cookie',
+    station_name: '饼干中转站',
+    awareness_mode: 'primary',
+    is_primary_explicit: true,
+    participating_count: 2,
+    currency_symbol: '🍪',
+    currency_label: 'CREDIT',
+    amount: '636.06',
+    observed_at: new Date().toISOString(),
+    state: 'available',
+    currency_context: {
+      station_id: 'st-cookie',
+      display_type: 'CREDIT',
+      native_symbol: '🍪',
+      native_unit: 'CREDIT',
+      native_amount: 636.06,
+      fiat_currency: 'CNY',
+      fiat_symbol: '¥',
+      fiat_per_base_unit: 0.1,
+      cny_amount: 63.606,
+      usd_amount: 8.8342,
+      usd_cny_rate: 7.2,
+      default_mode: 'native',
+      available_modes: ['native', 'cny', 'usd'],
+    },
+  };
+  const bridge = {
+    apiGet: async rawRoute => {
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      requests.push(['GET', route]);
+      if (route.endsWith('/maintenance')) return baseMaint;
+      if (route.endsWith('/balance')) return balancePayload;
+      if (route.endsWith('/voice')) return {providers: []};
+      if (route.endsWith('/image')) return {actions: []};
+      if (route === '/model') return {tasks: [], providers: []};
+      return {};
+    },
+    apiPost: async (rawRoute, body) => {
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      requests.push(['POST', route, body]);
+      return {saved: true, station_id: 'st-cookie', display_unit_mode: body?.display_unit_mode || 'native'};
+    },
+  };
+  class CustomEventMock {
+    constructor(type, init = {}) { this.type = type; this.detail = init.detail || null; }
+  }
+  const window = {
+    navigate: (...args) => navigations.push(args),
+    localStorage,
+    CustomEvent: CustomEventMock,
+    addEventListener(type, fn) {
+      if (!winListeners.has(type)) winListeners.set(type, new Set());
+      winListeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      winListeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(ev) {
+      dispatchedEvents.push(ev);
+      for (const fn of [...(winListeners.get(ev.type) || [])]) fn(ev);
+      return true;
+    },
+    CompanionProduct: {
+      role: () => ({model_api: '/astrbot_plugin_private_companion/model', config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
+      bridgeNow: () => bridge,
+    },
+    lucide: {createIcons() {}},
+    setTimeout: (cb, delay = 0) => { if (!delay) { cb(); return 0; } return 1; },
+    clearTimeout() {},
+  };
+  const rootListeners = {};
+  const root = {
+    innerHTML: '',
+    addEventListener(type, handler) { rootListeners[type] = handler; },
+    removeEventListener(type) { delete rootListeners[type]; },
+    querySelector() { return null; },
+  };
+  const ctx = {
+    window,
+    document: {createElement: () => ({click() {}})},
+    localStorage,
+    CustomEvent: CustomEventMock,
+    Intl, Date, Number, Object, String, Math, Array, Set, Promise, URLSearchParams,
+  };
+  vm.runInNewContext(currencySource, ctx);
+  vm.runInNewContext(source, ctx);
+
+  window.CompanionMaintenancePage.mount(root);
+  await flush();
+
+  // Renders 3-way [ 🍪 | ¥ | $ ] segmented capsule + conversion subline
+  assert.match(root.innerHTML, /class="maint-balance-unit-switch"/);
+  assert.match(root.innerHTML, /role="radio" aria-checked="true" class="is-active" data-balance-unit="native"/);
+  assert.match(root.innerHTML, /data-balance-unit="cny"/);
+  assert.match(root.innerHTML, /data-balance-unit="usd"/);
+  assert.match(root.innerHTML, /636\.06 🍪/);
+  assert.match(root.innerHTML, /≈ ¥63\.61 · \$8\.83/);
+
+  // Clicking [data-balance-unit="cny"] calls stopPropagation (no card jump), persists via display-unit, broadcasts event
+  let stopped = false;
+  rootListeners.click({
+    stopPropagation() { stopped = true; },
+    target: {
+      closest: sel => {
+        if (sel === '[data-balance-unit]') return {dataset: {balanceUnit: 'cny'}};
+        if (sel === '[data-balance-card-jump]') return {dataset: {balanceCardJump: 'quota'}};
+        return null;
+      },
+    },
+  });
+  await flush();
+  assert.equal(stopped, true, 'clicking unit capsule must call stopPropagation');
+  assert.equal(navigations.length, 0, 'clicking unit capsule must never trigger quota card jump');
+  assert.match(root.innerHTML, /¥63\.61/);
+  assert.match(root.innerHTML, /原值 636\.06 🍪 · ≈ \$8\.83/);
+  const persistCall = requests.find(([m, r]) => m === 'POST' && r === '/model/quota/stations/st-cookie/display-unit');
+  assert.ok(persistCall, 'must persist via lightweight POST /model/quota/stations/<id>/display-unit');
+  assert.equal(persistCall[2].display_unit_mode, 'cny');
+  assert.ok(dispatchedEvents.some(ev => ev.type === 'companion:balance-unit-change' && ev.detail?.unit === 'cny'));
+
+  // Clicking [data-balance-unit="usd"] switches to USD with rate tooltip & subline
+  rootListeners.click({
+    stopPropagation() {},
+    target: {closest: sel => (sel === '[data-balance-unit]' ? {dataset: {balanceUnit: 'usd'}} : null)},
+  });
+  await flush();
+  assert.match(root.innerHTML, /\$8\.83/);
+  assert.match(root.innerHTML, /汇率 7\.20/);
+
+  // Incoming cross-page event from quota workbench updates balance card immediately
+  window.dispatchEvent(new CustomEventMock('companion:balance-unit-change', {
+    detail: {scopeKey: 'station:st-cookie', stationId: 'st-cookie', unit: 'native', source: 'quota-workbench'},
+  }));
+  assert.match(root.innerHTML, /636\.06 🍪/);
+
+  // Refreshing balance with fiat-only (CNY) station renders 2-way [ ¥ | $ ] without native pill
+  balancePayload = {
+    configured: true,
+    available: true,
+    provider: 'multi_station',
+    provider_label: '多站点额度看板',
+    source_kind: 'quota_dashboard',
+    station_id: 'st-ds',
+    station_name: 'DeepSeek 官方',
+    awareness_mode: 'primary',
+    is_primary_explicit: true,
+    participating_count: 1,
+    currency_symbol: '¥',
+    currency_label: 'CNY',
+    amount: '144.00',
+    observed_at: new Date().toISOString(),
+    state: 'available',
+    currency_context: {
+      station_id: 'st-ds',
+      display_type: 'CNY',
+      native_symbol: '¥',
+      native_unit: 'CNY',
+      native_amount: 144.0,
+      fiat_currency: 'CNY',
+      fiat_symbol: '¥',
+      cny_amount: 144.0,
+      usd_amount: 20.0,
+      usd_cny_rate: 7.2,
+      default_mode: 'cny',
+      available_modes: ['cny', 'usd'],
+    },
+  };
+  rootListeners.click({
+    target: {closest: sel => (sel === '[data-balance-refresh]' ? {dataset: {}} : null)},
+  });
+  await flush();
+  assert.doesNotMatch(root.innerHTML, /data-balance-unit="native"/);
+  assert.match(root.innerHTML, /role="radio" aria-checked="true" class="is-active" data-balance-unit="cny"/);
+  assert.match(root.innerHTML, /data-balance-unit="usd"/);
+  assert.match(root.innerHTML, /¥144\.00/);
+  assert.match(root.innerHTML, /≈ \$20\.00/);
+
+  window.CompanionMaintenancePage.unmount();
+  assert.equal(winListeners.get('companion:balance-unit-change')?.size || 0, 0, 'unmount must remove cross-page unit sync listener');
 });

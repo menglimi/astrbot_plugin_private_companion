@@ -3083,6 +3083,96 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   line-height:1.4;
   white-space:nowrap;
 }
+.maint-balance-head {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:var(--sp-2);
+  width:100%;
+  min-width:0;
+}
+.maint-balance-head > span {
+  min-width:0;
+}
+.maint-balance-unit-switch {
+  margin-left:auto;
+  display:inline-flex;
+  align-items:center;
+  flex:0 0 auto;
+  gap:2px;
+  padding:2px;
+  border:1px solid var(--t-line);
+  border-radius:var(--r-sm);
+  background:var(--t-surface-soft);
+  white-space:nowrap;
+}
+.maint-balance-unit-switch button {
+  appearance:none;
+  min-height:24px;
+  min-width:26px;
+  padding:0 var(--sp-2);
+  border:1px solid transparent;
+  border-radius:var(--r-xs);
+  background:transparent;
+  color:var(--t-text-faint);
+  font:inherit;
+  font-size:var(--fs-micro);
+  font-weight:600;
+  line-height:1.2;
+  cursor:pointer;
+  transition:background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.maint-balance-unit-switch button:hover {
+  color:var(--t-text-strong);
+  background:color-mix(in srgb, var(--t-accent-quiet) 45%, transparent);
+}
+.maint-balance-unit-switch button.is-active {
+  background:var(--t-accent-quiet);
+  color:var(--t-accent-ink);
+  border-color:color-mix(in srgb, var(--t-accent) 32%, var(--t-line));
+}
+.maint-balance-unit-switch button:focus-visible {
+  outline:2px solid var(--t-focus);
+  outline-offset:1px;
+}
+.maint-balance-val {
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+}
+.maint-balance-val.is-unit-updated {
+  animation:maintBalanceShift 140ms ease both;
+}
+.maint-balance-subline {
+  display:block;
+  font-style:normal;
+  font-family:var(--numeric-font);
+  font-variant-numeric:tabular-nums;
+  font-size:var(--fs-micro);
+  color:var(--t-text-soft);
+  line-height:1.4;
+}
+@keyframes maintBalanceShift {
+  from { opacity:.35; transform:translateY(2px); }
+  to { opacity:1; transform:none; }
+}
+@media (max-width:740px) {
+  .maint-balance-unit-switch button {
+    min-height:32px;
+    padding:0 var(--sp-2);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maint-balance-val.is-unit-updated,
+  .maint-balance-unit-switch button {
+    animation:none !important;
+    transition:none !important;
+  }
+}
+:root[data-motion="off"] .maint-balance-val.is-unit-updated,
+:root[data-motion="off"] .maint-balance-unit-switch button {
+  animation:none !important;
+  transition:none !important;
+}
 .maint-balance-actions {
   display:flex;
   flex-wrap:wrap;
