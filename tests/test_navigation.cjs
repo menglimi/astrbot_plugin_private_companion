@@ -644,7 +644,9 @@ test("home calendar action opens the calendar furniture with planning expanded",
   const h = harness();
   h.window.CompanionProduct.scheduleCard = () => "schedule";
   assert.match(h.run("homeScheduleBand()"), /data-shell-furniture="calendar"/);
-  assert.match(h.run("renderFurniturePanel('calendar')"), /data-state-feature="planning"/);
+  const panel = h.run("renderFurniturePanel('calendar')");
+  assert.match(panel, /data-state-initial-feature="planning"/);
+  assert.doesNotMatch(panel, /data-state-feature="planning"/);
 });
 
 test("native companion furniture opens its real workbench or settings surface", () => {

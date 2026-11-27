@@ -1057,7 +1057,7 @@ window.CompanionStatePage = (() => {
       root?.querySelector(`#state-status-${feature}, #state-extra-${feature}`)?.focus({preventScroll:true});
       return;
     }
-    const featureButton=event.target.closest("[data-state-feature]");
+    const featureButton=event.target.closest("button[data-state-feature]");
     if(featureButton) {
       if(editor&&!editor.discardIfPristine())return;
       const feature=featureButton.dataset.stateFeature;

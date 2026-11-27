@@ -1303,7 +1303,7 @@ function mountPanelWorkspaces(){
   const roleWeatherHost=$('#perceptionRoleWeatherWorkspace');
   const stateHost=roleWeatherHost||roleStateHost;
   guarded('角色状态',()=>stateHost
-    ?window.CompanionStatePage?.mount(stateHost,{section:roleWeatherHost?'weather':roleStateHost.dataset.stateSection||'state',feature:roleStateHost?.dataset.stateFeature||''})
+    ?window.CompanionStatePage?.mount(stateHost,{section:roleWeatherHost?'weather':roleStateHost.dataset.stateSection||'state',feature:roleStateHost?.dataset.stateInitialFeature||''})
     :window.CompanionStatePage?.unmount());
   const replyHost=$('#replyWorkspace');
   const decisionReplyHost=$('#decisionReplyWorkspace');
@@ -2271,7 +2271,7 @@ function consoleLoading(text){return `<p class="console-loading" role="status">$
    脚本生效范围里重复声明同名函数只有后者生效，留着这份等于留一个改了不生效的陷阱。
    configLink / consoleLoading / consoleMountHead / providerSummary 同名重复且内容一致，
    一并收拢——重复本身不影响行为，但会让「改了一处没生效」变得无从判断。 */
-function renderRoleState(section='',feature=''){return `<section id="roleStateWorkspace" ${section?`data-state-section="${section}" `:''}${feature?`data-state-feature="${feature}" `:''}aria-label="${section==='contact'?'行为规划与沉默':'角色状态维护'}">${consoleLoading(section==='contact'?'正在读取联系节奏与沉默设置…':'正在连接角色状态工作区…')}</section>`;}
+function renderRoleState(section='',feature=''){return `<section id="roleStateWorkspace" ${section?`data-state-section="${section}" `:''}${feature?`data-state-initial-feature="${feature}" `:''}aria-label="${section==='contact'?'行为规划与沉默':'角色状态维护'}">${consoleLoading(section==='contact'?'正在读取联系节奏与沉默设置…':'正在连接角色状态工作区…')}</section>`;}
 /* 日记与生活的工作区容器。
  *
  * 它不是自带版式的页面模块，而是 iframe 工作区（pages/日记与生活/），
