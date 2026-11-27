@@ -24,6 +24,11 @@ class RepairProposalService:
     All local configuration owners participate in the same SQLite transaction.
     """
 
+    @staticmethod
+    def short_code(proposal_id: str) -> str:
+        value = str(proposal_id or "").strip()
+        return value[-4:] if len(value) >= 4 else value
+
     def __init__(self, diagnostics: DiagnosticService):
         self.diagnostics = diagnostics
         self.configuration = diagnostics.configuration
@@ -143,6 +148,85 @@ class RepairProposalService:
                 # resource. Current config access alone cannot release that evidence.
                 _, basis = self.diagnostics.collect(context, DiagnosticQuery.restore(data["basis_query"]))
                 return Outcome.success(self._view(row, data, current_edit_token=snapshot.edit_token, current_basis_token=basis))
+        except (DiagnosticError, ConfigurationError) as error:
+            return Outcome.failed(error.code, str(error))
+
+    def _live_pending_view(self, context: DiagnosticContext, row) -> RepairProposal | None:
+        if row["state"] != "pending":
+            return None
+        try:
+            data = json.loads(row["record_json"])
+            snapshot = self._authorize(context, restore_target(data["target"]), data["group_id"], write=False)
+            _, basis = self.diagnostics.collect(context, DiagnosticQuery.restore(data["basis_query"]))
+            view = self._view(row, data, current_edit_token=snapshot.edit_token, current_basis_token=basis)
+        except (DiagnosticError, ConfigurationError, ValueError, TypeError, KeyError):
+            return None
+        return view if view.state == "pending" else None
+
+    def list_pending(self, context: DiagnosticContext, *, limit: int = 10) -> Outcome[tuple[RepairProposal, ...]]:
+        """List currently actionable pending proposals for this caller context (newest first)."""
+        try:
+            bounded = max(1, min(int(limit), 20))
+            with self.runtime.read_snapshot():
+                self.diagnostics.current(context)
+                rows = self.runtime.read_all(
+                    """SELECT * FROM diagnostic_repair_proposals
+                       WHERE origin_key = ? AND state = 'pending'
+                       ORDER BY rowid DESC LIMIT ?""",
+                    (context.key, bounded * 3),
+                )
+                pending = []
+                for row in rows:
+                    view = self._live_pending_view(context, row)
+                    if view is not None:
+                        pending.append(view)
+                        if len(pending) >= bounded:
+                            break
+                return Outcome.success(tuple(pending))
+        except (DiagnosticError, ConfigurationError) as error:
+            return Outcome.failed(error.code, str(error))
+
+    def resolve_proposal_id(self, context: DiagnosticContext, identifier: str) -> Outcome[str]:
+        """Resolve an exact proposal ID or an unambiguous >=4-char suffix for this context."""
+        try:
+            if not isinstance(identifier, str) or not identifier.strip() or len(identifier.strip()) > 512:
+                raise DiagnosticError("repair_proposal_unavailable", "original proposal is unavailable in this context")
+            needle = identifier.strip()
+            with self.runtime.read_snapshot():
+                self.diagnostics.current(context)
+                exact = self.runtime.read_one(
+                    "SELECT proposal_id FROM diagnostic_repair_proposals WHERE proposal_id = ? AND origin_key = ?",
+                    (needle, context.key),
+                )
+                if exact is not None:
+                    return Outcome.success(exact["proposal_id"])
+                lower = needle.lower()
+                if len(lower) >= 4 and all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in lower):
+                    rows = self.runtime.read_all(
+                        """SELECT * FROM diagnostic_repair_proposals
+                           WHERE origin_key = ? ORDER BY rowid DESC LIMIT 64""",
+                        (context.key,),
+                    )
+                    actionable_pending = []
+                    inactive_matches = []
+                    for row in rows:
+                        if not row["proposal_id"].lower().endswith(lower):
+                            continue
+                        if self._live_pending_view(context, row) is not None:
+                            actionable_pending.append(row["proposal_id"])
+                        else:
+                            inactive_matches.append(row["proposal_id"])
+                    if len(actionable_pending) == 1:
+                        return Outcome.success(actionable_pending[0])
+                    if len(actionable_pending) > 1:
+                        raise DiagnosticError("repair_proposal_ambiguous",
+                            "multiple pending proposals share that short suffix; provide more characters or the full ID")
+                    if len(inactive_matches) == 1:
+                        return Outcome.success(inactive_matches[0])
+                    if len(inactive_matches) > 1:
+                        raise DiagnosticError("repair_proposal_ambiguous",
+                            "multiple proposals share that short suffix; provide more characters or the full ID")
+                raise DiagnosticError("repair_proposal_unavailable", "original proposal is unavailable in this context")
         except (DiagnosticError, ConfigurationError) as error:
             return Outcome.failed(error.code, str(error))
 

@@ -387,17 +387,33 @@ class PresenceCoordinator:
         if state is not None:
             public = state.get("values", {})
             mode = public.get("online_mode")
+            wording = public.get("presence")
+            online_choice = None
             if "online_status_enabled" in available and mode:
                 if mode in AUTOMATICALLY_BLOCKED_MODES:
                     # Recover an account left in an old away/busy state without
                     # issuing either forbidden platform mode again.
-                    return {"desired": {"mode": "online", "basis": "blocked_role_mode",
-                            "reference": [state["revision"], mode]}, "reason": "blocked_role_mode"}
-                return {"desired": {"mode": mode, "basis": "role_simulation",
-                        "reference": [state["revision"]]}, "reason": None}
-            wording = public.get("presence")
-            if "presence_enabled" in available and wording:
-                return {"desired": {"wording": wording, "basis": "role_simulation", "reference": [state["revision"]]}, "reason": None}
+                    online_choice = {
+                        "desired": {"mode": "online", "basis": "blocked_role_mode",
+                                    "reference": [state["revision"], mode]},
+                        "reason": "blocked_role_mode",
+                    }
+                else:
+                    online_choice = {
+                        "desired": {"mode": mode, "basis": "role_simulation",
+                                    "reference": [state["revision"]]},
+                        "reason": None,
+                    }
+            custom_choice = (
+                {"desired": {"wording": wording, "basis": "role_simulation",
+                             "reference": [state["revision"]]}, "reason": None}
+                if "presence_enabled" in available and wording else None
+            )
+            priority = values.get("presence_priority", "custom_first")
+            ordered = (online_choice, custom_choice) if priority == "online_first" else (custom_choice, online_choice)
+            for choice in ordered:
+                if choice is not None:
+                    return choice
         return {"desired": None, "reason": "presence_no_public_wording"}
 
     def _candidates(self):

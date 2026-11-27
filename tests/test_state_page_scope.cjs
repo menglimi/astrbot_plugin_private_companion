@@ -55,6 +55,8 @@ test("state uses the selected private window instead of the role representative"
   assert.deepEqual(h.requests,["state/selected"]);
   assert.equal(h.scopes.at(-1).window_selected,true);
   assert.equal(h.statuses.at(-1).settings.typing_refresh_seconds,7);
+  assert.match(h.root.innerHTML,/2 项开关已开启/);
+  assert.match(h.root.innerHTML,/自定义短状态优先（默认）/);
   h.page.unmount();
 });
 

@@ -56,14 +56,22 @@ test("QQ presence saves at role scope while typing stays window scoped", async (
   assert.deepEqual(JSON.parse(JSON.stringify(posts[0].changes)),{presence_enabled:true});
 
   editor.open("settings");
-  input("typing_enabled",true);
+  input("presence_priority","online_first","select-one");
   editor.submit({target:{id:"state-edit-form"},preventDefault(){}});
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(posts.length,2);
-  assert.equal(posts[1].action,"configure");
-  assert.equal(posts[1].edit_token,"window-edit");
-  assert.equal(Object.hasOwn(posts[1],"role_edit_token"),false);
-  assert.deepEqual(JSON.parse(JSON.stringify(posts[1].changes)),{typing_enabled:true});
+  assert.equal(posts[1].action,"configure_role");
+  assert.deepEqual(JSON.parse(JSON.stringify(posts[1].changes)),{presence_priority:"online_first"});
+
+  editor.open("settings");
+  input("typing_enabled",true);
+  editor.submit({target:{id:"state-edit-form"},preventDefault(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(posts.length,3);
+  assert.equal(posts[2].action,"configure");
+  assert.equal(posts[2].edit_token,"window-edit");
+  assert.equal(Object.hasOwn(posts[2],"role_edit_token"),false);
+  assert.deepEqual(JSON.parse(JSON.stringify(posts[2].changes)),{typing_enabled:true});
   editor.destroy();
 });
 

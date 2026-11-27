@@ -58,15 +58,19 @@ def require_window(calendar, context, window, at):
 
 
 def reserve_routine_slot(
-    calendar, context, *, routine, timezone, now, items, sleep_plan=None, title=None, detail=None
+    calendar, context, *, routine, timezone, now, items, sleep_plan=None, title=None, detail=None, presence=None
 ):
     """Put pending work in the next free afternoon or evening block."""
-    default_title, default_detail = {
-        "reading": ("书架阅读", "按顺序继续书架中的未读片段。"),
-        "writing": ("续写未完成作品", "从已有候选稿接着写，保留原有正文与人物设定。"),
+    default_title, default_detail, default_presence = {
+        "reading": ("书架阅读", "按顺序继续书架中的未读片段。", "阅读中"),
+        "writing": ("续写未完成作品", "从已有候选稿接着写，保留原有正文与人物设定。", "写作中"),
     }[routine]
     title = title or default_title
     detail = detail or default_detail
+    resolved_presence = (
+        default_presence if presence is None
+        else " ".join(str(presence).split())[:8]
+    )
     zone = ZoneInfo(timezone)
     earliest = now + timedelta(minutes=15)
     busy = [
@@ -105,7 +109,7 @@ def reserve_routine_slot(
                         "detail": default_detail if detail is None else detail,
                         "schedule": json.loads(encode(Schedule(start, timezone))),
                         "duration_minutes": 30,
-                        "presence": "",
+                        "presence": resolved_presence,
                     },
                 )
                 return stamp(start)

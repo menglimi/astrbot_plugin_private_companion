@@ -40,6 +40,7 @@ def describe_presentation(app, context, *, settings, effective):
 
     def status_diagnostic(option, intent_field):
         status = availability(option, "platform.presence")
+        status["shadowed_by"] = None
         if status["state"] != "ready":
             return status
         account = coordinator.account(context)
@@ -54,7 +55,13 @@ def describe_presentation(app, context, *, settings, effective):
             if desired is None:
                 status["state"] = "blocked" if intent["reason"] != "presence_no_public_wording" else "idle"
             elif intent_field not in desired:
-                status.update(state="idle", desired=None, reason=None)
+                if "wording" in desired:
+                    shadowed_by = "calendar_plan" if desired.get("basis") == "calendar_plan" else "custom_status"
+                elif "mode" in desired:
+                    shadowed_by = "native_reply" if desired.get("basis") == "native_reply" else "online_status"
+                else:
+                    shadowed_by = None
+                status.update(state="idle", desired=None, reason=None, shadowed_by=shadowed_by)
             else:
                 role = coordinator.role_key(context)
                 result_key = coordinator.result_key(context)
@@ -75,6 +82,14 @@ def describe_presentation(app, context, *, settings, effective):
             status.update(state="blocked", reason=error.code)
         return status
 
+    custom = status_diagnostic("presence_enabled", "wording")
+    online = status_diagnostic("online_status_enabled", "mode")
+    effective_channel = (
+        "custom_status" if custom.get("desired") and "wording" in custom["desired"]
+        else "online_status" if online.get("desired") and "mode" in online["desired"]
+        else None
+    )
     return {"observed_at": stamp(app.now()), "port": "installed" if coordinator else "preview",
-            "typing": typing, "custom_status": status_diagnostic("presence_enabled", "wording"),
-            "online_status": status_diagnostic("online_status_enabled", "mode")}
+            "priority": settings.get("presence_priority", "custom_first"),
+            "effective_channel": effective_channel,
+            "typing": typing, "custom_status": custom, "online_status": online}
