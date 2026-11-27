@@ -1005,8 +1005,9 @@ class StateMaintenance:
 
     def collect_reaped_workers(self):
         """Reap completed background workers on the owning event loop."""
-        updates = list(self._pending_reaped)
-        self._pending_reaped.clear()
+        pending = self.__dict__.setdefault("_pending_reaped", [])
+        updates = list(pending)
+        pending.clear()
         for key, worker in tuple(self.workers.items()):
             if not worker.done():
                 continue
@@ -1033,7 +1034,8 @@ class StateMaintenance:
         """Restore unpersisted reaped updates so a transient lock or abort never drops them."""
         if not updates:
             return
-        self._pending_reaped = list(updates) + self._pending_reaped
+        pending = self.__dict__.setdefault("_pending_reaped", [])
+        pending[:0] = list(updates)
 
     def persist_reaped_workers(self, updates):
         """Persist reaped worker results, pulling failed schedules forward by 5 minutes.
