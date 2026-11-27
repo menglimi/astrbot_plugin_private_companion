@@ -38,6 +38,10 @@ class Pending:
     followups_logged: int = 0
     force_ready: bool = False
     sealed_media: bool = False
+    context: Any = None
+    event_ref: str | None = None
+    last_judged_text: str | None = None
+    semantic_calls: int = 0
 
     @property
     def latest_text(self):
@@ -59,14 +63,17 @@ class Reservation:
 
 
 DEFAULT_RESOLUTION_TIMEOUT_SECONDS = 30.0
+MAX_SEMANTIC_JUDGMENTS_PER_TURN = 3
 
 
 class PrivateDebounce:
     """Shared per-target debounce state for one running plugin instance."""
 
     def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True,
-                 resolution_timeout=DEFAULT_RESOLUTION_TIMEOUT_SECONDS, semantic=None):
+                 resolution_timeout=DEFAULT_RESOLUTION_TIMEOUT_SECONDS,
+                 semantic=None, laya_semantic=None):
         self.semantic = semantic
+        self.laya_semantic = laya_semantic
         self.policy = policy
         self._clock = clock
         self._log_enabled = log_enabled
@@ -310,7 +317,7 @@ class PrivateDebounce:
             self.policy = policy
         return self.reserve(key, event, text, received_at=received_at)
 
-    async def configure(self, reservation, event, policy):
+    async def configure(self, reservation, event, policy, *, context=None, event_ref=None):
         """Install the first available policy, or bypass an unconfigured turn."""
         pending = reservation.pending
         async with self._lock:
@@ -318,6 +325,10 @@ class PrivateDebounce:
                 return "closed"
             if pending.owner_ticket != reservation.ticket or pending.owner is not event:
                 return "configuring" if pending.state == "collecting" else "superseded"
+            if context is not None:
+                pending.context = context
+            if event_ref is not None:
+                pending.event_ref = event_ref
             if pending.state == "aborted":
                 return "aborted"
             if pending.state == "bypass":
@@ -397,6 +408,16 @@ class PrivateDebounce:
             except asyncio.CancelledError:
                 raise
 
+    def _semantic_backend(self, policy):
+        mode = getattr(policy, "semantic_mode", None)
+        if mode is None:
+            mode = "onnx" if getattr(policy, "semantic_enabled", False) else "off"
+        if mode == "laya":
+            return mode, self.laya_semantic
+        if mode == "onnx":
+            return mode, self.semantic
+        return "off", None
+
     async def wait_for_quiet(self, reservation, event):
         """Wait until this event is still latest after its quiet window."""
         pending = reservation.pending
@@ -423,25 +444,47 @@ class PrivateDebounce:
                     quiet_deadline = max(quiet_deadline, extended_until)
                 now = self._clock()
                 timeout = min(quiet_deadline, total_deadline) - now
-                judge = (timeout <= 0 and now < total_deadline and self.semantic is not None
-                         and policy.semantic_enabled and judged_version != version)
-                if timeout <= 0 and not judge:
+                semantic_mode, classifier = self._semantic_backend(policy)
+                can_judge = (timeout <= 0 and now < total_deadline and classifier is not None
+                             and judged_version != version
+                             and pending.semantic_calls < MAX_SEMANTIC_JUDGMENTS_PER_TURN)
+                text = self.combined(reservation) if can_judge else ""
+                if can_judge and text == pending.last_judged_text:
+                    judged_version = version
+                    can_judge = False
+                if timeout <= 0 and not can_judge:
                     return "ready"
-                text = self.combined(reservation) if judge else ""
+                input_parts = tuple(item[1] for item in pending.entries) if can_judge else ()
+                turn_context = pending.context if can_judge else None
+                turn_event_ref = pending.event_ref if can_judge else None
                 pending.wake.clear()
                 if pending.version != version:
                     continue
-            if judge:
-                score = await self.semantic.score(text, total_deadline - now)
+            if can_judge:
+                if semantic_mode == "laya" and hasattr(classifier, "check_incomplete"):
+                    decision = await classifier.check_incomplete(
+                        text, total_deadline - now,
+                        context=turn_context, input_parts=input_parts, event_ref=turn_event_ref,
+                    )
+                    incomplete = decision is True
+                    detail = "unfinished" if decision is True else ("complete" if decision is False else "fallback")
+                    wait_seconds = getattr(classifier, "wait_seconds", 15.0)
+                else:
+                    score = await classifier.score(text, total_deadline - now)
+                    incomplete = score is not None and score < classifier.threshold
+                    detail = score
+                    wait_seconds = classifier.wait_seconds
                 async with self._lock:
                     if pending.version != version or pending.state != "active":
                         continue
                     judged_version = version
-                    incomplete = score is not None and score < self.semantic.threshold
-                    extended_until = pending.latest_received + self.semantic.wait_seconds if incomplete else 0.0
+                    pending.last_judged_text = text
+                    pending.semantic_calls += 1
+                    extended_until = pending.latest_received + wait_seconds if incomplete else 0.0
                     if self._log_enabled:
-                        logger.info("私聊语义收口 inputs=%d score=%s action=%s", len(pending.entries),
-                                    score, "wait" if incomplete else "reply")
+                        logger.info("私聊语义收口 mode=%s inputs=%d result=%s action=%s",
+                                    semantic_mode, len(pending.entries),
+                                    detail, "wait" if incomplete else "reply")
                 continue
             try:
                 await asyncio.wait_for(pending.wake.wait(), timeout=timeout)
@@ -515,6 +558,8 @@ class PrivateDebounce:
                 item.wake.set()
         if self.semantic is not None:
             self.semantic.close()
+        if self.laya_semantic is not None:
+            self.laya_semantic.close()
 
 
 class PrivateDeliveryDedup:

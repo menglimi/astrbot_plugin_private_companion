@@ -18,9 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+SEMANTIC_MODES = frozenset({"off", "onnx", "laya"})
+
 DEFAULTS = {
     "private_debounce_enabled": True,
     "private_debounce_semantic_enabled": False,
+    "private_debounce_semantic_mode": "off",
     "private_debounce_min_ms": 1500,
     "private_debounce_max_ms": 4000,
     "private_debounce_total_ms": 8000,
@@ -34,6 +37,17 @@ LIMITS = {
 MAX_MERGED_CHARS = 8000
 
 
+def resolve_semantic_mode(*, semantic_mode=None, semantic_enabled=False):
+    """Resolve the canonical semantic debounce mode with legacy boolean fallback."""
+    if type(semantic_enabled) is not bool:
+        raise ValueError("private debounce switch must be boolean")
+    if semantic_mode is None:
+        return "onnx" if semantic_enabled else "off"
+    if type(semantic_mode) is not str or semantic_mode not in SEMANTIC_MODES:
+        raise ValueError("private debounce semantic mode is invalid")
+    return semantic_mode
+
+
 @dataclass(frozen=True)
 class Policy:
     enabled: bool = True
@@ -41,10 +55,17 @@ class Policy:
     max_seconds: float = 4.0
     total_seconds: float = 8.0
     semantic_enabled: bool = False
+    semantic_mode: str = "off"
 
     def __post_init__(self):
         if type(self.enabled) is not bool or type(self.semantic_enabled) is not bool:
             raise ValueError("private debounce switch must be boolean")
+        if type(self.semantic_mode) is not str or self.semantic_mode not in SEMANTIC_MODES:
+            raise ValueError("private debounce semantic mode is invalid")
+        if self.semantic_mode == "off" and self.semantic_enabled:
+            object.__setattr__(self, "semantic_mode", "onnx")
+        elif self.semantic_mode != "off" and not self.semantic_enabled:
+            object.__setattr__(self, "semantic_enabled", True)
         for name in ("min_seconds", "max_seconds", "total_seconds"):
             value = getattr(self, name)
             if type(value) not in (int, float) or not 0.01 <= value <= 120:
@@ -55,9 +76,12 @@ class Policy:
             raise ValueError("private debounce total is shorter than one window")
 
     @classmethod
-    def from_milliseconds(cls, enabled, minimum, maximum, total, *, semantic_enabled=False):
+    def from_milliseconds(cls, enabled, minimum, maximum, total, *,
+                          semantic_enabled=False, semantic_mode=None):
+        mode = resolve_semantic_mode(semantic_mode=semantic_mode, semantic_enabled=semantic_enabled)
         return cls(enabled=enabled, min_seconds=minimum / 1000,
-                   max_seconds=maximum / 1000, total_seconds=total / 1000, semantic_enabled=semantic_enabled)
+                   max_seconds=maximum / 1000, total_seconds=total / 1000,
+                   semantic_enabled=mode != "off", semantic_mode=mode)
 
 
 def visible_characters(text):

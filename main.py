@@ -451,11 +451,32 @@ class PrivateCompanionV2StagingPlugin(Star):
             user_id = getter() if callable(getter) else ""
         return str(user_id or "")
 
+    def _laya_debounce_service(self, context=None):
+        staging = getattr(self, "staging", None)
+        session = getattr(staging, "session", None) or getattr(staging, "last_session", None)
+        application = getattr(session, "application", None)
+        resolver = getattr(application, "laya_decision_resolver", None)
+        if callable(resolver) and context is not None:
+            try:
+                return resolver(context)
+            except Exception:
+                return None
+        return None
+
     def _private_debounce_manager(self):
         manager = getattr(self, "_private_debounce", None)
         if manager is None:
-            from .astrbot_host.private_semantic_debounce import classifier_from_config
-            manager = PrivateDebounce(semantic=classifier_from_config(getattr(self, "config", None) or {}))
+            from .astrbot_host.private_semantic_debounce import (
+                LayaTurnCompleteness, classifier_from_config,
+            )
+            config = getattr(self, "config", None) or {}
+            manager = PrivateDebounce(
+                semantic=classifier_from_config(config),
+                laya_semantic=LayaTurnCompleteness(
+                    self._laya_debounce_service,
+                    options=config.get("private_debounce_semantic") if isinstance(config, dict) else None,
+                ),
+            )
             self._private_debounce = manager
         return manager
 
@@ -1497,7 +1518,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                 )
                 effective_policy = forward_burst_debounce_policy(
                     policy, has_forwards=burst_has_forwards)
-                status = await debounce_manager.configure(debounce_pending, event, effective_policy)
+                status = await debounce_manager.configure(
+                    debounce_pending, event, effective_policy,
+                    context=getattr(core_reply_plan, "context", None),
+                    event_ref=event_ref,
+                )
                 if status == "configuring":
                     status = await debounce_manager.wait_for_resolution(debounce_pending, event)
                 if status == "active":

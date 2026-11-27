@@ -107,6 +107,47 @@ INTERVENTION_QUESTION = {
 
 INTERVENTION_CHOICES = frozenset({"none", "state", "calendar", "both"})
 
+TURN_COMPLETENESS_CHOICES = frozenset({"complete", "unfinished", "uncertain"})
+
+TURN_COMPLETENESS_QUESTION = {
+    "turn_state": {
+        "type": "choice",
+        "instructions": (
+            "判断私聊中用户刚发出的连续输入是否已经说完，只判断表达完整性，不回答消息本身。"
+            "若对方明显只说了悬空起头半句、话没说完、或明确表示马上还要补充，选 unfinished；"
+            "若表达已完整（包括简短完整回应如“好的”“晚安”“在吗”或完整问题），选 complete；"
+            "仅在语意像被截断且无法判断是否还会继续补话时选 uncertain。"
+        ),
+        "criteria": {
+            "complete": "当前消息已表达完整，可以直接回复（含简短完整的问候、应声或提问）。",
+            "unfinished": "明显只说了一半、悬空起头（如“跟你说个事”“刚才我…”）或明确提示等下文补充。",
+            "uncertain": "语意略显截断，难以确定是否会继续补充。",
+        },
+    }
+}
+
+
+def turn_completeness_question(_facts=None):
+    """Build one single-head turn_state question for private continuous-input debounce."""
+    return deepcopy(TURN_COMPLETENESS_QUESTION)
+
+
+def render_turn_completeness_state(facts):
+    """Render a minimal bounded state for single-head private turn-completeness judgment."""
+    user_text = str(facts.get("user_text", ""))[:2000]
+    parts = [str(item).strip()[:600] for item in (facts.get("input_parts") or ())
+             if str(item).strip()][-8:]
+    model_facts = {
+        "message_kind": "text",
+        "scope_kind": "private",
+        "user_text": user_text,
+        "input_count": len(parts) if parts else 1,
+    }
+    if len(parts) > 1:
+        model_facts["input_parts"] = parts
+    return json.dumps({"facts": model_facts, "decision_fields": ["turn_state"]},
+                      ensure_ascii=False, separators=(",", ":"))
+
 
 def intervention_question(facts):
     """Build one small asynchronous classification question for role changes."""
@@ -329,5 +370,11 @@ def render_model_state(state: str) -> str:
         intervention = facts.get("role_intervention_material") or intervention
         if isinstance(intervention, dict):
             model["role_intervention_material"] = intervention
+    if document.get("decision_fields") == ["turn_state"]:
+        if isinstance(facts.get("input_count"), int) and facts["input_count"] > 0:
+            model["input_count"] = facts["input_count"]
+        parts = facts.get("input_parts")
+        if isinstance(parts, list) and parts:
+            model["input_parts"] = [str(item)[:600] for item in parts[-8:] if str(item).strip()]
     return json.dumps({"facts": model, "decision_fields": document.get("decision_fields", [])},
                       ensure_ascii=False, separators=(",", ":"))

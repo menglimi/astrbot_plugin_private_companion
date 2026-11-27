@@ -21,8 +21,12 @@ import warnings
 
 from companion_v2.decision.contract import (CONFIGURABLE_DECISION_FIELDS, DECISION_DEFAULTS, LayaDecision,
                        DecisionContractError, deterministic_skip_reason, parse_decision)
-from companion_v2.decision.prompt import (DECISION_QUESTIONS, INTERVENTION_CHOICES, build_state,
-    decision_questions, facts_document, intervention_question, render_intervention_state, render_model_state)
+from companion_v2.decision.prompt import (
+    DECISION_QUESTIONS, INTERVENTION_CHOICES, TURN_COMPLETENESS_CHOICES,
+    build_state, decision_questions, facts_document, intervention_question,
+    render_intervention_state, render_model_state,
+    render_turn_completeness_state, turn_completeness_question,
+)
 from companion_v2.decision.store import (
     CHAT_COMPLETIONS_ENDPOINT_REQUIRED, MODE_MODELS, SYSTEMONE_ENDPOINT_REQUIRED,
     WORKERS_AI_ENDPOINT_REQUIRED, cached_multilingual_model)
@@ -746,6 +750,70 @@ class LayaDecisionClient:
             self.last_trace["processing"]["local_runtime"] = local_runtime
         return choice
 
+    async def classify_turn_completeness(self, facts: dict, *,
+                                         timeout_seconds: float | None = None) -> str:
+        """Classify whether a coalesced private burst has finished using turn_state only."""
+        if type(facts) is not dict or facts.get("scope_kind") != "private":
+            raise LayaClientError("laya_facts_invalid", "turn completeness classification requires a private window")
+        if not str(facts.get("user_text", "")).strip():
+            raise LayaClientError("laya_facts_invalid", "turn completeness classification requires text")
+        effective_timeout = float(self.timeout_seconds)
+        if timeout_seconds is not None and type(timeout_seconds) in (int, float) and timeout_seconds > 0:
+            effective_timeout = min(effective_timeout, float(timeout_seconds))
+        self.last_trace = {}
+        questions = turn_completeness_question(facts)
+        state = render_turn_completeness_state(facts)
+        model_state = render_model_state(state)
+        self.last_trace = {
+            "request": {"model": self.model, "state": model_state, "questions": questions, "sent": False},
+            "response": None,
+            "processing": {"stages": [{"name": "request_preparation", "status": "ok"}]},
+        }
+        raw_result, local_runtime = None, None
+        if self.mode == "local":
+            _require_cuda()
+            if local_runtime_status(local_model_path=self.local_model_path)["local_runtime_state"] == "warming":
+                raise LayaClientError("laya_initializing", "Laya 本地模型正在预热")
+            try:
+                self.last_trace["request"]["sent"] = True
+                options = {"local_model_path": self.local_model_path} if self.local_model_path.strip() else {}
+                raw_result, local_runtime = await asyncio.wait_for(
+                    _run_local_predict(state, questions, **options), timeout=effective_timeout)
+            except asyncio.TimeoutError as error:
+                raise LayaClientError("laya_inference_timeout", "Laya 私聊补话判断超时") from error
+            self.last_trace["response"] = {"format": "python_object",
+                "body": _diagnostic_response_text(raw_result),
+                "value": raw_result if type(raw_result) is dict else None}
+        else:
+            self.last_trace["request"]["sent"] = True
+            if getattr(self._post, "__func__", None) is LayaDecisionClient._post:
+                raw_body = await self._post(model_state, questions, timeout_seconds=effective_timeout)
+            else:
+                try:
+                    raw_body = await asyncio.wait_for(
+                        self._post(model_state, questions), timeout=effective_timeout)
+                except asyncio.TimeoutError as error:
+                    raise LayaClientError("laya_inference_timeout", "Laya 私聊补话判断超时") from error
+            self.last_trace["response"] = {"format": "json", "body": raw_body}
+            raw_result = self._parse_body(raw_body)
+            self.last_trace["response"]["value"] = raw_result
+        if type(raw_result) is not dict:
+            raise LayaClientError("laya_response_invalid", "Laya turn completeness result is not an object")
+        answers = raw_result.get("answers")
+        answer = answers.get("turn_state") if type(answers) is dict else None
+        choice = answer.get("choice") if type(answer) is dict and answer.get("type") == "choice" else None
+        if type(choice) is not str or choice not in TURN_COMPLETENESS_CHOICES:
+            raise LayaClientError("laya_contract_invalid", "Laya returned an unsupported turn_state category")
+        if self.mode == "local":
+            _LOCAL_READY.add(_source_key(self.local_model_path))
+        self.last_trace["processing"] = {"stages": [
+            {"name": "inference", "status": "ok"},
+            {"name": "contract_conversion", "status": "ok"}],
+            "turn_state": choice}
+        if local_runtime is not None:
+            self.last_trace["processing"]["local_runtime"] = local_runtime
+        return choice
+
     async def probe(self, *, enabled_fields=None) -> LayaDecision:
         return await self.decide({
             "message_kind": "text",
@@ -772,7 +840,11 @@ class LayaDecisionClient:
             return self.transport.document(raw)
         return document
 
-    async def _post(self, model_state: str, questions: dict) -> str:
+    async def _post(self, model_state: str, questions: dict, *,
+                    timeout_seconds: float | None = None) -> str:
+        effective_timeout = (float(timeout_seconds)
+                             if timeout_seconds is not None and timeout_seconds > 0
+                             else self.timeout_seconds)
         if self._cloudflare_request:
             # Cloudflare Workers AI wraps the model payload under ``input``.
             payload = {"model": self.model,
@@ -792,9 +864,9 @@ class LayaDecisionClient:
                 if self.proxy:
                     # Keep an explicitly configured proxy local to this request.
                     opener = build_opener(ProxyHandler({"http": self.proxy, "https": self.proxy}))
-                    response = opener.open(request, timeout=self.timeout_seconds)
+                    response = opener.open(request, timeout=effective_timeout)
                 else:
-                    response = urlopen(request, timeout=self.timeout_seconds)
+                    response = urlopen(request, timeout=effective_timeout)
                 with response:
                     content = response.read(MAX_RESPONSE_BYTES + 1)
             except HTTPError as error:
