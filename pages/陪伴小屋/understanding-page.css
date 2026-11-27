@@ -1,24 +1,24 @@
-.understanding-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text);container:understanding-page / inline-size}
-.understanding-tabs{position:sticky;top:var(--sp-2);z-index:5;display:flex;align-items:center;gap:var(--sp-1);min-width:0;overflow-x:auto;padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow);scrollbar-width:thin}
-.understanding-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);flex:none;min-height:38px;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:500;white-space:nowrap;cursor:pointer;transition:background var(--dur-fast) ease,color var(--dur-fast) ease}
+.understanding-page{display:grid;gap:var(--sp-4);min-width:0;padding-bottom:var(--sp-6);color:var(--t-text);container:understanding-page / inline-size}
+.understanding-tabs{position:sticky;top:var(--sp-2);z-index:5;display:flex;align-items:center;gap:var(--sp-1);min-width:0;overflow-x:auto;padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow);scrollbar-width:thin}
+.understanding-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);flex:none;min-height:38px;padding:var(--sp-2) var(--sp-3);border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:500;white-space:nowrap;cursor:pointer;transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease}
 .understanding-tabs button svg{width:15px;height:15px}
 .understanding-tabs button:hover{background:var(--t-surface-soft);color:var(--t-text-strong)}
-.understanding-tabs button[aria-selected=true]{background:var(--t-accent-solid);color:var(--t-on-solid);font-weight:600}
+.understanding-tabs button[aria-selected=true]{border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line));background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600}
 .understanding-tabs button:focus-visible,.understanding-shortcut:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
-.understanding-tabs-scope{margin-left:auto;padding:var(--sp-1) var(--sp-2);border-radius:var(--r-pill);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:500;white-space:nowrap}
+.understanding-tabs-scope{margin-left:auto;padding:var(--sp-1) var(--sp-2);border:1px solid color-mix(in srgb,var(--t-accent) 24%,var(--t-line));border-radius:var(--r-pill);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:500;white-space:nowrap}
 .understanding-panel{display:grid;gap:var(--sp-4);min-width:0}
 .understanding-panel[hidden]{display:none}
 /* 总览 / 图片 / 视频 / 文件 / 网页均为 4 张指标卡（排满 4 列，消除视频页签 3+1 孤儿卡）；
    仅合并转发为 3 项紧凑概览条，单行水平排满 3 列。 */
 .understanding-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-3);min-width:0}
 .understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
-.understanding-stat{display:grid;align-content:start;gap:var(--sp-1);min-width:0;min-height:78px;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow)}
+.understanding-stat{display:grid;align-content:start;gap:var(--sp-1);min-width:0;min-height:84px;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
 .understanding-stat>span{overflow-wrap:anywhere;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.45}
 .understanding-stat>strong{overflow-wrap:anywhere;color:var(--t-text-strong);font-size:var(--fs-lead);line-height:1.3;font-weight:650;font-variant-numeric:tabular-nums}
 .understanding-stat>small{overflow-wrap:anywhere;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.5}
 /* 合并转发顶部紧凑摘要条：避免 3 张 104px 空旷大卡与下方输入框重复抢戏 */
 .understanding-stats-compact{
-  gap:0;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft);overflow:hidden;
+  gap:0;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow);overflow:hidden;
 }
 .understanding-stats-compact .understanding-stat{
   display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);
@@ -30,20 +30,24 @@
 .understanding-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);min-width:0}
 .understanding-shortcuts-two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .understanding-shortcuts-one{grid-template-columns:minmax(0,1fr)}
-.understanding-shortcut{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0;min-height:60px;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);color:var(--t-text-strong);font:inherit;text-align:left;cursor:pointer;transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease}
+.understanding-shortcut{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0;min-height:60px;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow);color:var(--t-text-strong);font:inherit;text-align:left;cursor:pointer;transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease}
 .understanding-shortcut:hover{border-color:color-mix(in srgb,var(--t-accent) 42%,var(--t-line-firm));background:var(--t-surface-soft)}
 .understanding-shortcut span{display:grid;gap:2px;min-width:0;overflow-wrap:anywhere}
 .understanding-shortcut strong{font-size:var(--fs-body);font-weight:600}
 .understanding-shortcut small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
 .understanding-shortcut>svg{width:16px;height:16px;flex:none;color:var(--t-accent-ink)}
-.understanding-permissions,.understanding-card{display:grid;gap:var(--sp-3);min-width:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow)}
-.understanding-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;min-width:0}
+.understanding-permissions,.understanding-card{display:grid;gap:var(--sp-3);min-width:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
+.understanding-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;min-width:0;padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line)}
 .understanding-panel-heading>div{display:grid;gap:2px;min-width:0}
 .understanding-panel-heading>div>span{color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:600}
 .understanding-panel-heading h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650}
 .understanding-scope-badge{flex:none;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);white-space:nowrap}
 .understanding-editor-workspace{min-width:0}
+.understanding-editor-workspace .reply-scope-note{margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-left:3px solid var(--t-accent);border-radius:var(--r-sm);background:var(--t-surface-soft);font-size:var(--fs-tiny);line-height:1.65;color:var(--t-text-soft)}
+.understanding-editor-workspace .reply-scope-note strong{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600}
+.understanding-editor-workspace .reply-scope-note p{margin:var(--sp-1) 0 0;color:var(--t-text-soft)}
 .understanding-editor-workspace .wb-card{border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+.understanding-editor-workspace .wb-card-head{display:none}
 .understanding-editor-workspace .wb-card-copy h3,.understanding-editor-workspace .wb-card-copy p{display:none}
 .understanding-page[data-understanding-active=overview] .understanding-editor-workspace .wb-scope{display:none}
 .understanding-editor-workspace .wb-section-layout{display:block}
@@ -51,14 +55,25 @@
 .understanding-editor-workspace .wb-section-panel{padding:0}
 /* 网页理解独立使用 #webUnderstandingWorkspace，不显示共享媒体工作台（避免回退渲染出总览的 6 项许可开关）。 */
 .understanding-panel[data-understanding-panel=web] #contextImageWorkspace{display:none}
+.understanding-panel[data-understanding-panel=web] #webUnderstandingWorkspace .wb-card{padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
+.understanding-panel[data-understanding-panel=web] #webUnderstandingWorkspace .wb-card-head{margin:0 0 var(--sp-3);padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line)}
+.understanding-panel[data-understanding-panel=web] #webUnderstandingWorkspace .wb-card:not(.wb-journal):not(.wb-policy) .wb-group{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.understanding-panel[data-understanding-panel=web] #webUnderstandingWorkspace .wb-actions:not(.is-dirty){margin-top:var(--sp-4);padding:var(--sp-3) 0 0;border:0;border-top:1px solid var(--t-line);border-radius:0;background:transparent;box-shadow:none}
+/* 外层已是白卡的面板（总览适用范围 / 合并转发当前窗口卡）：去重内层分组卡边框与动作条外框，避免卡片套卡片。 */
+.understanding-permissions .wb-card:not(.wb-journal):not(.wb-policy) .wb-group,
+.understanding-forward-window-card .wb-card:not(.wb-journal):not(.wb-policy) .wb-group{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.understanding-permissions .wb-group-header,
+.understanding-forward-window-card .wb-group-header{display:none}
+.understanding-permissions .wb-actions:not(.is-dirty),
+.understanding-forward-window-card .wb-actions:not(.is-dirty){margin-top:var(--sp-3);padding:var(--sp-3) 0 0;border:0;border-top:1px solid var(--t-line);border-radius:0;background:transparent;box-shadow:none}
 /* 总览 · 角色级理解许可：6 项私聊/群聊开关按「图片 / 视频 / 文件」三行两列成对排列。 */
-.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-4)}
-.understanding-permissions [data-wb-group="media_permissions"] .wb-field{align-items:center;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field{align-items:start;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
 .understanding-permissions [data-wb-group="media_permissions"] .wb-field-main{grid-template-columns:minmax(8em,1fr) auto;align-items:center;column-gap:var(--sp-3)}
 .understanding-permissions [data-wb-group="media_permissions"] .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:end;justify-content:flex-end;width:auto;max-width:none}
 .understanding-forward-workspace,.understanding-panel>[data-understanding-editor-slot]{min-width:0}
-.understanding-forward-window-card .reply-scope-note{margin:0 0 var(--sp-2)}
-.understanding-forward-workspace .host-options-panel{margin-top:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow)}
+.understanding-forward-window-card .reply-scope-note{margin:0 0 var(--sp-3)}
+.understanding-forward-workspace .host-options-panel{margin-top:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
 .understanding-forward-workspace .host-options-heading p,.understanding-forward-workspace .host-options-copy small{color:var(--t-text-faint)}
 @container understanding-page (max-width:720px){
   .understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -70,5 +85,6 @@
   .understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:900px){.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-stats-compact .understanding-stat{border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:nth-child(2){border-right:0}.understanding-stats-compact .understanding-stat:last-child{grid-column:1/-1;border-right:0;border-bottom:0}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
-@media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stats-compact .understanding-stat{border-right:0;border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:last-child{border-bottom:0}.understanding-stat{min-height:68px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions,.understanding-card,.understanding-forward-workspace .host-options-panel{padding:var(--sp-3)}.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:left;max-width:100%;overflow-wrap:anywhere}}
+@media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2)}.understanding-panel[data-understanding-panel=forwards] .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stats-compact .understanding-stat{border-right:0;border-bottom:1px solid var(--t-line)}.understanding-stats-compact .understanding-stat:last-child{border-bottom:0}.understanding-stat{min-height:68px;padding:var(--sp-3)}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions,.understanding-card,.understanding-forward-workspace .host-options-panel,.understanding-panel[data-understanding-panel=web] #webUnderstandingWorkspace .wb-card{padding:var(--sp-3)}.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:left;max-width:100%;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.understanding-tabs button,.understanding-shortcut{scroll-behavior:auto;transition:none}}
+:root[data-motion="off"] .understanding-tabs button,:root[data-motion="off"] .understanding-shortcut{transition:none}

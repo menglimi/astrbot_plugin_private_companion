@@ -1,26 +1,44 @@
-/* 统一配置工作台：层轨显示继承链，字段与保存动作的范围详情按需展开。 */
-.wb{display:flex;flex-direction:column;gap:var(--sp-5);min-width:0}
+/* 统一配置工作台：全宽分组白卡 + 卡内均衡软底字段卡 + 纤细层轨 + 非侵入式脏态吸底保存条。 */
+.wb{display:flex;flex-direction:column;gap:var(--sp-4);min-width:0;padding-bottom:var(--sp-3)}
 /* 外层已有分区标题；工作台只保留结构，提示允许越过卡片边界。 */
 .wb-card{overflow:visible;min-width:0;container:wb-card / inline-size}
 .wb-card-head{
   display:flex;align-items:baseline;justify-content:space-between;
   gap:var(--sp-3);flex-wrap:wrap;margin:0 0 var(--sp-3);
 }
-.wb-card-copy{min-width:0}
-.wb-card-copy h3{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;margin:0}
-.wb-card-copy p{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7;margin:var(--sp-1) 0 0;max-width:62ch}
+.wb-card-copy{min-width:0;flex:1 1 auto}
+.wb-card-copy h3{color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650;margin:0;line-height:1.35}
+.wb-card-copy p{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.65;margin:var(--sp-1) 0 0;max-width:none}
 .wb-card-body{padding:0;min-width:0}
 
-/* === 逻辑段落：一张卡内分几块（分段 / 拟人 / 语音…） ===
+/* === 逻辑段落：全宽圆角白底分组卡（对标手机端连接视觉层次） ===
    段落只影响阅读顺序，整张卡仍共用一个编辑令牌与一次保存。 */
 .wb-group{min-width:0;container:wb-group / inline-size}
+.wb-card:not(.wb-journal):not(.wb-policy) .wb-group{
+  padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);
+  border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow);
+}
 .wb-group+.wb-group{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
+.wb-card:not(.wb-journal):not(.wb-policy) .wb-group+.wb-group{margin-top:var(--sp-4)}
+.wb-group-header{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);
+  margin:0 0 var(--sp-3);padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line);min-width:0;
+}
+.wb-group-copy{display:grid;gap:var(--sp-1);min-width:0;flex:1 1 auto}
 .wb-group-head{
   display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;
   margin:0 0 var(--sp-1) var(--sp-2);color:var(--t-text-strong);
-  font-size:var(--fs-body);font-weight:600;letter-spacing:.01em;
+  font-size:var(--fs-body);font-weight:650;letter-spacing:.01em;
 }
+.wb-group-header .wb-group-head{margin:0;font-size:var(--fs-lead);line-height:1.35}
+.wb-group-header .wb-help{margin:0;max-width:none;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.55}
 .wb-group-head small{color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400;line-height:1.7}
+.wb-group-count{
+  display:inline-flex;align-items:center;flex:none;
+  padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-pill);
+  background:var(--t-surface-soft);color:var(--t-text-soft);
+  font-size:var(--fs-micro);font-weight:500;font-variant-numeric:tabular-nums;line-height:1.25;white-space:nowrap;
+}
 
 /* 多组配置切换成模块工作区；同一张草稿与保存回执贯穿全部模块。 */
 .wb-section-layout{display:grid;grid-template-columns:minmax(178px,220px) minmax(0,1fr);align-items:start;gap:var(--sp-4);min-width:0}
@@ -51,58 +69,77 @@
 .wb-section-panel[hidden]{display:none}
 .wb-section-panel:not([hidden]){animation:wb-section-enter .22s cubic-bezier(.2,.75,.25,1) both}
 .wb-section-panel:focus-visible{outline:2px solid var(--t-focus);outline-offset:3px}
-.wb-section-panel .wb-group{margin:0;padding:0;border:0}
-.wb-section-panel .wb-group-head{margin:0 0 var(--sp-2);font-size:var(--fs-body)}
-.wb-section-panel .wb-group>.wb-help{margin-bottom:var(--sp-3);max-width:64ch}
+.wb-section-panel .wb-group{margin:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line)}
+.wb-journal .wb-section-panel .wb-group{margin:0;padding:0;border:0;background:transparent;box-shadow:none}
+.wb-section-panel .wb-group-head{margin:0 0 var(--sp-2);font-size:var(--fs-lead)}
+.wb-section-panel .wb-group-header .wb-group-head{margin:0}
+.wb-section-panel .wb-group>.wb-help{margin-bottom:var(--sp-3);max-width:none}
 @keyframes wb-section-enter{from{opacity:.55;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
 /* === 字段行 === */
-/* 字段按容器实际宽度自动分列：在 AstrBot 双侧栏约 880–912px 内容区里可舒适地排成两列，
-   窄面板、带内侧栏的工作区或移动端自动回落单列。长控件（多行文本、词条、替换规则、
-   知识源、发送顺序、日期、标签、台词）整幅通栏。空的恢复继承槽位自动折叠，不占右侧留白。 */
+/* 字段按容器实际宽度自动分列：宽屏均衡 2 列软底圆角子卡，长控件、总开关与奇数尾项智能通栏，
+   3 项对等开关在宽容器呈 3 列对称排布，窄屏自动回落单列。 */
 .wb-fields{
   display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));
-  align-items:stretch;gap:0 var(--sp-5);min-width:0;
+  align-items:stretch;gap:var(--sp-3);min-width:0;
 }
 .wb-field{
   display:grid;grid-template-columns:12px minmax(0,1fr);
   align-items:start;gap:var(--sp-2) var(--sp-3);
-  padding:var(--sp-3) var(--sp-2) var(--sp-3) 0;border-bottom:1px solid var(--t-line);
+  box-sizing:border-box;
+  padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface-soft);
   min-width:0;container:wb-field / inline-size;
+  transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
 }
 .wb-field:where(:has(>.wb-field-side:not(:empty))){grid-template-columns:12px minmax(0,1fr) auto}
-/* 长控件不被挤进窄列：多行文本、词条、替换规则、知识源、顺序编辑器、日期、标签、台词整幅通栏。 */
+/* 长控件、总开关与智能补齐项整幅通栏，彻底消灭孤儿空白。 */
+.wb-field.is-span-full,
 .wb-field:has(textarea),
 .wb-field:has(.wb-word-editor),
 .wb-field:has(.wb-keywords),
+.wb-field:has(.wb-line-list-editor),
 .wb-field:has(.wb-replacement-editor),
 .wb-field:has(.wb-source-picker),
 .wb-field:has(.wb-order-editor),
 .wb-field:has(.wb-date),
 .wb-field:has(.wb-tagset),
 .wb-field:has(.wb-quotes){grid-column:1/-1}
-.wb-field.is-inherited{background:linear-gradient(90deg,var(--t-surface-soft) 0%,transparent 62%)}
+.wb-field.is-inherited{background:var(--t-surface-soft)}
+.wb-card:not(.wb-journal):not(.wb-policy) .wb-field:not(.is-inherited){
+  border-color:color-mix(in srgb,var(--t-accent) 22%,var(--t-line));
+}
+.wb-card:not(.wb-journal):not(.wb-policy) .wb-field.is-master-field{
+  border-color:color-mix(in srgb,var(--t-accent) 28%,var(--t-line));
+  background:color-mix(in srgb,var(--t-accent-quiet) 32%,var(--t-surface-soft));
+}
+@container wb-group (min-width:740px){
+  .wb-fields[data-wb-grid="trio"]{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@container wb-group (max-width:739px){
+  .wb-fields[data-wb-grid="trio"]>.wb-field:last-child{grid-column:1/-1}
+}
 
-/* --- 层轨：四段色块，实际生效层亮起 --- */
+/* --- 纤细层轨：3px 柔圆胶囊色条，替代厚重色块，保留完整层级悬停语义 --- */
 .wb-rail{
-  display:flex;flex-direction:column;gap:2px;
-  width:11px;flex:none;align-self:stretch;min-height:34px;
-  padding-top:2px;
+  display:flex;flex-direction:column;gap:3px;
+  width:3px;flex:none;justify-self:center;align-self:stretch;min-height:22px;
+  padding:2px 0;
 }
 .wb-node{
-  flex:1;min-height:5px;border-radius:var(--r-2xs);
-  background:var(--t-line-firm);opacity:.42;
+  flex:1;min-height:5px;border-radius:var(--r-pill);
+  background:var(--t-line-firm);opacity:.32;
   transition:opacity var(--dur) ease,background var(--dur) ease,transform var(--dur) ease;
   position:relative;
 }
-/* 生效层：实心且略外扩，是唯一的视觉重音 */
-.wb-node.is-source{background:var(--t-accent);opacity:1;transform:scaleX(1.28)}
-.wb-node.is-editable{box-shadow:inset 0 0 0 1px var(--t-line-firm)}
-.wb-node.is-locked{background:repeating-linear-gradient(45deg,var(--t-line-firm) 0 2px,transparent 2px 4px)}
-/* 悬停某层：该层亮起（即使不是生效层），其余结霜退后 */
+/* 生效层：精致强调色细条 */
+.wb-node.is-source{background:var(--t-accent);opacity:1}
+.wb-node.is-editable{box-shadow:none}
+.wb-node.is-locked{background:var(--t-line);opacity:.22}
+/* 悬停某层：该层亮起，其余柔和退后 */
 .wb-field[data-focus-layer] .wb-node{opacity:.2;transform:none}
 .wb-field[data-focus-layer] .wb-node[data-layer=""]{opacity:.2}
-.wb-field .wb-node.is-focus{background:var(--t-accent);opacity:.72;transform:scaleX(1.2)}
+.wb-field .wb-node.is-focus{background:var(--t-accent);opacity:.78;transform:scaleX(1.35)}
 .wb-field .wb-node.is-focus.is-source{opacity:1}
 
 /* 首次绘制：层轨自上而下逐段落位，一次而已 */
@@ -111,18 +148,24 @@
 .wb-rail.is-drawing .wb-node:nth-child(2){animation-delay:.06s}
 .wb-rail.is-drawing .wb-node:nth-child(3){animation-delay:.12s}
 .wb-rail.is-drawing .wb-node:nth-child(4){animation-delay:.18s}
-/* .is-source 用 scaleX，与 carve 的 scaleY 可共存，绘制结束后交回 */
 .wb-rail.is-drawing .wb-node.is-source{animation-name:wb-carve-source}
 @keyframes wb-carve-source{
-  from{transform:scale(.2,.2);opacity:0}
-  to{transform:scaleX(1.28) scaleY(1);opacity:1}
+  from{transform:scale(.4,.2);opacity:0}
+  to{transform:scale(1,1);opacity:1}
 }
 
-/* 层轨的图例：只在第一行出现 */
+/* 层轨图例：精致胶囊条，一眼读懂左侧纤细色条对应层级 */
 .wb-rail-legend{
-  display:flex;align-items:center;gap:var(--sp-1);
-  padding:0 var(--sp-2) var(--sp-2) 0;color:var(--t-text-faint);font-size:var(--fs-micro);
+  display:inline-flex;align-items:center;gap:var(--sp-1);flex-wrap:wrap;
+  justify-self:start;align-self:start;width:fit-content;max-width:100%;
+  margin:0 0 var(--sp-3);padding:var(--sp-1) var(--sp-3);
+  border:1px solid var(--t-line);border-radius:var(--r-pill);
+  background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.35;
 }
+.wb-rail-legend::before{
+  content:"";width:3px;height:11px;margin-right:2px;border-radius:var(--r-pill);background:var(--t-accent);flex:none;
+}
+.wb-rail-legend-label{color:var(--t-text-faint);margin-right:2px}
 .wb-rail-legend b{font-weight:500;color:var(--t-text-soft)}
 
 /* 范围信息按需查看；按钮可聚焦，也可在触屏上展开。 */
@@ -157,7 +200,7 @@
 .wb-control textarea{
   box-sizing:border-box;width:100%;min-width:0;min-height:38px;
   padding:var(--sp-2) var(--sp-3);border:1px solid var(--field-border);border-radius:var(--field-radius);
-  background:var(--field-bg);color:var(--t-text);font:inherit;font-size:var(--fs-body);
+  background:var(--t-surface-raised);color:var(--t-text);font:inherit;font-size:var(--fs-body);
   transition:border-color var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
 }
 .wb-control textarea{min-height:78px;resize:vertical;line-height:1.8}
@@ -185,10 +228,11 @@
 .wb-control input:focus-visible,.wb-control select:focus-visible,.wb-control textarea:focus-visible{
   outline:none;border-color:var(--t-accent);box-shadow:var(--focus-ring);
 }
-/* 带单位/边界的数字输入：数字框按内容取宽，范围提示紧挨着它，
-   不再把输入框拉伸到整幅宽再让范围飘到最右边。 */
+/* 带单位/边界的数字输入：数字框按内容取宽，范围提示同行紧挨着它，
+   不再把输入框拉伸到整幅宽再把范围挤到第二行。 */
 .wb-number{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);min-width:0;flex-wrap:wrap}
-.wb-number input{flex:0 1 148px;min-width:104px}
+.wb-number input{flex:0 1 104px;min-width:84px}
+.wb-control .wb-number input[type=number]{width:104px;min-width:84px}
 .wb-unit{flex:none;color:var(--t-text-faint);font-size:var(--fs-tiny);white-space:nowrap}
 .wb-range{flex:none;color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;white-space:nowrap}
 
@@ -235,7 +279,7 @@
 .wb-word-editor{display:flex;flex-direction:column;gap:var(--sp-2);min-width:0}
 .wb-keywords{
   display:flex;flex-wrap:wrap;gap:var(--sp-1);align-items:center;min-width:0;min-height:42px;
-  padding:var(--sp-2);border:1px solid var(--field-border);border-radius:var(--r-sm);background:var(--field-bg);
+  padding:var(--sp-2);border:1px solid var(--field-border);border-radius:var(--r-sm);background:var(--t-surface-raised);
   transition:border-color var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
 }
 .wb-keywords:focus-within{border-color:var(--t-accent);box-shadow:var(--focus-ring)}
@@ -314,14 +358,16 @@
 .wb-field-side{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);flex:none;padding-top:2px}
 .wb-reset{
   display:inline-flex;align-items:center;gap:var(--sp-1);
-  padding:var(--sp-1) var(--sp-2);border-radius:var(--r-xs);font-size:var(--fs-micro);
-  color:var(--t-accent-ink);background:var(--t-accent-quiet);
-  opacity:0;transition:opacity var(--dur) ease;
+  padding:var(--sp-1) var(--sp-2);border:1px solid color-mix(in srgb,var(--t-accent) 24%,var(--t-line));
+  border-radius:var(--r-pill);font-size:var(--fs-micro);
+  color:var(--t-accent-ink);background:var(--t-surface-raised);
+  opacity:0;transition:opacity var(--dur) ease,background var(--dur-fast) ease,border-color var(--dur-fast) ease;
 }
+.wb-reset:hover{background:var(--t-accent-quiet);border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line))}
 .wb-field:hover .wb-reset,.wb-field:focus-within .wb-reset{opacity:1}
 .wb-reset svg{width:11px;height:11px}
 
-/* 改动过的字段：左侧一条竖线，安静但有据可查 */
+/* 改动过的字段：精致边框与柔和底色呼应，不再叠出多余双竖线 */
 .wb-field{position:relative}
 .wb-field[hidden]{display:none!important}
 .wb-field::before{
@@ -329,23 +375,32 @@
   background:var(--t-accent);opacity:0;transform:scaleY(.3);
   transition:opacity var(--dur) ease,transform var(--dur) cubic-bezier(.2,.8,.2,1);
 }
-.wb-field.is-dirty::before{opacity:.85;transform:scaleY(1)}
+.wb-field.is-dirty{
+  border-color:color-mix(in srgb,var(--t-accent) 52%,var(--t-line-firm));
+  background:var(--t-surface-raised);
+}
+.wb-field.is-dirty::before{opacity:0;transform:scaleY(.3)}
 
 /* === 动作条 ===
- *
- * 吸底。一张分区卡常有二十多个字段（表达页最长的一段近三十个），
- * 保存按钮原本只出现在表单最末尾：改中间某一项时要先滚到底才能按保存，
- * 按完再滚回原处。现在动作条贴在视口下缘，滚到哪都在。
- *
- * 背景必须是不透明的：吸底时下面还有字段在滚动，透明会让两行字叠在一起。 */
+ * 浏览态安静落在表单底部圆角卡中，绝不腰斩底行控件；
+ * 仅在有未保存改动（.is-dirty）时轻盈吸底浮起，方便长表随时保存。 */
 .wb-actions{
-  position:sticky;bottom:0;z-index:3;
+  position:static;bottom:auto;z-index:4;
   display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;
-  padding:var(--sp-3) 0;margin-top:var(--sp-3);border-top:1px solid var(--t-line);
-  background:var(--t-surface);
-  /* 上缘投影只画在动作条上方，用于说明「下面还有内容」。 */
-  box-shadow:0 -10px 16px -14px var(--t-line-firm);
+  padding:var(--sp-3) var(--sp-4);margin-top:var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  background:var(--t-surface-raised);box-shadow:var(--t-shadow);
+  transition:box-shadow var(--dur-fast) ease,border-color var(--dur-fast) ease;
 }
+.wb-actions.is-dirty{
+  position:sticky;bottom:var(--sp-3);z-index:6;
+  border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line-firm));
+  box-shadow:var(--t-shadow-lift);
+}
+/* 外层已自带卡片壳的专题嵌入区（如预算卡）：去重内层分组卡、动作条外框并保留胶囊图例内边距。 */
+.models-budget-section .wb-card:not(.wb-journal):not(.wb-policy) .wb-group{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+.models-budget-section .wb-card .wb-actions,.models-budget-section .wb-card .wb-actions.is-dirty{position:static;bottom:auto;padding:var(--sp-3) 0 0;border:0;border-top:1px solid var(--t-line);border-radius:0;background:transparent;box-shadow:none}
+.models-budget-section .wb-card .wb-rail-legend{padding:var(--sp-1) var(--sp-3);margin:0 0 var(--sp-2)}
 /* 面板右下角还有那间小屋子（见 shell.css 的画中画）：动作条把文字让开，
    按钮始终在左边，不会被它压住。 */
 @media (min-width:761px){
@@ -495,8 +550,15 @@
   .wb-save.is-saved .wb-check path{animation:none!important;stroke-dashoffset:0}
   .wb-save.is-replayed .wb-check{animation:none!important}
   .wb-ledger-trigger.has-drafts .wb-ledger-dot{animation:none!important}
+  .wb-field,.wb-actions,.wb-reset{transition:none!important}
   .wb-skeleton-row{animation:none!important}
 }
+:root[data-motion="off"] .wb-field,
+:root[data-motion="low"] .wb-field,
+:root[data-motion="off"] .wb-actions,
+:root[data-motion="low"] .wb-actions,
+:root[data-motion="off"] .wb-reset,
+:root[data-motion="low"] .wb-reset{transition-duration:0s!important}
 :root[data-motion="off"] .wb-rail.is-drawing .wb-node,
 :root[data-motion="low"] .wb-rail.is-drawing .wb-node{animation:none!important}
 :root[data-motion="off"] .wb-node,
@@ -557,12 +619,13 @@
   .wb-order-tools [data-wb-order-natural]{grid-column:1/-1;justify-self:start}
   .wb-segmented{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   /* 窄屏回落单列：两列会把标签与数字框挤到换行，反而更难读。 */
-  .wb-fields{grid-template-columns:minmax(0,1fr);gap:0}
+  .wb-fields{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
+  .wb-card:not(.wb-journal):not(.wb-policy) .wb-group{padding:var(--sp-3)}
   .wb-actions>.wb-save{flex:1}
   .wb-actions-status,.wb-actions-note{margin-left:0;flex-basis:100%}
-  .wb-card-body{padding:var(--sp-4)}
-  /* 窄屏卡片有 16px 内边距，吸底动作条要重新贴到卡片两边。 */
-  .wb-actions{margin-inline:calc(var(--sp-4) * -1);padding-inline:var(--sp-4)}
+  .wb-card-body{padding:0}
+  /* 移动端保存条始终随内容排在底部，避免浮条遮挡字段。 */
+  .wb-actions,.wb-actions.is-dirty{position:static;bottom:auto;margin-inline:0;padding:var(--sp-3)}
 }
 
 /* === 轻结构文本控件（自我页）：生日 / 词条快选 / 词条小片 / 台词气泡 ===
@@ -714,8 +777,12 @@
   width:100%;max-width:none;
 }
 
-.wb-field:hover{background:color-mix(in srgb,var(--t-surface-soft) 68%,transparent)}
-.wb-field:has(textarea):hover,.wb-field:has(.wb-word-editor):hover,.wb-field:has(.wb-replacement-editor):hover,.wb-field:has(.wb-date):hover{background:transparent}
+.wb-field:hover{border-color:color-mix(in srgb,var(--t-accent) 34%,var(--t-line-firm));background:var(--t-surface)}
+.wb-field:has(textarea):hover,.wb-field:has(.wb-word-editor):hover,.wb-field:has(.wb-replacement-editor):hover,.wb-field:has(.wb-date):hover{border-color:color-mix(in srgb,var(--t-accent) 28%,var(--t-line-firm));background:var(--t-surface)}
+
+/* 单字段分组卡与宽幅总开关卡：说明限制舒适行宽，控件右端对齐不失衡。 */
+.wb-card:not(.wb-journal):not(.wb-policy) .wb-group.is-single-field .wb-field-main>.wb-help,
+.wb-card:not(.wb-journal):not(.wb-policy) .wb-field.is-master-field .wb-field-main>.wb-help{max-width:72ch}
 
 /* 窄容器（如两列卡片内约 380–450px 宽的字段或窄屏）：
    - 开关保持紧凑的「标题 ↔ 开关」一行 + 通栏说明；
