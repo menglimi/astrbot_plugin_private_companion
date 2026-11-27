@@ -500,7 +500,7 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
               "part_gap_ms": (0, 60000), "voice_cooldown_seconds": (0, 86400),
               "part_gap_min_ms": (100, 60000), "part_gap_max_ms": (100, 60000),
               "part_gap_log_base": (1.1, 5.0),
-              "voice_max_speech_chars": (1, 10000), "voice_timeout_seconds": (1, 120),
+              "voice_max_speech_chars": (1, 10000), "voice_timeout_seconds": (1, 300),
               "reply_diagnostic_limit": (10, 300),
               **GROUP_AIR_LIMITS, **GROUP_CONTINUATION_LIMITS, **PRIVATE_CLOSING_LIMITS,
               **PRIVATE_DEBOUNCE_LIMITS, **GROUP_WAKEUP_LIMITS, **OUTBOUND_LIMITS}

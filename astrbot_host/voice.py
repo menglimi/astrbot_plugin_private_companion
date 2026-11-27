@@ -3,11 +3,15 @@
 import asyncio
 import base64
 import inspect
+import io
 import os
 import re
 import logging
 from pathlib import Path
+import shutil
 import struct
+import subprocess
+import wave
 from dataclasses import replace
 
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
@@ -22,8 +26,31 @@ from .fish_audio import supports_singsing
 
 
 logger = logging.getLogger(__name__)
-MAX_VOICE_BYTES = 8_000_000
+MAX_RAW_AUDIO_BYTES = 64_000_000
+MAX_VOICE_BYTES = 10_000_000
+WAV_COMPRESS_THRESHOLD_BYTES = 2_000_000
+MP3_ADAPTIVE_BITRATES = (128_000, 96_000, 64_000)
+_MP3_SAMPLE_RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
 DEFAULT_MIMO_TOOL_NAME = "mimo_tts_speak"
+
+
+class VoiceAudioTooLargeError(ValueError):
+    """Raised when synthesized audio exceeds the safe payload limit after compression."""
+
+    def __init__(self, actual_bytes, max_bytes, *, duration_seconds=None, audio_format="", detail=""):
+        self.actual_bytes = int(actual_bytes)
+        self.max_bytes = int(max_bytes)
+        self.duration_seconds = duration_seconds
+        self.audio_format = str(audio_format or "")
+        self.detail = str(detail or "")
+        parts = [f"{self.actual_bytes} > {self.max_bytes} bytes"]
+        if self.audio_format:
+            parts.append(f"format={self.audio_format}")
+        if self.duration_seconds is not None:
+            parts.append(f"duration={self.duration_seconds:.1f}s")
+        if self.detail:
+            parts.append(self.detail)
+        super().__init__("voice audio exceeds safe limit (" + ", ".join(parts) + ")")
 
 
 def _mimo_plugin_from_handler(handler):
@@ -314,6 +341,175 @@ def _finalize_streamed_wav(audio):
     return audio
 
 
+def _is_wav(audio):
+    return len(audio) >= 12 and audio[:4] == b"RIFF" and audio[8:12] == b"WAVE"
+
+
+def _is_mp3(audio):
+    return (len(audio) >= 3 and audio[:3] == b"ID3") or (
+        len(audio) >= 2 and audio[0] == 0xFF and (audio[1] & 0xE0) == 0xE0
+    )
+
+
+def _audio_format_label(audio):
+    if _is_wav(audio):
+        return "wav"
+    if _is_mp3(audio):
+        return "mp3"
+    if audio[:4] == b"OggS":
+        return "ogg"
+    if audio[:4] == b"fLaC":
+        return "flac"
+    return "unknown"
+
+
+def _wav_duration_seconds(audio):
+    if not _is_wav(audio):
+        return None
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as wav:
+            rate = wav.getframerate()
+            return wav.getnframes() / rate if rate > 0 else None
+    except Exception:
+        return None
+
+
+def _nearest_mp3_rate(rate):
+    if rate in _MP3_SAMPLE_RATES:
+        return rate
+    return min(_MP3_SAMPLE_RATES, key=lambda candidate: abs(candidate - rate))
+
+
+def _compress_wav_to_mp3_pyav(audio, bitrate):
+    import av
+
+    in_buffer = io.BytesIO(audio)
+    out_buffer = io.BytesIO()
+    in_container = av.open(in_buffer, mode="r")
+    try:
+        audio_streams = getattr(in_container.streams, "audio", ())
+        if not audio_streams:
+            return None
+        in_stream = audio_streams[0]
+        target_rate = _nearest_mp3_rate(int(getattr(in_stream, "rate", 44100) or 44100))
+        channels = int(getattr(in_stream, "channels", 1) or 1)
+        layout = "stereo" if channels >= 2 else "mono"
+        out_container = av.open(out_buffer, mode="w", format="mp3")
+        try:
+            out_stream = out_container.add_stream("libmp3lame", rate=target_rate, layout=layout)
+            out_stream.bit_rate = int(bitrate)
+            resampler = av.AudioResampler(format=out_stream.format.name, layout=layout, rate=out_stream.rate)
+            for frame in in_container.decode(audio=0):
+                for resampled in resampler.resample(frame):
+                    for packet in out_stream.encode(resampled):
+                        out_container.mux(packet)
+            for resampled in resampler.resample(None):
+                for packet in out_stream.encode(resampled):
+                    out_container.mux(packet)
+            for packet in out_stream.encode(None):
+                out_container.mux(packet)
+        finally:
+            out_container.close()
+    finally:
+        in_container.close()
+    encoded = out_buffer.getvalue()
+    return encoded if encoded else None
+
+
+def _compress_wav_to_mp3_ffmpeg(audio, bitrate):
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    result = subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error",
+            "-f", "wav", "-i", "pipe:0",
+            "-codec:a", "libmp3lame", "-b:a", f"{int(bitrate) // 1000}k",
+            "-f", "mp3", "pipe:1",
+        ],
+        input=audio,
+        capture_output=True,
+        timeout=60,
+        check=True,
+    )
+    return result.stdout if result.stdout else None
+
+
+def _compress_wav_to_mp3(audio, bitrate=128_000):
+    """Compress WAV bytes to MP3 (prefer PyAV libmp3lame, fallback to ffmpeg CLI)."""
+    try:
+        encoded = _compress_wav_to_mp3_pyav(audio, bitrate)
+        if encoded:
+            return encoded, "pyav"
+    except Exception as error:
+        logger.debug("[CompanionV2] PyAV WAV->MP3 压缩失败，准备回退 ffmpeg error_type=%s",
+                     type(error).__name__)
+    try:
+        encoded = _compress_wav_to_mp3_ffmpeg(audio, bitrate)
+        if encoded:
+            return encoded, "ffmpeg"
+    except Exception as error:
+        logger.warning("[CompanionV2] ffmpeg WAV->MP3 压缩失败 error_type=%s", type(error).__name__)
+    return None, ""
+
+
+def _prepare_audio_bytes(audio, *, max_bytes=None, compress_threshold=None):
+    """Finalize streamed WAV headers, auto-compress large WAVs to MP3, and enforce payload limits."""
+    max_bytes = MAX_VOICE_BYTES if max_bytes is None else max_bytes
+    compress_threshold = WAV_COMPRESS_THRESHOLD_BYTES if compress_threshold is None else compress_threshold
+    audio = _finalize_streamed_wav(audio)
+    fmt = _audio_format_label(audio)
+    duration = _wav_duration_seconds(audio) if fmt == "wav" else None
+    if fmt == "wav" and len(audio) > compress_threshold:
+        raw_bytes = len(audio)
+        smallest = None
+        for bitrate in MP3_ADAPTIVE_BITRATES:
+            encoded, backend = _compress_wav_to_mp3(audio, bitrate=bitrate)
+            if not encoded:
+                break
+            if smallest is None or len(encoded) < len(smallest):
+                smallest = encoded
+            if len(encoded) <= max_bytes:
+                logger.info(
+                    "[CompanionV2] 语音 WAV 已自动压缩为 MP3 backend=%s raw_bytes=%d encoded_bytes=%d "
+                    "bitrate=%dkbps duration=%s",
+                    backend, raw_bytes, len(encoded), bitrate // 1000,
+                    f"{duration:.1f}s" if duration is not None else "unknown",
+                )
+                return encoded
+        if smallest is not None and len(smallest) > max_bytes:
+            logger.warning(
+                "[CompanionV2] 语音压缩后仍超过安全体积上限 actual_bytes=%d raw_bytes=%d max_bytes=%d "
+                "format=mp3 duration=%s",
+                len(smallest), raw_bytes, max_bytes,
+                f"{duration:.1f}s" if duration is not None else "unknown",
+            )
+            raise VoiceAudioTooLargeError(
+                len(smallest), max_bytes, duration_seconds=duration,
+                audio_format="mp3", detail=f"raw_wav_bytes={raw_bytes}",
+            )
+        if raw_bytes <= max_bytes:
+            return audio
+        logger.warning(
+            "[CompanionV2] 语音 WAV 超过安全体积上限且无法压缩 actual_bytes=%d max_bytes=%d "
+            "format=wav duration=%s",
+            raw_bytes, max_bytes, f"{duration:.1f}s" if duration is not None else "unknown",
+        )
+        raise VoiceAudioTooLargeError(
+            raw_bytes, max_bytes, duration_seconds=duration,
+            audio_format="wav", detail="compression_unavailable",
+        )
+    if len(audio) > max_bytes:
+        logger.warning(
+            "[CompanionV2] 语音音频超过安全体积上限 actual_bytes=%d max_bytes=%d format=%s duration=%s",
+            len(audio), max_bytes, fmt, f"{duration:.1f}s" if duration is not None else "unknown",
+        )
+        raise VoiceAudioTooLargeError(
+            len(audio), max_bytes, duration_seconds=duration, audio_format=fmt,
+        )
+    return audio
+
+
 def _read_audio(path_value, *, allow_data=False):
     if not isinstance(path_value, (str, Path)) or not str(path_value):
         return None
@@ -324,8 +520,19 @@ def _read_audio(path_value, *, allow_data=False):
     if not any(path.is_relative_to(root) for root in roots) or not path.is_file():
         return None
     with path.open("rb") as stream:
-        audio = stream.read(MAX_VOICE_BYTES + 1)
-    return _finalize_streamed_wav(audio) if 0 < len(audio) <= MAX_VOICE_BYTES else None
+        audio = stream.read(MAX_RAW_AUDIO_BYTES + 1)
+    if not audio:
+        return None
+    if len(audio) > MAX_RAW_AUDIO_BYTES:
+        logger.warning(
+            "[CompanionV2] 语音原始文件超过读取上限 actual_bytes=>%d max_raw_bytes=%d path=%s",
+            MAX_RAW_AUDIO_BYTES, MAX_RAW_AUDIO_BYTES, path.name,
+        )
+        raise VoiceAudioTooLargeError(
+            len(audio), MAX_RAW_AUDIO_BYTES, audio_format=_audio_format_label(audio),
+            detail="raw_file_exceeds_read_limit",
+        )
+    return _prepare_audio_bytes(audio)
 
 
 def _configured_tts_provider(context, provider_id):
@@ -440,6 +647,14 @@ class NativeVoiceReply:
                     audio = await self._synthesize(mimo, text, timeout_seconds, allow_data=True)
             if audio is not None:
                 return {"type": "record", "data": {"file": "base64://" + base64.b64encode(audio).decode("ascii")}}
+        except VoiceAudioTooLargeError as error:
+            logger.warning(
+                "[CompanionV2] 语音合成结果超过体积上限，已放弃发送 provider=%s actual_bytes=%d "
+                "max_bytes=%d format=%s duration=%s",
+                provider_id or "default", error.actual_bytes, error.max_bytes, error.audio_format or "unknown",
+                f"{error.duration_seconds:.1f}s" if error.duration_seconds is not None else "unknown",
+            )
+            raise
         except Exception as error:
             logger.warning("V2 voice synthesis unavailable: %s", type(error).__name__)
         return None

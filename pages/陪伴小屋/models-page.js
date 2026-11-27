@@ -1452,8 +1452,8 @@ window.CompanionModelsPage = (() => {
     finally { v.loading = false; if (current(ticket, s)) render(); } }
   async function voiceSave(s, retry = false) { const v = s.voice;
     if (v.busy || v.loading || !v.data || v.stale || (!retry && !voiceDirty(v))) return;
-    if (!Number.isInteger(v.draft.timeout_seconds) || v.draft.timeout_seconds < 1 || v.draft.timeout_seconds > 120) {
-      v.bad = true; v.notice = "语音超时需要设置为 1–120 秒。"; render(); return; }
+    if (!Number.isInteger(v.draft.timeout_seconds) || v.draft.timeout_seconds < 1 || v.draft.timeout_seconds > 300) {
+      v.bad = true; v.notice = "语音超时需要设置为 1–300 秒。"; render(); return; }
     const ticket = version, command = retry ? v.pending : {operation_key: crypto.randomUUID(), edit_token: v.data.edit_token, changes: voiceChanges(v)};
     if (!command) return; v.pending = command; v.busy = true; v.bad = false; v.notice = "正在保存语音配置…"; render();
     let uncertain = retry;
@@ -1738,7 +1738,7 @@ window.CompanionModelsPage = (() => {
       ${v.editorOpen ? ttsEditor(s) : ""}
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">语音请求</span><h3>合成超时与保存</h3></div></div>
         <div class="model-fd"><span class="model-cap">合成超时（秒）</span>
-          <span class="model-unit"><input type="number" min="1" max="120" data-voice-timeout value="${esc(v.draft.timeout_seconds)}" ${v.busy || v.loading || v.pending ? "disabled" : ""}><i>秒</i></span></div>
+          <span class="model-unit"><input type="number" min="1" max="300" data-voice-timeout value="${esc(v.draft.timeout_seconds)}" ${v.busy || v.loading || v.pending ? "disabled" : ""}><i>秒</i></span></div>
         <p class="model-note">${!v.data.voice_enabled ? "语音回复未开启，请到「表达」启用。" : "发送策略见「表达」。"}</p>
         <div class="model-editor-actions"><button type="button" class="button primary" data-voice-save ${v.busy || v.loading || v.pending || v.stale || !voiceDirty(v) ? "disabled" : ""}>保存语音配置</button>
           ${v.pending ? '<button type="button" class="button" data-voice-retry>核对原保存结果</button>' : ""}

@@ -54,8 +54,7 @@ def _direction_for(policy, provider_type, model, overrides=None):
 
 async def provider_direction(context, policy, umo, channel="", overrides=None):
     """Describe only the selected live voice; never include endpoint or secrets."""
-    if policy is None or context is None or not (
-            policy.generation_mode == "model_tag" or policy.trigger_mode == "adaptive"):
+    if policy is None or context is None or not policy.uses_model_tags:
         return ""
     if getattr(policy, "direction_mode", "auto") == "off":
         return ""

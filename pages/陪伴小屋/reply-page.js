@@ -229,7 +229,7 @@ window.CompanionReplyPage = (() => {
       voice_foreign_text_mode: "外文按原文、译文或双语朗读。",
       voice_position: "语音在整条回复里的位置。",
       voice_cooldown_seconds: "两次语音的最短间隔；0 表示不等待。",
-      voice_max_speech_chars: "单段朗读上限，超出会截断。",
+      voice_max_speech_chars: "单块语音最大字数，超出后会按句末标点自动拆成多条连续语音，不会截断丢字；长语音或慢速耳语建议设为 200–400。",
       voice_timeout_seconds: "等待合成的最长时间，超时退回文字。",
       voice_provider_id: "角色级绑定，私聊与群聊共用。",
       voice_zh_provider_id: "留空时跟随通用扩展。",
@@ -591,6 +591,71 @@ window.CompanionReplyPage = (() => {
     const item = (state.status?.tts?.providers || []).find(provider => provider.id === id);
     return item ? [item.id, item.model, item.voice].filter(Boolean).join(" · ") : id;
   }
+  function voiceConflictGuidance(draft) {
+    if (!draft || draft.voice_enabled !== true) return null;
+    if (draft.voice_generation_mode === "plain" && draft.voice_conversion_scope === "partial") {
+      return {
+        message: "当前为「朗读正文 + 部分转语音」：程序仍需要模型用语音标签挑出短句，建议切到「模型语音标签」。",
+        preset: "partial_recommended",
+        actionLabel: "一键切为模型语音标签",
+      };
+    }
+    if (draft.voice_delivery_mode === "voice_only" && draft.voice_conversion_scope === "partial") {
+      return {
+        message: "当前为「仅语音 + 部分转语音」：仅语音只在语音完整覆盖正文时才隐藏文字，未朗读部分仍会发出文字。",
+        preset: "voice_only_full",
+        actionLabel: "一键套用仅语音推荐",
+      };
+    }
+    if (draft.voice_delivery_mode === "voice_only"
+        && draft.voice_segment_mode === "whole"
+        && draft.enabled === true) {
+      return {
+        message: "分段回复开启且「朗读段落」为「整段回复」时，前面的文字气泡会先发出，「仅语音」无法隐藏已发出的文字；建议改为「每一段」。",
+        preset: "voice_only_segmented",
+        actionLabel: "一键改为逐段仅语音",
+      };
+    }
+    const maxChars = Number(draft.voice_max_speech_chars);
+    if (Number.isFinite(maxChars) && maxChars > 600) {
+      return {
+        message: `单段朗读上限当前为 ${maxChars} 字；系统会自动按预估时长分块防超时，长语音或耳语仍建议设为 200–400 字。`,
+        preset: "",
+        actionLabel: "",
+      };
+    }
+    return null;
+  }
+  function applyVoicePreset(preset) {
+    const draft = draftSettings();
+    if (!draft) return;
+    const patches = {
+      partial_recommended: {voice_generation_mode: "model_tag"},
+      voice_only_full: {
+        voice_conversion_scope: "full",
+        ...(draft.enabled === true && draft.voice_segment_mode === "whole" ? {voice_segment_mode: "each"} : {}),
+      },
+      voice_only_segmented: {voice_segment_mode: "each", voice_conversion_scope: "full"},
+    };
+    const patch = patches[preset];
+    if (!patch) return;
+    let touchedDom = false;
+    for (const [field, value] of Object.entries(patch)) {
+      const control = root?.querySelector?.(`[data-wb-field="${field}"]`);
+      if (control) {
+        control.value = String(value);
+        control.dispatchEvent?.(new Event("change", {bubbles: true}));
+        touchedDom = true;
+      } else {
+        draft[field] = value;
+      }
+    }
+    if (!touchedDom) {
+      schedulePreview();
+      notifyStatus();
+      renderVoiceHero();
+    }
+  }
   function voiceHeroMarkup() {
     const draft = draftSettings();
     if (!draft) {
@@ -612,9 +677,11 @@ window.CompanionReplyPage = (() => {
     const title = !enabled ? "语音朗读已关闭"
       : probability <= 0 ? "触发概率为 0，暂时不会朗读"
       : "下一轮可能带上朗读";
+    const guidance = reading ? voiceConflictGuidance(draft) : null;
     const alert = !enabled ? "文字会照常发送；需要声音时再打开「启用语音」，不会影响其他表达设置。"
       : probability <= 0 ? "当前触发概率是 0；把「触发概率」调高后才会合成语音。"
       : !draft.voice_provider_id ? "还没有绑定 TTS 扩展；在「模型与连接 → 语音」里选好发音人与音色后才会真的出声。"
+      : guidance ? guidance.message
       : "";
     const chips = [
       ["触发", trigger],
@@ -635,6 +702,9 @@ window.CompanionReplyPage = (() => {
       + (alert ? `<p class="voice-hero-alert" role="note">${icon("triangle-alert")}<span>${e(alert)}</span></p>` : "")
       + `<div class="voice-hero-chips">${chips}</div>`
       + `<div class="voice-hero-actions">`
+      + (guidance?.preset
+        ? `<button type="button" class="button small" data-voice-preset="${e(guidance.preset)}">${icon("sparkles")}${e(guidance.actionLabel)}</button>`
+        : "")
       + `<button type="button" class="button small" data-voice-jump="voice">${icon("sliders-horizontal")}调整开关与触发</button>`
       + `<a class="button small" href="#manage/models">${icon("audio-lines")}配置 TTS 引擎 ↗</a></div>`
       + `<p class="voice-hero-hint">TTS 在「模型与连接」配置；页尾的全局语音总开关也要开启。</p></div>`
@@ -1403,6 +1473,11 @@ window.CompanionReplyPage = (() => {
       return;
     }
     const previewAction = event.target.closest("[data-reply-action]")?.dataset.replyAction;
+    const voicePreset = event.target.closest("[data-voice-preset]")?.dataset.voicePreset;
+    if (voicePreset) {
+      applyVoicePreset(voicePreset);
+      return;
+    }
     const voiceJump = event.target.closest("[data-voice-jump]")?.dataset.voiceJump;
     if (voiceJump) {
       const target = root?.querySelector?.(`[data-wb-group="${voiceJump}"]`);

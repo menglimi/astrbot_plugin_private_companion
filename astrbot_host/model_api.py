@@ -1690,7 +1690,7 @@ class ModelWebAPI:
                 raise ValueError("invalid voice changes")
             for name, value in changes.items():
                 if name == "voice_timeout_seconds":
-                    if type(value) is not int or not 1 <= value <= 120:
+                    if type(value) is not int or not 1 <= value <= 300:
                         raise ValueError("invalid voice timeout")
                 elif type(value) is not str or len(value) > 128:
                     raise ValueError("invalid voice binding")

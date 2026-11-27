@@ -5,15 +5,17 @@ from datetime import timedelta
 import json
 import math
 import re
+import unicodedata
 
-from companion_v2.conversation.segment_control import controlled_parts
+from companion_v2.conversation.segment_control import control_token_ranges, controlled_parts
 from companion_v2.conversation.text_processing import markdown_code_runs, mask_markdown_code
 from companion_v2.execution.models import digest, stamp
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.system_prompts.catalog import VOICE_RULES
 from .voice_markup import (
     VOICE_PROTOCOL_GT, VOICE_PROTOCOL_LT, VOICE_TAG_NAME_PATTERN, canonical_voice_tag,
-    slice_speech, strip_performance_controls, strip_singing_provider_cue, visible_speech,
+    slice_speech, strip_coverage_cues, strip_performance_controls, strip_singing_provider_cue,
+    visible_speech,
 )
 
 
@@ -261,7 +263,7 @@ class VoiceReplyPolicy:
         for value, low, high in ((self.cooldown_seconds, 0, 86400),
                                  (self.private_cooldown_seconds, -1, 86400),
                                  (self.group_cooldown_seconds, -1, 86400),
-                                 (self.max_speech_chars, 1, 10000), (self.timeout_seconds, 1, 120)):
+                                 (self.max_speech_chars, 1, 10000), (self.timeout_seconds, 1, 300)):
             if type(value) is not int or not low <= value <= high:
                 raise ValueError("voice reply limit is invalid")
         for value, limit in ((self.trigger_keywords, 2000), (self.primary_mention_keywords, 2000),
@@ -301,6 +303,8 @@ class VoiceReplyPolicy:
             prompt = "本轮按语境决定是否使用语音；适合口述的内容写入语音标签，没有合适内容时直接写普通正文。" + prompt
         if self.conversion_scope == "full" and self.trigger_mode in {"always", "request"}:
             prompt += "同一条回复若自然分成多段，各段都保持一致的语音标签与可见文字配对；不要只给前几段加标签，却把后续仍属于本次口语回应的内容留在标签外。"
+        if self.delivery_mode == "voice_only" and self.conversion_scope == "full":
+            prompt += "本轮为仅语音发送：请把全部口语正文放进语音标签内，不要在标签外再附带重复文字或多余旁白（代码、链接与表格可留在标签外）。"
         prompt += f"每段朗读控制在 {self.max_speech_chars} 字以内；较长内容按自然语意停顿分成多个语音标签。"
         if self.language != "zh":
             label = "日语" if self.language == "ja" else "英语"
@@ -373,7 +377,8 @@ def with_voice_override(policy, *, provider_id="", model="", voice=""):
 
 def capability_instruction(policy):
     language = {"zh": "中文", "ja": "日语", "en": "英语"}[policy.language]
-    delivery = "优先语音呈现" if policy.delivery_mode == "voice_only" else "语音与文字并行"
+    delivery = ("仅语音呈现（语音完整覆盖口语正文时自动隐藏文字，仅在含代码、链接或合成失败时保留文字）"
+                if policy.delivery_mode == "voice_only" else "语音与文字并行")
     mode = {"always": "语音回复", "request": "应用户请求语音回复", "adaptive": "按语境选择语音"}[policy.trigger_mode]
     return (f"本轮呈现方式：{mode}，默认语种{language}（用户本轮明确要求换语种时以用户要求为准），{delivery}。"
             "本轮设置已通过开关和触发条件检查；人格中旧的仅文字、需另行请求语音等呈现规则由本轮设置替代，角色身份和语气仍遵循人格。"
@@ -567,8 +572,10 @@ def _decorates(following, insided, speech_end):
     rest = following[_after_copy(following, insided):]
     if not rest:
         return True
+    if not _meaning_of(rest):
+        return True
     if any(char in _SENTENCE_END for char in rest):
-        return not _meaning_of(rest)
+        return False
     tail = rest.lstrip()
     if len(tail) != len(rest):
         # A space opens a new word: a clause saying something else.
@@ -693,7 +700,115 @@ def _restatement(speech, following, remaining):
     """
     if _has_paired_mark(following):
         return 0
-    return _copy_length(speech, following) or _opening_length(speech, following, remaining)
+    tokens = control_token_ranges(following)
+    lead_clause = following[:tokens[0][0]].rstrip("\r\n") if tokens else following
+    return _copy_length(speech, lead_clause) or _opening_length(speech, following, remaining)
+
+
+def _is_boundary_only(text):
+    """Return True when ``text`` carries only whitespace and segment boundaries."""
+    if not text or not text.strip():
+        return True
+    parts, _ = controlled_parts(text)
+    return not any(part.strip() for part in parts)
+
+
+def _split_plain_segments(prefix, needed):
+    """Locate ``(start, end)`` spans of non-empty plain segments inside ``prefix``."""
+    tokens = control_token_ranges(prefix)
+    raw_spans = []
+    if tokens:
+        cursor = 0
+        for start, end in tokens:
+            raw_spans.append((cursor, start))
+            cursor = end
+        raw_spans.append((cursor, len(prefix)))
+    else:
+        raw_spans.append((0, len(prefix)))
+
+    def trim_span(span_start, span_end):
+        chunk = prefix[span_start:span_end]
+        left = len(chunk) - len(chunk.lstrip())
+        right = len(chunk) - len(chunk.rstrip())
+        start, end = span_start + left, span_end - right
+        return (start, end) if start < end else None
+
+    segments = [item for start, end in raw_spans if (item := trim_span(start, end)) is not None]
+    if len(segments) < needed:
+        line_segments = []
+        cursor = 0
+        for line in prefix.splitlines(keepends=True):
+            line_end = cursor + len(line)
+            if not _is_boundary_only(line):
+                trimmed = trim_span(cursor, line_end)
+                if trimmed is not None:
+                    line_segments.append(trimmed)
+            cursor = line_end
+        if len(line_segments) >= needed:
+            segments = line_segments
+    return segments
+
+
+def _rebind_trailing_voice_appendix(text, matches, *, singsing=False):
+    """Rebind trailing ``<pc_tts>`` copies onto the matching plain segments ahead of them."""
+    if not matches:
+        return None
+    prefix = text[:matches[0].start()]
+    if not prefix.strip() or any(is_code for is_code, _ in markdown_code_runs(prefix)):
+        return None
+    for index, match in enumerate(matches):
+        gap_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        if not _is_boundary_only(text[match.end():gap_end]):
+            return None
+    segments = _split_plain_segments(prefix, len(matches))
+    if len(segments) < len(matches):
+        return None
+    target_segments = segments[-len(matches):]
+    for (seg_start, seg_end), match in zip(target_segments, matches):
+        seg_text = prefix[seg_start:seg_end]
+        if _has_paired_mark(seg_text):
+            return None
+        speech = _voice_payload(text, match, singsing=singsing).strip()
+        inside = _statement_words(_wording(speech)[0])
+        seg_words = _statement_words(_wording(_body_text(seg_text, singsing=singsing))[0])
+        if not inside or seg_words != inside:
+            return None
+    rebuilt, cursor = [], 0
+    for (seg_start, seg_end), match in zip(target_segments, matches):
+        rebuilt.append(prefix[cursor:seg_start])
+        rebuilt.append(text[match.start():match.end()])
+        cursor = seg_end
+    return "".join(rebuilt)
+
+
+def _preceding_restatement_start(body_before, speech):
+    """Return where an immediate preceding copy of ``speech`` starts in ``body_before``."""
+    if not body_before or not speech:
+        return None
+    inside = _statement_words(_wording(speech)[0])
+    if not inside:
+        return None
+    tokens = control_token_ranges(body_before)
+    segment_start = tokens[-1][1] if tokens else 0
+    tail = body_before[segment_start:]
+    if not tail.strip() or _has_paired_mark(tail):
+        return None
+    stripped = tail.rstrip()
+    candidates = [0]
+    for index, char in enumerate(stripped):
+        if char == "\n" or char in _SENTENCE_END:
+            next_pos = index + 1
+            while next_pos < len(stripped) and stripped[next_pos] in " \t":
+                next_pos += 1
+            if next_pos < len(stripped):
+                candidates.append(next_pos)
+    for pos in reversed(candidates):
+        clause = stripped[pos:]
+        if not _meaning_of(clause):
+            continue
+        if _statement_words(_wording(clause)[0]) == inside:
+            return segment_start + pos
+    return None
 
 
 def separate_spoken(text, policy, *, singsing=False):
@@ -704,7 +819,7 @@ def separate_spoken(text, policy, *, singsing=False):
     re-derived afterwards, so offsets cannot drift. A wrapper is displayed without
     its directions unless a translation follows it, in which case the translation
     is the visible body and the wrapper only carries the speech that is spoken. A
-    clause restating the wrapper it follows is displayed once.
+    clause restating the wrapper it follows or precedes is displayed once.
 
     Boundary tokens are part of the reply and stay in the visible text: they are
     what splits it later. Only the comparison that decides a restatement ignores
@@ -714,18 +829,29 @@ def separate_spoken(text, policy, *, singsing=False):
         return strip_voice_markup(text, singsing=singsing), ()
     translate = policy.language != "zh" and policy.foreign_text_mode == "translation"
     matches = _voice_matches(mask_markdown_code(text))
+    if matches and not translate:
+        rebound = _rebind_trailing_voice_appendix(text, matches, singsing=singsing)
+        if rebound is not None:
+            text = rebound
+            matches = _voice_matches(mask_markdown_code(text))
     visible, spoken, cursor = _VisibleText(), [], 0
     for index, match in enumerate(matches):
-        visible.add(_body_text(text[cursor:match.start()], singsing=singsing))
+        body_before = _body_text(text[cursor:match.start()], singsing=singsing)
         raw_speech = _voice_payload(text, match, singsing=singsing)
         speech = raw_speech.strip()
-        if speech:
-            spoken.append((visible.length, speech))
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         following = text[match.end():end]
         first_run = next(markdown_code_runs(following), (False, ""))
         lead_prose = first_run[1] if not first_run[0] else ""
-        if translate and _has_chinese_translation(lead_prose):
+        is_translated = translate and _has_chinese_translation(lead_prose)
+        if speech and not is_translated:
+            cut = _preceding_restatement_start(body_before, speech)
+            if cut is not None:
+                body_before = body_before[:cut]
+        visible.add(body_before)
+        if speech:
+            spoken.append((visible.length, speech))
+        if is_translated:
             visible.add(_body_text(following, singsing=singsing))
         else:
             visible.add(_visible_wrapped_speech(raw_speech))
@@ -736,6 +862,84 @@ def separate_spoken(text, policy, *, singsing=False):
         cursor = end
     visible.add(_body_text(text[cursor:], singsing=singsing))
     return "".join(visible.parts), tuple(spoken)
+
+
+_URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.I)
+_MARKDOWN_TABLE_SEPARATOR = re.compile(
+    r"(?m)^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$"
+)
+_COVERAGE_DECORATION = frozenset("~～〜♪♫♬★☆♡♥•·・")
+
+
+def has_non_spoken_structure(text):
+    """Return True when ``text`` contains code blocks, URLs, or Markdown tables."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return (any(is_code for is_code, _ in markdown_code_runs(text))
+            or bool(_URL_PATTERN.search(text))
+            or bool(_MARKDOWN_TABLE_SEPARATOR.search(text)))
+
+
+def is_pure_spoken_prose(text):
+    """Return True when ``text`` is plain spoken prose with no code, URL, or table."""
+    return isinstance(text, str) and bool(text.strip()) and not has_non_spoken_structure(text)
+
+
+def _coverage_key(text):
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(
+        char for char in normalized
+        if not char.isspace()
+        and not unicodedata.category(char).startswith("P")
+        and char not in _COVERAGE_DECORATION
+    )
+
+
+def _project_speech_with_presentation(text, presentation):
+    projected = text
+    replace_text = getattr(presentation, "replace_text", None)
+    if callable(replace_text):
+        try:
+            projected = replace_text(projected)
+        except Exception:
+            pass
+    clean_parts = getattr(presentation, "clean_parts", None)
+    if callable(clean_parts):
+        try:
+            parts = clean_parts((projected,))
+            if isinstance(parts, (list, tuple)):
+                projected = "".join(part for part in parts if isinstance(part, str))
+        except Exception:
+            pass
+    return projected
+
+
+def speech_covers_visible(visible, speech, *, presentation=None):
+    """Return True when ``speech`` semantically covers all visible text.
+
+    Strips delivery/performance controls (including FishAudio parenthetical
+    cues), ignores whitespace and pure punctuation differences, and accounts
+    for configured text cleanup/replacement projections on ``speech``. Keeps
+    visible text whenever code blocks, URLs, Markdown tables, foreign
+    translations, or uncovered substantive wording remain.
+    """
+    if not isinstance(visible, str) or not isinstance(speech, str):
+        return False
+    visible_clean = visible.strip()
+    speech_raw = speech.strip()
+    if not visible_clean or not speech_raw:
+        return False
+    if has_non_spoken_structure(visible_clean):
+        return False
+    spoken_base = strip_coverage_cues(speech_raw)
+    candidates = [spoken_base]
+    if presentation is not None:
+        candidates.append(_project_speech_with_presentation(spoken_base, presentation))
+    visible_key = _coverage_key(visible_clean)
+    if not visible_key:
+        compact_visible = re.sub(r"\s+", "", visible_clean)
+        return any(re.sub(r"\s+", "", candidate) == compact_visible for candidate in candidates)
+    return any(_coverage_key(candidate) == visible_key for candidate in candidates)
 
 
 def authored_singing(text):
@@ -832,27 +1036,69 @@ def eligible(policy, *, input_text, kind, batch_id, primary_mention=False, allow
     return chance >= 1 or chance > 0 and int(digest(batch_id)[:12], 16) / 0xFFFFFFFFFFFF < chance
 
 
-def speech_chunks(text, maximum):
+_SLOW_SPEECH_CUES = re.compile(
+    r"(?i)<\s*(?:whisper|slow|soft)\b"
+    r"|\[[^\[\]\r\n]*(?:轻声|低语|耳语|慢|轻柔|喘|气声|whisper|slow|soft|ひそひそ|ささやき|ゆっくり)[^\[\]\r\n]*\]"
+)
+_PAUSE_DURATION_TOKENS = re.compile(
+    r"(?i)(?:…{1,}|\.{3,}|<\s*(?:pause|breath|sigh|silence|inhale|exhale)\b[^>]*>"
+    r"|\[(?:pause|breath|sigh|silence|停顿|停顿一下|稍作停顿|换气|吸气|呼气|叹息|沉默)\])"
+)
+_CJK_SPEECH_CHAR = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+_LATIN_SPEECH_WORD = re.compile(r"[A-Za-z0-9]+")
+
+
+def estimate_speech_seconds(text):
+    """Estimate synthesized audio duration in seconds, weighting whispers and pauses."""
+    if not isinstance(text, str) or not text.strip():
+        return 0.0
+    slow = bool(_SLOW_SPEECH_CUES.search(text))
+    spoken = visible_speech(text)
+    cjk_count = len(_CJK_SPEECH_CHAR.findall(spoken))
+    latin_words = len(_LATIN_SPEECH_WORD.findall(spoken))
+    pauses = len(_PAUSE_DURATION_TOKENS.findall(text))
+    newlines = spoken.count("\n")
+    cjk_rate = 2.4 if slow else 4.2
+    latin_rate = 1.6 if slow else 2.6
+    return (cjk_count / cjk_rate) + (latin_words / latin_rate) + (pauses * 0.7) + (newlines * 0.35)
+
+
+def speech_chunks(text, maximum, *, max_estimated_seconds=None, _depth=0):
     """Split at spoken pauses while keeping performance directions intact."""
     chunks = []
     source = text.strip()
     remaining = visible_speech(source)
+    if not source:
+        return ()
     if len(remaining) <= maximum:
-        return (source,) if source else ()
-    start = 0
-    while len(remaining) > maximum:
-        pauses = tuple(re.finditer(r"[。！？!?；;\n]|[.](?=\s|$)|[，,](?=\s|[\u4e00-\u9fff\u3040-\u30ff])", remaining[:maximum]))
-        boundary = pauses[-1].end() if pauses else remaining.rfind(" ", 0, maximum + 1)
-        if boundary <= 0:
-            boundary = maximum
-        chunks.append(slice_speech(source, start, start + boundary).strip())
-        start += boundary
-        tail = remaining[boundary:]
-        start += len(tail) - len(tail.lstrip())
-        remaining = tail.lstrip()
-    if remaining:
-        chunks.append(slice_speech(source, start, start + len(remaining)).strip())
-    return tuple(chunk for chunk in chunks if chunk)
+        chunks = [source]
+    else:
+        start = 0
+        while len(remaining) > maximum:
+            pauses = tuple(re.finditer(r"[。！？!?；;\n]|[.](?=\s|$)|[，,](?=\s|[\u4e00-\u9fff\u3040-\u30ff])", remaining[:maximum]))
+            boundary = pauses[-1].end() if pauses else remaining.rfind(" ", 0, maximum + 1)
+            if boundary <= 0:
+                boundary = maximum
+            chunks.append(slice_speech(source, start, start + boundary).strip())
+            start += boundary
+            tail = remaining[boundary:]
+            start += len(tail) - len(tail.lstrip())
+            remaining = tail.lstrip()
+        if remaining:
+            chunks.append(slice_speech(source, start, start + len(remaining)).strip())
+    chunks = [chunk for chunk in chunks if chunk]
+    if max_estimated_seconds is None or max_estimated_seconds <= 0 or _depth >= 4:
+        return tuple(chunks)
+    bounded = []
+    for chunk in chunks:
+        estimated = estimate_speech_seconds(chunk)
+        visible_len = len(visible_speech(chunk))
+        if estimated > max_estimated_seconds and visible_len > 40:
+            sub_max = max(40, min(visible_len - 1, int(visible_len * (max_estimated_seconds / estimated) * 0.9)))
+            bounded.extend(speech_chunks(chunk, sub_max, max_estimated_seconds=max_estimated_seconds, _depth=_depth + 1))
+        else:
+            bounded.append(chunk)
+    return tuple(bounded)
 
 
 class VoiceReplyDelivery:

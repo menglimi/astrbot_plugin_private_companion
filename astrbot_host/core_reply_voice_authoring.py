@@ -23,7 +23,9 @@ from .core_reply_tool_dispatch import active_core_runner
 from .core_reply_voice import observe_core_voice_response
 
 
-def _text_only(text):
+def is_text_only_request(text):
+    if not isinstance(text, str) or not text.strip():
+        return False
     return bool(re.search(
         r"(?:^|[。！？!?，,；;\n])\s*(?:请|这次|这回|本轮|现在|接下来)?\s*(?:"
         r"(?:只(?:用|要|发|回)?|仅(?:用|要)?|纯)\s*(?:文字|文本)"
@@ -32,14 +34,17 @@ def _text_only(text):
         text, re.I))
 
 
+_text_only = is_text_only_request
+
+
 def _should_repair(core, response, *, final=True):
     policy = core.get("prepared", {}).get("voice_reply_policy")
     text = getattr(response, "completion_text", "") or ""
     original = getattr(core.get("prepared", {}).get("native_input"), "text", "")
     original = original or core.get("prepared", {}).get("text", "")
     if not (isinstance(policy, VoiceReplyPolicy) and policy.trigger_mode in {"always", "request"}
-            and policy.generation_mode == "model_tag" and text.strip()
-            and not _text_only(original) and core.get("_voice_authoring_attempted_response") is not response):
+            and policy.uses_model_tags and text.strip()
+            and not is_text_only_request(original) and core.get("_voice_authoring_attempted_response") is not response):
         return False
     singsing = bool(core["prepared"].get("voice_singsing_enabled"))
     _, spoken = separate_spoken(text, policy, singsing=singsing)
