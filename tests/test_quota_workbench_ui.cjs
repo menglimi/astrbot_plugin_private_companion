@@ -1535,8 +1535,8 @@ test("Polish: openAwareness honors reduced motion, resize listener cleans up on 
 
 test("Wallet ledger row, 1-click inline threshold editor, universal multi-station subscription progress bars, and wallet edit modal UX", async () => {
   const h = quotaHarness();
-  const future12d = new Date(Date.now() + 12 * 86400 * 1000).toISOString();
-  const future2d = new Date(Date.now() + 2 * 86400 * 1000).toISOString();
+  const future12d = new Date(Date.now() + (12 * 86400 + 3600) * 1000).toISOString();
+  const future2d = new Date(Date.now() + (2 * 86400 + 3600) * 1000).toISOString();
   const payload = sampleQuotaPayload({
     stations: [
       {
@@ -1657,25 +1657,51 @@ test("Wallet ledger row, 1-click inline threshold editor, universal multi-statio
   assert.match(keyCardHtml, /Key 已用 \$4\.20/);
   assert.match(keyCardHtml, /限额 \$20\.00 · 剩 79\.0%/);
 
-  // 3) Universal subscriptions panel on Sub2API renders real progress bars, exact %, expiry countdown, and collapses >2 plans
+  // 3) Universal subscriptions panel on Sub2API defaults to a compact collapsible summary strip (aria-expanded="false", inert drawer, weighted 33.3%, earliest expiry), and expands all 3 plans on click
   const sub2CardHtml = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
-  assert.match(sub2CardHtml, /月度主力包/);
-  assert.match(sub2CardHtml, /剩 75\.0%/);
-  assert.match(sub2CardHtml, /夜间流量包/);
-  assert.match(sub2CardHtml, /剩 10\.0%/);
-  assert.match(sub2CardHtml, /qw-sub-bar-track/);
-  assert.match(sub2CardHtml, /qw-sub-expiry/);
-  const subsListBefore = sub2CardHtml.split('class="qw-subs-list"')[1];
-  assert.equal((subsListBefore.match(/data-qw-sub-item/g) || []).length, 2, "Only top 2 subscriptions should be rendered before expand");
-  assert.doesNotMatch(subsListBefore, /备用体验包/, "3rd subscription should be collapsed by default");
-  assert.match(sub2CardHtml, /展开其余 1 个套餐/);
+  assert.match(sub2CardHtml, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="false"/);
+  assert.match(sub2CardHtml, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+  assert.match(sub2CardHtml, /class="qw-sub-count-pill">3 个套餐</);
+  assert.match(sub2CardHtml, /剩 33\.3%/, "Weighted remaining percentage across 20/60 USD plans must be 33.3%");
+  assert.match(sub2CardHtml, /\$20\.00 \/ \$60\.00/);
+  assert.match(sub2CardHtml, /最早 2 天后到期/);
+  assert.match(sub2CardHtml, /qw-subs-summary-bar/);
+  assert.match(sub2CardHtml, /明细/);
 
-  // Clicking expand reveals 3rd subscription cleanly
+  // Clicking the summary strip expands the drawer cleanly (removes inert, sets aria-expanded="true", shows all 3 plans)
   h.root.click("[data-qw-subs-toggle]", { qwSubsToggle: "st-sub2" });
-  const subsListAfter = h.root.innerHTML.split('data-qw-card="st-sub2"')[1].split('class="qw-subs-list"')[1];
-  assert.equal((subsListAfter.match(/data-qw-sub-item/g) || []).length, 3, "All 3 subscriptions should render after expand");
+  const sub2Expanded = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2Expanded, /data-qw-subscriptions="st-sub2"[^>]*class="[^"]*is-expanded|class="[^"]*is-expanded"[^>]*data-qw-subscriptions="st-sub2"/);
+  assert.match(sub2Expanded, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="true"/);
+  assert.doesNotMatch(sub2Expanded, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+  assert.match(sub2Expanded, /收起/);
+  const subsListAfter = sub2Expanded.split('class="qw-subs-list is-scrollable"')[1];
+  assert.ok(subsListAfter, "3+ subscriptions should enable bounded scroll container class is-scrollable");
+  assert.equal((subsListAfter.match(/data-qw-sub-item/g) || []).length, 3, "All 3 subscriptions should render inside expanded drawer");
+  assert.match(subsListAfter, /月度主力包/);
+  assert.match(subsListAfter, /剩 75\.0%/);
+  assert.match(subsListAfter, /夜间流量包/);
+  assert.match(subsListAfter, /剩 10\.0%/);
   assert.match(subsListAfter, /备用体验包/);
-  assert.match(h.root.innerHTML, /收起其余套餐/);
+  assert.match(subsListAfter, /qw-sub-bar-track/);
+  assert.match(subsListAfter, /qw-sub-expiry/);
+
+  // Refreshing station preserves expanded state in memory (does not jump back to collapsed)
+  h.root.click("[data-qw-refresh-one]", { qwRefreshOne: "st-sub2" });
+  await flush();
+  const refreshSub2 = h.requests.find(r => r.method === "POST" && r.route === "model/quota/refresh");
+  assert.ok(refreshSub2);
+  refreshSub2.resolve(payload);
+  await flush();
+  const sub2AfterRefresh = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2AfterRefresh, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="true"/, "Refresh must preserve expanded subscription drawer state");
+  assert.doesNotMatch(sub2AfterRefresh, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+
+  // Clicking again collapses cleanly
+  h.root.click("[data-qw-subs-toggle]", { qwSubsToggle: "st-sub2" });
+  const sub2CollapsedAgain = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2CollapsedAgain, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="false"/);
+  assert.match(sub2CollapsedAgain, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
 
   // 4) 1-click inline threshold editor on wallet card: click 预警线 ¥10 -> pick ¥20 preset -> save via /thresholds
   h.root.click("[data-qw-threshold-open]", { qwThresholdOpen: "st-xy" });
@@ -1823,19 +1849,92 @@ test("Universal subscription summary aligns with fiat-station currency mode and 
 
   // 1) USD station switched to cny converts BOTH header total ($20 -> ¥144.00) and child bars ($15/$20 -> ¥108.00/¥144.00)
   const usdCnyCard = h.root.innerHTML.split('data-qw-card="st-usd-cny"')[1].split('data-qw-card="st-mixed-fiat"')[0];
-  assert.match(usdCnyCard, /class="qw-subs-head"[\s\S]*?<strong class="qw-num">¥144\.00<\/strong>/);
+  assert.match(usdCnyCard, /class="qw-subs-head[^"]*"[\s\S]*?<strong class="qw-num">¥144\.00<\/strong>/);
+  assert.match(usdCnyCard, /¥144\.00 \/ ¥216\.00/);
+  assert.match(usdCnyCard, /剩 66\.7%/);
   assert.match(usdCnyCard, /剩余 ¥108\.00 \/ ¥144\.00/);
   assert.match(usdCnyCard, /剩余 ¥36\.00 \/ ¥72\.00/);
-  assert.doesNotMatch(usdCnyCard, /class="qw-subs-head"[\s\S]*?\$20\.00/);
+  assert.doesNotMatch(usdCnyCard, /class="qw-subs-head[^"]*"[\s\S]*?\$20\.00/);
 
   // 2) Mixed USD + CNY subscriptions fold via FX rate instead of adding raw numbers (10*7.2 + 20 = ¥92.00)
   const mixedFiatCard = h.root.innerHTML.split('data-qw-card="st-mixed-fiat"')[1].split('data-qw-card="st-mixed-incompat"')[0];
-  assert.match(mixedFiatCard, /class="qw-subs-head"[\s\S]*?<strong class="qw-num">折合 ¥92\.00<\/strong>/);
+  assert.match(mixedFiatCard, /class="qw-subs-head[^"]*"[\s\S]*?<strong class="qw-num">折合 ¥92\.00<\/strong>/);
 
   // 3) Incompatible USD + TOKENS subscriptions show 多币种 instead of adding 10 + 50000
   const mixedIncompatCard = h.root.innerHTML.split('data-qw-card="st-mixed-incompat"')[1];
-  assert.match(mixedIncompatCard, /class="qw-subs-head"[\s\S]*?<strong class="qw-num">多币种<\/strong>/);
+  assert.match(mixedIncompatCard, /class="qw-subs-head[^"]*"[\s\S]*?<strong class="qw-num">多币种<\/strong>/);
   assert.doesNotMatch(mixedIncompatCard, /50,010/);
+
+  h.page.unmount();
+});
+
+test("Compact subscription strip degrades gracefully for uncapped/no-expiry plans and folds credit rate caption inline without extra line", async () => {
+  const h = quotaHarness();
+  const payload = sampleQuotaPayload({
+    stations: [
+      {
+        id: "st-uncapped",
+        name: "无限额套餐站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://uncapped.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "fiat",
+        fiat_currency: "CNY",
+        fiat_per_base_unit: 1.0,
+      },
+    ],
+    snapshots: {
+      "st-uncapped": {
+        station_id: "st-uncapped",
+        ok: true,
+        remaining: 732.98,
+        used: 3150.0,
+        quota_model: "wallet",
+        display_type: "CREDIT",
+        symbol: "🍪",
+        custom_exchange_rate: 10,
+        site_recharge_price: 1.0,
+        inferred_fiat_currency: "CNY",
+        fiat_remaining: 73.30,
+        fiat_used: 315.0,
+        subscriptions: [
+          { name: "无限量畅享包", remaining: 500, total: null, fiat_remaining: 50.0, display_type: "CREDIT", symbol: "🍪", fiat_currency: "CNY", status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      total_stations: 1,
+      ok_count: 1,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      health_by_id: { "st-uncapped": "normal" },
+      quota_model_by_id: { "st-uncapped": "wallet" },
+    },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  const card = h.root.innerHTML.split('data-qw-card="st-uncapped"')[1];
+  // 1) Credit rate caption folds inline next to conversion text and omits redundant standalone .qw-extra-line
+  assert.match(card, /class="qw-balance-rate qw-num"[^>]*>· 10 🍪 = ¥1<\/span>/);
+  assert.doesNotMatch(card, /class="qw-extra-line"/, "Rate caption must fold inline rather than burning an extra vertical row");
+
+  // 2) Single non-generic plan shows plan name in pill; uncapped/no-expiry omits progress bar & shows clean fallback without dangling dots
+  assert.match(card, /class="qw-sub-count-pill">无限量畅享包</);
+  assert.doesNotMatch(card, /qw-subs-summary-bar/, "Uncapped-only subscriptions must not render a fake summary progress bar");
+  assert.match(card, /不限上限套餐/);
+  assert.doesNotMatch(card, /qw-subs-dot/, "Single metadata fragment must never emit a dangling separator dot");
 
   h.page.unmount();
 });

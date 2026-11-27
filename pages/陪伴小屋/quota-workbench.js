@@ -50,7 +50,7 @@ window.CompanionQuotaWorkbench = (() => {
     "moonshot",
   ]);
   const CAPPED_ONLY_ADAPTER_IDS = new Set(["openai_billing"]);
-  const MAX_VISIBLE_SUBSCRIPTIONS = 2;
+  const SUBSCRIPTION_SCROLL_THRESHOLD = 3;
 
   const DEFAULT_SCRIPT_TEMPLATE =
     '({\n' +
@@ -693,6 +693,36 @@ window.CompanionQuotaWorkbench = (() => {
     };
   }
 
+  function formatSummaryExpiry(subs) {
+    let minMs = Infinity;
+    for (const item of subs) {
+      const iso = item?.expires_at;
+      if (!iso || typeof iso !== "string") continue;
+      const ms = new Date(iso).getTime();
+      if (Number.isFinite(ms) && ms < minMs) minMs = ms;
+    }
+    if (!Number.isFinite(minMs)) return null;
+    const diffMs = minMs - Date.now();
+    const dt = new Date(minMs);
+    const dateTitle = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")} ${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+    const multi = subs.length > 1;
+    if (diffMs <= 0) {
+      return { text: multi ? "有套餐已到期" : "已到期", cls: "is-risk", title: `最早到期：${dateTitle}` };
+    }
+    const totalHours = Math.floor(diffMs / 3_600_000);
+    const days = Math.floor(totalHours / 24);
+    if (days === 0 && totalHours < 1) {
+      return { text: multi ? "最早即将到期" : "即将到期", cls: "is-risk", title: `最早到期：${dateTitle}` };
+    }
+    if (days === 0) {
+      return { text: `${multi ? "最早 " : ""}${totalHours} 小时后到期`, cls: "is-warn", title: `最早到期：${dateTitle}` };
+    }
+    if (days <= 3) {
+      return { text: `${multi ? "最早 " : ""}${days} 天后到期`, cls: "is-warn", title: `最早到期：${dateTitle}` };
+    }
+    return { text: `${multi ? "最早 " : ""}${days} 天后到期`, cls: "", title: `最早到期：${dateTitle}` };
+  }
+
   function formatSubscriptionSummary(subs, station, snap, summary, dual) {
     const rate = Number(summary?.usd_cny_rate) || 7.2;
     const activeMode = resolveStationActiveDisplayMode(station, dual);
@@ -717,54 +747,151 @@ window.CompanionQuotaWorkbench = (() => {
         || snap?.inferred_fiat_currency
         || ""
       ).toUpperCase();
-      const rem = item.remaining != null && Number.isFinite(Number(item.remaining)) ? Number(item.remaining) : null;
-      const baseFiat = item.fiat_remaining != null && Number.isFinite(Number(item.fiat_remaining))
+      const rawTotal = item.total != null && Number.isFinite(Number(item.total)) && Number(item.total) > 0
+        ? Number(item.total)
+        : null;
+      const rawUsed = item.used != null && Number.isFinite(Number(item.used)) ? Number(item.used) : null;
+      const rem = item.remaining != null && Number.isFinite(Number(item.remaining))
+        ? Number(item.remaining)
+        : (rawTotal != null && rawUsed != null ? Math.max(0, rawTotal - rawUsed) : null);
+      const baseFiatRem = item.fiat_remaining != null && Number.isFinite(Number(item.fiat_remaining))
         ? Number(item.fiat_remaining)
         : ((dt === "CNY" || dt === "USD") && rem != null ? rem : null);
-      return { dt, sym, fiatCur, rem, baseFiat };
-    }).filter(m => m.rem != null || m.baseFiat != null);
+      const baseFiatTotal = item.fiat_total != null && Number.isFinite(Number(item.fiat_total)) && Number(item.fiat_total) > 0
+        ? Number(item.fiat_total)
+        : ((dt === "CNY" || dt === "USD") && rawTotal != null ? rawTotal : null);
+      const status = String(item.status || "").toLowerCase();
+      return { dt, sym, fiatCur, rem, total: rawTotal, baseFiatRem, baseFiatTotal, status };
+    }).filter(m => m.rem != null || m.baseFiatRem != null || m.total != null);
 
-    if (!metas.length) return "—";
+    const singleName = subs.length === 1 ? String(subs[0]?.name || subs[0]?.title || "").trim() : "";
+    const countBadge = subs.length === 1
+      ? (singleName && singleName !== "订阅套餐" ? singleName : "1 个套餐")
+      : `${subs.length} 个套餐`;
+    const earliestExpiry = formatSummaryExpiry(subs);
 
-    const toFiat = (meta, dstCur) => {
-      if (meta.baseFiat == null || (meta.fiatCur !== "CNY" && meta.fiatCur !== "USD")) return null;
-      return convertFiatValue(meta.baseFiat, meta.fiatCur, dstCur, rate);
-    };
-
-    const firstDt = metas[0].dt;
-    const firstSym = metas[0].sym;
-    const sameNative = metas.every(m => m.dt === firstDt && m.sym === firstSym && m.rem != null);
-    const nativeSumStr = sameNative
-      ? formatMoneyText(metas.reduce((acc, m) => acc + m.rem, 0), firstDt, firstSym)
-      : "";
-
-    if (targetFiat && metas.every(m => toFiat(m, targetFiat) != null)) {
-      const convSum = metas.reduce((acc, m) => acc + toFiat(m, targetFiat), 0);
-      const dstSym = targetFiat === "USD" ? "$" : "¥";
-      const dstText = `${dstSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      return sameNative && firstDt === "CREDIT" ? `${dstText}（${nativeSumStr}）` : dstText;
+    if (!metas.length) {
+      return {
+        mainText: "—",
+        weightedPct: null,
+        barCls: earliestExpiry?.cls === "is-risk" ? "is-critical" : earliestExpiry?.cls === "is-warn" ? "is-low" : "",
+        earliestExpiry,
+        countBadge,
+        sublineParts: earliestExpiry ? [{ text: earliestExpiry.text, cls: earliestExpiry.cls }] : [],
+      };
     }
 
-    if (sameNative) {
-      if (firstDt === "CREDIT") {
-        const sharedFiatCur = metas[0].fiatCur;
-        if ((sharedFiatCur === "CNY" || sharedFiatCur === "USD")
-          && metas.every(m => m.baseFiat != null && m.fiatCur === sharedFiatCur)) {
-          const fiatSum = metas.reduce((acc, m) => acc + m.baseFiat, 0);
-          const fiatSym = sharedFiatCur === "USD" ? "$" : "¥";
-          return `${nativeSumStr} ≈ ${fiatSym}${fiatSum.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
+    const toFiatVal = (val, fiatCur, dstCur) => {
+      if (val == null || (fiatCur !== "CNY" && fiatCur !== "USD")) return null;
+      return convertFiatValue(val, fiatCur, dstCur, rate);
+    };
+    const remMetas = metas.filter(m => m.rem != null || m.baseFiatRem != null);
+    const firstDt = remMetas[0]?.dt || metas[0].dt;
+    const firstSym = remMetas[0]?.sym || metas[0].sym;
+    const sameNative = remMetas.length > 0 && remMetas.every(m => m.dt === firstDt && m.sym === firstSym && m.rem != null);
+    const nativeRemSum = sameNative ? remMetas.reduce((acc, m) => acc + m.rem, 0) : null;
+    const nativeSumStr = sameNative ? formatMoneyText(nativeRemSum, firstDt, firstSym) : "";
+    const summaryCur = String(summary?.display_currency || "CNY").toUpperCase();
+
+    let mainText = "—";
+    let displayCurrency = "";
+    if (remMetas.length) {
+      if (targetFiat && remMetas.every(m => toFiatVal(m.baseFiatRem, m.fiatCur, targetFiat) != null)) {
+        const convSum = remMetas.reduce((acc, m) => acc + toFiatVal(m.baseFiatRem, m.fiatCur, targetFiat), 0);
+        const dstSym = targetFiat === "USD" ? "$" : "¥";
+        const dstText = `${dstSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        mainText = sameNative && firstDt === "CREDIT" ? `${dstText}（${nativeSumStr}）` : dstText;
+        displayCurrency = targetFiat;
+      } else if (sameNative) {
+        if (firstDt === "CREDIT") {
+          const sharedFiatCur = remMetas[0].fiatCur;
+          if ((sharedFiatCur === "CNY" || sharedFiatCur === "USD")
+            && remMetas.every(m => m.baseFiatRem != null && m.fiatCur === sharedFiatCur)) {
+            const fiatSum = remMetas.reduce((acc, m) => acc + m.baseFiatRem, 0);
+            const fiatSym = sharedFiatCur === "USD" ? "$" : "¥";
+            mainText = `${nativeSumStr} ≈ ${fiatSym}${fiatSum.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
+          } else {
+            mainText = nativeSumStr;
+          }
+        } else {
+          mainText = nativeSumStr;
+        }
+      } else if ((summaryCur === "CNY" || summaryCur === "USD")
+        && remMetas.every(m => toFiatVal(m.baseFiatRem, m.fiatCur, summaryCur) != null)) {
+        const convSum = remMetas.reduce((acc, m) => acc + toFiatVal(m.baseFiatRem, m.fiatCur, summaryCur), 0);
+        const sSym = summaryCur === "USD" ? "$" : "¥";
+        mainText = `折合 ${sSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        displayCurrency = summaryCur;
+      } else {
+        mainText = "多币种";
+      }
+    }
+
+    // Weighted remaining ratio + paired remaining/total across capped plans
+    const capped = metas.filter(m => m.total != null && m.total > 0 && (m.rem != null || m.baseFiatRem != null));
+    let weightedPct = null;
+    let ratioText = "";
+    if (capped.length) {
+      const capDt = capped[0].dt;
+      const capSym = capped[0].sym;
+      const sameCapNative = capped.every(m => m.dt === capDt && m.sym === capSym && m.rem != null && m.total != null);
+      const fiatGoal = displayCurrency || targetFiat || (summaryCur === "CNY" || summaryCur === "USD" ? summaryCur : "");
+      const allCapFiat = Boolean(
+        fiatGoal
+        && capped.every(m => toFiatVal(m.baseFiatRem, m.fiatCur, fiatGoal) != null && toFiatVal(m.baseFiatTotal, m.fiatCur, fiatGoal) != null)
+      );
+
+      if (allCapFiat && (displayCurrency || targetFiat || !sameCapNative)) {
+        const fRem = capped.reduce((acc, m) => acc + toFiatVal(m.baseFiatRem, m.fiatCur, fiatGoal), 0);
+        const fTot = capped.reduce((acc, m) => acc + toFiatVal(m.baseFiatTotal, m.fiatCur, fiatGoal), 0);
+        if (fTot > 0) {
+          weightedPct = Math.max(0, Math.min(100, (fRem / fTot) * 100));
+          const sym = fiatGoal === "USD" ? "$" : "¥";
+          if (capped.length === subs.length) {
+            ratioText = `${formatMoneyText(fRem, fiatGoal, sym)} / ${formatMoneyText(fTot, fiatGoal, sym)}`;
+          }
+        }
+      } else if (sameCapNative) {
+        const nRem = capped.reduce((acc, m) => acc + m.rem, 0);
+        const nTot = capped.reduce((acc, m) => acc + m.total, 0);
+        if (nTot > 0) {
+          weightedPct = Math.max(0, Math.min(100, (nRem / nTot) * 100));
+          if (capped.length === subs.length) {
+            ratioText = `${formatMoneyText(nRem, capDt, capSym)} / ${formatMoneyText(nTot, capDt, capSym)}`;
+          }
         }
       }
-      return nativeSumStr;
     }
 
-    const summaryCur = String(summary?.display_currency || "CNY").toUpperCase();
-    if ((summaryCur === "CNY" || summaryCur === "USD") && metas.every(m => toFiat(m, summaryCur) != null)) {
-      const convSum = metas.reduce((acc, m) => acc + toFiat(m, summaryCur), 0);
-      const sSym = summaryCur === "USD" ? "$" : "¥";
-      return `折合 ${sSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const allCritical = metas.every(m => m.status === "exhausted" || m.status === "expired" || m.status === "critical");
+    const anyWarn = metas.some(m => m.status === "low" || m.status === "critical" || m.status === "exhausted" || m.status === "expired");
+    let barCls = "";
+    if (allCritical || (weightedPct != null && weightedPct <= 5) || earliestExpiry?.cls === "is-risk") {
+      barCls = "is-critical";
+    } else if (anyWarn || (weightedPct != null && weightedPct <= 20) || earliestExpiry?.cls === "is-warn") {
+      barCls = "is-low";
     }
-    return "多币种";
+
+    const sublineParts = [];
+    if (ratioText) {
+      sublineParts.push({ text: ratioText, cls: "" });
+    } else if (capped.length > 0 && capped.length < subs.length) {
+      sublineParts.push({ text: `含 ${capped.length} 个定额套餐`, cls: "" });
+    } else if (capped.length === 0) {
+      sublineParts.push({ text: earliestExpiry ? "不限上限" : "不限上限套餐", cls: "" });
+    }
+    if (earliestExpiry) {
+      sublineParts.push({ text: earliestExpiry.text, cls: earliestExpiry.cls });
+    }
+
+    return {
+      mainText,
+      weightedPct,
+      barCls,
+      earliestExpiry,
+      countBadge,
+      sublineParts,
+    };
   }
 
   function renderInlineThresholdEditor(station, thView, editState) {
@@ -1083,7 +1210,10 @@ window.CompanionQuotaWorkbench = (() => {
           const altText = isFiatView
             ? `${formatMoney(snap.remaining, "CREDIT", dual.nativeSymbol).num} ${dual.nativeSymbol}`
             : `≈ ${dual.fiatSymbol}${Number(snap.fiat_remaining).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          dualSubHtml = `<span class="qw-balance-conv qw-num">${esc(altText)}</span>` +
+          const rateInlineHtml = dual.rateCaption
+            ? `<span class="qw-balance-rate qw-num" title="站内换算 ${esc(dual.rateCaption)}">· ${esc(dual.rateCaption)}</span>`
+            : "";
+          dualSubHtml = `<span class="qw-balance-conv qw-num">${esc(altText)}</span>${rateInlineHtml}` +
             `<button type="button" class="qw-unit-toggle${isFiatView ? " is-fiat" : ""}" data-qw-toggle-unit="${esc(station.id)}" aria-pressed="${isFiatView}" title="切换原币与折合法币显示">${esc(dual.nativeSymbol)} ↔ ${esc(dual.fiatSymbol)}</button>`;
         }
 
@@ -1120,9 +1250,8 @@ window.CompanionQuotaWorkbench = (() => {
           ` : "";
         }
 
-        const extraText = dual.canToggle && dual.rateCaption
-          ? `${isFiatView ? `${formatMoney(snap.remaining, "CREDIT", dual.nativeSymbol).num} ${dual.nativeSymbol}` : `≈ ${dual.fiatSymbol}${Number(snap.fiat_remaining).toFixed(2)}`} · ${dual.rateCaption}`
-          : snap.extra;
+        // Rate caption is folded inline into the balance conversion line to avoid an extra vertical row.
+        const extraText = dual.canToggle && dual.rateCaption ? "" : snap.extra;
 
         balanceHtml = `
           <div class="qw-balance-block">
@@ -1163,11 +1292,10 @@ window.CompanionQuotaWorkbench = (() => {
     let subscriptionHtml = "";
     if (subs.length) {
       const subNames = subs.map(item => item.name || item.title).filter(Boolean).join(" / ");
-      const subMainText = formatSubscriptionSummary(subs, station, snap, summary, dual);
+      const subSummary = formatSubscriptionSummary(subs, station, snap, summary, dual);
       const isExpanded = Boolean(q.expandedSubsIds?.has?.(station.id));
-      const visibleSubs = isExpanded ? subs : subs.slice(0, MAX_VISIBLE_SUBSCRIPTIONS);
-      const hiddenCount = Math.max(0, subs.length - MAX_VISIBLE_SUBSCRIPTIONS);
-      const itemsHtml = visibleSubs.map(item => {
+      const drawerId = `qw-subs-drawer-${String(station.id).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const itemsHtml = subs.map(item => {
         const view = formatSubscriptionItem(item, station, snap, summary, dual);
         const pctLabel = view.pct != null ? `剩 ${view.pct.toFixed(1)}%` : "";
         return `
@@ -1192,15 +1320,38 @@ window.CompanionQuotaWorkbench = (() => {
         `;
       }).join("");
 
+      const summaryMetaHtml = subSummary.sublineParts.length
+        ? `<span class="qw-subs-summary-meta qw-num">${subSummary.sublineParts.map(part =>
+            `<span${part.cls ? ` class="${part.cls}"` : ""}>${esc(part.text)}</span>`
+          ).join('<span class="qw-subs-dot" aria-hidden="true">·</span>')}</span>`
+        : "";
+
       subscriptionHtml = `
-        <div class="qw-sub-strip qw-subs-panel" data-qw-subscriptions title="${esc(subNames ? "活跃订阅套餐：" + subNames : "站点活跃订阅套餐余量")}">
-          <div class="qw-subs-head">
-            <span class="qw-sub-label">订阅余量</span>
-            <strong class="qw-num">${esc(subMainText)}</strong>
-            <span class="qw-sub-meta">· ${subs.length} 个套餐</span>
+        <div class="qw-sub-strip qw-subs-panel${isExpanded ? " is-expanded" : ""}" data-qw-subscriptions="${esc(station.id)}" title="${esc(subNames ? "活跃订阅套餐：" + subNames : "站点活跃订阅套餐余量")}">
+          <button type="button" class="qw-subs-head qw-subs-summary-btn" data-qw-subs-toggle="${esc(station.id)}" aria-expanded="${isExpanded}" aria-controls="${esc(drawerId)}">
+            <span class="qw-subs-head-top">
+              <span class="qw-subs-head-left">
+                <span class="qw-sub-label">订阅余量</span>
+                <span class="qw-sub-count-pill">${esc(subSummary.countBadge)}</span>
+              </span>
+              <span class="qw-subs-head-right">
+                <strong class="qw-num">${esc(subSummary.mainText)}</strong>
+                ${subSummary.weightedPct != null ? `<span class="qw-sub-pct qw-num ${subSummary.barCls}">剩 ${subSummary.weightedPct.toFixed(1)}%</span>` : ""}
+                <span class="qw-subs-chevron" aria-hidden="true"><span data-qw-subs-chevron-text>${isExpanded ? "收起" : "明细"}</span><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></span>
+              </span>
+            </span>
+            ${subSummary.weightedPct != null ? `
+              <span class="qw-sub-bar-track qw-subs-summary-bar" role="progressbar" aria-label="订阅套餐综合剩余额度比例" aria-valuenow="${subSummary.weightedPct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+                <span class="qw-sub-bar-fill ${subSummary.barCls}" style="width:${subSummary.weightedPct.toFixed(1)}%"></span>
+              </span>
+            ` : ""}
+            ${summaryMetaHtml}
+          </button>
+          <div id="${esc(drawerId)}" class="qw-subs-drawer" data-qw-subs-drawer="${esc(station.id)}"${isExpanded ? "" : " inert"}>
+            <div class="qw-subs-drawer-inner">
+              <div class="qw-subs-list${subs.length >= SUBSCRIPTION_SCROLL_THRESHOLD ? " is-scrollable" : ""}">${itemsHtml}</div>
+            </div>
           </div>
-          <div class="qw-subs-list">${itemsHtml}</div>
-          ${hiddenCount > 0 ? `<button type="button" class="qw-sub-toggle-btn" data-qw-subs-toggle="${esc(station.id)}" aria-expanded="${isExpanded}">${isExpanded ? "收起其余套餐" : `展开其余 ${hiddenCount} 个套餐`}</button>` : ""}
         </div>
       `;
     }
@@ -3048,9 +3199,30 @@ window.CompanionQuotaWorkbench = (() => {
     if (subsToggleBtn) {
       const sid = subsToggleBtn.dataset.qwSubsToggle;
       q.expandedSubsIds ||= new Set();
-      if (q.expandedSubsIds.has(sid)) q.expandedSubsIds.delete(sid);
-      else q.expandedSubsIds.add(sid);
-      patchSingleCardDom(ctx, sid);
+      const willExpand = !q.expandedSubsIds.has(sid);
+      if (willExpand) q.expandedSubsIds.add(sid);
+      else q.expandedSubsIds.delete(sid);
+      const dom = getLiveDom(ctx);
+      const panelEl = dom?.gridEl?.querySelector?.(`[data-qw-subscriptions="${sid}"]`);
+      if (panelEl) {
+        panelEl.classList?.toggle?.("is-expanded", willExpand);
+        const btnEl = panelEl.querySelector?.(`[data-qw-subs-toggle="${sid}"]`);
+        if (btnEl) btnEl.setAttribute?.("aria-expanded", String(willExpand));
+        const chevronTxt = panelEl.querySelector?.("[data-qw-subs-chevron-text]");
+        if (chevronTxt) chevronTxt.textContent = willExpand ? "收起" : "明细";
+        const drawerEl = panelEl.querySelector?.(`[data-qw-subs-drawer="${sid}"]`);
+        if (drawerEl) {
+          if (willExpand) {
+            drawerEl.inert = false;
+            drawerEl.removeAttribute?.("inert");
+          } else {
+            drawerEl.inert = true;
+            drawerEl.setAttribute?.("inert", "");
+          }
+        }
+      } else {
+        patchSingleCardDom(ctx, sid);
+      }
       return;
     }
     const thOpenBtn = t.closest("[data-qw-threshold-open]");
