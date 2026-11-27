@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
 from telegram import Chat, Message, Update, User
-from astrbot.core.message.components import Face, Image, Plain, Reply
+from astrbot.core.message.components import Face, Image, Plain, Record, Reply
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAdapter
@@ -533,6 +533,19 @@ class TelegramDeliveryTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
         self.platform.client.send_voice.assert_awaited_once()
         self.platform.client.send_message.assert_awaited_once()
 
+    async def test_background_voice_is_sent_as_an_opus_voice_message(self):
+        audio = self.root / "synthetic.wav"
+        with wave.open(str(audio), "wb") as stream:
+            stream.setparams((1, 2, 8000, 0, "NONE", ""))
+            stream.writeframes(bytes(1600))
+        self.sender.voice = AsyncMock(return_value={"type": "record", "data": {"file": str(audio)}})
+        self.platform.client.send_voice = AsyncMock()
+        receipt = await self.send()
+        self.assertEqual(receipt.status, "delivered")
+        sent = Path(self.platform.client.send_voice.await_args.kwargs["voice"]).read_bytes()
+        self.assertEqual(sent[:4], b"OggS")
+        self.assertIn(b"OpusHead", sent[:100])
+
 
 class TelegramFaceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
     async def test_reply_face_is_shown_as_text(self):
@@ -543,6 +556,20 @@ class TelegramFaceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
         # AstrBot sends MarkdownV2, so the brackets are escaped on the wire.
         sent = [call.kwargs["text"] for call in self.platform.client.send_message.await_args_list]
         self.assertEqual(sent, ["晚安", "\\[QQ表情 14\\]"])
+
+    async def test_reply_voice_is_sent_as_an_opus_voice_message(self):
+        audio = self.root / "reply.wav"
+        with wave.open(str(audio), "wb") as stream:
+            stream.setparams((1, 2, 8000, 0, "NONE", ""))
+            stream.writeframes(bytes(1600))
+        event = self.telegram_event()
+        self.platform.client.send_voice = AsyncMock()
+        with patch("astrbot.core.platform.astr_message_event.Metric.upload", new_callable=AsyncMock):
+            for part in native_reply_messages(event, MessageChain(chain=[Record(file=str(audio))])):
+                await event.send(await native_wire_message(event, part))
+        sent = Path(self.platform.client.send_voice.await_args.kwargs["voice"]).read_bytes()
+        self.assertEqual(sent[:4], b"OggS")
+        self.assertIn(b"OpusHead", sent[:100])
 
     async def test_reply_without_a_face_is_unchanged(self):
         message = MessageChain(chain=[Plain(text="晚安"), Image(file="base64://AAAA")])

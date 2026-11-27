@@ -100,7 +100,11 @@ class AstrBotPlatformSender:
                 file_value = data.get("file") if isinstance(data, dict) else None
                 if not isinstance(file_value, str) or not file_value.strip():
                     raise ValueError("voice component has no native file")
-                chain.append(Record(file=file_value))
+                if platform_name == "telegram":
+                    from .telegram_wire import TelegramVoice
+                    chain.append(TelegramVoice(file=file_value))
+                else:
+                    chain.append(Record(file=file_value))
             elif component.kind == "at":
                 chain.append(At(qq=str(component.value)))
             elif component.kind == "face":

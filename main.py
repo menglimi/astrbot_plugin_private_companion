@@ -133,6 +133,7 @@ from .astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
 from .astrbot_host.recalls import is_notice_event
 from .astrbot_host.stranger_notice import refuse_stranger
 from .astrbot_host.telegram_forward import label_telegram_forward
+from .astrbot_host.telegram_private_media import restore_voice_caption
 
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
@@ -1227,6 +1228,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 suppress_default_reply(event)
                 return
         if channel == "private":
+            restore_voice_caption(event)
             label_telegram_forward(event)
         if channel == "private" and getattr(target, "participant_id", None):
             processor = getattr(self.staging, "process_private_relay_receipts", None)
@@ -2401,6 +2403,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         except Exception as error:
             logger.warning("[CompanionV2] 视频输入状态重写失败 error_type=%s",
                            type(error).__name__)
+
+    # Runs after every other request hook, so history and late additions are covered too.
+    @filter.on_llm_request(priority=-1000001)
+    async def protect_companion_telegram_request(self, event: AstrMessageEvent, req):
+        from .astrbot_host.telegram_request import protect_telegram_request
+        protect_telegram_request(event, req)
 
     @filter.on_agent_begin(priority=-1000000)
     async def repair_companion_core_runner_history(self, event: AstrMessageEvent, run_context):

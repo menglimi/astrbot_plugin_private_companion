@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import io
 import ipaddress
@@ -74,8 +76,29 @@ class PublicImageResolver(aiohttp.ThreadedResolver):
         return values
 
 
-async def fetch_image(value):
-    return await fetch_attachment(value, maximum_bytes=MAX_IMAGE_BYTES)
+async def fetch_image(value, *, maximum_bytes=MAX_IMAGE_BYTES):
+    return await fetch_attachment(value, maximum_bytes=maximum_bytes)
+
+
+class ReadMeter:
+    """Body bytes received by downloads in one ``metered`` block, including failed ones."""
+
+    def __init__(self):
+        self.bytes = 0
+
+
+_meter = ContextVar("companion_v2_attachment_meter", default=None)
+
+
+@contextmanager
+def metered():
+    """Count what downloads started in this block receive, through any loader in between."""
+    meter = ReadMeter()
+    token = _meter.set(meter)
+    try:
+        yield meter
+    finally:
+        _meter.reset(token)
 
 
 async def fetch_attachment(value, *, maximum_bytes):
@@ -97,7 +120,10 @@ async def fetch_attachment(value, *, maximum_bytes):
                     if response.content_length is not None and response.content_length > maximum_bytes:
                         raise TaskError("host_image_limit", "image exceeds the intake byte budget")
                     content = bytearray()
+                    meter = _meter.get()
                     async for chunk in response.content.iter_chunked(65536):
+                        if meter is not None:
+                            meter.bytes += len(chunk)
                         if len(content) + len(chunk) > maximum_bytes:
                             raise TaskError("host_image_limit", "image exceeds the intake byte budget")
                         content.extend(chunk)
@@ -137,7 +163,7 @@ def inspect_image(content, position):
         raise TaskError("host_image_invalid", "image bytes could not be verified") from None
 
 
-def _read_host_resolved_image(value):
+def _read_host_resolved_image(value, maximum_bytes=MAX_IMAGE_BYTES):
     """Read a local file the trusted host already vouched for.
 
     Two producers set ``host_resolved``: the quote resolver, and the adapter's
@@ -148,27 +174,31 @@ def _read_host_resolved_image(value):
     if not path.is_absolute() or value.startswith(("\\\\", "//")) or not path.is_file():
         raise TaskError("host_image_location_invalid", "resolved image cache must be a local absolute file")
     with path.open("rb") as stream:
-        content = stream.read(MAX_IMAGE_BYTES + 1)
-    if len(content) > MAX_IMAGE_BYTES:
+        content = stream.read(maximum_bytes + 1)
+    if len(content) > maximum_bytes:
         raise TaskError("host_image_limit", "image exceeds the intake byte budget")
     return content
 
 
-async def load_native_image(locator):
+async def load_native_image(locator, *, maximum_bytes=MAX_IMAGE_BYTES):
+    """``maximum_bytes`` can only lower the image ceiling, e.g. to what a turn has left."""
     if not isinstance(locator, NativeImageLocator):
         raise TaskError("host_image_location_invalid", "image intake needs a frozen host component")
+    maximum_bytes = min(maximum_bytes, MAX_IMAGE_BYTES)
     try:
         value = locator.locator
         if value.startswith("base64://"):
             encoded = value[len("base64://"):]
-            if len(encoded) > (MAX_IMAGE_BYTES + 2) // 3 * 4:
+            if len(encoded) > (maximum_bytes + 2) // 3 * 4:
                 raise TaskError("host_image_limit", "image exceeds the intake byte budget")
             content = base64.b64decode(encoded, validate=True)
         elif locator.host_resolved is True and Path(value).is_absolute():
-            content = await asyncio.to_thread(_read_host_resolved_image, value)
+            content = await asyncio.to_thread(_read_host_resolved_image, value, maximum_bytes)
         else:
             # Do not interpret a network message's file/path field as local disk authority.
-            content = await fetch_image(value)
+            content = await fetch_image(value, maximum_bytes=maximum_bytes)
+        if len(content) > maximum_bytes:
+            raise TaskError("host_image_limit", "image exceeds the intake byte budget")
         return await asyncio.to_thread(inspect_image, content, locator.position)
     except TaskError:
         raise
