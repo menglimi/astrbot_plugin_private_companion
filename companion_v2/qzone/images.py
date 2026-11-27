@@ -11,6 +11,7 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
+from companion_v2.conversation.media.external_generated_album import EXTERNAL_IMAGE_PREFIX
 from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.refs import RoleOwnerRef
 from companion_v2.qzone.capability import PUBLISH_ACTION
@@ -106,6 +107,19 @@ def _outfit_album_image(application, context, at, image_id):
     return image
 
 
+def _external_album_image(application, context, at, generated, image_id):
+    require(application.tasks.identity.authorize(
+        context.actor, scope=context.scope, capability=PUBLISH_ACTION, observed_at=at))
+    if generated is None:
+        raise TaskError("qzone_image_invalid", "相册图片服务不可用")
+    item = generated.album_image(context, at, image_id)
+    image = PublishImage.read(item.content, mime_type=item.descriptor.mime_type,
+                              source_id=item.image_id)
+    if image.content_hash != item.descriptor.content_hash:
+        raise TaskError("qzone_image_invalid", "相册图片与原始素材不一致")
+    return image
+
+
 def album_images(application, context, at, image_ids, *, planner=None):
     """Resolve exact originals and recheck public-sharing consent at each call."""
     from companion_v2.sharing.planner import ShareCatalog, SharePlanner
@@ -122,6 +136,10 @@ def album_images(application, context, at, image_ids, *, planner=None):
     for image_id in image_ids:
         if isinstance(image_id, str) and image_id.startswith(DAILY_OUTFIT_IMAGE_PREFIX):
             images.append(_outfit_album_image(application, context, at, image_id))
+            candidates.append(image_id)
+            continue
+        if isinstance(image_id, str) and image_id.startswith(EXTERNAL_IMAGE_PREFIX):
+            images.append(_external_album_image(application, context, at, generated, image_id))
             candidates.append(image_id)
             continue
         if generated is None:
@@ -148,7 +166,8 @@ def _generated_summary(generated, context, at, item):
             excerpt = ""
     if excerpt:
         return excerpt
-    labels = {"image.generate": "生成图片", "image.edit": "编辑图片", "image.mask_edit": "局部改图"}
+    labels = {"image.generate": "生成图片", "image.edit": "编辑图片", "image.mask_edit": "局部改图",
+              "image.external": "外部工具生图"}
     return labels.get(getattr(item, "action", ""), "相册图片")
 
 

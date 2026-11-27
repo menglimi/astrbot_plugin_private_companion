@@ -133,8 +133,13 @@ class GeneratedImages:
             raise TaskError("generated_album_cursor_invalid", "the album cursor is invalid") from None
 
     @staticmethod
+    def _album_tiebreaker(item):
+        from .external_generated_album import external_cursor_tiebreaker
+        return external_cursor_tiebreaker(item.image_id)
+
+    @staticmethod
     def _encode_album_cursor(item):
-        value = json.dumps({"created_at": item.created_at, "invocation_id": item.image_id.split(":")[1],
+        value = json.dumps({"created_at": item.created_at, "invocation_id": GeneratedImages._album_tiebreaker(item),
                             "position": item.descriptor.position}, ensure_ascii=False,
                            sort_keys=True, separators=(",", ":")).encode("utf-8")
         return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
@@ -210,7 +215,9 @@ class GeneratedImages:
                WHERE """ + " AND ".join(where) + f" ORDER BY i.created_at DESC, i.invocation_id DESC LIMIT {sql_limit}",
             tuple(parameters))
         from .native_generated_album import page as native_page
+        from .external_generated_album import page as external_page
         native_items, native_more = native_page(self, context, at, before=before, limit=limit)
+        external_items, external_more = external_page(self, context, at, before=before, limit=limit)
         by_batch = {}
         items = []
         for row in rows:
@@ -231,9 +238,10 @@ class GeneratedImages:
             if len(items) >= limit + 1:
                 break
         items.extend(native_items)
-        items.sort(key=lambda item: (item.created_at, item.image_id.split(":")[1], item.descriptor.position),
+        items.extend(external_items)
+        items.sort(key=lambda item: (item.created_at, self._album_tiebreaker(item), item.descriptor.position),
                     reverse=True)
-        more = len(items) > limit or len(rows) == sql_limit or native_more
+        more = len(items) > limit or len(rows) == sql_limit or native_more or external_more
         page = tuple(items[:limit])
         next_cursor = self._encode_album_cursor(page[-1]) if page and more else None
         return {"items": page, "next_cursor": next_cursor}
@@ -278,8 +286,11 @@ class GeneratedImages:
                 if image_id not in hidden:
                     seen_ids.add(image_id)
         from .native_generated_album import count as native_count
+        from .external_generated_album import count as external_count
         _, native_ids = native_count(self, context, hidden_ids=hidden)
         seen_ids.update(native_ids)
+        _, external_ids = external_count(self, context, hidden_ids=hidden)
+        seen_ids.update(external_ids)
         return len(seen_ids)
 
     def observability_page(self, context, at, *, limit=20):
@@ -327,6 +338,10 @@ class GeneratedImages:
             self.messages.authorize(context, at)
             from .native_generated_album import artifact
             return artifact(self, context, at, image_id)
+        if image_id.startswith("external-image:"):
+            self.messages.authorize(context, at)
+            from .external_generated_album import image as external_image
+            return external_image(self, context, at, image_id)
         if not image_id.startswith("generated-image:"):
             raise TaskError("generated_image_missing", "the selected album image is unavailable")
         try:
@@ -354,6 +369,13 @@ class GeneratedImages:
 
     def album_prompt_excerpt(self, context, at, image_id, *, max_chars=120):
         """Return a bounded, whitespace-collapsed prompt summary for one album image."""
+        if type(image_id) is str and image_id.startswith("external-image:"):
+            try:
+                self.messages.authorize(context, at)
+            except TaskError:
+                return ""
+            from .external_generated_album import prompt_excerpt as external_prompt_excerpt
+            return external_prompt_excerpt(self, context, image_id, max_chars=max_chars)
         if type(image_id) is not str or not image_id.startswith("generated-image:"):
             return ""
         try:

@@ -1080,6 +1080,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 event, current, message, segment_index=segment_index)
 
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
+        application = getattr(getattr(self.staging, "session", None), "application", None)
         return {
             **connection_callbacks,
             "authorize": authorize_core_send,
@@ -1089,6 +1090,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             "on_reply_end": finish_core_reply_end,
             "prepare_send": prepare_core_voice,
             "media_submit": getattr(observer, "submit", None),
+            "application": application,
         }
 
     def _adopt_core_reply_delivery(self, event) -> bool:
@@ -2363,10 +2365,14 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.on_using_llm_tool()
     async def observe_companion_core_tool_begin(self, event: AstrMessageEvent, tool, tool_args):
         observe_core_tool_started(event, tool)
+        from .astrbot_host.core_reply_external_images import observe_external_tool_begin
+        observe_external_tool_begin(event, tool, tool_args)
 
     @filter.on_llm_tool_respond()
     async def observe_companion_core_tool_done(self, event: AstrMessageEvent, tool, tool_args, tool_result):
         observe_core_tool_finished(event, tool)
+        from .astrbot_host.core_reply_external_images import observe_external_tool_end
+        observe_external_tool_end(event, tool, tool_args, tool_result)
 
     # The agent boundary is the last chance to make the history legal: the SDK
     # converts req.contexts into run_context.messages right after the request

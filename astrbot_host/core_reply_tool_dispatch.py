@@ -109,6 +109,8 @@ def observe_core_tool_dispatch_begin(event, run_context):
                     if getattr(item, "kind", None) == "cached_image" and item.cached_image is not None:
                         from .core_reply_reactions import observe_core_cached_image
                         observe_core_cached_image(event, item.cached_image)
+                        from .core_reply_external_images import observe_external_cached_image
+                        observe_external_cached_image(event, item.cached_image)
                 except Exception:
                     pass
                 yield item
