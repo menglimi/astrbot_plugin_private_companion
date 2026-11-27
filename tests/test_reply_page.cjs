@@ -93,7 +93,7 @@ const LIMITS = {
   threshold: [1, 65536], min_segment_chars: [1, 65536], max_segments: [1, 64],
   part_gap_ms: [0, 60000], part_gap_min_ms: [100, 60000], part_gap_max_ms: [100, 60000],
   part_gap_log_base: [1.1, 5], voice_cooldown_seconds: [0, 86400], voice_max_speech_chars: [1, 10000],
-  voice_timeout_seconds: [1, 120], group_wakeup_question_threshold: [0, 100],
+  voice_timeout_seconds: [1, 300], group_wakeup_question_threshold: [0, 100],
   group_wakeup_cold_group_threshold: [0, 100], group_wakeup_cold_group_idle_minutes: [3, 720],
   group_wakeup_cooldown_seconds: [0, 3600], group_wakeup_fatigue_limit: [1, 20],
   group_wakeup_fatigue_decay_minutes: [5, 720], group_wakeup_generated_keyword_limit: [4, 80],
@@ -605,6 +605,46 @@ test('voice hero follows the draft and warns when voice is off', async () => {
   instance.state.draft.voice_probability = 0;
   h.listeners['root:input']({target: {dataset: {wbField: 'voice_probability'}}});
   assert.match(h.slots.scope.innerHTML, /触发概率为 0/);
+  h.page.unmount();
+});
+
+test('voice hero surfaces conflict guidance and applies one-click presets', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-voice');
+  const instance = live(h);
+  instance.state.draft.voice_enabled = true;
+  instance.state.draft.voice_provider_id = 'tts-a';
+  instance.state.draft.voice_probability = 1;
+
+  // 1) plain + partial conflict
+  instance.state.draft.voice_generation_mode = 'plain';
+  instance.state.draft.voice_conversion_scope = 'partial';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_conversion_scope'}}});
+  assert.match(h.slots.scope.innerHTML, /朗读正文 \+ 部分转语音/);
+  assert.match(h.slots.scope.innerHTML, /data-voice-preset="partial_recommended"/);
+  h.listeners['root:click']({target: {closest: sel => sel === '[data-voice-preset]' ? {dataset: {voicePreset: 'partial_recommended'}} : null}});
+  assert.equal(instance.state.draft.voice_generation_mode, 'model_tag');
+
+  // 2) voice_only + partial conflict
+  instance.state.draft.voice_delivery_mode = 'voice_only';
+  instance.state.draft.voice_conversion_scope = 'partial';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_delivery_mode'}}});
+  assert.match(h.slots.scope.innerHTML, /仅语音 \+ 部分转语音/);
+  assert.match(h.slots.scope.innerHTML, /data-voice-preset="voice_only_full"/);
+  h.listeners['root:click']({target: {closest: sel => sel === '[data-voice-preset]' ? {dataset: {voicePreset: 'voice_only_full'}} : null}});
+  assert.equal(instance.state.draft.voice_conversion_scope, 'full');
+
+  // 3) voice_only + whole + segmented conflict
+  instance.state.draft.enabled = true;
+  instance.state.draft.voice_segment_mode = 'whole';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_segment_mode'}}});
+  assert.match(h.slots.scope.innerHTML, /整段回复/);
+  assert.match(h.slots.scope.innerHTML, /data-voice-preset="voice_only_segmented"/);
+  h.listeners['root:click']({target: {closest: sel => sel === '[data-voice-preset]' ? {dataset: {voicePreset: 'voice_only_segmented'}} : null}});
+  assert.equal(instance.state.draft.voice_segment_mode, 'each');
+
+  // 4) voice_max_speech_chars > 600 gentle tip (default is 1800)
+  assert.match(h.slots.scope.innerHTML, /1800 字/);
   h.page.unmount();
 });
 

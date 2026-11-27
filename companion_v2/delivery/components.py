@@ -14,6 +14,7 @@ installation that never touches the new field keeps its current delivery.
 from dataclasses import dataclass
 
 from companion_v2.conversation.text_processing import strip_internal_expression_protocol
+from companion_v2.conversation.voice_reply import speech_covers_visible
 from .plan import CONTENT_KINDS
 
 
@@ -109,7 +110,7 @@ def build_component_plan(text, images=(), voice=None, *, position="after_media",
 
     voice_included = _voice_component_is_valid(voice)
     hide_text = (voice_included and voice_only is True and isinstance(speech, str)
-                 and speech.strip() == text.strip())
+                 and speech_covers_visible(text, speech))
     text_component = () if hide_text or not text else (OutboundComponent("text", text),)
     image_components = tuple(OutboundComponent("image", image) for image in images)
     voice_components = (OutboundComponent("voice", voice),) if voice_included else ()
