@@ -3314,39 +3314,66 @@ function qzoneCredentialMarkup(credential){
   /* 「没有可用来源」只在失败态出现；unknown 只意味着还没读过，不能替用户下结论。 */
   const failed=QZONE_CREDENTIAL_FAILED_STATES.includes(state);
   const showSource=state!=='unknown'&&(source!=='none'||failed);
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">凭据</span>
-    <span class="action-qzone-status-value"><span class="action-qzone-chip ${tone}">${escapeHTML(QZONE_CREDENTIAL_STATES[state]||'状态未知')}</span>`
-    +`${showSource?`<span>${escapeHTML(QZONE_CREDENTIAL_SOURCES[source]||'来源未知')}</span>`:''}`
-    +`${state==='unknown'?'<span class="action-qzone-reason">刷新凭据或读一次空间即可确认。</span>':''}`
-    +`${masked?`<span>账号 ${escapeHTML(masked)}</span>`:''}`
-    +`${reason?`<span class="action-qzone-reason">${escapeHTML(reason)}</span>`:''}</span>
-    <button class="button small" type="button" data-qzone-action="refresh-credentials" ${qzoneState.busy?'disabled':''}>${I('key-round')}<span>刷新凭据</span></button>
-  </div>`;
+  const facts=[];
+  if(showSource)facts.push(escapeHTML(QZONE_CREDENTIAL_SOURCES[source]||'来源未知'));
+  if(masked)facts.push(`账号 <b class="action-qzone-num">${escapeHTML(masked)}</b>`);
+  if(state==='unknown'&&!facts.length)facts.push('尚未执行首次凭据读取');
+  const note=state==='unknown'
+    ? '<p class="action-qzone-tile-foot">刷新凭据或读一次空间即可确认。</p>'
+    : '';
+  return `<article class="action-qzone-tile" data-qzone-tile="credential">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('key-round')}<span>凭据状态</span></span>
+      <span class="action-qzone-indicator ${tone}"><i aria-hidden="true"></i>${escapeHTML(QZONE_CREDENTIAL_STATES[state]||'状态未知')}</span>
+    </header>
+    <div class="action-qzone-tile-body">
+      ${facts.length?`<p class="action-qzone-tile-line">${facts.join('<span class="action-qzone-sep" aria-hidden="true">·</span>')}</p>`:''}
+      ${reason?`<p class="action-qzone-tile-reason${failed?' is-warn':''}">${escapeHTML(reason)}</p>`:''}
+      ${note}
+    </div>
+  </article>`;
 }
 function qzoneConsentMarkup(status){
   const granted=QZONE_CAPABILITIES.filter(([id])=>qzoneCapabilityGranted(status,id));
   const flags=[['已安装',status.installed===true],['包版本一致',status.active===true],
     ['角色已启用',status.role_enabled===true],['身份授权',status.invoke_granted===true]];
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">授权</span>
-    <span class="action-qzone-status-value">${flags.map(([label,on])=>
-      `<span class="action-qzone-chip ${on?'is-ok':'is-off'}">${label}</span>`).join('')}`
-    +`<span>能力 ${granted.length} / ${QZONE_CAPABILITIES.length}`
-    +`${granted.length?`（${escapeHTML(granted.map(([,name])=>name).join('、'))}）`:''}</span></span>
-    <button class="button small" type="button" data-qzone-action="refresh-status" ${qzoneState.busy?'disabled':''}>${I('refresh-cw')}<span>重新读取</span></button>
-  </div>`;
+  const allGranted=granted.length===QZONE_CAPABILITIES.length;
+  const tone=allGranted?'is-ok':granted.length?'is-warn':'is-off';
+  return `<article class="action-qzone-tile" data-qzone-tile="consent">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('shield-check')}<span>授权与能力</span></span>
+      <span class="action-qzone-tile-metric ${tone}">能力 ${granted.length} / ${QZONE_CAPABILITIES.length}</span>
+    </header>
+    <div class="action-qzone-tile-body">
+      <ul class="action-qzone-checks">${flags.map(([label,on])=>
+        `<li class="${on?'is-ok':'is-off'}"><i aria-hidden="true"></i><span>${label}</span></li>`).join('')}</ul>
+      <p class="action-qzone-tile-foot">${granted.length
+        ? `已授权：${escapeHTML(granted.map(([,name])=>name).join(' · '))}`
+        : '尚未授权任何能力。'}</p>
+    </div>
+  </article>`;
 }
 function qzoneSwitchMarkup(settings){
-  /* 设置读不出来时（宿主还没给运行设置）这一行整块不渲染：
-     一个只有标签、没有内容的空行比没有这一行更像坏了。 */
+  /* 设置读不出来时（宿主还没给运行设置）这一张卡整块不渲染：
+     一个只有标题、没有内容的空卡比没有这张卡更像坏了。 */
   if(!Object.keys(settings).length)return '';
   const rows=[['总开关','enabled'],['点赞','like_enabled'],['回复','comment_enabled'],['发说说','publish_enabled']];
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">能力开关</span>
-    <span class="action-qzone-status-value">${rows.map(([label,key])=>
-      `<span class="action-qzone-chip ${settings[key]===true?'is-ok':'is-off'}">${label} · ${settings[key]===true?'开':'关'}</span>`).join('')}</span>
-  </div>`;
+  const onCount=rows.filter(([,key])=>settings[key]===true).length;
+  const masterOn=settings.enabled===true;
+  const badgeText=masterOn?`${onCount} / ${rows.length} 开启`:'总开关已关';
+  const badgeTone=masterOn?(onCount===rows.length?'is-ok':'is-warn'):'is-off';
+  return `<article class="action-qzone-tile" data-qzone-tile="switches">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('sliders-horizontal')}<span>能力开关</span></span>
+      <span class="action-qzone-tile-metric ${badgeTone}">${badgeText}</span>
+    </header>
+    <div class="action-qzone-tile-body">
+      <div class="action-qzone-switch-grid">${rows.map(([label,key])=>{
+        const on=settings[key]===true;
+        return `<div class="action-qzone-switch-item ${on?'is-ok':'is-off'}"><span>${label}</span><strong><i aria-hidden="true"></i>${on?'开':'关'}</strong></div>`;
+      }).join('')}</div>
+    </div>
+  </article>`;
 }
 function qzoneLimitsMarkup(settings){
   const parts=[['每次读取动态',settings.feed_recent_posts,'条'],
@@ -3361,25 +3388,34 @@ function qzoneLimitsMarkup(settings){
   return `<p class="action-qzone-limits">${I('clock-3')}<span>`
     +`${parts.map(([label,value,unit])=>`${label} ${escapeHTML(String(value))}${unit?' '+unit:''}`).join(' · ')}</span></p>`;
 }
-/* 主题策略：说清「谁在决定主题」，以及目录里有几个主题是开着的。
+/* 主题策略与频控：说清「谁在决定主题」、目录里有几个主题是开着的，以及动作节流。
  * 措辞不能暗示「已经在自动发布」——自动发布要同时满足两项设置，光看
  * topic_auto_enabled 是不够的，所以这里只报取值，不做任何「已启用」的断言。 */
 function qzoneTopicPolicyMarkup(settings){
-  if(!Object.keys(settings).length)return '';
+  const hasSettings=Object.keys(settings).length>0;
+  const limits=qzoneLimitsMarkup(settings);
+  if(!hasSettings&&!limits)return '';
   const auto=settings.topic_auto_enabled===true;
   const confirm=settings.topic_require_confirmation!==false;
   const topics=qzoneTopicTopics();
   /* 目录没读到时不编「0 个已开启」：那是把「没读到」说成了「一个都没开」。 */
-  const count=topics.length
-    ? `已启用主题 ${topics.length} 个（目录里当前可用的）`
+  const badge=topics.length?`已启用主题 ${topics.length} 个`:'目录未读取';
+  const badgeTitle=topics.length
+    ? `目录里当前可用的主题共 ${topics.length} 个`
     : '主题目录还没有读到';
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">主题策略</span>
-    <span class="action-qzone-status-value">
-      <span class="action-qzone-chip ${auto?'is-warn':'is-off'}">模型自行发布 · ${auto?'开':'关'}（默认关）</span>
-      <span class="action-qzone-chip ${confirm?'is-ok':'is-warn'}">主题人工确认 · ${confirm?'开':'关'}（默认开）</span>
-      <span>${escapeHTML(count)}</span></span>
-  </div>`;
+  return `<article class="action-qzone-tile" data-qzone-tile="policy">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('sparkles')}<span>频控与主题策略</span></span>
+      ${hasSettings?`<span class="action-qzone-tile-metric ${topics.length?'is-ok':'is-off'}" title="${escapeHTML(badgeTitle)}">${escapeHTML(badge)}</span>`:''}
+    </header>
+    <div class="action-qzone-tile-body">
+      ${hasSettings?`<div class="action-qzone-policy-list">
+        <div class="action-qzone-policy-item"><span>模型自行发布</span><span class="action-qzone-indicator ${auto?'is-warn':'is-off'}"><i aria-hidden="true"></i>${auto?'开':'关'}<em>（默认关）</em></span></div>
+        <div class="action-qzone-policy-item"><span>主题人工确认</span><span class="action-qzone-indicator ${confirm?'is-ok':'is-warn'}"><i aria-hidden="true"></i>${confirm?'开':'关'}<em>（默认开）</em></span></div>
+      </div>${topics.length?'':'<p class="action-qzone-tile-note">主题目录还没有读到</p>'}`:''}
+      ${limits}
+    </div>
+  </article>`;
 }
 function qzoneStateText(status){
   if(status.installed!==true)return '未安装';
@@ -3391,20 +3427,56 @@ function qzoneStateText(status){
   if(consented['qzone.post.publish']===true&&status.publish_granted!==true)return '缺少发布授权';
   return '已启用';
 }
-function qzoneStatusMarkup(status,full){
+function qzoneHeadMarkup(status){
+  const hasStatus=Boolean(status);
   const blocked=typeof qzoneStatus()?.runtime?.blocked_reason==='string'&&qzoneStatus().runtime.blocked_reason.trim();
-  const tone=status.installed!==true?'is-off':qzoneUsable(status)&&qzoneAuthorizationComplete(status)&&!blocked
-    ?'is-ok':'is-warn';
-  const reason=QZONE_STATUS_REASONS[status.reason]||'';
+  const tone=!hasStatus
+    ? (qzoneState.phase==='error'?'is-warn':'is-off')
+    : (status.installed!==true?'is-off':qzoneUsable(status)&&qzoneAuthorizationComplete(status)&&!blocked?'is-ok':'is-warn');
+  const stateLabel=!hasStatus
+    ? (qzoneState.phase==='error'?'读取失败':'正在读取')
+    : qzoneStateText(status);
+  const reason=hasStatus?(QZONE_STATUS_REASONS[status.reason]||''):'';
+  const version=hasStatus?`扩展版本 ${String(status.package_version||'未知')}`:'';
+  const actions=hasStatus
+    ? `<div class="action-qzone-head-actions">
+        <button class="button small action-qzone-tool" type="button" data-qzone-action="refresh-credentials" ${qzoneState.busy?'disabled':''}>${I('key-round')}<span>${qzoneActing('credentials')?'正在刷新…':'刷新凭据'}</span></button>
+        <button class="button small action-qzone-tool" type="button" data-qzone-action="refresh-status" ${qzoneState.busy?'disabled':''}>${I('refresh-cw')}<span>${qzoneActing('status')?'正在读取…':'重新读取'}</span></button>
+      </div>`
+    : (qzoneState.phase==='error'
+      ? `<div class="action-qzone-head-actions">
+          <button class="button small action-qzone-tool" type="button" data-qzone-action="refresh-status" ${qzoneState.busy?'disabled':''}>${I('refresh-cw')}<span>重新读取</span></button>
+        </div>`
+      : '');
+  return `<header class="action-qzone-head">
+    <div class="action-qzone-head-main">
+      <span class="action-qzone-mark">${I('star')}</span>
+      <div class="action-qzone-copy">
+        <div class="action-qzone-eyebrow">
+          <p class="action-kicker action-kicker-light">QQ 空间拓展</p>
+          ${version?`<span class="action-qzone-sep" aria-hidden="true">·</span><span class="action-qzone-version">${escapeHTML(version)}</span>`:''}
+        </div>
+        <div class="action-qzone-title-row">
+          <h2 id="action-qzone-title">QQ 空间</h2>
+          <span class="action-qzone-badge ${tone}"><i aria-hidden="true"></i>${escapeHTML(stateLabel)}</span>
+          ${reason?`<span class="action-qzone-head-reason">${escapeHTML(reason)}</span>`:''}
+        </div>
+        <p class="action-qzone-subtitle">动态、回复与发布</p>
+      </div>
+    </div>
+    ${actions}
+  </header>`;
+}
+function qzoneStatusMarkup(status,full){
+  const tiles=[
+    qzoneCredentialMarkup(status.credential),
+    full?qzoneConsentMarkup(status):'',
+    full?qzoneSwitchMarkup(qzoneSettings()):'',
+    full?qzoneTopicPolicyMarkup(qzoneSettings()):'',
+  ].filter(Boolean);
   return `<div class="action-qzone-status">
-    <p class="action-qzone-state"><span class="action-qzone-chip ${tone}">${escapeHTML(qzoneStateText(status))}</span>`
-    +`${reason?`<span>${escapeHTML(reason)}</span>`:''}`
-    +`<span>扩展版本 ${escapeHTML(String(status.package_version||'未知'))}</span></p>
-    ${qzoneCredentialMarkup(status.credential)}
-    ${full?qzoneConsentMarkup(status):''}
-    ${full?qzoneSwitchMarkup(qzoneSettings()):''}
-    ${full?qzoneLimitsMarkup(qzoneSettings()):''}
-    ${full?qzoneTopicPolicyMarkup(qzoneSettings()):''}
+    ${qzoneHeadMarkup(status)}
+    <div class="action-qzone-grid${tiles.length===1?' is-single':''}">${tiles.join('')}</div>
   </div>`;
 }
 function qzoneInstallMarkup(installed){
@@ -3715,15 +3787,17 @@ function qzoneBody(){
     /* 还没有状态：要么在读，要么读失败。两种必须说得不一样——
        「正在读取…」停在一次失败之后是最容易骗人的界面。 */
     const failed=qzoneState.phase==='error';
-    return `${failed?'':'<p class="action-qzone-loading" role="status">正在读取 QQ 空间的当前状态…</p>'}
-      ${qzoneNoticeMarkup()}
-      ${failed?`<div class="action-qzone-row">${button('重新读取','data-qzone-action="refresh-status"','small')}</div>`:''}`;
+    return `<div class="action-qzone-status">
+        ${qzoneHeadMarkup(null)}
+        ${failed?'':'<p class="action-qzone-loading" role="status">正在读取 QQ 空间的当前状态…</p>'}
+        ${qzoneNoticeMarkup()}
+      </div>`;
   }
   const installed=status.installed===true;
   const usable=qzoneUsable(status);
-  return `${qzoneNoticeMarkup()}
+  return `${qzoneStatusMarkup(status,usable||installed)}
     ${qzoneBlockedMarkup()}
-    ${qzoneStatusMarkup(status,usable||installed)}
+    ${qzoneNoticeMarkup()}
     ${usable?(qzoneAuthorizationComplete(status)?'':qzoneAuthorizationMarkup(status)):qzoneInstallMarkup(installed)}
     ${installed?qzoneSuggestionBlockMarkup():''}
     ${installed?qzoneConfigMarkup():''}
@@ -3733,12 +3807,6 @@ function qzoneBody(){
 }
 function renderQzoneSection(){
   return `<section class="action-qzone" id="action-qzone" aria-labelledby="action-qzone-title">
-    <header class="action-qzone-head">
-      <span class="action-qzone-mark">${I('star')}</span>
-      <div class="action-qzone-copy"><p class="action-kicker action-kicker-light">QQ 空间拓展</p>
-        <h2 id="action-qzone-title">QQ 空间</h2>
-        <p>动态、回复与发布</p></div>
-    </header>
     <div class="action-qzone-body" id="actionQzoneBody">${qzoneBody()}</div>
   </section>`;
 }
