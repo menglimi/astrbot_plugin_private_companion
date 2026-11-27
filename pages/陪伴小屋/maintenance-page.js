@@ -3497,39 +3497,56 @@ window.CompanionMaintenancePage = (() => {
       }
     }
 
-    let detail = !state.balanceLoaded ? "读取已配置的模型服务余额；查询结果与 本插件角色预算分开显示。"
-      : !balance.configured ? "未配置余额端点；NewAPI 需要单独的用户访问令牌。"
-      : balance.available ? "查询于 " + time(balance.observed_at) + "；不会并入 本插件角色预算。"
+    const isNumericValue = Boolean(curView) || (balance.available && balance.amount != null && String(balance.amount).trim() !== "");
+    let metaPrimary = !state.balanceLoaded ? "读取已配置的模型服务余额"
+      : !balance.configured ? "未配置余额端点；NewAPI 需用户访问令牌"
+      : balance.available ? "查询于 " + time(balance.observed_at)
       : balance.state === "configuration_invalid" ? "余额查询配置无效，请检查余额查询配置。"
       : "查询失败，请检查 HTTPS 地址、访问令牌与额度单位配置。";
+    let metaScope = (!state.balanceLoaded || balance.available) ? "不并入角色预算" : "";
 
     if (isQuotaBoard && state.balanceLoaded && balance.configured) {
       if (balance.available) {
         const obsPart = "查询于 " + time(balance.observed_at);
         if (awarenessMode === "aggregate_sum" && balance.extra) {
-          detail = balance.extra + " · " + obsPart + "；不会并入本插件角色预算。";
+          metaPrimary = balance.extra + " · " + obsPart;
         } else if (balance.participating_count > 1) {
-          detail = obsPart + " · 共监测 " + balance.participating_count + " 站；不会并入本插件角色预算。";
+          metaPrimary = obsPart + " · 共监测 " + balance.participating_count + " 站";
         } else {
-          detail = obsPart + "；不会并入本插件角色预算。";
+          metaPrimary = obsPart;
         }
+        metaScope = "不并入角色预算";
       } else if (stationName) {
-        detail = "站点「" + stationName + "」余额暂不可用，点击可前往额度看板检查配置。";
+        metaPrimary = "站点「" + stationName + "」余额暂不可用，点击可前往额度看板检查配置。";
+        metaScope = "";
       }
     }
 
     const animCls = state.balanceUnitAnim ? " is-unit-updated" : "";
+    const valCls = "maint-balance-val" + (isNumericValue ? "" : " is-status") + animCls;
     const ariaTarget = isQuotaBoard ? (stationName || "额度看板") : providerLabel;
     return '<div class="maint-balance-availability" data-balance-card-jump="quota" data-state="' + (balance.available ? "ok" : balance.configured ? "warn" : "unknown") + '">' +
-      '<div class="maint-balance-head"><i data-lucide="wallet-cards"></i><span><small>' + escapeHtml(eyebrow) + '</small><strong>' + escapeHtml(title) +
-      (modeBadge ? '<span class="maint-balance-badge">' + escapeHtml(modeBadge) + '</span>' : '') + '</strong></span>' +
-      unitSwitchHtml + '</div>' +
-      '<p><b class="maint-balance-val' + animCls + '">' + escapeHtml(value) + '</b>' + sublineHtml + '<span>' + escapeHtml(detail) + '</span></p>' +
-      '<div class="maint-balance-actions">' +
-      '<button class="maint-balance-query" type="button" data-balance-refresh ' + (state.balanceLoading ? "disabled" : "") +
-      ' aria-label="查询 ' + escapeHtml(ariaTarget) + ' 账户余额" title="查询账户余额"><i data-lucide="refresh-cw"></i><span>' +
-      (state.balanceLoading ? "查询中" : state.balanceLoaded ? "重新查询" : "查询余额") + '</span></button>' +
-      '<button class="maint-balance-open" type="button" data-balance-open-quota data-go="manage" data-manage="models" data-manage-subtab="quota" title="前往模型与连接 · 额度看板"><span>额度看板 ↗</span></button>' +
+      '<div class="maint-balance-head">' +
+        '<div class="maint-balance-identity">' +
+          '<span class="maint-balance-icon" aria-hidden="true"><i data-lucide="wallet-cards"></i></span>' +
+          '<div class="maint-balance-title-stack">' +
+            '<strong class="maint-balance-title"><span class="maint-balance-name" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>' +
+            (modeBadge ? '<span class="maint-balance-badge">' + escapeHtml(modeBadge) + '</span>' : '') + '</strong>' +
+            '<small class="maint-balance-eyebrow" title="' + escapeHtml(eyebrow) + '">' + escapeHtml(eyebrow) + '</small>' +
+          '</div>' +
+        '</div>' +
+        unitSwitchHtml +
+      '</div>' +
+      '<div class="maint-balance-figure"><b class="' + valCls + '">' + escapeHtml(value) + '</b>' + sublineHtml + '</div>' +
+      '<div class="maint-balance-foot">' +
+        '<div class="maint-balance-meta"><span class="maint-balance-meta-primary">' + escapeHtml(metaPrimary) + '</span>' +
+        (metaScope ? '<span class="maint-balance-meta-scope">' + escapeHtml(metaScope) + '</span>' : '') + '</div>' +
+        '<div class="maint-balance-actions">' +
+          '<button class="maint-balance-query" type="button" data-balance-refresh ' + (state.balanceLoading ? "disabled" : "") +
+          ' aria-label="查询 ' + escapeHtml(ariaTarget) + ' 账户余额" title="查询账户余额"><i data-lucide="refresh-cw"></i><span>' +
+          (state.balanceLoading ? "查询中" : state.balanceLoaded ? "重新查询" : "查询余额") + '</span></button>' +
+          '<button class="maint-balance-open" type="button" data-balance-open-quota data-go="manage" data-manage="models" data-manage-subtab="quota" title="前往模型与连接 · 额度看板"><span>额度看板 ↗</span></button>' +
+        '</div>' +
       '</div></div>';
   }
 
@@ -3620,7 +3637,27 @@ window.CompanionMaintenancePage = (() => {
       number(coreCoverage.observed_requests) + ' 次实际请求 · ' + number(coreCoverage.fallback_usage_observations) +
       ' 条汇总或最后响应。' + (coreCoverage.partial_request_observation_turns ? number(coreCoverage.partial_request_observation_turns) +
         ' 回合仅观测部分请求，含工具参数重查。' : "") + '无法观测的多轮次数保持未知，核心费用不计为零。</p>' : "";
-    return '<div class="maint-token-hero maint-token-summary maint-token-dashboard-summary">' + balanceMarkup() + '<div class="maint-usage-total maint-token-summary-card"><span>' + escapeHtml(label) + ' · Provider 已确认 Token</span><strong>' + number(stats.tokens) + '</strong><small>Token</small><div class="maint-usage-subline"><span>已确认 ' + number(stats.knownCalls) + ' 次</span><i></i><span>未确认 ' + number(stats.unconfirmed) + ' 次</span><i></i><span>' + priceNote + '</span></div></div>' + budgetMarkup(budget, spent, held, limit, budgetPct, softEnabled, softPct, softLimit, softState) + '</div>' + observationNote +
+    const usageStatusState = stats.unconfirmed > 0 ? "warn" : stats.knownCalls > 0 ? "ok" : "muted";
+    const usageStatusLabel = stats.unconfirmed > 0
+      ? ("含 " + number(stats.unconfirmed) + " 次待确认")
+      : stats.knownCalls > 0
+        ? (number(stats.knownCalls) + " 次确认")
+        : "暂无调用";
+    return '<div class="maint-token-hero maint-token-summary maint-token-dashboard-summary">' + balanceMarkup() +
+      '<div class="maint-usage-total maint-token-summary-card">' +
+        '<div class="maint-token-card-heading maint-usage-head">' +
+          '<span>' + escapeHtml(label) + ' · Provider 已确认 Token</span>' +
+          '<span class="maint-usage-status-pill" data-state="' + usageStatusState + '">' + escapeHtml(usageStatusLabel) + '</span>' +
+        '</div>' +
+        '<div class="maint-usage-reading"><strong>' + number(stats.tokens) + '</strong><small>Token</small></div>' +
+        '<div class="maint-usage-breakdown">' +
+          '<div class="maint-usage-calls">' +
+            '<span class="maint-usage-call-item is-ok"><i></i>已确认 ' + number(stats.knownCalls) + ' 次</span>' +
+            '<span class="maint-usage-call-item' + (stats.unconfirmed > 0 ? ' is-warn' : '') + '"><i></i>未确认 ' + number(stats.unconfirmed) + ' 次</span>' +
+          '</div>' +
+          '<div class="maint-usage-cost-row"><span class="maint-usage-cost-label">本地费用</span><span class="maint-usage-cost-val">' + priceNote + '</span></div>' +
+        '</div>' +
+      '</div>' + budgetMarkup(budget, spent, held, limit, budgetPct, softEnabled, softPct, softLimit, softState) + '</div>' + observationNote +
       (state.tokenSource === "companion" ? usageSplitMarkup(data) : "") +
       '<details class="maint-token-drill"><summary>更多用量指标与周期对比</summary><div class="maint-token-drill-content">' + periodComparison + '<div class="maint-token-kpis"><div><span>输入 / 输出</span><strong>' + number(stats.input) + ' / ' + number(stats.output) + '</strong></div><div><span>平均每次</span><strong>' +
       (stats.calls ? number(stats.tokens / stats.calls) : "—") + ' Token</strong></div><div><span>平均延迟</span><strong>' + (stats.latency == null ? "—" : number(stats.latency) + " ms") +

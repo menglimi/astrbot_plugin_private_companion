@@ -134,8 +134,10 @@ function harness(responses) {
   window.URL = url;
   window.Blob = BlobMock;
   window.atob = value => Buffer.from(value, 'base64').toString('binary');
-  vm.runInNewContext(source, {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
-    Array, Set, Promise, URLSearchParams});
+  const vmCtx = {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
+    Array, Set, Map, Promise, URLSearchParams};
+  vm.runInNewContext(currencySource, vmCtx);
+  vm.runInNewContext(source, vmCtx);
   return {
     page: window.CompanionMaintenancePage, requests, root, exports: csvExports, downloads, confirmations, audioPreviews, revokedAudioUrls, navigations,
     advanceTimers: elapsed => {
@@ -462,7 +464,7 @@ test('dialogue and plugin views switch totals, rankings, cache, history, traces 
 
   h.root.click('[data-token-source]', {tokenSource: 'plugin'});
   const overview = () => h.root.innerHTML.split('data-maint-view="overview"')[1].split('data-maint-view="prompts"')[0];
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>1,300<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>1,300<\/strong>/);
   assert.match(overview(), /US\$0\.013000 已计价部分/);
   assert.match(overview(), /data-rank-key="proactive\.compose"/);
   assert.doesNotMatch(overview(), /data-task-settings-kind="conversation\.reply"|dialogue-provider/);
@@ -485,15 +487,15 @@ test('dialogue and plugin views switch totals, rankings, cache, history, traces 
   assert.match(h.exports[0], /"每日","[^"]+","1300"/);
   assert.match(h.downloads[0], /tokens-plugin-/);
   h.root.click('[data-period]', {period: 'total'});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>1,800<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>1,800<\/strong>/);
   h.root.click('[data-period]', {period: '7d'});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>1,800<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>1,800<\/strong>/);
   h.root.click('[data-select-day]', {selectDay: previous});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>500<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>500<\/strong>/);
   h.root.click('[data-period]', {period: 'today'});
   h.root.click('[data-rank-kind]', {rankKind: 'tasks', rankKey: 'proactive.compose'});
   h.root.click('[data-token-source]', {tokenSource: 'conversation'});
-  assert.match(overview(), /Provider 已确认 Token<\/span><strong>11,000<\/strong>/);
+  assert.match(overview(), /Provider 已确认 Token<\/span>[\s\S]*?<strong>11,000<\/strong>/);
   assert.match(overview(), /data-rank-key="conversation\.reply"/);
   assert.doesNotMatch(overview(), /data-task-settings-kind="proactive\.compose"|plugin-provider/);
   const dialogueRecent = h.root.innerHTML.split('data-maint-view="recent"')[1];
@@ -3070,4 +3072,104 @@ test('balance card honors server preferred_unit over stale localStorage and seri
   await flush();
 
   window.CompanionMaintenancePage.unmount();
+});
+
+test('top KPI summary cards share top-aligned 3-section flex layout, top-right unit pill, baseline-hugged Token unit, and zero trailing separator dot', async () => {
+  const today = localDay();
+  const statsWithUnconfirmed = {
+    ...daily(today, {calls: 54, tokens: 7831384, cost_microusd: 459722}),
+    unconfirmed_calls: 1,
+    cost_basis: 'estimated_local',
+  };
+  const h = harness({
+    maintenance: {
+      generated_at: today + 'T13:21:00',
+      summary: statsWithUnconfirmed,
+      totals: statsWithUnconfirmed,
+      daily: [statsWithUnconfirmed],
+      history: [statsWithUnconfirmed],
+      cost_availability: 'partial_estimated',
+      pricing: {display_currency: 'CNY', usd_cny_rate: 7.2},
+      recent: [],
+      budget: {spent_tokens: 718375, held_tokens: 0, hard_limit_enabled: false, soft_limit_enabled: false},
+    },
+    balance: {
+      configured: true,
+      available: true,
+      provider: 'multi_station',
+      provider_label: '多站点额度看板',
+      source_kind: 'quota_dashboard',
+      station_id: 'st-relay',
+      station_name: '饼干中转站',
+      awareness_mode: 'primary',
+      is_primary_explicit: true,
+      participating_count: 4,
+      currency_symbol: '🍪',
+      currency_label: 'CREDIT',
+      amount: '732.98',
+      observed_at: today + 'T13:21:00',
+      state: 'available',
+      currency_context: {
+        scope_key: 'station:st-relay',
+        station_id: 'st-relay',
+        display_type: 'CREDIT',
+        native_symbol: '🍪',
+        native_amount: 732.98,
+        inferred_fiat_currency: 'CNY',
+        cny_amount: 73.298,
+        usd_amount: 10.1803,
+        usd_cny_rate: 7.2,
+        preferred_unit: 'cny',
+        available_units: ['native', 'cny', 'usd'],
+      },
+    },
+  });
+  h.page.mount(h.root);
+  await flush();
+
+  const html = h.root.innerHTML;
+  const summaryStart = html.indexOf('maint-token-dashboard-summary');
+  const summaryEnd = html.indexOf('maint-scope-note', summaryStart);
+  const summaryHtml = html.slice(summaryStart, summaryEnd > summaryStart ? summaryEnd : undefined);
+
+  // 1) Balance card puts identity and compact unit switcher on the same top header row, with dedicated figure + anchored foot
+  assert.match(summaryHtml, /<div class="maint-balance-head"><div class="maint-balance-identity">[\s\S]*?<strong class="maint-balance-title"><span class="maint-balance-name"[^>]*>饼干中转站<\/span><span class="maint-balance-badge">主站<\/span><\/strong><small class="maint-balance-eyebrow"[^>]*>ACCOUNT BALANCE · 额度看板<\/small><\/div><\/div><div class="maint-balance-unit-switch"/);
+  assert.match(summaryHtml, /<div class="maint-balance-figure"><b class="maint-balance-val">¥73\.30<\/b><em class="maint-balance-subline"/);
+  assert.match(summaryHtml, /<div class="maint-balance-foot"><div class="maint-balance-meta"><span class="maint-balance-meta-primary">查询于 [^<]+ · 共监测 4 站<\/span><span class="maint-balance-meta-scope">不并入角色预算<\/span><\/div><div class="maint-balance-actions">/);
+
+  // 2) Confirmed Token card uses top-aligned heading + status pill, baseline-hugged Token unit, and 2-row breakdown with ZERO orphaned trailing dot
+  const usageSection = summaryHtml.split('<div class="maint-usage-total maint-token-summary-card">')[1].split('<div class="maint-budget-block')[0];
+  assert.match(usageSection, /<div class="maint-token-card-heading maint-usage-head"><span>今日 · Provider 已确认 Token<\/span><span class="maint-usage-status-pill" data-state="warn">含 1 次待确认<\/span><\/div>/);
+  assert.match(usageSection, /<div class="maint-usage-reading"><strong>7,831,384<\/strong><small>Token<\/small><\/div>/);
+  assert.match(usageSection, /<div class="maint-usage-breakdown"><div class="maint-usage-calls"><span class="maint-usage-call-item is-ok"><i><\/i>已确认 53 次<\/span><span class="maint-usage-call-item is-warn"><i><\/i>未确认 1 次<\/span><\/div><div class="maint-usage-cost-row"><span class="maint-usage-cost-label">本地费用<\/span><span class="maint-usage-cost-val">¥3\.31 本地估算 · 部分未设单价<\/span><\/div><\/div>/);
+  assert.doesNotMatch(usageSection, /maint-usage-subline/, 'middle KPI card must not rely on flex-wrap dot separators that leave orphaned trailing dots');
+  assert.doesNotMatch(usageSection, /次<\/span><i><\/i>/, 'middle KPI card must never render trailing separator dots after call counts');
+
+  // 3) CSS contract guarantees unified top-aligned flex-column cards, margin-top:auto footers, and nowrap balance header
+  assert.match(styles, /\.maint-token-dashboard-summary > \.maint-usage-total\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary > \.maint-balance-availability\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary > \.maint-budget-block\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary \.maint-balance-availability > \.maint-balance-head\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+  assert.match(styles, /\.maint-usage-breakdown\s*\{[^}]*margin-top:\s*auto;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary \.maint-balance-availability > \.maint-balance-foot\s*\{[^}]*margin-top:\s*auto;/s);
+  assert.match(styles, /\.maint-token-dashboard-summary \.maint-soft-limit\s*\{[^}]*margin-top:\s*auto;/s);
+
+  // 4) Zero-unconfirmed case renders calm ok status pill ("53 次确认")
+  h.page.unmount();
+  const statsAllOk = {...daily(today, {calls: 53, tokens: 7831384, cost: 3.31}), known_calls: 53, unconfirmed_calls: 0};
+  const hOk = harness({
+    maintenance: {
+      generated_at: today + 'T13:21:00',
+      summary: statsAllOk,
+      totals: statsAllOk,
+      daily: [statsAllOk],
+      history: [statsAllOk],
+      recent: [],
+      budget: {},
+    },
+  });
+  hOk.page.mount(hOk.root);
+  await flush();
+  assert.match(hOk.root.innerHTML, /<span class="maint-usage-status-pill" data-state="ok">53 次确认<\/span>/);
+  hOk.page.unmount();
 });
