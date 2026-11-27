@@ -150,6 +150,155 @@ test("Issue #1: 真实正向不适/饥饿/困倦/忙碌与转折子句保持准�
   assert.ok(Date.now() - started < 200, "clause negation matching must stay linear-time");
 });
 
+test("状态否定作用域增强：复杂插词否定、双重否定、转折跨维度、症状解除与未消退边界全覆盖", () => {
+  const { vital, specialState, renderState } = loadHomeSidebar();
+
+  // 1. 含未枚举修饰词/并列病症的长否定句（复现“没有什么酸沉或病痛不适”）
+  const complexNegatedHealth = [
+    "睡饱后浑身暖和舒展，手腕和指节都很松快，没有什么酸沉或病痛不适",
+    "没有任何头痛脑热或不适",
+    "经期小腹没有明显坠胀或痛经",
+    "没有昨晚那种沉重的不适",
+    "不觉得手腕发酸或不适",
+    "没感到胸闷气短或不适",
+    "还好没什么不舒服",
+    "完全没有不舒服",
+    "一点不舒服也没有",
+    "并没有不太舒服",
+    "不算不舒服",
+    "已经不痛了",
+    "现在不疼了",
+    "不再难受了",
+    "头疼已经好了",
+    "不适感已经消退",
+    "已经退烧了，人轻松多了",
+    "睡醒后神清气爽，痛快极了",
+    "浑身舒展轻快，说不上哪里不适",
+  ];
+  for (const sample of complexNegatedHealth) {
+    const result = vital("health", sample);
+    assert.equal(result.visual, "well", `health vital(${sample}) should be well, got ${result.visual}/${result.label}`);
+    assert.equal(result.icon, "heart-pulse", `health icon(${sample}) should be heart-pulse`);
+    assert.equal(result.label, "良好", `health label(${sample}) should be 良好`);
+    assert.equal(result.tone, "ok", `health tone(${sample}) should be ok`);
+    assert.equal(specialState("health", sample), false, `specialState(health, ${sample}) should be false`);
+  }
+
+  // 渲染端一致性校验：卡片图标、短标签与悬停详情完全一致
+  const renderedWell = renderState({
+    now: NOW,
+    state: makeStatus({
+      energy: 88,
+      health: "睡饱后浑身暖和舒展，手腕和指节都很松快，没有什么酸沉或病痛不适",
+      sleep: "清醒",
+    }, { home_show_busy: false, home_show_location: false, home_show_mood: false, home_show_hunger: false, home_show_cycle: false }),
+    life: makeLife(),
+  });
+  assert.match(renderedWell, /data-state-kind="health" data-visual="well" data-tone="ok"/);
+  assert.match(renderedWell, /data-lucide="heart-pulse"/);
+  assert.doesNotMatch(renderedWell, /data-lucide="heart-crack"/);
+  assert.match(renderedWell, /data-state-kind="health"[\s\S]*?<strong>良好<\/strong>/);
+
+  // 2. 转折跨维度：“没有不适但有点困” -> 健康良好、睡眠困倦
+  const mixedHealthSleep = "没有不适但有点困";
+  assert.equal(vital("health", mixedHealthSleep).visual, "well");
+  assert.equal(vital("health", mixedHealthSleep).label, "良好");
+  assert.equal(specialState("health", mixedHealthSleep), false);
+  assert.equal(vital("sleep", mixedHealthSleep).visual, "sleepy");
+  assert.equal(vital("sleep", mixedHealthSleep).label, "困倦");
+
+  // 3. 模糊难以指认句式与比较缓和句式：不误报心碎“不适”，也不强行断言“良好”
+  for (const sample of ["说不上哪里不适", "说不出哪里不舒服", "没之前那么痛"]) {
+    const result = vital("health", sample);
+    assert.equal(result.visual, "recorded", `ambiguous health(${sample}) should preserve raw text as recorded`);
+    assert.equal(result.icon, "heart-pulse");
+    assert.equal(specialState("health", sample), false);
+  }
+
+  // 4. 各类真实不适、否定正向词（不怎么舒服）、非否定固定短语与未消退症状保持准确预警
+  const complexPositiveHealth = [
+    "轻微头痛",
+    "不怎么舒服",
+    "不是很舒服",
+    "不大舒服",
+    "不太好受",
+    "有点难受",
+    "小腹隐隐作痛",
+    "有点痛经",
+    "嗓子有点疼",
+    "轻微头晕恶心",
+    "不仅头疼还发烧",
+    "不小心着凉感冒了",
+    "不知怎么有点头晕",
+    "时不时隐隐作痛",
+    "没睡好导致头疼",
+    "没睡好有点头疼",
+    "没有发烧反而有点头晕",
+    "不适感一点也没有消退",
+    "头疼还没好",
+    "发烧仍未退",
+    "疼痛并未缓解",
+    "没有在恢复，反而更难受了",
+    "状态不太稳定",
+    "浑身无力有点虚弱",
+  ];
+  for (const sample of complexPositiveHealth) {
+    const result = vital("health", sample);
+    assert.equal(result.visual, "strained", `health vital(${sample}) should be strained, got ${result.visual}/${result.label}`);
+    assert.equal(result.icon, "heart-crack", `health icon(${sample}) should be heart-crack`);
+    assert.equal(result.label, "不适");
+    assert.equal(result.tone, "warn");
+    assert.equal(specialState("health", sample), true, `specialState(health, ${sample}) should be true`);
+  }
+
+  // 5. 举一反三：饥饿 / 睡眠 / 忙碌的插词否定、固定词与作用域截断边界
+  for (const sample of [
+    "胃里踏实，没有什么空落落或饥饿感",
+    "谈不上肚子饿",
+    "已经不饿了",
+    "还没到肚子饿的时候",
+    "并没有觉得肚子饿",
+    "不怎么饿",
+  ]) {
+    assert.equal(vital("hunger", sample).visual, "sated", `hunger vital(${sample}) should be sated`);
+    assert.equal(specialState("hunger", sample), false);
+  }
+  assert.notEqual(vital("hunger", "没有吃撑，也没有吃得太饱").visual, "full");
+  for (const sample of ["没吃早饭结果饿了", "没怎么吃饱", "今天还没有吃饱", "没想到突然有点饿了"]) {
+    assert.equal(vital("hunger", sample).visual, "hungry", `hunger vital(${sample}) should be hungry`);
+    assert.equal(specialState("hunger", sample), true);
+  }
+
+  for (const sample of [
+    "神清气爽，没有半点昨夜残留的困倦感",
+    "已经不困了",
+    "不再犯困",
+    "一点都不想睡",
+  ]) {
+    assert.equal(vital("sleep", sample).visual, "awake", `sleep vital(${sample}) should be awake`);
+    assert.equal(specialState("sleep", sample), false);
+  }
+  for (const sample of ["睡得很踏实，没有什么辗转反侧或失眠", "没有熬夜也没有睡眠不足", "昨晚没有翻来覆去睡不着"]) {
+    assert.notEqual(vital("sleep", sample).visual, "restless", `sleep vital(${sample}) must not be restless`);
+    assert.equal(specialState("sleep", sample), false);
+  }
+  assert.equal(vital("sleep", "忍不住打哈欠好困").visual, "sleepy");
+  assert.equal(vital("sleep", "没睡好还是有点困").visual, "restless");
+
+  for (const sample of [
+    "在客厅暖和处闲着，眼下没什么正事忙",
+    "眼下没什么正事在忙",
+    "暂时没有需要忙碌的安排",
+    "已经不忙了",
+    "顺手帮忙整理了一下桌角",
+  ]) {
+    assert.equal(specialState("busy", sample), false, `specialState(busy, ${sample}) should be false`);
+  }
+  for (const sample of ["忙得不可开交", "最近挺忙的", "不得不忙着收尾", "没完没了地忙着赶工"]) {
+    assert.equal(specialState("busy", sample), true, `specialState(busy, ${sample}) should be true`);
+  }
+});
+
 test("Issue #1: home-sidebar 宽行判断按渲染标签长度而非原文长度计算", () => {
   const { renderState } = loadHomeSidebar();
   const state = makeStatus({

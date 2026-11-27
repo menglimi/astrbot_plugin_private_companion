@@ -181,47 +181,107 @@ window.CompanionHomeSidebar = (() => {
   }
   const activities = life => Array.isArray(life?.activities) ? life.activities : [];
   const sleepOf = ({state, life}) => state?.body_sleep || life?.body_sleep || state?.state?.sleep_execution;
-  const CLAUSE_SPLIT = /[，。；,;!！?？\n]+|(?=(?:但是|但|不过|可是|只是|就是|却|然而|反而|倒是))/;
-  const NEGATOR = "(?:完全没有|一点也没|一点都没|丝毫没有|半点没有|没有出现|没有觉得|没有感到|并没有|并未曾|未曾|完全不|一点也不|一点都不|丝毫不|半点不|谈不上|挑不出|找不到|觉察不到|感受不到|感觉不到|不至于|算不上|没觉得|没感到|没有|暂无|并无|未见|尚未|不再|并不|并未|不算|没到|没啥|无|没|(?<!不得|不能)不)";
-  const NEG_BRIDGE = "(?:觉得|感到|觉察到|感觉到|察觉到|出现|产生|带有|带着|存在|什么|啥|任何|其他|其它|别的|明显|特别|格外|半点|丝毫|一丝|半分|一点|有多|多少|多么|多|真|真的|怎么|太|很|有点|有些|过于|过分|正在|正|在|有|哪里|哪儿|哪处|身上|身体|胸口|肠胃|胃里|头部|肩背|腰背|四肢|扰人的|多余的|酸沉|酸软|酸胀|酸痛|闷胀|沉闷|乏力|紧绷|僵硬|发沉|或者|以及|或|和|与|及|、|的|之类|方面)";
-  const NEG_JOIN = "(?:或者|以及|或|和|与|及|、|也(?:没有|并无|暂无|未见|没|无|不))";
+  const CLAUSE_SPLIT = /[，。；,;!！?？\n]+|(?=(?:但是|但|不过|可是|只是|就是|却|然而|反而|反倒|倒是))/;
+  // 固定表达与“不+正向词”习语中的“不/没/无”不构成外层否定作用域（模糊表达单独由 UNCERTAIN_NEGATOR 处理）。
+  const NON_NEGATOR_PHRASE = /不得不|忍不住|禁不住|按捺不住|免不了|少不了|难免|不由得|不由自主|不知不觉|不自觉|不仅|不但|不只|不光|不止|不停|不断|不绝|时不时|不时|不小心|不慎|不知怎么|不知道为什么|不知道为何|不管|不论|无论|没想到|没料到|没完没了|无精打采|无力|无奈|无端|无故|说不上来|说不上|说不出来|说不出|讲不清|分不清|不是很舒服|不怎么舒服|不太舒服|不大舒服|不甚舒服|不舒服|不舒适|不太好受|不好受|不太舒坦|不舒坦|不太稳定|不够稳定|不稳定/g;
+  // 强存在/感知/判断/终止否定词：既可否定普通症状，也可对“不舒服/不太舒服/没吃饱”构成双重否定。
+  const STRONG_NEGATOR = /(?:完全没有|一点也没|一点都没|丝毫没有|半点没有|压根没有|根本没有|没有出现|没有觉得|没有感到|并没有|并未曾|并未觉得|并未感到|未曾|并无|暂无|全无|皆无|未见|尚未|没觉得|没感到|没有|没什么|没啥|没到|还没|不觉得|不感到|觉察不到|感受不到|感觉不到|挑不出|找不到|谈不上|算不上|不至于|不算|不再|并非|不是|并没|无|没)/g;
+  // 广义前置否定词：用于非“不/没”前缀的普通症状词（如“已经不痛了”“完全不困”“不怎么忙”）。
+  const GENERAL_NEGATOR = /(?:完全没有|一点也没|一点都没|丝毫没有|半点没有|压根没有|根本没有|没有出现|没有觉得|没有感到|并没有|并未曾|并未觉得|并未感到|未曾|完全不|一点也不|一点都不|丝毫不|半点不|压根不|根本不|并不|并未|并无|暂无|全无|皆无|未见|尚未|没觉得|没感到|没有|没什么|没啥|没到|还没|不觉得|不感到|觉察不到|感受不到|感觉不到|挑不出|找不到|谈不上|算不上|不至于|不算|不再|不怎么|不太|不大|不甚|并非|不是|并没|无|没|不)/g;
+  // 模糊/难以指认句式（如“说不上哪里不适”）：抑制误判为正向不适，但不强行断言为“良好”。
+  const UNCERTAIN_NEGATOR = /(?:说不上来|说不上|说不出来|说不出|讲不清|分不清)/g;
+  // 同一分句内终止否定作用域的边界：因果转折、持续强调或已消耗否定词的独立动作谓语。
+  const NEG_SCOPE_BREAK = /(?:导致|引起|弄得|搞得|害得|结果|所以|因此|于是|反而|反倒|偏偏|还是|依然|依旧|仍旧|仍然|却|但|不过|可是|只是|就是|然而|倒是|还(?:挺|很|有点|有些|略|偏)|睡好|睡足|睡够|吃饭|吃早饭|吃午饭|吃晚饭|吃东西|吃饱|休息好|喝水|盖好|穿暖|穿够)/;
+  const NON_CESSATION_SUFFIX = /^(?:感|意|症状|之感|的感觉|状态)?(?:一点|半点|丝毫)?(?:也|都)?(?:还|仍|仍然|依然|依旧|始终|一直|迟迟|并)?(?:没有|没|未|并未|尚未|不曾|不太)(?:消退|缓解|减轻|好转|散去|退去|退|痊愈|消失|停|止|好)/;
+  const POST_NEG_SUFFIX = /^(?:感|意|症状|之感|的地方|的感觉|的迹象|的苗头)?(?:也|都|均|统统|全都|全|一概)?(?:没有|并无|全无|皆无|无)(?=$|[了啦呢嘛啊呀的])/;
+  const CESSATION_SUFFIX = /^(?:感|意|症状|之感|的感觉)?(?:已经|早已|早就|基本|彻底|完全|终于|都|全都)?(?:消退|散去|退去|退了|痊愈|消失|好了|止住了|没了|没有了|不再有)(?:了|啦|呢|嘛)?(?=$|[，。；,;!！?？\s了啦呢嘛啊呀的])/;
+  const COMPARATIVE_MITIGATION = /(?:之前|刚才|先前|昨天|昨晚|原先|原本|平时|以前).{0,4}(?:那么|那样|这么|这样)/;
+  const NEG_IDIOM_HEAD = /^(?:不是很舒服|不怎么舒服|不太舒服|不大舒服|不甚舒服|不舒服|不舒适|不太好受|不好受|不太舒坦|不舒坦|不太稳定|不够稳定|不稳定|没有吃饱|没怎么吃饱|没太吃饱|没吃饱|未吃饱|没有睡好|没怎么睡好|没睡好|难以入睡|无法入睡)/;
+  const NEG_SCOPE_MAX_CHARS = 24;
+  const UNCERTAIN_SCOPE_MAX_CHARS = 16;
+  const HEALTH_STRAINED_POS = "不是很舒服|不怎么舒服|不太舒服|不大舒服|不甚舒服|不舒服|不舒适|不太好受|不好受|不太舒坦|不舒坦|不太稳定|不够稳定|不稳定|不适|生病|发烧|低烧|高烧|发热|感冒|着凉|受凉|剧烈疼痛|疼痛|偏头痛|头痛|头疼|病痛|酸痛|胃痛|胃疼|腹痛|肚子痛|肚子疼|痛经|咽痛|喉咙痛|喉咙疼|嗓子痛|嗓子疼|牙痛|牙疼|腰痛|腰疼|背痛|背疼|胸痛|关节痛|隐痛|胀痛|刺痛|闷痛|钝痛|剧痛|作痛|阵痛|发痛|发疼|生疼|疼得|痛得|很痛|很疼|好痛|好疼|有点痛|有点疼|有些痛|有些疼|挺痛|挺疼|太痛|太疼|略痛|略疼|微痛|微疼|难受|头晕|眩晕|恶心|反胃|咳嗽|发冷|畏寒|腹泻|拉肚子|抽筋|虚弱|乏力|欠佳";
+  const HUNGER_POS_CORE = "没有吃饱|没怎么吃饱|没太吃饱|没吃饱|未吃饱|吃不饱|有点饿|有些饿|微饿|很饿|好饿|挺饿|太饿|发饿|肚子饿|饿得|饿了|饥饿感|饥饿|饥肠辘辘";
+  const SLEEPY_POS_CORE = "困倦感|困倦|困意|犯困|想睡|好困|有些困|有点困|很困|太困|挺困|困乏|疲惫";
+  const BUSY_POS_CORE = "忙碌|忙着|忙于|在忙|正忙|很忙|有点忙|有些忙|挺忙|太忙|忙不过来|忙得|忙活";
   const STATUS_PATTERNS = {
-    healthRecovering: "恢复中|康复中|正在恢复|逐渐恢复|正在好转|有所好转",
-    healthStrained: "不太舒服|不舒服|不适|生病|发烧|发热|疼痛|头痛|头疼|感冒|虚弱|不稳定|欠佳",
-    healthWell: "稳定|正常|健康|良好",
-    hungerFull: "吃撑|太饱|过饱|饱胀|有点撑",
-    hungerPos: "没有吃饱|没吃饱|未吃饱|有点饿|有些饿|很饿|好饿|挺饿|太饿|发饿|肚子饿|饿得|饿了|饥饿感|饥饿|饥肠辘辘|^饿$",
-    hungerNeg: "没有吃饱|没吃饱|未吃饱|饥饿感|饥饿|饿意|饿得|饿了|饿",
+    healthRecovering: "恢复中|康复中|正在恢复|逐渐恢复|慢慢恢复|正在好转|有所好转|逐渐好转|慢慢好转|正在缓解|逐渐缓解|慢慢缓解",
+    healthStrainedPos: HEALTH_STRAINED_POS,
+    healthStrainedNeg: `${HEALTH_STRAINED_POS}|痛(?!(?:快|恨|惜|哭|饮|骂|斥|击|打|改|定))|疼(?!(?:爱|惜))`,
+    healthWell: "稳定|正常|健康|良好|舒展|舒适|舒服|松快|轻快|安稳|稳当|神清气爽|无恙|健朗|退烧|痊愈",
+    hungerFull: "吃撑|太饱|过饱|饱胀|有点撑|撑得",
+    hungerPos: `${HUNGER_POS_CORE}|^饿$`,
+    hungerNeg: `${HUNGER_POS_CORE}|饿意|饿`,
     hungerSated: "已吃饱|吃饱了|饱腹|饱足|已饱",
-    sleepRestless: "难以入睡|无法入睡|失眠|睡不着|辗转|睡眠不足|没有睡好|没睡好|睡不好",
-    sleepyPos: "困倦感|困倦|困意|犯困|想睡|好困|有些困|有点困|很困|太困|挺困|疲惫|^困$",
-    sleepyNeg: "困倦感|困倦|困意|犯困|想睡|困乏|疲惫|困(?![难惑扰境局顿])",
+    sleepRestless: "难以入睡|无法入睡|失眠|睡不着|辗转|睡眠不足|没有睡好|没怎么睡好|没睡好|睡不好",
+    sleepyPos: `${SLEEPY_POS_CORE}|^困$`,
+    sleepyNeg: `${SLEEPY_POS_CORE}|困(?![难惑扰境局顿])`,
     sleepRest: "休息|入睡|睡着|睡眠中",
     sleepAwake: "清醒|精神饱满|已醒|醒着",
-    busyPos: "忙碌|忙着|忙于|在忙|正忙|很忙|有点忙|有些忙|挺忙|太忙|忙不过来|忙得|^忙$",
-    busyNeg: "忙碌|忙着|忙于|在忙|正忙|忙不过来|忙得|忙",
+    busyPos: `${BUSY_POS_CORE}|^忙$`,
+    busyNeg: `${BUSY_POS_CORE}|(?<!帮|急|匆|慌|连)忙`,
   };
+  function collectMatches(regex, source) {
+    regex.lastIndex = 0;
+    const list = [];
+    let m;
+    while ((m = regex.exec(source)) !== null) {
+      list.push({start: m.index, end: m.index + m[0].length, text: m[0]});
+      if (m[0].length === 0) regex.lastIndex += 1;
+    }
+    return list;
+  }
+  function findGoverningNegator(negators, clause, targetStart, maxChars) {
+    for (let i = negators.length - 1; i >= 0; i -= 1) {
+      const neg = negators[i];
+      if (neg.end > targetStart) continue;
+      const gap = clause.slice(neg.end, targetStart);
+      if (gap.length > maxChars) break;
+      if (NEG_SCOPE_BREAK.test(gap)) return null;
+      return {neg, gap};
+    }
+    return null;
+  }
   function analyzeNegation(raw, posSource, negSource = posSource) {
     const value = text(raw);
-    if (!value) return {hasPositive:false, hasNegated:false};
-    const negPattern = new RegExp(
-      `${NEGATOR}${NEG_BRIDGE}{0,8}(?:${negSource})(?:感|意|症状|之感)?(?:${NEG_JOIN}${NEG_BRIDGE}{0,4}(?:${negSource})(?:感|意|症状|之感)?)*`,
-      "g"
-    );
-    const postNegPattern = new RegExp(
-      `(?:一点|半点|丝毫|一丝|半分|完全|根本|几乎)?${NEG_BRIDGE}{0,3}(?:${negSource})(?:感|意|症状|之感)?(?:也|都)?(?:没有|并无|全无|皆无|无)(?=$|[了啦呢嘛啊呀的])`,
-      "g"
-    );
+    if (!value) return {hasPositive:false, hasNegated:false, hasUncertain:false};
     const posPattern = new RegExp(posSource);
-    let hasPositive = false, hasNegated = false;
+    const tokenPattern = new RegExp(negSource, "g");
+    let hasPositive = false, hasNegated = false, hasUncertain = false;
     for (const part of value.split(CLAUSE_SPLIT)) {
       const clause = part.trim();
       if (!clause) continue;
-      let cleaned = clause.replace(negPattern, () => { hasNegated = true; return ""; });
-      cleaned = cleaned.replace(postNegPattern, () => { hasNegated = true; return ""; });
-      if (posPattern.test(cleaned)) hasPositive = true;
+      const masked = clause.replace(NON_NEGATOR_PHRASE, match => " ".repeat(match.length));
+      const strongNegs = collectMatches(STRONG_NEGATOR, masked);
+      const generalNegs = collectMatches(GENERAL_NEGATOR, masked);
+      const uncertainNegs = collectMatches(UNCERTAIN_NEGATOR, clause);
+      const tokens = collectMatches(tokenPattern, clause);
+      for (const tok of tokens) {
+        const suffix = clause.slice(tok.end);
+        const isExactClause = tok.start === 0 && tok.end === clause.length;
+        const matchesPos = posPattern.test(isExactClause ? tok.text : ` ${tok.text} `);
+        if (NON_CESSATION_SUFFIX.test(suffix)) {
+          if (matchesPos) hasPositive = true;
+          continue;
+        }
+        if (POST_NEG_SUFFIX.test(suffix) || CESSATION_SUFFIX.test(suffix)) {
+          hasNegated = true;
+          continue;
+        }
+        const negPool = NEG_IDIOM_HEAD.test(tok.text) ? strongNegs : generalNegs;
+        const governed = findGoverningNegator(negPool, clause, tok.start, NEG_SCOPE_MAX_CHARS);
+        if (governed) {
+          if (COMPARATIVE_MITIGATION.test(governed.gap)) hasUncertain = true;
+          else hasNegated = true;
+          continue;
+        }
+        if (findGoverningNegator(uncertainNegs, clause, tok.start, UNCERTAIN_SCOPE_MAX_CHARS)) {
+          hasUncertain = true;
+          continue;
+        }
+        if (matchesPos) hasPositive = true;
+      }
     }
-    return {hasPositive, hasNegated};
+    return {hasPositive, hasNegated, hasUncertain};
   }
   function vital(kind, raw, {sleeping=false, disabled=false, loading=false, unreadable=false}={}) {
     const icons = {energy:"battery",health:"heart-pulse",hunger:"utensils",sleep:"moon",mood:"heart",
@@ -241,7 +301,7 @@ window.CompanionHomeSidebar = (() => {
     if (kind === "health") {
       if (/^(稳定|正常|健康|良好|状态良好|无不适|没有不适|身体无不适)$/.test(raw)) return item("well","heart-pulse","良好","ok");
       if (analyzeNegation(raw, STATUS_PATTERNS.healthRecovering).hasPositive) return item("recovering","heart-handshake","恢复中","ok");
-      const strained = analyzeNegation(raw, STATUS_PATTERNS.healthStrained);
+      const strained = analyzeNegation(raw, STATUS_PATTERNS.healthStrainedPos, STATUS_PATTERNS.healthStrainedNeg);
       if (strained.hasPositive) return item("strained","heart-crack","不适","warn");
       if (strained.hasNegated || analyzeNegation(raw, STATUS_PATTERNS.healthWell).hasPositive) return item("well","heart-pulse","良好","ok");
     } else if (kind === "hunger") {
