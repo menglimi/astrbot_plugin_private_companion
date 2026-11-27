@@ -758,7 +758,16 @@ window.CompanionOutputPage=(()=>{
       const total=typeof data?.total_count==="number"&&Number.isFinite(data.total_count)&&data.total_count>=0?data.total_count:NaN;
       const synced=typeof data?.synced_count==="number"&&Number.isFinite(data.synced_count)&&data.synced_count>0?data.synced_count:0;
       const summary=Number.isFinite(total)?(synced?`（已同步 ${synced} 张，共 ${total} 张）`:`（共 ${total} 张）`):"";
-      albumNotice=`已打开产出图库目录${summary}：${data?.path||"产出图库目录"}`;
+      const folderPath=data?.path||"产出图库目录";
+      if(data?.opened===false){
+        if(data?.reason==="non_interactive_desktop"){
+          albumNotice=`图库已同步${summary}，但后端运行在非交互桌面/后台服务中，无法直接弹出资源管理器。目录路径：${folderPath}（也可使用「导出选中」下载）`;
+        }else{
+          albumNotice=`当前为无桌面/服务器环境，无法自动弹出文件管理器；图库已同步至服务端目录${summary}：${folderPath}（可直接查看路径，或使用「导出选中」下载）`;
+        }
+      }else{
+        albumNotice=`已打开产出图库目录${summary}：${folderPath}`;
+      }
     }catch(error){if(live(id)){albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"无法打开产出图库目录";albumNotice=albumError;}}
     finally{if(live(id)){albumBusy="";renderAlbum();}}
   }

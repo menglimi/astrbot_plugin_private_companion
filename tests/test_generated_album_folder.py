@@ -320,12 +320,13 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
             )
 
             opened_targets: list[str] = []
-            launcher_attr = "os.startfile" if os.name == "nt" else "subprocess.Popen"
 
             def fake_launch(arg, *_args, **_kwargs):
-                opened_targets.append(arg if isinstance(arg, str) else arg[-1])
+                value = str(arg)
+                opened_targets.append(value)
+                return value
 
-            with patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+            with patch("companion_v2.references.management.open_local_folder", side_effect=fake_launch):
                 first = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
                 second = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:01:00+00:00")
 
@@ -352,7 +353,7 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
 
             manager._admit = lambda operator, context, at: "owner-2"
             generated_images.page_map = {None: {"items": (), "next_cursor": None}}
-            with patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+            with patch("companion_v2.references.management.open_local_folder", side_effect=fake_launch):
                 separate = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
             self.assertNotEqual(separate["path"], first["path"])
             self.assertEqual(list(Path(separate["path"]).iterdir()), [])
@@ -367,12 +368,13 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
             # Hostile bound role ID stays strictly confined inside media/generated-album/.
             manager, context, _ = self._build_manager(data_root, pages, role_id="../../etc/passwd")
             opened: list[str] = []
-            launcher_attr = "os.startfile" if os.name == "nt" else "subprocess.Popen"
 
             def fake_launch(arg, *_args, **_kwargs):
-                opened.append(arg if isinstance(arg, str) else arg[-1])
+                value = str(arg)
+                opened.append(value)
+                return value
 
-            with patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+            with patch("companion_v2.references.management.open_local_folder", side_effect=fake_launch):
                 result = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
                 root_fallback = manager.open_album_folder(
                     SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00", role_id="",
@@ -399,19 +401,32 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
 
             # Missing role_binding (backward-compat omitted role) opens generated-album root.
             no_role_manager, no_role_ctx, _ = self._build_manager(data_root, pages, role_id=None)
-            with patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+            with patch("companion_v2.references.management.open_local_folder", side_effect=fake_launch):
                 compat = no_role_manager.open_album_folder(SimpleNamespace(), no_role_ctx, at="2026-10-12T05:00:00+00:00")
             self.assertEqual(compat["path"], str(album_base))
             self.assertEqual(compat["total_count"], 0)
 
             # OS launch failure preserves generated_album_open_failed code.
             with patch(
-                f"companion_v2.references.management.{launcher_attr}",
+                "companion_v2.references.management.open_local_folder",
                 side_effect=OSError("no display"),
             ):
                 with self.assertRaises(TaskError) as open_error:
                     manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
             self.assertEqual(open_error.exception.code, "generated_album_open_failed")
+
+            # Headless / non-interactive host still syncs files and returns opened=False + reason.
+            from companion_v2.storage.local_folder import FolderOpenResult
+            with patch(
+                "companion_v2.references.management.open_local_folder",
+                side_effect=lambda p: FolderOpenResult(
+                    path=str(p), opened=False, reason="headless_environment", launcher="none",
+                ),
+            ):
+                headless = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
+            self.assertEqual(headless["opened"], False)
+            self.assertEqual(headless["reason"], "headless_environment")
+            self.assertEqual(headless["total_count"], 1)
 
 
 class HostApiOpenAlbumFolderRouteTests(unittest.TestCase):
@@ -506,14 +521,15 @@ class OpenFolderRouteTest(MultiFixture, unittest.IsolatedAsyncioTestCase):
             return {"items": (), "next_cursor": None}
 
         opened = []
-        launcher_attr = "os.startfile" if os.name == "nt" else "subprocess.Popen"
 
         def fake_launch(arg, *_args, **_kwargs):
-            opened.append(arg if isinstance(arg, str) else arg[-1])
+            value = str(arg)
+            opened.append(value)
+            return value
 
         try:
             with patch.object(app.messages.generated_images, "album_page", side_effect=fake_album_page), \
-                 patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+                 patch("companion_v2.references.management.open_local_folder", side_effect=fake_launch):
                 first_res = await call(first + "/album/open-folder", {})
                 self.assertEqual(first_res["status"], "ok", first_res)
                 payload = first_res["data"]
@@ -632,12 +648,13 @@ class RealNativeAlbumFolderTest(CoreReplyImagesTests):
         operator = dashboard_operator(self.runtime, "album-e2e-admin", at=self.clock.now())
 
         opened = []
-        launcher_attr = "os.startfile" if os.name == "nt" else "subprocess.Popen"
 
         def fake_launch(arg, *_args, **_kwargs):
-            opened.append(arg if isinstance(arg, str) else arg[-1])
+            value = str(arg)
+            opened.append(value)
+            return value
 
-        with patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+        with patch("companion_v2.references.management.open_local_folder", side_effect=fake_launch):
             first = manager.open_album_folder(operator, self.context, at=self.clock.now())
             second = manager.open_album_folder(operator, self.context, at=self.clock.now())
 

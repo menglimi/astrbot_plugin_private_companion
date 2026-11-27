@@ -58,6 +58,7 @@ from companion_v2.references.wardrobe import (
 from companion_v2.storage.generated_album import (
     ALBUM_HIDDEN_KEY_PREFIX, album_filename, hidden_album_ids, sync_generated_album_folder,
 )
+from companion_v2.storage.local_folder import FolderOpenResult, clean_windows_path, open_local_folder
 from companion_v2.storage.runtime import StorageRuntime
 
 
@@ -661,24 +662,30 @@ class ReferenceMaterialManagement:
             synced = sync_generated_album_folder(root, entries, role_id=effective_role_id, owner=owner)
         except (OSError, ValueError) as error:
             raise TaskError("generated_album_folder_unavailable", "the generated album folder could not be prepared") from error
-        target = Path(synced["path"])
+        target = Path(clean_windows_path(synced["path"]) if os.name == "nt" else synced["path"])
         if not target.is_dir():
             raise TaskError("generated_album_folder_unavailable", "the generated album folder is unavailable")
         try:
-            if os.name == "nt":
-                os.startfile(str(target))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(target)])
-            else:
-                subprocess.Popen(["xdg-open", str(target)])
+            outcome = open_local_folder(target)
         except (OSError, AttributeError, ValueError) as error:
             raise TaskError("generated_album_open_failed", "the generated album folder could not be opened") from error
-        return {
-            "path": synced["path"],
-            "opened": True,
+        if isinstance(outcome, FolderOpenResult):
+            opened_path = outcome.path or str(target)
+            opened = bool(outcome.opened)
+            reason = outcome.reason
+        else:
+            opened_path = outcome if isinstance(outcome, str) and outcome else str(target)
+            opened = True
+            reason = ""
+        payload = {
+            "path": opened_path,
+            "opened": opened,
             "synced_count": synced["synced_count"],
             "total_count": synced["total_count"],
         }
+        if not opened and reason:
+            payload["reason"] = reason
+        return payload
 
     @staticmethod
     def _resolve_album_mime_type(content: bytes, declared: str = "") -> str:
