@@ -411,7 +411,21 @@ window.CompanionHomeSidebar = (() => {
     const planningIncomplete = planning?.enabled && planning.calendar_enabled
       && (planning.running || ["failed","expired","dead_letter","cancelled","uncertain","blocked","deferred"].includes(dailyResult?.state));
     const planningFailure = planningIncomplete && !planning.running;
+    const formatPlanningProviderFailure = item => {
+      const status = Number.isInteger(item?.http_status) ? item.http_status : null;
+      const provider = typeof item?.provider === "string" && item.provider.trim() ? item.provider.trim() : "";
+      const fallback = item?.fallback_attempted === true ? "已尝试备用模型" : "";
+      const summary = status === 429 ? "模型额度或频次受限"
+        : status != null && status >= 500 && status <= 599 ? "上游模型服务暂时不可用"
+        : status === 401 || status === 403 ? "模型凭据或鉴权被拒"
+        : status === 404 ? "模型或接口地址不可用"
+        : "模型请求失败";
+      const meta = [status != null ? `HTTP ${status}` : "", provider, fallback].filter(Boolean).join(" · ");
+      return meta ? `${summary}（${meta}）` : summary;
+    };
     const planningFailureLabel = ({provider_wait_timed_out:"模型等待超时",timeout:"执行超时",
+      provider_request_failed:formatPlanningProviderFailure(dailyResult),
+      model_not_started:"模型请求未能发出",provider_refused:"模型拒绝生成日程",
       model_usage_unknown:"模型输出不完整（可能达到长度上限）",response_contract_rejected:"模型返回格式不符合日程要求",
       native_response_parse_failed:"模型返回无法解析",planning_output_invalid:"模型返回的日程无效",worker_error:"生成失败"})[dailyResult?.code]
       || (dailyResult?.code ? `生成未完成（${dailyResult.code}）` : "生成未完成");

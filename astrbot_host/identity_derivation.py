@@ -40,7 +40,7 @@ LEGACY_BOT_ID = "staging-bot"
 LEGACY_ROLE_ID = "staging-role"
 
 _ACCOUNT = re.compile(r"[^\s\x00-\x1f\x7f:]+")
-_ASCII_ACCOUNT = re.compile(r"[0-9A-Za-z_-]+")
+_ASCII_ACCOUNT = re.compile(r"[0-9A-Za-z._@-]+")
 _SAFE = re.compile(r"[^0-9a-z]+")
 _ROLE_CHANNEL_SUFFIX = re.compile(r"\s*[-_·－]\s*(?:私聊|群聊)\s*$")
 
@@ -48,6 +48,10 @@ _ROLE_CHANNEL_SUFFIX = re.compile(r"\s*[-_·－]\s*(?:私聊|群聊)\s*$")
 def _account(value: object, field: str) -> str:
     """A native account/sender key (numeric OneBot or opaque official id)."""
     valid = (type(value) is str and len(value) <= 128 and _ACCOUNT.fullmatch(value) is not None
+             and ".." not in value
+             and not value.startswith(".")
+             and not value.endswith(".")
+             and any(char.isalnum() for char in value)
              and (_ASCII_ACCOUNT.fullmatch(value) is not None if value.isascii()
                   else all(char.isalnum() or char in "._-@" for char in value)))
     if not valid:

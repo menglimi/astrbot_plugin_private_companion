@@ -12,6 +12,11 @@ window.CompanionStatePage = (() => {
     state_not_enabled:"请先在状态设置中启用状态维护。",
     state_not_bound:"当前角色尚未绑定状态工作区，请核对账号与人格映射。",
     record_revision_conflict:"状态已变化，请重新读取后再试。",
+    state_view_stale:"页面状态版本已过时，请先点「刷新状态」后再试。",
+    authorization_denied:"当前账号缺少操作授权，请核对权限后重试。",
+    state_command_invalid:"请求参数无效，请刷新页面后再试。",
+    state_storage_unavailable:"状态存储暂不可用，请稍后重试。",
+    plugin_web_internal_error:"面板服务暂时异常，请稍后重试。",
     binding_revoked:"管理账号的授权已撤销。", binding_rebound:"管理账号的绑定已变化，请重新进入。",
     page_request_invalid:"目标目录请求无效，请重新打开页面。", bridge_unavailable:"页面还没有接上 AstrBot。若这是从管理界面打开的插件页，刷新一次通常就好；若反复出现，请确认插件已启用。",
     bridge_timeout:"未收到状态确认，请刷新核对。", invalid_response:"服务返回的数据不完整，请刷新核对。",
@@ -33,8 +38,12 @@ window.CompanionStatePage = (() => {
   const e = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const when = value => value && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "未安排";
+  const clockLabel = value => {
+    try { return new Date(value).toLocaleTimeString("zh-CN", {hour12:false}); }
+    catch { return ""; }
+  };
   const reason = code => errors[code] || (code ? "当前状态未能确认，请刷新核对。" : "暂时无法读取角色状态。请刷新核对。");
-  let root = null, bridge = null, version = 0, timer = null, data = null, editor = null, calendarEditor = null, backgroundLoading = false;
+  let root = null, bridge = null, version = 0, timer = null, refreshNoticeTimer = null, data = null, editor = null, calendarEditor = null, backgroundLoading = false;
   let section = "state", activeFeature = null, pendingEditor = null, lastPaintedFeature = null, suppressEditorEmit = false;
   let settingsOpen=false,settingsReturnFeature=null,settingsReturnFocus=null;
   let mainSlot=null,settingsDialogHost=null,settingsDialogHeader=null,settingsDialogBody=null,lastSettingsHeaderHtml="";
@@ -118,7 +127,7 @@ window.CompanionStatePage = (() => {
     stateByScope.set(stateScopeKey, {...data, loading:false, error:false, notice:""});
   }
 
-  function blank() { return {catalog:null,target:-1,role:-1,windowSelected:false,status:null,cursor:"",loading:false,error:false,notice:"",ready:false,
+  function blank() { return {catalog:null,target:-1,role:-1,windowSelected:false,status:null,cursor:"",loading:false,manualRefreshing:false,error:false,notice:"",ready:false,
     pendingMaintenance:null,maintenanceSubmitting:false}; }
   function target() { return data?.catalog?.targets[data.target]; }
   function role() { return target()?.roles[data.role]; }
@@ -160,7 +169,8 @@ window.CompanionStatePage = (() => {
   }
   function live(ticket) { return ticket === version && root?.isConnected; }
   function stopTimer() { clearTimeout(timer); timer = null; }
-  function notice(message,error=false) { data.notice=message; data.error=error; }
+  function clearRefreshNoticeTimer() { clearTimeout(refreshNoticeTimer); refreshNoticeTimer = null; }
+  function notice(message,error=false) { clearRefreshNoticeTimer(); data.notice=message; data.error=error; }
   function statusLabel(status) {
     return ({active:"运行中",disabled:"状态维护未启用",unknown:"尚无状态记录",unavailable:"当前状态不可用"})[status] || "角色状态";
   }
@@ -378,12 +388,25 @@ window.CompanionStatePage = (() => {
       <i data-lucide="${icon}" aria-hidden="true"></i><span>${label}</span><strong>${e(energy?`${value} / 100`:value)}</strong>
       ${energy?`<meter min="0" max="100" value="${Math.max(0,Math.min(100,value))}" aria-label="能量 ${value} / 100"></meter>`:""}</button>`;
   }
+  function formatProviderFailure(result) {
+    const status=Number.isInteger(result?.http_status)?result.http_status:null;
+    const provider=typeof result?.provider==="string"&&result.provider.trim()?result.provider.trim():"";
+    const fallback=result?.fallback_attempted===true?"已尝试备用模型":"";
+    const summary=status===429?"模型额度或频次受限"
+      :status!=null&&status>=500&&status<=599?"上游模型服务暂时不可用"
+      :status===401||status===403?"模型凭据或鉴权被拒"
+      :status===404?"模型或接口地址不可用"
+      :"模型请求失败";
+    const meta=[status!=null?`HTTP ${status}`:"",provider,fallback].filter(Boolean).join(" · ");
+    return meta?`${summary}（${meta}）`:`${summary}，请检查模型与备用模型配置`;
+  }
   function maintenanceFeedback(status) {
     if(!status.settings?.enabled)return {label:"状态维护已关闭",tone:"is-pending",scheduled:false};
     if(status.host_state&&status.host_state!=="running")return {label:"状态维护已暂停",tone:"is-pending",scheduled:false};
     const result=status.maintenance?.result;
     const failed={expired:"上次维护已过期",failed:"上次维护失败",dead_letter:"上次维护失败",cancelled:"上次维护已取消",uncertain:"上次维护结果未确认"};
     const code=result?.code||result?.reason;
+    if(result?.state==="queued")return {label:"已排队，等待后台执行…",tone:"is-pending",scheduled:true};
     if(result?.state==="waiting"&&["state_role_context_unavailable","state_context_unbound"].includes(code))return {
       label:"角色状态计划已保留，等待可信运行上下文",tone:"is-pending",scheduled:true};
     if(result?.state==="blocked") {
@@ -405,7 +428,11 @@ window.CompanionStatePage = (() => {
         owner_unavailable:"原任务材料已不可用",state_foreground_active:"对话正在使用当前状态",
         model_budget_exhausted:"插件本地硬预算已触发，请查看治理与维护中的预算设置",
         model_budget_soft_deferred:"插件本地软限额已触发，等待下一轮维护",
+        model_not_started:"模型请求未能发出，请检查模型与账号配置",
         model_usage_unknown:"模型调用未完成确认，可能超时或返回格式不符；保留上次状态",
+        native_response_parse_failed:"模型返回格式无法解析，保留上次状态",
+        provider_refused:"模型拒绝生成本次状态，保留上次状态",
+        provider_request_failed:formatProviderFailure(result),
         response_contract_rejected:"模型返回格式不符合状态要求，保留上次状态",
         provider_wait_timed_out:"等待模型超时，保留上次状态"})[code];
       return {label:failed[result.state]+(detail?`：${detail}`:CODE.test(code||"")?`（${code}）`:""),tone:"is-warning",scheduled:true};
@@ -743,7 +770,8 @@ window.CompanionStatePage = (() => {
       :weatherView?"设置天气来源与时效，日程会参考所在地实况。"
       :patrolView?"设置每日巡视的时刻与保留时长。"
       :"点按任意状态查看设置；下方入口可调整 QQ 展示、日程、天气与时间。";
-    const mainMarkup=`<div class="state-page-heading"><div><span class="state-badge">${contactView?"联系安排":weatherView?"天气感知":patrolView?"维护设置":"角色状态"}</span><p class="state-page-hint">${e(pageHint)}</p></div><div class="state-page-actions">${section==="state"?`<button type="button" class="memory-button state-maintain-button" id="state-maintain" ${maintainDisabled?"disabled":""} ${maintenanceOff?`title="在状态设置中启用后台状态维护"`:""}><i data-lucide="${maintainIcon}" aria-hidden="true"></i><span>${maintainLabel}</span></button>`:""}<button type="button" class="memory-button" id="state-refresh" title="重新读取当前状态" ${data.loading||editor?.busy?"disabled":""}>${contactView?"刷新联系设置":weatherView?"刷新天气设置":patrolView?"刷新巡视设置":"刷新状态"}</button></div></div>
+    const refreshLabel=data.manualRefreshing?"刷新中…":contactView?"刷新联系设置":weatherView?"刷新天气设置":patrolView?"刷新巡视设置":"刷新状态";
+    const mainMarkup=`<div class="state-page-heading"><div><span class="state-badge">${contactView?"联系安排":weatherView?"天气感知":patrolView?"维护设置":"角色状态"}</span><p class="state-page-hint">${e(pageHint)}</p></div><div class="state-page-actions">${section==="state"?`<button type="button" class="memory-button state-maintain-button" id="state-maintain" ${maintainDisabled?"disabled":""} ${maintenanceOff?`title="在状态设置中启用后台状态维护"`:""}><i data-lucide="${maintainIcon}" aria-hidden="true"></i><span>${maintainLabel}</span></button>`:""}<button type="button" class="memory-button" id="state-refresh" title="重新读取当前状态" ${data.loading||editor?.busy?"disabled":""}>${refreshLabel}</button></div></div>
       ${scopeMarkup}<div class="memory-notice ${data.error?"error":""}" id="state-notice" role="status" aria-live="polite" ${noticeText?"":"hidden"}>${e(noticeText)}</div>${content}`;
     if(liveDom){
       mainSlot.innerHTML=mainMarkup;
@@ -843,13 +871,13 @@ window.CompanionStatePage = (() => {
       else {data.notice=section==="contact"&&!data.windowSelected?"":"当前角色尚未绑定状态工作区，请核对账号与人格映射。";render();}
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  async function load(cursor=data?.cursor||"",{silent=false}={}) {
+  async function load(cursor=data?.cursor||"",{silent=false,manual=false}={}) {
     if(!root||!data.ready||!role()?.state_api)return;
     if(silent?(data.loading||backgroundLoading):data.loading)return;
     const ticket=++version;stopTimer();data.cursor=cursor;
     const previousSnapshot=silent?stateSnapshot():null;
     if(silent)backgroundLoading=true;
-    else {backgroundLoading=false;data.loading=true;render();}
+    else {backgroundLoading=false;data.loading=true;data.manualRefreshing=Boolean(manual);render();}
     try {
       const result=await api("GET",endpoint(),{after_id:data.cursor});
       if(!live(ticket))return;
@@ -868,8 +896,25 @@ window.CompanionStatePage = (() => {
           data.pendingMaintenance=null;notice("状态更新失败，请查看维护状态。",true);
         }else if(result.maintenance?.result&&currentResult!==pending.resultSnapshot&&completedStates.includes(result.maintenance.result.state)){
           data.pendingMaintenance=null;notice("维护完成，状态保持不变。");
+        }else if(result.maintenance?.result?.state==="queued"){
+          notice("状态更新已排队，等待后台执行…");
         }else notice("状态更新中…");
-      }else notice("");
+      }else if(manual){
+        const stamped=clockLabel(Date.now());
+        const confirmText=stamped?`已刷新 · ${stamped}`:"已刷新。";
+        notice(confirmText);
+        refreshNoticeTimer=setTimeout(()=>{
+          refreshNoticeTimer=null;
+          if(root?.isConnected&&data&&!data.error&&data.notice===confirmText){
+            data.notice="";
+            render();
+          }
+        },3500);
+        refreshNoticeTimer?.unref?.();
+        void Promise.resolve(window.CompanionProduct?.refreshSummary?.()).catch(()=>{});
+      }else if(!silent){
+        notice("");
+      }
       stateScopeKey=currentStateScope(); rememberState();
       return data.status;
     } catch(error) { if(live(ticket))failure(error);return null; }
@@ -880,6 +925,7 @@ window.CompanionStatePage = (() => {
           if(stateSnapshot()!==previousSnapshot)render();
         }else{
           data.loading=false;
+          data.manualRefreshing=false;
           render();
           if(data.status&&pendingEditor&&section==="state"&&root?.isConnected){
             const queued=pendingEditor;
@@ -893,15 +939,22 @@ window.CompanionStatePage = (() => {
   }
   async function requestMaintenance() {
     if(!root?.isConnected||!data?.status||data.loading||data.maintenanceSubmitting||section!=="state")return;
-    if(editor&&!editor.discardIfPristine())return;
+    if(editor&&!editor.discardIfPristine()){
+      notice("下方编辑区有未保存修改或待核对请求，请先保存或取消后再触发立即更新。",true);
+      render();
+      root?.querySelector("#state-feature-detail, #state-edit-form")?.scrollIntoView?.({
+        behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"nearest"});
+      return;
+    }
     if(data.status.settings?.enabled===false){notice("请先在状态设置中启用状态维护。",true);render();return;}
     const current=data.status.state;
-    if(!Number.isInteger(current?.revision)||typeof current?.view_token!=="string"){
+    const token=typeof current?.maintain_token==="string"?current.maintain_token:current?.view_token;
+    if(!Number.isInteger(current?.revision)||typeof token!=="string"){
       notice("当前状态尚未就绪，请重新读取后再试。",true);render();return;
     }
     const prevPending=data.pendingMaintenance;
     const pending={operation_key:prevPending?.retryable&&prevPending.operation_key?prevPending.operation_key:crypto.randomUUID(),
-      expected_revision:current.revision,view_token:current.view_token,
+      expected_revision:current.revision,view_token:token,
       resultSnapshot:JSON.stringify(data.status.maintenance?.result??null),retryable:false};
     data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
     notice("正在安排状态更新…");render();
@@ -909,7 +962,7 @@ window.CompanionStatePage = (() => {
       await api("POST",endpoint()+"/command",{action:"maintain",operation_key:pending.operation_key,
         view_token:pending.view_token,expected_revision:pending.expected_revision});
       if(!root?.isConnected||data.pendingMaintenance?.operation_key!==pending.operation_key)return;
-      data.maintenanceSubmitting=false;notice("状态更新已排队。");render();schedule();
+      data.maintenanceSubmitting=false;notice("状态更新已排队，等待后台执行…");render();schedule();
     } catch(error) {
       if(!root?.isConnected||data.pendingMaintenance?.operation_key!==pending.operation_key)return;
       data.maintenanceSubmitting=false;
@@ -1017,7 +1070,7 @@ window.CompanionStatePage = (() => {
     }
     const maintain=event.target.closest("#state-maintain");
     if(maintain){if(data.status?.settings?.enabled===false)openSettings(maintain);else requestMaintenance();return;}
-    if(event.target.closest("#state-refresh, #state-home-settings-refresh")&&!editor?.busy){if(data.ready)load();else directory();}
+    if(event.target.closest("#state-refresh, #state-home-settings-refresh")&&!editor?.busy){if(data.ready)load(data.cursor,{manual:true});else directory();}
     const page=event.target.closest("[data-state-page]");
     if(page&&!page.disabled&&(!editor||editor.discardIfPristine()))load(page.dataset.statePage);
   }
@@ -1083,7 +1136,7 @@ window.CompanionStatePage = (() => {
       setChrome(true);await directory();
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  function unmount() { rememberState();++version;stopTimer();clearTimeout(settingsCloseTimer);settingsCloseTimer=null;backgroundLoading=false;pendingEditor=null;(settingsDialogHost||root?.querySelector("#state-home-settings"))?.close?.();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;lastPaintedFeature=null;suppressEditorEmit=false;mainSlot=null;settingsDialogHost=null;settingsDialogHeader=null;settingsDialogBody=null;lastSettingsHeaderHtml="";editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
+  function unmount() { rememberState();++version;stopTimer();clearRefreshNoticeTimer();clearTimeout(settingsCloseTimer);settingsCloseTimer=null;backgroundLoading=false;pendingEditor=null;(settingsDialogHost||root?.querySelector("#state-home-settings"))?.close?.();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;lastPaintedFeature=null;suppressEditorEmit=false;mainSlot=null;settingsDialogHost=null;settingsDialogHeader=null;settingsDialogBody=null;lastSettingsHeaderHtml="";editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
   document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!backgroundLoading&&!editor?.interacting)load(data.cursor,{silent:true});});
   window.addEventListener?.("beforeunload",event=>{if(editor?.dirty){event.preventDefault();event.returnValue="";}});
   return {mount,unmount,openSettings,openEditor,openFeature,currentFeature:()=>activeFeature,

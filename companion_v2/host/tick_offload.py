@@ -1179,20 +1179,8 @@ def stage_state_maintenance(sm: StateMaintenance) -> StagedOffload | None:
         return None
     if sm.closed:
         return StagedOffload("skip")
-    reaped_updates = []
-    for key, worker in tuple(sm.workers.items()):
-        if worker.done():
-            del sm.workers[key]
-            if not worker.cancelled():
-                error = worker.exception()
-                sm.results[key] = (
-                    {"state": "failed", "code": getattr(error, "code", "state_worker_failed")}
-                    if error
-                    else worker.result()
-                )
-                schedule_key = sm.worker_schedules.pop(key, None)
-                if schedule_key is not None:
-                    reaped_updates.append((encode(sm.results[key]), schedule_key))
+    reaped_updates = sm.collect_reaped_workers()
+    reaped_persisted = [False]
     has_active_workers = bool(sm.workers)
     active_worker_keys = frozenset(sm.workers)
 
@@ -1205,12 +1193,8 @@ def stage_state_maintenance(sm: StateMaintenance) -> StagedOffload | None:
         except Exception:
             pass
         if reaped_updates:
-            with sm.runtime.transaction() as connection:
-                for encoded_result, schedule_key in reaped_updates:
-                    connection.execute(
-                        "UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
-                        (encoded_result, schedule_key),
-                    )
+            sm.persist_reaped_workers(reaped_updates)
+            reaped_persisted[0] = True
         sm.patrol()
         if has_active_workers:
             return None, False
@@ -1322,7 +1306,7 @@ def stage_state_maintenance(sm: StateMaintenance) -> StagedOffload | None:
                     if not updated.rowcount:
                         continue
                 request_id = "state-period-" + digest([context.key, row["revision"], row["next_at"]])
-                return (context, instruction, request_id, row["context_key"]), False
+                return (context, instruction, request_id, row["context_key"], row["revision"]), False
             except TaskError as error:
                 sm._record_preflight(row, context, state="blocked", code=error.code, stage=stage)
                 continue
@@ -1332,17 +1316,23 @@ def stage_state_maintenance(sm: StateMaintenance) -> StagedOffload | None:
         return None, True
 
     def apply_state(scanned):
+        if reaped_updates and not reaped_persisted[0]:
+            sm.requeue_reaped_workers(reaped_updates)
         launch_spec, notify_more = scanned
         if launch_spec is not None and not sm.closed and not sm.workers:
-            context, instruction, request_id, schedule_key = launch_spec
+            context, instruction, request_id, schedule_key, schedule_revision = launch_spec
             worker = asyncio.create_task(sm.run(context, instruction, request_id))
             sm.workers[context.key] = worker
-            sm.worker_schedules[context.key] = schedule_key
+            sm.worker_schedules[context.key] = (schedule_key, schedule_revision)
             worker.add_done_callback(lambda done: sm.app.notify())
         elif notify_more:
             sm.app.notify()
 
-    return StagedOffload("offload", scan=scan_state, apply=apply_state)
+    def cleanup_state():
+        if reaped_updates and not reaped_persisted[0]:
+            sm.requeue_reaped_workers(reaped_updates)
+
+    return StagedOffload("offload", scan=scan_state, apply=apply_state, cleanup=cleanup_state)
 
 
 async def advance_state_maintenance_async(sm: StateMaintenance) -> None:
