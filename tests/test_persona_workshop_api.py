@@ -20,9 +20,11 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from astrbot_host.persona_workshop_api import (COMMANDS, PREFIX, PERSONA_TRYOUT_SCENARIOS,
+from astrbot_host.persona_workshop_api import (COMMANDS, MAX_WORKSHOP_BODY_BYTES,
+    PERSONA_STANDARD_SECTION_ALIASES, PERSONA_STANDARD_SECTIONS, PREFIX, PERSONA_TRYOUT_SCENARIOS,
     PersonaWorkshopWebAPI, _session_provider_id,
-    build_persona_standardization_prompt, parse_persona_standardization_draft)
+    build_persona_standardization_prompt, canonical_persona_text,
+    extract_canonical_persona_sections, parse_persona_standardization_draft)
 from companion_v2.adapters.astrbot.native import persona_instruction
 from companion_v2.knowledge.catalog import EntryDocument, KnowledgeCatalog, SourceBinding
 from companion_v2.knowledge.configuration import (GROUP as KNOWLEDGE_GROUP,
@@ -727,6 +729,254 @@ class NoPersonaWriteTests(PersonaWorkshopFixture):
             self.assertNotIn(name, source)
         self.assertIn("resolve_selected_persona", source)
         self.assertIn("persona_snapshot", source)
+
+
+class WorkshopBackendBugfixTests(PersonaWorkshopFixture):
+    @staticmethod
+    def _tryout_json():
+        return json.dumps({"scenarios": [
+            {"id": scene["id"], "options": [
+                {"text": "嗯，我听着。", "tag": "贴合"},
+                {"text": "让我想一想。", "tag": "另一种表达"},
+                {"text": "请问您需要什么帮助？", "tag": "对照"},
+            ]} for scene in PERSONA_TRYOUT_SCENARIOS
+        ]}, ensure_ascii=False)
+
+    async def test_utf8_body_limit_allows_long_chinese_personas_up_to_256kb(self):
+        await self.initialize()
+        provider = self.controller.session.model.native
+        # 1. style_rules: 16,000 Chinese chars (~48KB UTF-8; old 30KB limit crashed Step 4)
+        long_draft = "星" * 16000
+        self.assertGreater(len(long_draft.encode("utf-8")), 45000)
+        style_result = {"text": "短句平稳。", "examples": "嗯，我听着。"}
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(
+                completion_text=json.dumps(style_result, ensure_ascii=False)))):
+            res = await self.post_style_rules({
+                "persona_id": "original",
+                "draft_text": long_draft,
+                "selections": [{"scene_id": "everyday", "text": "嗯，我听着。"}],
+            })
+        self.assertEqual(res["status"], "ok", res)
+
+        # 2. tryouts: 30,000 Chinese chars (~90KB UTF-8; old 80KB limit rejected)
+        huge_draft = "月" * 30000
+        self.assertGreater(len(huge_draft.encode("utf-8")), 85000)
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(
+                completion_text=self._tryout_json()))):
+            res = await self.post_tryouts({"persona_id": "original", "draft_text": huge_draft})
+        self.assertEqual(res["status"], "ok", res)
+
+        # 3. standardize: 28,000 Chinese chars + 4,000-char answers (> 90KB UTF-8; old 90KB limit rejected)
+        long_source = "海" * 28000
+        long_answer = "风" * 4000
+        self.assertGreater(len((long_source + long_answer).encode("utf-8")), 95000)
+        draft_json = json.dumps({"sections": {"identity": "守塔人"}, "notes": []}, ensure_ascii=False)
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=draft_json))):
+            res = await self.post_standardize({
+                "source_mode": "paste",
+                "source_text": long_source,
+                "answers": {"identity": long_answer},
+            })
+        self.assertEqual(res["status"], "ok", res)
+
+        # 4. Over 256KB is still rejected cleanly
+        oversized = "超" * (MAX_WORKSHOP_BODY_BYTES // 3 + 5000)
+        self.assertGreater(len(oversized.encode("utf-8")), MAX_WORKSHOP_BODY_BYTES)
+        res = await self.post_style_rules({
+            "persona_id": "original",
+            "draft_text": oversized,
+            "selections": [],
+        })
+        self.assertEqual(res["data"]["code"], "persona_standardization_invalid")
+
+    def test_habits_section_title_is_unified_and_backward_compatible_with_legacy_alias(self):
+        self.assertEqual(PERSONA_STANDARD_SECTIONS["habits"], "兴趣习惯与表达")
+        self.assertIn("兴趣习惯与表达", PERSONA_STANDARD_SECTION_ALIASES["habits"])
+        self.assertIn("表达习惯与日常", PERSONA_STANDARD_SECTION_ALIASES["habits"])
+
+        canonical = canonical_persona_text({
+            "identity": "领航员",
+            "motivations": "守住航线",
+            "habits": "喜欢泡麦茶，口头禅是慢慢来。",
+            "boundaries": "不透露坐标",
+        })
+        self.assertIn("## 兴趣习惯与表达", canonical)
+        parsed_new = extract_canonical_persona_sections(canonical)
+        self.assertIsNotNone(parsed_new)
+        self.assertEqual(parsed_new["sections"]["motivations"], "守住航线")
+        self.assertEqual(parsed_new["sections"]["habits"], "喜欢泡麦茶，口头禅是慢慢来。")
+
+        legacy = canonical.replace("## 兴趣习惯与表达", "## 表达习惯与日常")
+        parsed_legacy = extract_canonical_persona_sections(legacy)
+        self.assertIsNotNone(parsed_legacy)
+        self.assertEqual(parsed_legacy["sections"]["motivations"], "守住航线")
+        self.assertEqual(parsed_legacy["sections"]["habits"], "喜欢泡麦茶，口头禅是慢慢来。")
+
+        # Model returning legacy Chinese heading inside sections dict or canonical text
+        by_alias_key = parse_persona_standardization_draft(json.dumps({
+            "sections": {"identity": "领航员", "表达习惯与日常": "早睡早起"},
+            "notes": [],
+        }, ensure_ascii=False))
+        self.assertEqual(by_alias_key["sections"]["habits"], "早睡早起")
+        by_legacy_text = parse_persona_standardization_draft(json.dumps({
+            "text": legacy,
+            "notes": [],
+        }, ensure_ascii=False))
+        self.assertEqual(by_legacy_text["sections"]["habits"], "喜欢泡麦茶，口头禅是慢慢来。")
+
+    async def test_paste_mode_works_without_persona_id_or_resolved_snapshot(self):
+        await self.initialize()
+        self.native.selected = "[%None]"
+        self.native.persona = None
+        provider = self.controller.session.model.native
+        draft_json = json.dumps({"sections": {"identity": "粘贴角色"}, "notes": []}, ensure_ascii=False)
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=draft_json))):
+            res = await self.post_standardize({
+                "persona_id": "",
+                "source_mode": "paste",
+                "source_text": "粘贴来的人设正文。",
+                "answers": {},
+            })
+        self.assertEqual(res["status"], "ok", res)
+        self.assertEqual(res["data"]["draft"]["sections"]["identity"], "粘贴角色")
+        self.assertEqual(res["data"]["source"]["source_mode"], "paste")
+
+        # Subsequent tryouts & style_rules also work without persona_id
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=self._tryout_json()))):
+            tryout_res = await self.post_tryouts({"persona_id": "", "draft_text": "粘贴角色正文"})
+        self.assertEqual(tryout_res["status"], "ok", tryout_res)
+
+        style_json = json.dumps({"text": "简短自然。", "examples": "嗯，知道了。"}, ensure_ascii=False)
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=style_json))):
+            style_res = await self.post_style_rules({
+                "draft_text": "粘贴角色正文",
+                "selections": [{"scene_id": "everyday", "text": "嗯，我听着。"}],
+            })
+        self.assertEqual(style_res["status"], "ok", style_res)
+
+    async def test_admin_can_use_workshop_from_group_scope_without_scope_block(self):
+        await self.initialize()
+        from dataclasses import replace as dc_replace
+        session = self.controller.session
+        private_target = session.profile.target
+        group_scope = dc_replace(private_target.scope, kind=ScopeKind.GROUP)
+        group_role_binding = dc_replace(private_target.role_binding, scope=group_scope)
+        group_audience = dc_replace(private_target.audience, scope=group_scope)
+        group_target = dc_replace(private_target, role_binding=group_role_binding, audience=group_audience)
+        session.profile = NS(target=group_target, provider_id=session.profile.provider_id)
+        self.assertIs(session.profile.target.scope.kind, ScopeKind.GROUP)
+
+        status = await self.get()
+        self.assertEqual(status["status"], "ok", status)
+        self.assertTrue(status["data"]["persona"]["resolved"])
+        self.assertEqual(status["data"]["persona"]["persona_id"], "original")
+
+        provider = session.model.native
+        draft_json = json.dumps({"sections": {"identity": "群聊入口整理"}, "notes": []}, ensure_ascii=False)
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=draft_json))):
+            std = await self.post_standardize({"persona_id": "original", "answers": {}})
+        self.assertEqual(std["status"], "ok", std)
+
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=self._tryout_json()))):
+            tri = await self.post_tryouts({"persona_id": "original", "draft_text": "群聊入口试答稿"})
+        self.assertEqual(tri["status"], "ok", tri)
+
+        style_json = json.dumps({"text": "温和直接。", "examples": "嗯。"}, ensure_ascii=False)
+        with patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text=style_json))):
+            sty = await self.post_style_rules({
+                "persona_id": "original", "draft_text": "群聊入口试答稿",
+                "selections": [{"scene_id": "everyday", "text": "嗯，我听着。"}],
+            })
+        self.assertEqual(sty["status"], "ok", sty)
+
+        # Authorization is still enforced on group scope
+        denied = await self.get(username="")
+        self.assertEqual(denied["data"]["code"], "dashboard_identity_required")
+
+    async def test_standardize_tryouts_and_style_rules_support_explicit_provider_id(self):
+        await self.initialize()
+        draft_json = json.dumps({"sections": {"identity": "指定模型生成"}, "notes": []}, ensure_ascii=False)
+        style_json = json.dumps({"text": "清晰短句。", "examples": "好。"}, ensure_ascii=False)
+        explicit = NS(
+            provider_config={"id": "custom-workshop-model"},
+            text_chat=AsyncMock(side_effect=[
+                NS(completion_text=draft_json),
+                NS(completion_text=self._tryout_json()),
+                NS(completion_text=style_json),
+            ]),
+        )
+        default_provider = self.controller.session.model.native
+        self.controller.native_types = NS(provider=None)
+        self.controller.context.get_all_providers = lambda: [explicit]
+
+        with patch.object(default_provider, "text_chat", AsyncMock(side_effect=AssertionError("should not use default"))):
+            r1 = await self.post_standardize({
+                "persona_id": "original", "answers": {}, "provider_id": "custom-workshop-model",
+            })
+            r2 = await self.post_tryouts({
+                "persona_id": "original", "draft_text": "角色草稿", "provider_id": "custom-workshop-model",
+            })
+            r3 = await self.post_style_rules({
+                "persona_id": "original", "draft_text": "角色草稿",
+                "selections": [{"scene_id": "everyday", "text": "嗯，我听着。"}],
+                "provider_id": "custom-workshop-model",
+            })
+
+        self.assertEqual(r1["status"], "ok", r1)
+        self.assertEqual(r1["data"]["provider_id"], "custom-workshop-model")
+        self.assertEqual(r2["status"], "ok", r2)
+        self.assertEqual(r2["data"]["provider_id"], "custom-workshop-model")
+        self.assertEqual(r3["status"], "ok", r3)
+        self.assertEqual(r3["data"]["provider_id"], "custom-workshop-model")
+        self.assertEqual(explicit.text_chat.await_count, 3)
+
+        missing = await self.post_standardize({
+            "persona_id": "original", "answers": {}, "provider_id": "nonexistent-model",
+        })
+        self.assertEqual(missing["data"]["code"], "role_profile_model_unavailable")
+
+    async def test_max_tokens_fallback_sanitized_warning_and_model_output_error_code_separation(self):
+        await self.initialize()
+        provider = self.controller.session.model.native
+
+        class BadRequestError(Exception):
+            status_code = 400
+
+        draft_json = json.dumps({"sections": {"identity": "降级重试成功"}, "notes": []}, ensure_ascii=False)
+        with patch.object(provider, "text_chat", AsyncMock(side_effect=[
+                BadRequestError("400 max_tokens too large"),
+                NS(completion_text=draft_json),
+        ])) as call, self.assertLogs("astrbot_host.persona_workshop_api", level="WARNING") as logs:
+            res = await self.post_standardize({"persona_id": "original", "answers": {}})
+        self.assertEqual(res["status"], "ok", res)
+        self.assertEqual([c.kwargs["max_tokens"] for c in call.await_args_list], [6800, 4096])
+        self.assertTrue(any("max_tokens=6800" in line and "fallback=4096" in line for line in logs.output))
+
+        # LLM invalid JSON output produces persona_model_output_invalid (not persona_standardization_invalid)
+        for endpoint, caller, payload in (
+            ("standardize", self.post_standardize, {"persona_id": "original", "answers": {}}),
+            ("tryouts", self.post_tryouts, {"persona_id": "original", "draft_text": "草稿"}),
+            ("style_rules", self.post_style_rules, {
+                "persona_id": "original", "draft_text": "草稿",
+                "selections": [{"scene_id": "everyday", "text": "嗯"}],
+            }),
+        ):
+            with self.subTest(endpoint=endpoint), \
+                    patch.object(provider, "text_chat", AsyncMock(return_value=NS(completion_text="完全不是JSON"))), \
+                    self.assertLogs("astrbot_host.persona_workshop_api", level="WARNING") as out_logs:
+                bad = await caller(payload)
+            self.assertEqual(bad["status"], "error", bad)
+            self.assertEqual(bad["data"]["code"], "persona_model_output_invalid")
+            self.assertIn("更换模型", bad["reason"])
+            self.assertTrue(any(f"operation={endpoint}" in line for line in out_logs.output))
+
+        # Unexpected provider exception logs sanitized warning without leaking secret payload
+        with patch.object(provider, "text_chat", AsyncMock(side_effect=RuntimeError("Bearer super-secret-key"))), \
+                self.assertLogs("astrbot_host.persona_workshop_api", level="WARNING") as err_logs:
+            failed = await self.post_standardize({"persona_id": "original", "answers": {}})
+        self.assertEqual(failed["data"]["code"], "role_profile_draft_failed")
+        self.assertFalse(any("super-secret-key" in line for line in err_logs.output))
+        self.assertTrue(any("operation=standardize" in line and "RuntimeError" in line for line in err_logs.output))
 
 
 if __name__ == "__main__":

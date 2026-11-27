@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from companion_v2.execution.models import TaskError
 
@@ -12,6 +13,88 @@ STAGES = ("positioning", "personality", "voice", "background", "review")
 TEXT_LIMITS = {"provider_id": 200, "source_persona_id": 200, "source_text": 30000,
                "confirmed": 16000, "draft": 65536, "lorebook": 20000, "input": 8000}
 MAX_DOCUMENT_BYTES = 768000
+_FENCE_BLOCK = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_RESPONSE_KEYS = frozenset({"reply", "options", "confirmed", "stage", "draft", "lorebook"})
+
+
+def _extract_json_objects(text: str) -> list[str]:
+    """Find balanced top-level {...} slices without breaking on braces inside JSON strings."""
+    candidates = []
+    length = len(text)
+    index = 0
+    while index < length:
+        start = text.find("{", index)
+        if start < 0:
+            break
+        depth = 0
+        in_string = False
+        escaped = False
+        end = -1
+        for pos in range(start, length):
+            ch = text[pos]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = pos
+                        break
+        if end >= start:
+            candidates.append(text[start:end + 1])
+            index = end + 1
+        else:
+            break
+    return candidates
+
+
+def _decode_response_object(raw: str) -> dict:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate result key")
+            result[key] = value
+        return result
+
+    def reject_nonfinite(_token):
+        raise ValueError("invalid number")
+
+    text = raw.strip()
+    search_spaces = []
+    for match in _FENCE_BLOCK.finditer(text):
+        inner = match.group(1).strip()
+        if inner:
+            search_spaces.append(inner)
+    search_spaces.append(text)
+
+    seen = set()
+    last_error = None
+    for space in search_spaces:
+        for candidate in _extract_json_objects(space):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                parsed = json.loads(candidate, object_pairs_hook=unique, parse_constant=reject_nonfinite)
+            except json.JSONDecodeError as error:
+                last_error = error
+                continue
+            if type(parsed) is dict:
+                return parsed
+            last_error = ValueError("response is not a JSON object")
+    if last_error is not None:
+        raise last_error
+    raise ValueError("no JSON object found")
 
 
 def invalid():
@@ -67,35 +150,47 @@ def model_request(state, action):
     return method, json.dumps(payload, ensure_ascii=False)
 
 
-def model_response(raw):
+def model_response(raw, *, default_stage="positioning", fallback_confirmed="",
+                   fallback_draft="", fallback_lorebook=""):
     if type(raw) is not str or not raw.strip() or len(raw) > 140000:
         raise TaskError("persona_designer_response_invalid", "模型没有返回完整的设计结果，可以重试本轮。")
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate result key")
-            result[key] = value
-        return result
-
     try:
-        result = json.loads(text, object_pairs_hook=unique,
-                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid number")))
-        if type(result) is not dict or set(result) != {"reply", "options", "confirmed", "stage", "draft", "lorebook"}:
+        result = _decode_response_object(raw)
+        if type(result) is not dict or set(result) - _RESPONSE_KEYS:
             raise ValueError("invalid response fields")
-        for key, limit in {"reply": 16000, "confirmed": 16000, "draft": 65536, "lorebook": 20000}.items():
-            if type(result[key]) is not str or len(result[key]) > limit:
+        reply = result.get("reply")
+        if type(reply) is not str or not reply.strip() or len(reply) > 16000:
+            raise ValueError("missing or invalid reply")
+        stage = result.get("stage")
+        if stage is None and "stage" not in result:
+            stage = default_stage
+        if type(stage) is not str or stage not in STAGES:
+            raise ValueError("missing or invalid stage")
+        defaults = {
+            "confirmed": fallback_confirmed,
+            "draft": fallback_draft,
+            "lorebook": fallback_lorebook,
+        }
+        normalized = {"reply": reply, "stage": stage}
+        for key, limit in {"confirmed": 16000, "draft": 65536, "lorebook": 20000}.items():
+            if key not in result or result[key] is None:
+                value = defaults[key]
+            else:
+                value = result[key]
+            if type(value) is not str or len(value) > limit:
                 raise ValueError("invalid response text")
-        if not result["reply"].strip() or result["stage"] not in STAGES:
-            raise ValueError("missing reply or stage")
-        if (type(result["options"]) is not list or len(result["options"]) > 3
-                or any(type(value) is not str or not value.strip() or len(value) > 300
-                       for value in result["options"])):
+            normalized[key] = value
+        raw_options = result.get("options") if "options" in result and result["options"] is not None else []
+        if type(raw_options) is not list:
             raise ValueError("invalid options")
-        return result
+        options = []
+        for value in raw_options:
+            if type(value) is not str or len(value) > 300:
+                raise ValueError("invalid options")
+            cleaned = value.strip()
+            if cleaned:
+                options.append(cleaned)
+        normalized["options"] = options[:3]
+        return normalized
     except (ValueError, TypeError, KeyError) as error:
         raise TaskError("persona_designer_response_invalid", "模型返回的设计结果不完整，可以重试本轮。") from error

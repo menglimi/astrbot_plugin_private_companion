@@ -164,8 +164,17 @@ class PersonaDesignerWebAPI:
             personas = [{"id": name, "name": name, "default": name == selected} for name in names]
         except Exception:
             persona_issue = "人设列表暂时未能读取，仍可手动输入或从零设计。"
+        persona_summaries = {}
+        if personas:
+            try:
+                from .persona_workshop_api import _persona_summaries
+                persona_summaries = await _persona_summaries(
+                    context, [item["id"] for item in personas], active_id=selected
+                )
+            except Exception:
+                persona_summaries = {}
         return {"models": models, "personas": personas, "default_persona_id": selected,
-                "persona_issue": persona_issue}
+                "persona_issue": persona_issue, "persona_summaries": persona_summaries}
 
     async def persona(self, owner):
         query = self._query(("id",))
@@ -213,14 +222,21 @@ class PersonaDesignerWebAPI:
         try:
             return await provider.text_chat(prompt=prompt, system_prompt=system, contexts=[], max_tokens=limit)
         except Exception as error:
-            if (type(error).__name__ not in ("BadRequestError", "InvalidRequestError", "InvalidArgument")
-                    or limit <= 4096):
+            status = getattr(error, "status_code", None) or getattr(error, "status", None)
+            is_limit_rejection = (
+                type(error).__name__ in ("BadRequestError", "InvalidRequestError", "InvalidArgument")
+                or status == 400
+                or any(tok in str(error).lower() for tok in ("max_tokens", "max_output_tokens", "max_completion_tokens"))
+            )
+            if not is_limit_rejection or limit <= 4096:
                 raise
             logger.warning("[CompanionV2] 新的她模型拒绝输出上限 max_tokens=%s，降载到 4096 重试", limit)
             try:
                 return await provider.text_chat(prompt=prompt, system_prompt=system, contexts=[], max_tokens=4096)
             except Exception as second:
-                if type(second).__name__ in ("BadRequestError", "InvalidRequestError", "InvalidArgument"):
+                second_status = getattr(second, "status_code", None) or getattr(second, "status", None)
+                if (type(second).__name__ in ("BadRequestError", "InvalidRequestError", "InvalidArgument")
+                        or second_status == 400):
                     raise TaskError(
                         "persona_designer_model_rejected",
                         "模型没有接受这次设计请求；可以换一个文本模型，或缩短人设/对话后重试。",
@@ -265,7 +281,13 @@ class PersonaDesignerWebAPI:
             self._owner()
             if self._providers().get(state["provider_id"]) is not provider:
                 raise TaskError("persona_designer_model_changed", "模型已重新加载，请重新发起本轮设计。")
-            return model_response(getattr(response, "completion_text", response))
+            return model_response(
+                getattr(response, "completion_text", response),
+                default_stage=state["stage"],
+                fallback_confirmed=state["confirmed"],
+                fallback_draft=state["draft"],
+                fallback_lorebook=state["lorebook"],
+            )
         finally:
             stopped.cancel()
             if not task.done():

@@ -67,6 +67,41 @@ class ProtocolTests(unittest.TestCase):
                 model_response(raw)
             self.assertEqual(raised.exception.code, "persona_designer_response_invalid")
 
+    def test_response_tolerates_chatter_fences_missing_optional_fields_and_truncates_options(self):
+        # 1. Preamble + postamble + markdown fence + braces inside string + non-JSON {说明} in preamble
+        chatter = (
+            "好的，按你的想法{参考}整理如下：\n```json\n"
+            + response(reply="你可以用 {称呼} 来称呼对方。", options=["方案一", "方案二", "方案三", "多余四", "多余五"])
+            + "\n```\n希望这版方向合适，随时告诉我！"
+        )
+        parsed = model_response(chatter)
+        self.assertEqual(parsed["reply"], "你可以用 {称呼} 来称呼对方。")
+        self.assertEqual(parsed["options"], ["方案一", "方案二", "方案三"])
+
+        # 2. Raw outermost JSON wrapped in polite chatter without fences + missing optional lorebook/options/draft/confirmed
+        minimal = '没问题，先聊聊定位：{"reply":"她平时更偏安静还是外向？","stage":"positioning"} 你可以直接回复。'
+        parsed_min = model_response(minimal)
+        self.assertEqual(parsed_min, {
+            "reply": "她平时更偏安静还是外向？",
+            "stage": "positioning",
+            "confirmed": "",
+            "draft": "",
+            "lorebook": "",
+            "options": [],
+        })
+
+        # 3. Missing stage/lorebook falls back to caller's preserved context defaults
+        partial = '{"reply":"我记下了这段习惯。","options":["继续聊口吻","生成初稿","调整反差","多出一条"]}'
+        parsed_partial = model_response(
+            partial, default_stage="voice", fallback_confirmed="已确认",
+            fallback_draft="已有草稿", fallback_lorebook="已有背景",
+        )
+        self.assertEqual(parsed_partial["stage"], "voice")
+        self.assertEqual(parsed_partial["confirmed"], "已确认")
+        self.assertEqual(parsed_partial["draft"], "已有草稿")
+        self.assertEqual(parsed_partial["lorebook"], "已有背景")
+        self.assertEqual(parsed_partial["options"], ["继续聊口吻", "生成初稿", "调整反差"])
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
