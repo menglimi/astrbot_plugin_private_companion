@@ -49,8 +49,8 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _ExternalImageDescriptor:
-    """Fallback descriptor when a valid external image exceeds native 5 MiB cap."""
+class ExternalImageDescriptor:
+    """Static single-frame descriptor when a valid external image exceeds native 5 MiB cap."""
 
     position: int
     mime_type: str
@@ -141,7 +141,7 @@ def _build_descriptor(
             )
         except TaskError:
             pass
-    return _ExternalImageDescriptor(
+    return ExternalImageDescriptor(
         position=0,
         mime_type=mime_type,
         width=width,
@@ -246,16 +246,26 @@ def _context_audience_signature(context) -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
+def _group_audience_key(signature: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(item for item in signature if item.startswith("group:"))
+
+
 def allowed_origin_keys(runtime, context) -> tuple[str, ...]:
     """Return ``origin_key`` values strictly scoped to this conversation & audience.
 
     Follows historical context_key revisions of the exact same
     ``(role, installation, platform, kind, account, bot, native_scope_id, audience)``
     while strictly isolating distinct peers, groups, and roles.
+    For group scopes, matches the shared ``group:`` collective subject so all
+    members of the same group see group-generated external images while keeping
+    distinct groups and private chats strictly isolated.
     """
+    from companion_v2.foundation.refs import ScopeKind
+
     scope = context.role_binding.scope
     role = context.role_binding.role
     expected_audience = _context_audience_signature(context)
+    expected_group_audience = _group_audience_key(expected_audience)
     keys = [context.key]
     read_all = getattr(runtime, "read_all", None)
     if not callable(read_all):
@@ -317,7 +327,11 @@ def allowed_origin_keys(runtime, context) -> tuple[str, ...]:
             scope.native_scope_id,
         ):
             continue
-        if expected_audience and _audience_signature(data.get("audience")) != expected_audience:
+        candidate_sig = _audience_signature(data.get("audience"))
+        if scope.kind is ScopeKind.GROUP:
+            if expected_group_audience and _group_audience_key(candidate_sig) != expected_group_audience:
+                continue
+        elif expected_audience and candidate_sig != expected_audience:
             continue
         keys.append(candidate_key)
     return tuple(keys)
@@ -412,44 +426,48 @@ def has_duplicate_sha256(runtime, origin_keys: tuple[str, ...], sha256_hex: str)
                     return f"generated-image:{inv}:{pos}"
     except sqlite3.OperationalError:
         pass
-    # 3) Batch extension_tool_invocations ledger
+    # 3) Batch conversation.generated_images ledger (handles double-encoded JSON payload_json)
+    origin_set = frozenset(origin_keys)
     try:
-        batch_row = runtime.read_one(
-            """SELECT i.invocation_id, p.position
-               FROM conversation_image_payloads p
-               JOIN extension_tool_invocations i
-                 ON p.parent_id = ('generated-images-' || i.invocation_id)
-               JOIN conversation_batches b ON b.batch_id = i.batch_id
-               WHERE b.origin_key IN (SELECT value FROM json_each(?))
-                 AND i.state = 'succeeded'
-                 AND json_extract(p.descriptor_json, '$.content_hash') = ?
-               LIMIT 1""",
-            (encode(tuple(origin_keys)), target),
-        )
-        if batch_row is not None:
-            return f"generated-image:{batch_row['invocation_id']}:{batch_row['position']}"
-        # Also match hashed parent_id directly on active sources
-        direct_row = runtime.read_one(
-            """SELECT p.parent_id, p.position
+        candidate_rows = read_all(
+            """SELECT p.position, ps.payload_json
                FROM conversation_image_payloads p
                JOIN sources s
                  ON s.source_id = p.source_id
                 AND s.lineage_id = p.source_lineage
                 AND s.source_revision = p.source_revision
                 AND s.state = 'active'
+               JOIN assets a
+                 ON a.asset_id = p.asset_id
+                AND a.lineage_id = p.asset_lineage
+                AND a.asset_revision = p.asset_revision
+                AND a.state = 'active'
                JOIN sources ps
                  ON ps.source_id = p.parent_id
                 AND ps.lineage_id = p.parent_lineage
                 AND ps.source_revision = p.parent_revision
                 AND ps.state = 'active'
                WHERE ps.owner = 'conversation.generated_images'
-                 AND json_extract(p.descriptor_json, '$.content_hash') = ?
-                 AND json_extract(ps.payload_json, '$.origin_key') IN (SELECT value FROM json_each(?))
-               LIMIT 1""",
-            (target, encode(tuple(origin_keys))),
+                 AND json_extract(p.descriptor_json, '$.content_hash') = ?""",
+            (target,),
         )
-        if direct_row is not None:
-            return f"generated-image:{direct_row['parent_id']}:{direct_row['position']}"
+        for row in candidate_rows:
+            raw_payload = row["payload_json"]
+            if not raw_payload:
+                continue
+            try:
+                parsed = json.loads(raw_payload)
+                if isinstance(parsed, str):
+                    parsed = json.loads(parsed)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if parsed.get("origin_key") not in origin_set:
+                continue
+            invocation_id = parsed.get("invocation_id")
+            if isinstance(invocation_id, str) and invocation_id:
+                return f"generated-image:{invocation_id}:{row['position']}"
     except sqlite3.OperationalError:
         pass
     return None

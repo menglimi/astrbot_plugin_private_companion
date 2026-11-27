@@ -47,6 +47,7 @@ _BLACKLIST_TOKENS = frozenset({
     "browser", "screenshot", "screen_capture", "capture_screen", "webpage",
     "playwright", "selenium", "camera", "webcam", "snapshot",
     "reaction", "sticker", "meme", "emoji", "gif", "avatar", "profile",
+    "thumbnail", "thumb",
     "qr", "qrcode", "barcode", "captcha",
     "chart", "graph", "plot", "mermaid", "diagram", "latex", "math",
     "markdown", "render_text", "t2i", "text_to_image_card",
@@ -54,15 +55,20 @@ _BLACKLIST_TOKENS = frozenset({
     "search", "web_search", "fetch", "scrape", "weather", "map", "calendar",
     "ocr", "vision", "analyze", "describe", "inspect", "read_file", "download",
 })
-_GENERATION_NAME_KEYWORDS = (
-    "generate_image", "image_generate", "gen_img", "genimg", "txt2img", "text2img",
-    "img2img", "inpaint", "outpaint", "make_image", "create_image", "render_image",
-    "edit_image", "image_edit", "draw", "paint", "imagine", "novelai", "nai",
-    "flux", "sdxl", "comfy", "midjourney", "dalle", "dall_e", "imagen",
+_GENERATION_NAME_TOKENS = frozenset({
+    "nai", "novelai", "draw", "paint", "imagine", "flux", "sdxl",
+    "comfy", "comfyui", "midjourney", "dalle", "imagen",
+    "txt2img", "text2img", "img2img", "inpaint", "outpaint", "genimg",
+})
+_GENERATION_NAME_PHRASES = (
+    "generate_image", "image_generate", "gen_img",
+    "make_image", "create_image", "render_image",
+    "edit_image", "image_edit", "dall_e",
     "生图", "画图", "绘图", "改图", "文生图", "图生图",
 )
 _IMAGE_NOUN_KEYWORDS = ("image", "img", "pic", "picture", "photo", "art", "illust", "图", "画")
 _PROMPT_ARG_KEYS = ("prompt", "positive_prompt", "tags", "tag", "image_prompt", "description")
+_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+")
 logger = logging.getLogger(__name__)
 
@@ -126,19 +132,25 @@ def is_tier2_image_generation_tool(
     tool_args: Mapping | None = None,
 ) -> bool:
     """Generic Tier-2 heuristic: strict non-generation blacklist + explicit generation signal."""
-    normalized = (tool_name or "").strip().lower()
-    if not normalized or is_internal_tool(normalized):
+    raw_name = (tool_name or "").strip()
+    if not raw_name or is_internal_tool(raw_name):
         return False
+    normalized = _CAMEL_BOUNDARY_RE.sub(r"\1_\2", raw_name).lower()
     tokens = {tok for tok in _TOKEN_SPLIT_RE.split(normalized) if tok}
     # Reject blacklisted tokens either as exact segment or obvious compound substring
     if tokens & _BLACKLIST_TOKENS:
         return False
-    for blocked in ("screenshot", "qrcode", "barcode", "captcha", "mermaid", "sticker", "reaction", "webcam"):
+    for blocked in (
+        "screenshot", "qrcode", "barcode", "captcha", "mermaid",
+        "sticker", "reaction", "webcam", "thumbnail",
+    ):
         if blocked in normalized:
             return False
-    # Positive signal 1: tool name carries explicit image-generation semantics
-    for kw in _GENERATION_NAME_KEYWORDS:
-        if kw in normalized:
+    # Positive signal 1: exact generation token OR unambiguous compound/CJK phrase
+    if tokens & _GENERATION_NAME_TOKENS:
+        return True
+    for phrase in _GENERATION_NAME_PHRASES:
+        if phrase in normalized:
             return True
     if ("generate" in tokens or "gen" in tokens or "create" in tokens or "make" in tokens) and any(
         noun in normalized for noun in _IMAGE_NOUN_KEYWORDS
@@ -177,6 +189,9 @@ def observe_external_tool_begin(event, tool, tool_args=None) -> bool:
         return False
     name = _tool_name(tool)
     if not name or is_internal_tool(name):
+        # Starting an internal tool isolates it from any stale external tool
+        # whose exception bypassed on_llm_tool_respond.
+        state["active"].clear()
         return False
     now_mono = time.monotonic()
     _prune_active(state, now_mono)

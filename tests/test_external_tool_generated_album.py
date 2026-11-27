@@ -38,6 +38,8 @@ from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.conversation.media.external_generated_album import (
     EXTERNAL_IMAGE_ACTION,
     EXTERNAL_IMAGE_PREFIX,
+    ExternalImageDescriptor,
+    allowed_origin_keys,
     backfill_external_generated_image,
     delete_external_generated_image,
     external_image_id,
@@ -46,8 +48,9 @@ from companion_v2.conversation.media.external_generated_album import (
     record_external_generated_image,
     validate_external_image_bytes,
 )
+from companion_v2.conversation.media.generated import GeneratedAlbumImage
 from companion_v2.conversation.native_tool_results import PREFIX as NATIVE_PREFIX
-from companion_v2.execution.models import TaskContext, TaskError, require
+from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
 from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef, SubjectKind, SubjectRef
 from companion_v2.identity_policy.group_audience import group_audience
 from companion_v2.identity_policy.models import AuthorizationTier
@@ -112,6 +115,12 @@ class ExternalToolClassifierTests(unittest.TestCase):
             "ocr_image_read",
             "fetch_user_avatar",
             "notify_user_status",
+            "get_thumbnail",
+            "bilibili_thumbnail",
+            "getThumbnail",
+            "withdraw_receipt",
+            "withdrawReceipt",
+            "retrain_model",
         )
         for name in blocked:
             with self.subTest(tool=name):
@@ -122,6 +131,7 @@ class ExternalToolClassifierTests(unittest.TestCase):
     def test_third_party_generation_tools_pass_tier2(self):
         allowed = (
             ("NAI_Generate_Image", "Generate anime image", {"tag": "1girl, landscape"}),
+            ("generateImage", "Generate an image", {"prompt": "evening sky"}),
             ("flux_generate", "Flux image model", {"prompt": "sunset over sea"}),
             ("comfyui_txt2img", "", {"prompt": "mountain"}),
             ("sd_draw_illustration", "", {}),
@@ -239,6 +249,67 @@ class ExternalAlbumValidationAndBackfillTests(unittest.TestCase):
         # Same bytes in a completely separate origin_key are NOT suppressed across scopes.
         other_res = record_external_generated_image(self.runtime, origin_key=other_origin, content=png, created_at=NOW)
         self.assertEqual(other_res["status"], "recorded")
+
+    def test_cross_ledger_sha256_dedup_against_double_encoded_batch_generated_images_source(self):
+        origin = "12ab34cd" + "0" * 56
+        other_origin = "98fe76dc" + "0" * 56
+        png = _make_static_image((15, 95, 175), size=(512, 384))
+        sha_hex = hashlib.sha256(png).hexdigest()
+        invocation_id = "inv-batch-99"
+        parent_id = "generated-images-" + digest(invocation_id)
+        at_iso = NOW.isoformat()
+        # Mirror Companion's double-encoded JSON payload_json (sources/repositories.py)
+        inner_payload = json.dumps({"origin_key": origin, "invocation_id": invocation_id})
+        double_encoded = json.dumps(inner_payload)
+        descriptor_json = json.dumps({"position": 0, "content_hash": sha_hex})
+
+        with self.runtime.transaction() as conn:
+            conn.execute(
+                """INSERT INTO sources(
+                       source_id, lineage_id, source_revision, owner, installation_id, platform,
+                       scope_kind, native_scope_id, bot_id, account_id, conversation_id, session_id,
+                       issued_at, expires_at, recipients_json, content_hash, payload_json,
+                       state, governance_revision, created_at, updated_at
+                   ) VALUES(?, 'lin-1', 1, 'conversation.generated_images', 'test-ext-album', 'onebot',
+                            'private', 'u1', 'bot-1', 'acc-1', 'c1', 's1',
+                            ?, NULL, '[]', 'h-parent', ?, 'active', 1, ?, ?)""",
+                (parent_id, at_iso, double_encoded, at_iso, at_iso),
+            )
+            conn.execute(
+                """INSERT INTO sources(
+                       source_id, lineage_id, source_revision, owner, installation_id, platform,
+                       scope_kind, native_scope_id, bot_id, account_id, conversation_id, session_id,
+                       issued_at, expires_at, recipients_json, content_hash, payload_json,
+                       state, governance_revision, created_at, updated_at
+                   ) VALUES('src-img-1', 'lin-1', 1, 'conversation.image', 'test-ext-album', 'onebot',
+                            'private', 'u1', 'bot-1', 'acc-1', 'c1', 's1',
+                            ?, NULL, '[]', 'h-img', '{}', 'active', 1, ?, ?)""",
+                (at_iso, at_iso, at_iso),
+            )
+            conn.execute(
+                """INSERT INTO assets(
+                       asset_id, lineage_id, asset_revision, owner, installation_id, platform,
+                       scope_kind, native_scope_id, bot_id, account_id, conversation_id, session_id,
+                       recipients_json, content_hash, state, governance_revision, created_at, updated_at
+                   ) VALUES('asset-img-1', 'lin-1', 1, 'conversation.image', 'test-ext-album', 'onebot',
+                            'private', 'u1', 'bot-1', 'acc-1', 'c1', 's1',
+                            '[]', ?, 'active', 1, ?, ?)""",
+                (sha_hex, at_iso, at_iso),
+            )
+            conn.execute(
+                """INSERT INTO conversation_image_payloads
+                   VALUES(?, 'lin-1', 1, 0, 'src-img-1', 'lin-1', 1, 'asset-img-1', 'lin-1', 1, ?, ?)""",
+                (parent_id, descriptor_json, b"raw"),
+            )
+
+        self.assertEqual(
+            has_duplicate_sha256(self.runtime, (origin,), sha_hex),
+            f"generated-image:{invocation_id}:0",
+        )
+        dup_res = record_external_generated_image(self.runtime, origin_key=origin, content=png, created_at=NOW)
+        self.assertEqual(dup_res["status"], "duplicate")
+        self.assertEqual(dup_res["image_id"], f"generated-image:{invocation_id}:0")
+        self.assertIsNone(has_duplicate_sha256(self.runtime, (other_origin,), sha_hex))
 
 
 class ExternalToolRealtimeCaptureTests(HostFixture, unittest.IsolatedAsyncioTestCase):
@@ -402,6 +473,52 @@ class ExternalToolRealtimeCaptureTests(HostFixture, unittest.IsolatedAsyncioTest
             "green forest sunlight",
         )
 
+    async def test_crashed_external_tool_window_is_cleared_by_internal_tool_and_dispatch_result(self):
+        from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin
+
+        event = self._prepare_event()
+        event.unified_msg_origin = "qq-main:FriendMessage:200"
+        png = _make_static_image((88, 44, 166), size=(512, 512))
+        chain = MessageChain([AstrImage.fromBase64(base64.b64encode(png).decode("ascii"))])
+        ext_tool = NS(name="NAI_Generate_Image", description="Generate anime image")
+
+        # 1) External tool crashes (skips observe_external_tool_end); subsequent internal tool clears stale window.
+        observe_external_tool_begin(event, ext_tool, {"tag": "crashed"})
+        observe_external_tool_begin(event, NS(name="companion_v2_reaction_search", description="sticker"), {})
+        await event.send(chain)
+        self._drain()
+        self.assertEqual(self.app.messages.generated_images.album_count(self.context, NOW), 0)
+
+        # 2) External tool crashes inside ToolLoopAgentRunner._handle_function_tools;
+        # yielding tool_call_result clears active external tools even without on_llm_tool_respond.
+        async def fake_original_tools(*_args, **_kwargs):
+            observe_external_tool_begin(event, ext_tool, {"tag": "crashed inside runner"})
+            # Tool raises -> runner skips on_tool_end, yields tool_call_result message chain
+            yield NS(kind="message_chain", message_chain=MessageChain(type="tool_call_result", chain=[]))
+            # A later untracked send in the same batch must NOT inherit the crashed tool window
+            await event.send(chain)
+
+        async def fake_step(*_args, **_kwargs):
+            if False:
+                yield None
+
+        run_context = NS(context=NS(event=event), messages=[])
+        runner = NS(
+            run_context=run_context,
+            _handle_function_tools=fake_original_tools,
+            step=fake_step,
+            done=lambda: True,
+        )
+        with patch.dict(
+            "astrbot.core.pipeline.process_stage.follow_up._ACTIVE_AGENT_RUNNERS",
+            {event.unified_msg_origin: runner},
+        ):
+            observe_core_tool_dispatch_begin(event, run_context)
+            async for _ in runner._handle_function_tools():
+                pass
+        self._drain()
+        self.assertEqual(self.app.messages.generated_images.album_count(self.context, NOW), 0)
+
 
 class ExternalAlbumUnifiedProjectionAndQZoneTests(HostFixture, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -553,6 +670,82 @@ class ExternalAlbumUnifiedProjectionAndQZoneTests(HostFixture, unittest.Isolated
         self.assertEqual(len(pub_images), 1)
         self.assertEqual(pub_images[0].content, img_a2)
         self.assertEqual(pub_ids, (r2["image_id"],))
+
+        # 5) Static ExternalImageDescriptor (for 5-20 MiB static external PNGs) is accepted by register_from_album
+        big_desc = ExternalImageDescriptor(
+            position=0,
+            mime_type="image/png",
+            width=1216,
+            height=832,
+            byte_count=len(img_a2),
+            content_hash=hashlib.sha256(img_a2).hexdigest(),
+        )
+        big_item = GeneratedAlbumImage(r2["image_id"], t2.isoformat(), EXTERNAL_IMAGE_ACTION, big_desc, img_a2)
+        with patch.object(mgmt, "_resolve_album_item", return_value=big_item):
+            big_reg = mgmt.register_from_album(
+                self.core, self.context, at=NOW,
+                image_id=r2["image_id"], label="高分辨率横图", roles=["scene"], operation_key="ext-ref-op-key-0002",
+            )
+        self.assertEqual(big_reg["label"], "高分辨率横图")
+
+    async def test_group_external_album_shares_within_same_group_and_isolates_other_groups(self):
+        from companion_v2.storage.native_conversation_schema import STATEMENTS as NATIVE_TURN_STATEMENTS
+
+        with self.runtime.transaction() as conn:
+            for stmt in NATIVE_TURN_STATEMENTS:
+                conn.execute(stmt)
+
+        # Member B in the SAME group (grp-1)
+        member_b_actor = self.other_context.actor
+        for action in ("text", "conversation.reply"):
+            self.grant(member_b_actor, self.group_scope, action)
+        member_b_group_context = TaskContext(
+            member_b_actor,
+            require(self.identity.resolve_role(self.group_scope, observed_at=NOW)),
+            group_audience(self.group_scope, member_b_actor.subject),
+        )
+        self.assertNotEqual(self.group_context.key, member_b_group_context.key)
+
+        # Separate group (grp-2)
+        group2_scope = replace(SCOPE, kind=ScopeKind.GROUP, native_scope_id="grp-2", session_id="grp-2", conversation_id="conv-grp-2")
+        self.personas.register_route(ConversationRoute(group2_scope, group_id="grp-2"), observed_at=NOW)
+        for action in ("text", "conversation.reply"):
+            self.grant(self.important, group2_scope, action)
+        group2_context = TaskContext(
+            self.important,
+            require(self.identity.resolve_role(group2_scope, observed_at=NOW)),
+            group_audience(group2_scope, self.important.subject),
+        )
+
+        # Record a native turn row for Member A in grp-1 so allowed_origin_keys discovers it for Member B
+        with self.runtime.transaction() as conn:
+            conn.execute(
+                """INSERT INTO conversation_native_turns(
+                       turn_id, context_key, context_json, role_instruction,
+                       observed_at, generation_state, phase_at
+                   ) VALUES('turn-grp-a', ?, ?, 'persona', ?, 'completed', ?)""",
+                (self.group_context.key, encode(self.group_context), NOW.isoformat(), NOW.isoformat()),
+            )
+
+        png_grp = _make_static_image((120, 40, 210), size=(640, 480))
+        md5_grp = hashlib.md5(png_grp).hexdigest()
+        rec = record_external_generated_image(
+            self.runtime, origin_key=self.group_context.key, content=png_grp, created_at=NOW,
+            tool_name="NAI_Generate_Image", prompt="group shared art",
+        )
+        self.assertEqual(rec["status"], "recorded")
+
+        generated = self.app.messages.generated_images
+        # Member B in grp-1 sees Member A's group external image and can recover by MD5
+        self.assertEqual(generated.album_count(member_b_group_context, NOW), 1)
+        self.assertEqual(generated.album_image(member_b_group_context, NOW, rec["image_id"]).content, png_grp)
+        member_b_keys = allowed_origin_keys(self.runtime, member_b_group_context)
+        self.assertIsNotNone(find_by_md5(self.runtime, member_b_keys, md5_grp))
+
+        # Group 2 and Private Chat remain 100% isolated
+        self.assertEqual(generated.album_count(group2_context, NOW), 0)
+        self.assertEqual(generated.album_count(self.context, NOW), 0)
+        self.assertIsNone(find_by_md5(self.runtime, allowed_origin_keys(self.runtime, group2_context), md5_grp))
 
 
 if __name__ == "__main__":

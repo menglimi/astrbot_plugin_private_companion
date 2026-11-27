@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import Image, ImageOps
 
+from companion_v2.conversation.media.external_generated_album import ExternalImageDescriptor
 from companion_v2.conversation.media.models import MAX_IMAGE_BYTES, ImageDescriptor
 from companion_v2.conversation.media.output_settings import effective_settings as image_settings, parse_scene_presets
 from companion_v2.execution.models import TaskContext, TaskError, digest, require
@@ -986,7 +987,7 @@ class ReferenceMaterialManagement:
         if len(payload) > MAX_ASSET_BYTES:
             raise TaskError("reference_asset_too_large", "this image exceeds the 20 MiB reference limit")
         descriptor = original.descriptor
-        if type(descriptor) is not ImageDescriptor:
+        if type(descriptor) not in (ImageDescriptor, ExternalImageDescriptor):
             raise TaskError("reference_image_animated", "animated images cannot be registered as reference material")
         identifier = self._asset_id(owner, operation_key)
         media_ref = OWNED_REFERENCE_PREFIX + "album:" + sha256(image_id.encode("utf-8")).hexdigest() + ":" + identifier
