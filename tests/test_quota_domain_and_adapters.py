@@ -1325,6 +1325,155 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_logo_disk_persistence_swr_exponential_backoff_expanded_candidates_and_proxy_fallback(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                logo_dir = Path(tmp) / "quota" / "logos"
+                now_box = [datetime(2026, 11, 27, 0, 0, tzinfo=timezone.utc)]
+                cache = StationLogoCache(cache_dir=logo_dir, now=lambda: now_box[0])
+
+                # 1) Expanded direct candidate (/logo.svg) + server_address alias discovery + disk atomic persistence
+                safe_svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#4a7"/></svg>'
+                f1, calls1 = _mock_factory({
+                    ("GET", "https://web-alias.example.test/logo.svg"): _FakeResponse(200, safe_svg, {"Content-Type": "image/svg+xml"}),
+                })
+                ver1, err1 = await cache.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f1,
+                )
+                self.assertTrue(ver1)
+                self.assertEqual(err1, "")
+                self.assertTrue((logo_dir / "st-persist.bin").exists())
+                self.assertTrue((logo_dir / "st-persist.meta.json").exists())
+
+                # Cold restart: new StationLogoCache instance reads straight from disk with 0 HTTP requests
+                restarted = StationLogoCache(cache_dir=logo_dir, now=lambda: now_box[0])
+                disk_entry = restarted.get("st-persist")
+                self.assertIsNotNone(disk_entry)
+                self.assertTrue(disk_entry.usable)
+                self.assertEqual(disk_entry.version, ver1)
+                self.assertEqual(disk_entry.mime_type, "image/svg+xml")
+
+                # 2) Stale-While-Revalidate + Exponential Backoff (5m -> 15m -> 1h): NEVER wipes good logo on upstream error!
+                now_box[0] = now_box[0] + timedelta(hours=25)
+                f_fail, fail_calls = _mock_factory({
+                    ("GET", "https://api-edge.example.test/"): _FakeResponse(502, b"bad gateway"),
+                    ("GET", "https://web-alias.example.test/"): _FakeResponse(502, b"bad gateway"),
+                })
+                ver_swr1, err_swr1 = await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(ver_swr1, ver1)
+                self.assertEqual(err_swr1, "")
+                kept1 = restarted.get("st-persist")
+                self.assertTrue(kept1.usable)
+                self.assertEqual(kept1.fail_count, 1)
+                self.assertEqual(kept1.next_retry_at, now_box[0] + timedelta(minutes=5))
+                calls_after_fail1 = len(fail_calls)
+
+                # Within 5m backoff -> 0 upstream requests, still serves old logo
+                now_box[0] = now_box[0] + timedelta(minutes=3)
+                ver_backoff, _ = await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(ver_backoff, ver1)
+                self.assertEqual(len(fail_calls), calls_after_fail1)
+
+                # After 5m -> 2nd failure backs off 15m; after 15m -> 3rd failure backs off 1h
+                now_box[0] = now_box[0] + timedelta(minutes=3)
+                await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(restarted.get("st-persist").fail_count, 2)
+                self.assertEqual(restarted.get("st-persist").next_retry_at, now_box[0] + timedelta(minutes=15))
+
+                now_box[0] = now_box[0] + timedelta(minutes=16)
+                await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(restarted.get("st-persist").fail_count, 3)
+                self.assertEqual(restarted.get("st-persist").next_retry_at, now_box[0] + timedelta(hours=1))
+                self.assertTrue(restarted.get("st-persist").usable)
+
+                # Recovery after 1h updates logo cleanly and resets fail_count
+                now_box[0] = now_box[0] + timedelta(hours=1, minutes=1)
+                f_recover, _ = _mock_factory({
+                    ("GET", "https://web-alias.example.test/favicon.png"): _FakeResponse(200, PNG_BYTES, {"Content-Type": "image/png"}),
+                })
+                ver_rec, err_rec = await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_recover,
+                )
+                self.assertTrue(ver_rec and ver_rec != ver1)
+                self.assertEqual(err_rec, "")
+                self.assertEqual(restarted.get("st-persist").fail_count, 0)
+                self.assertIsNone(restarted.get("st-persist").next_retry_at)
+
+                # 3) Tampered disk binary fails sniff validation safely
+                (logo_dir / "st-persist.bin").write_bytes(b"<script>evil()</script>")
+                tampered_cache = StationLogoCache(cache_dir=logo_dir, now=lambda: now_box[0])
+                tampered_entry = tampered_cache.get("st-persist")
+                self.assertTrue(tampered_entry is None or not tampered_entry.usable)
+
+                # 4) Proxy transport error safely falls back to direct fetch for public credential-free icon
+                seen_proxies: list[str] = []
+
+                def proxy_fallback_factory(**session_kwargs):
+                    px = str(session_kwargs.get("proxy_url") or "")
+
+                    def handler(method, url, _kw):
+                        seen_proxies.append(px)
+                        if px:
+                            raise OSError("proxy refused")
+                        if url == "https://px.example.test/favicon.svg":
+                            return _FakeResponse(200, safe_svg, {"Content-Type": "image/svg+xml"})
+                        return _FakeResponse(404, b"")
+
+                    from tests.test_quota_domain_and_adapters import _FakeSession
+
+                    return _FakeSession(handler)
+
+                ver_px, err_px = await cache.refresh(
+                    "st-proxy-fb",
+                    "https://px.example.test",
+                    "",
+                    proxy_url="http://127.0.0.1:7899",
+                    session_factory=proxy_fallback_factory,
+                )
+                self.assertTrue(ver_px)
+                self.assertEqual(err_px, "")
+                self.assertIn("http://127.0.0.1:7899", seen_proxies)
+                self.assertIn("", seen_proxies)
+
+                # 5) forget() removes disk files cleanly
+                cache.forget("st-persist")
+                self.assertFalse((logo_dir / "st-persist.bin").exists())
+                self.assertFalse((logo_dir / "st-persist.meta.json").exists())
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

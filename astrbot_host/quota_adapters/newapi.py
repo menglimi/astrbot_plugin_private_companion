@@ -999,12 +999,16 @@ class _BaseNewApiAdapter(QuotaAdapter):
         display_multiplier = params.display_multiplier
         symbol = params.symbol
 
+        server_address = str((site_status_found or {}).get("server_address") or "").strip()
+        logo_extra_roots = [r for r in (server_address, *_known_alias_roots(active_root)) if r]
+
         logo_version, logo_error = "", ""
         if ctx.logo_cache is not None:
             logo_version, logo_error = await ctx.logo_cache.refresh(
                 spec.id,
                 active_root,
                 published_logo,
+                extra_roots=logo_extra_roots,
                 allow_http=ctx.allow_http,
                 proxy_url=ctx.proxy_url,
                 session_factory=ctx.session_factory,
@@ -1152,8 +1156,6 @@ class _BaseNewApiAdapter(QuotaAdapter):
             sub_task,
             topup_task,
         )
-
-        server_address = str((site_status_found or {}).get("server_address") or "").strip()
 
         if bal_err is not None or user_data is None:
             err_code, err_msg, repair_hint, detected_header = bal_err or (

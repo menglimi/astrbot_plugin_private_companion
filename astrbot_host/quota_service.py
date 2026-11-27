@@ -45,6 +45,7 @@ from .quota_adapters import (
 )
 from .quota_adapters.base import same_origin, validate_proxy_url
 from .quota_adapters.newapi import _known_alias_roots
+from .quota_adapters.official import _official_logo_hints
 from .service_balance_provider import _catalog as _balance_provider_catalog
 
 logger = logging.getLogger(__name__)
@@ -172,12 +173,13 @@ class QuotaWatchService:
 
         self.store = QuotaStationStore(self.runtime_root)
         self.snapshot_cache = QuotaSnapshotCache(self.runtime_root)
-        self.logo_cache = StationLogoCache(now=self._now)
+        self.logo_cache = StationLogoCache(cache_dir=self.runtime_root / "quota" / "logos", now=self._now)
 
         self._loop_bound: asyncio.AbstractEventLoop | None = None
         self._semaphore: asyncio.Semaphore | None = None
         self._inflight_all: asyncio.Task[dict[str, QuotaSnapshot]] | None = None
         self._inflight_station: dict[str, asyncio.Task[QuotaSnapshot]] = {}
+        self._inflight_icon: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._bg_task: asyncio.Task[None] | None = None
         self._last_refresh_all_monotonic: float | None = None
         self._upstream_logs_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
@@ -194,6 +196,7 @@ class QuotaWatchService:
             self._loop_bound = loop
             self._inflight_all = None
             self._inflight_station.clear()
+            self._inflight_icon.clear()
         return self._semaphore
 
     def _base_controller(self) -> Any:
@@ -875,9 +878,19 @@ class QuotaWatchService:
         astrbot_providers, _connections = self._discover_astrbot_suppliers(session=session)
         provider_usage = self._collect_provider_usage(runtime, session) if runtime is not None else {}
 
+        snaps_out: dict[str, dict[str, Any]] = {}
+        for sid, snap in snaps.items():
+            snap_dict = snap.to_dict()
+            if snap.ok and not snap.logo_version:
+                cached_logo = self.logo_cache.get(sid)
+                if cached_logo is not None and cached_logo.usable and cached_logo.version:
+                    snap_dict["logo_version"] = cached_logo.version
+                    snap_dict["logo_error"] = ""
+            snaps_out[sid] = snap_dict
+
         return {
             "stations": [st.to_public_dict() for st in stations],
-            "snapshots": {sid: snap.to_dict() for sid, snap in snaps.items()},
+            "snapshots": snaps_out,
             "summary": summary,
             "awareness": awareness.to_dict(),
             "legacy_projected": legacy_projected,
@@ -887,6 +900,12 @@ class QuotaWatchService:
             "updated_at": updated_at or summary["latest_checked_at"],
             "edit_token": edit_token,
         }
+
+    def is_background_refresh_running(self) -> bool:
+        return bool(
+            (self._bg_task is not None and not self._bg_task.done())
+            or (self._inflight_all is not None and not self._inflight_all.done())
+        )
 
     def get_icon_payload(self, station_id: str) -> dict[str, Any]:
         sid = str(station_id or "").strip()
@@ -902,6 +921,90 @@ class QuotaWatchService:
             "mime_type": entry.mime_type,
             "data_url": entry.data_url(),
         }
+
+    async def ensure_icon_payload(self, station_id: str, *, session: Any = None) -> dict[str, Any]:
+        """Resolve station icon via memory -> disk -> single-flight on-demand fetch."""
+        sid = str(station_id or "").strip()
+        if not sid:
+            raise QuotaSettingsError("quota_request_invalid", "缺少站点 ID")
+
+        cached_payload = self.get_icon_payload(sid)
+        if cached_payload["available"]:
+            return cached_payload
+
+        self._get_semaphore()
+        existing = self._inflight_icon.get(sid)
+        if existing is not None and not existing.done():
+            return await existing
+
+        stations, _awareness, _token, _legacy = self._effective_stations()
+        spec = next((st for st in stations if st.id == sid), None)
+        if spec is None or not spec.enabled:
+            return cached_payload
+
+        async def _fetch_on_demand() -> dict[str, Any]:
+            _, connections = self._discover_astrbot_suppliers(session=session)
+            ctx, err_snap = self._build_probe_context(spec, connections)
+            if err_snap is not None or ctx is None:
+                return self.get_icon_payload(sid)
+
+            root = normalize_station_root(ctx.base_url)
+            if not root:
+                return self.get_icon_payload(sid)
+
+            snap = self.snapshot_cache.get(sid)
+            published_logo = ""
+            extra_roots: list[str] = []
+            if snap is not None and snap.server_address:
+                extra_roots.append(snap.server_address)
+
+            if spec.adapter_id in ("newapi", "newapi_user_id"):
+                active_root = root
+                for candidate_root in _known_alias_roots(root):
+                    extra_roots.append(candidate_root)
+                for candidate_root in _known_alias_roots(root):
+                    site_status = await fetch_newapi_status(
+                        candidate_root,
+                        allow_http=ctx.allow_http,
+                        proxy_url=ctx.proxy_url,
+                        timeout_seconds=min(ctx.timeout_seconds, 4.0),
+                        session_factory=ctx.session_factory,
+                    )
+                    if site_status is not None:
+                        active_root = candidate_root
+                        published_logo = str(site_status.get("logo") or "")
+                        srv_addr = str(site_status.get("server_address") or "").strip()
+                        if srv_addr:
+                            extra_roots.insert(0, srv_addr)
+                        break
+                root = active_root
+            else:
+                official_pub, official_roots = _official_logo_hints(spec.adapter_id, root)
+                if official_pub:
+                    published_logo = official_pub
+                extra_roots.extend(official_roots)
+
+            ver, _err = await self.logo_cache.refresh(
+                sid,
+                root,
+                published_logo,
+                extra_roots=extra_roots,
+                allow_http=ctx.allow_http,
+                proxy_url=ctx.proxy_url,
+                session_factory=ctx.session_factory,
+            )
+            if ver and snap is not None and (snap.logo_version != ver or snap.logo_error):
+                updated_snap = QuotaSnapshot(**{**snap.to_dict(), "logo_version": ver, "logo_error": ""})
+                self.snapshot_cache.put(updated_snap, updated_at=self._current_time().isoformat())
+            return self.get_icon_payload(sid)
+
+        task = asyncio.create_task(_fetch_on_demand(), name=f"companion-quota-icon-{sid}")
+        self._inflight_icon[sid] = task
+        try:
+            return await task
+        finally:
+            if self._inflight_icon.get(sid) is task:
+                self._inflight_icon.pop(sid, None)
 
     def invalidate_upstream_logs(self, station_id: str = "") -> None:
         sid = str(station_id or "").strip()
@@ -1246,6 +1349,10 @@ class QuotaWatchService:
             if not task.done():
                 task.cancel()
                 tasks.append(task)
+        for task in list(self._inflight_icon.values()):
+            if not task.done():
+                task.cancel()
+                tasks.append(task)
         for task in tasks:
             try:
                 await task
@@ -1256,6 +1363,7 @@ class QuotaWatchService:
         self._bg_task = None
         self._inflight_all = None
         self._inflight_station.clear()
+        self._inflight_icon.clear()
         self._upstream_logs_cache.clear()
         self._observed_group_ratios.clear()
 

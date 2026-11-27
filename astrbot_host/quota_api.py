@@ -97,7 +97,8 @@ class QuotaWebEndpoints:
             session, _op, _mgr, _status = await self._authorize()
             service, runtime = self._service(session)
             payload = await asyncio.to_thread(service.get_dashboard_payload, runtime=runtime, session=session)
-            service.maybe_schedule_background_refresh(session=session)
+            scheduled = service.maybe_schedule_background_refresh(session=session)
+            payload["background_refresh_scheduled"] = bool(scheduled or service.is_background_refresh_running())
             return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -288,7 +289,7 @@ class QuotaWebEndpoints:
             session, _op, _mgr, _status = await self._authorize(allow_query_keys=("id", "v"))
             station_id = str(request.query.get("id") or "").strip()
             service, _runtime = self._service(session)
-            data = service.get_icon_payload(station_id)
+            data = await service.ensure_icon_payload(station_id, session=session)
             return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))

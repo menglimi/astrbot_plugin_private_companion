@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 from html.parser import HTMLParser
+import json
+import os
+from pathlib import Path
 import re
+import tempfile
 import threading
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin, urlsplit
@@ -36,11 +40,26 @@ from .base import (
 LOGO_MAX_BYTES = 1024 * 1024  # 1 MiB ceiling for crisp high-DPI PNG/ICO/WebP brand marks
 SVG_MAX_BYTES = 64 * 1024  # 64 KiB ceiling for static vector brand logos
 HOMEPAGE_ICON_PROBE_MAX_BYTES = 64 * 1024  # Bounded <head> prefix read for HTML icon discovery
+LOGO_META_MAX_BYTES = 16 * 1024
 LOGO_MAX_REDIRECTS = 2
-LOGO_MAX_FETCH_ATTEMPTS = 10
+LOGO_MAX_FETCH_ATTEMPTS = 16
 LOGO_TTL = timedelta(hours=24)
 LOGO_NEGATIVE_TTL = timedelta(hours=1)
+LOGO_BACKOFF_SCHEDULE = (
+    timedelta(minutes=5),
+    timedelta(minutes=15),
+    timedelta(hours=1),
+)
+LOGO_DISK_SCHEMA_VERSION = 1
 LOGO_TIMEOUT_SECONDS = 6.0
+LOGO_DIRECT_SUFFIXES = (
+    "/logo.png",
+    "/logo.svg",
+    "/favicon.svg",
+    "/favicon.png",
+    "/favicon.ico",
+)
+_SAFE_STATION_FILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 _XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -452,8 +471,8 @@ def logo_candidate_urls(
     roots = _ordered_icon_roots(base_url, extra_roots=extra_roots)
     for root in roots:
         root_allow = bool(allow_http) and same_origin(base_url, root)
-        _add(root, "/logo.png", root_allow_http=root_allow)
-        _add(root, "/favicon.ico", root_allow_http=root_allow)
+        for suffix in LOGO_DIRECT_SUFFIXES:
+            _add(root, suffix, root_allow_http=root_allow)
     return candidates
 
 
@@ -492,6 +511,39 @@ def _short_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:12]
 
 
+def _backoff_delta(fail_count: int) -> timedelta:
+    idx = max(0, min(int(fail_count) - 1, len(LOGO_BACKOFF_SCHEDULE) - 1))
+    return LOGO_BACKOFF_SCHEDULE[idx]
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 @dataclass(frozen=True)
 class CachedLogo:
     source_url: str
@@ -500,6 +552,8 @@ class CachedLogo:
     version: str
     fetched_at: datetime
     error: str = ""
+    fail_count: int = 0
+    next_retry_at: datetime | None = None
 
     @property
     def usable(self) -> bool:
@@ -513,10 +567,16 @@ class CachedLogo:
 
 
 class StationLogoCache:
-    """In-memory positive/negative cache for proxied station logos."""
+    """Persistent + in-memory Stale-While-Revalidate cache for proxied station logos."""
 
-    def __init__(self, *, now: Callable[[], datetime] | None = None):
+    def __init__(
+        self,
+        *,
+        now: Callable[[], datetime] | None = None,
+        cache_dir: Path | str | None = None,
+    ):
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._cache_dir: Path | None = Path(cache_dir).resolve() if cache_dir else None
         self._lock = threading.RLock()
         self._entries: dict[str, CachedLogo] = {}
 
@@ -524,13 +584,133 @@ class StationLogoCache:
         current = self._now()
         return current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current
 
+    @staticmethod
+    def _station_stem(station_id: str) -> str:
+        sid = str(station_id or "").strip().lower()
+        if sid and _SAFE_STATION_FILE_RE.fullmatch(sid):
+            return sid
+        return "st-" + hashlib.sha256(str(station_id or "").encode("utf-8")).hexdigest()[:16]
+
+    def _disk_paths(self, station_id: str) -> tuple[Path, Path] | None:
+        if self._cache_dir is None:
+            return None
+        stem = self._station_stem(station_id)
+        return self._cache_dir / f"{stem}.bin", self._cache_dir / f"{stem}.meta.json"
+
+    def _save_to_disk(self, station_id: str, entry: CachedLogo, *, drop_binary: bool = False) -> None:
+        paths = self._disk_paths(station_id)
+        if paths is None:
+            return
+        bin_path, meta_path = paths
+        try:
+            if entry.usable:
+                _atomic_write_bytes(bin_path, entry.data)
+            elif drop_binary:
+                bin_path.unlink(missing_ok=True)
+            meta = {
+                "schema_version": LOGO_DISK_SCHEMA_VERSION,
+                "station_id": str(station_id or ""),
+                "source_url": entry.source_url,
+                "mime_type": entry.mime_type,
+                "version": entry.version,
+                "fetched_at": entry.fetched_at.isoformat(),
+                "last_error": entry.error,
+                "fail_count": int(entry.fail_count),
+                "next_retry_at": entry.next_retry_at.isoformat() if entry.next_retry_at is not None else "",
+            }
+            meta_bytes = (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            _atomic_write_bytes(meta_path, meta_bytes)
+        except OSError:
+            return
+
+    def _load_from_disk(self, station_id: str) -> CachedLogo | None:
+        paths = self._disk_paths(station_id)
+        if paths is None:
+            return None
+        bin_path, meta_path = paths
+        if not meta_path.exists():
+            return None
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > LOGO_META_MAX_BYTES:
+                return None
+            meta = json.loads(raw_meta.decode("utf-8"))
+            if type(meta) is not dict:
+                return None
+        except (OSError, UnicodeError, ValueError):
+            return None
+
+        source_url = str(meta.get("source_url") or "")
+        fetched_at = _parse_iso_datetime(meta.get("fetched_at")) or self._current_time()
+        last_error = str(meta.get("last_error") or "")
+        raw_fails = meta.get("fail_count", 0)
+        fail_count = int(raw_fails) if isinstance(raw_fails, int) and not isinstance(raw_fails, bool) and raw_fails >= 0 else 0
+        next_retry_at = _parse_iso_datetime(meta.get("next_retry_at"))
+
+        if bin_path.exists():
+            try:
+                raw_bin = bin_path.read_bytes()
+            except OSError:
+                raw_bin = b""
+            if raw_bin and len(raw_bin) <= LOGO_MAX_BYTES:
+                mime, clean_bytes = sniff_safe_logo(raw_bin)
+                if mime and clean_bytes:
+                    return CachedLogo(
+                        source_url=source_url,
+                        mime_type=mime,
+                        data=clean_bytes,
+                        version=_short_hash(clean_bytes),
+                        fetched_at=fetched_at,
+                        error=last_error,
+                        fail_count=fail_count,
+                        next_retry_at=next_retry_at,
+                    )
+
+        if last_error:
+            return CachedLogo(
+                source_url=source_url,
+                mime_type="",
+                data=b"",
+                version="",
+                fetched_at=fetched_at,
+                error=last_error,
+                fail_count=fail_count,
+                next_retry_at=next_retry_at,
+            )
+        return None
+
     def get(self, station_id: str) -> CachedLogo | None:
         with self._lock:
-            return self._entries.get(station_id)
+            entry = self._entries.get(station_id)
+            if entry is not None:
+                return entry
+        loaded = self._load_from_disk(station_id)
+        if loaded is not None:
+            with self._lock:
+                self._entries.setdefault(station_id, loaded)
+                return self._entries[station_id]
+        return None
+
+    def is_stale(self, entry: CachedLogo | None) -> bool:
+        if entry is None or not entry.usable:
+            return True
+        now = self._current_time()
+        if (now - entry.fetched_at) < LOGO_TTL:
+            return False
+        if entry.next_retry_at is not None and now < entry.next_retry_at:
+            return False
+        return True
 
     def forget(self, station_id: str) -> None:
         with self._lock:
             self._entries.pop(station_id, None)
+        paths = self._disk_paths(station_id)
+        if paths is not None:
+            for path in paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def clear(self) -> None:
         with self._lock:
@@ -545,27 +725,39 @@ class StationLogoCache:
         extra_roots: Iterable[str] = (),
         allow_http: bool = False,
         proxy_url: str = "",
+        fallback_proxy_url: str = "",
+        force: bool = False,
         session_factory: Callable[..., Any] | None = None,
     ) -> tuple[str, str]:
-        """Return ``(version, error_text)`` using positive/negative TTL caching."""
+        """Return ``(version, error_text)`` with persistent disk cache, SWR, and exponential backoff."""
         roots = _ordered_icon_roots(base_url, extra_roots=extra_roots)
         published_url = resolve_logo_url(base_url, published_logo, allow_http=allow_http) if published_logo else ""
         if not published_url and not roots:
             self.forget(station_id)
             return "", "站点地址无效，无法解析图标"
 
-        want = "|".join([_origin_of(base_url), published_url, *roots])
+        want_origin = _origin_of(base_url)
+        want = "|".join([want_origin, published_url, *roots])
         now = self._current_time()
-        with self._lock:
-            prev = self._entries.get(station_id)
-        if prev is not None and prev.source_url == want:
-            age = now - prev.fetched_at
-            if prev.usable and age < LOGO_TTL:
-                return prev.version, ""
-            if not prev.usable and prev.error and age < LOGO_NEGATIVE_TTL:
-                return "", prev.error
+        prev = self.get(station_id)
+        prev_origin = prev.source_url.split("|", 1)[0] if (prev is not None and prev.source_url) else ""
+        same_station_origin = bool(prev is not None and prev.usable and prev_origin and prev_origin == want_origin)
 
-        referer = _origin_of(base_url)
+        if not force and prev is not None and prev.source_url == want:
+            age = now - prev.fetched_at
+            if prev.usable:
+                if age < LOGO_TTL:
+                    return prev.version, ""
+                if prev.next_retry_at is not None and now < prev.next_retry_at:
+                    return prev.version, ""
+            else:
+                if prev.next_retry_at is not None:
+                    if now < prev.next_retry_at:
+                        return "", prev.error
+                elif prev.error and age < LOGO_NEGATIVE_TTL:
+                    return "", prev.error
+
+        referer = want_origin
         img_headers = {
             "Accept": "image/webp,image/png,image/jpeg,image/x-icon,image/gif,image/svg+xml,*/*;q=0.5",
             "User-Agent": BROWSER_USER_AGENT,
@@ -578,9 +770,44 @@ class StationLogoCache:
             img_headers["Referer"] = referer
             html_headers["Referer"] = referer
 
+        # Public credential-free logo requests can safely fall back between proxy and direct on transport failure.
+        alt_proxy = "" if proxy_url else str(fallback_proxy_url or "").strip()
+        proxy_order = (proxy_url, alt_proxy) if alt_proxy != proxy_url else (proxy_url,)
+
         attempts = 0
         tried_urls: set[str] = set()
         last_error = "未能获取有效图标"
+
+        async def _fetch_public(
+            target: str,
+            *,
+            headers: dict[str, str],
+            timeout_seconds: float,
+            max_bytes: int,
+            truncate_at_max_bytes: bool = False,
+        ) -> tuple[int, dict[str, str], bytes, str]:
+            last_exc: QuotaHttpError | None = None
+            for idx_p, candidate_proxy in enumerate(proxy_order):
+                try:
+                    return await http_request_public_bytes(
+                        target,
+                        headers=headers,
+                        allow_http=allow_http,
+                        origin_url=base_url,
+                        proxy_url=candidate_proxy,
+                        timeout_seconds=timeout_seconds,
+                        max_bytes=max_bytes,
+                        truncate_at_max_bytes=truncate_at_max_bytes,
+                        max_redirects=LOGO_MAX_REDIRECTS,
+                        session_factory=session_factory,
+                    )
+                except QuotaHttpError as exc:
+                    last_exc = exc
+                    if idx_p + 1 < len(proxy_order) and exc.code in ("network_error", "timeout", "proxy_dependency_missing"):
+                        continue
+                    raise
+            assert last_exc is not None
+            raise last_exc
 
         async def _try_image(target: str) -> tuple[str | None, bytes]:
             nonlocal attempts, last_error
@@ -589,16 +816,11 @@ class StationLogoCache:
             tried_urls.add(target)
             attempts += 1
             try:
-                status, _resp_headers, body, _final = await http_request_public_bytes(
+                status, _resp_headers, body, _final = await _fetch_public(
                     target,
                     headers=img_headers,
-                    allow_http=allow_http,
-                    origin_url=base_url,
-                    proxy_url=proxy_url,
                     timeout_seconds=LOGO_TIMEOUT_SECONDS,
                     max_bytes=LOGO_MAX_BYTES,
-                    max_redirects=LOGO_MAX_REDIRECTS,
-                    session_factory=session_factory,
                 )
             except QuotaHttpError as exc:
                 last_error = str(exc)
@@ -620,9 +842,12 @@ class StationLogoCache:
                 version=_short_hash(data),
                 fetched_at=now,
                 error="",
+                fail_count=0,
+                next_retry_at=None,
             )
             with self._lock:
                 self._entries[station_id] = entry
+            self._save_to_disk(station_id, entry)
             return entry.version, ""
 
         # 1. Explicit /api/status or official published logo (fast 1-request path).
@@ -631,7 +856,7 @@ class StationLogoCache:
             if mime:
                 return _store_success(mime, data)
 
-        # 2. Per-root discovery: homepage <link rel="...icon..."> -> /logo.png -> /favicon.ico.
+        # 2. Per-root discovery: homepage <link rel="...icon..."> -> direct icon paths.
         for idx, root in enumerate(roots):
             if attempts >= LOGO_MAX_FETCH_ATTEMPTS:
                 break
@@ -642,17 +867,12 @@ class StationLogoCache:
                 tried_urls.add(home_url)
                 attempts += 1
                 try:
-                    h_status, _h_headers, h_body, final_home = await http_request_public_bytes(
+                    h_status, _h_headers, h_body, final_home = await _fetch_public(
                         home_url,
                         headers=html_headers,
-                        allow_http=allow_http,
-                        origin_url=base_url,
-                        proxy_url=proxy_url,
                         timeout_seconds=min(LOGO_TIMEOUT_SECONDS, 4.0),
                         max_bytes=HOMEPAGE_ICON_PROBE_MAX_BYTES,
                         truncate_at_max_bytes=True,
-                        max_redirects=LOGO_MAX_REDIRECTS,
-                        session_factory=session_factory,
                     )
                     if h_status in (401, 403):
                         auth_walled = True
@@ -674,12 +894,31 @@ class StationLogoCache:
             if auth_walled and idx + 1 < len(roots):
                 continue
 
-            for suffix in ("/logo.png", "/favicon.ico"):
+            for suffix in LOGO_DIRECT_SUFFIXES:
                 candidate = resolve_logo_url(root, suffix, allow_http=root_allow_http)
                 mime, data = await _try_image(candidate)
                 if mime:
                     return _store_success(mime, data)
 
+        # Stale-While-Revalidate: NEVER erase a previously usable logo on transient revalidation failure!
+        if prev is not None and prev.usable and (prev.source_url == want or same_station_origin):
+            next_fails = prev.fail_count + 1
+            retained = CachedLogo(
+                source_url=prev.source_url,
+                mime_type=prev.mime_type,
+                data=prev.data,
+                version=prev.version,
+                fetched_at=prev.fetched_at,
+                error=last_error,
+                fail_count=next_fails,
+                next_retry_at=now + _backoff_delta(next_fails),
+            )
+            with self._lock:
+                self._entries[station_id] = retained
+            self._save_to_disk(station_id, retained)
+            return retained.version, ""
+
+        next_fails = (prev.fail_count + 1) if (prev is not None and not prev.usable and prev.source_url == want) else 1
         failed = CachedLogo(
             source_url=want,
             mime_type="",
@@ -687,7 +926,10 @@ class StationLogoCache:
             version="",
             fetched_at=now,
             error=last_error,
+            fail_count=next_fails,
+            next_retry_at=now + _backoff_delta(next_fails),
         )
         with self._lock:
             self._entries[station_id] = failed
+        self._save_to_disk(station_id, failed, drop_binary=True)
         return "", last_error
