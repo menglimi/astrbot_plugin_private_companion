@@ -357,7 +357,7 @@
   font-size:var(--fs-lead);line-height:1.95;color:var(--t-text);white-space:pre-wrap;
   overflow-wrap:anywhere;
 }
-.mem-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:var(--sp-2) var(--sp-4);margin:0 0 var(--sp-4)}
+.mem-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr));gap:var(--sp-2) var(--sp-4);margin:0 0 var(--sp-4)}
 .mem-fields div{min-width:0}
 .mem-fields dt{font-size:var(--fs-micro);color:var(--t-text-faint);margin-bottom:3px}
 .mem-fields dd{

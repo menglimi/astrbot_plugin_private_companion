@@ -957,3 +957,6 @@ dialog[open] { animation: rise .25s both; }
 dialog::backdrop { animation: fade .25s both; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
 :root[data-motion="low"] *, :root[data-motion="low"] *::before, :root[data-motion="low"] *::after { animation-duration: .06s !important; }
+@media (max-width: 760px), (pointer: coarse) {
+  .tabs button, .retry-form button, .actions button { min-height: 44px; }
+}

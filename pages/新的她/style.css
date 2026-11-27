@@ -41,4 +41,4 @@ dialog{width:min(540px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:
 .draft-foot{position:sticky;bottom:-1px;z-index:2;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);background:var(--surface)}
 .draft-foot .actions{gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .draft-foot .actions .button.primary{min-width:96px}
-@media(max-width:560px){.draft-foot{align-items:flex-start;flex-direction:column}.draft-foot .actions{width:100%}.draft-foot .actions .button{flex:1}}
+@media(max-width:560px){.stages{scrollbar-width:none;-webkit-overflow-scrolling:touch}.stages::-webkit-scrollbar{display:none}.stages button{min-height:44px}.draft-foot{position:static;bottom:auto;align-items:flex-start;flex-direction:column}.draft-foot .actions{width:100%}.draft-foot .actions .button{flex:1;min-height:44px}}

@@ -4,7 +4,7 @@
 .qzone-file-button:focus-within { outline: 2px solid currentColor; outline-offset: 3px; }
 .qzone-file-button:has(input:disabled) { opacity: .55; cursor: default; }
 .qzone-selected-images,.qzone-album-images,.qzone-photos {
-  display: grid; grid-template-columns: repeat(auto-fill,minmax(112px,1fr)); gap: 10px; margin: 10px 0;
+  display: grid; grid-template-columns: repeat(auto-fill,minmax(min(112px,100%),1fr)); gap: 10px; margin: 10px 0;
 }
 .qzone-selected-images:empty,.qzone-photos:empty { display: none; }
 .qzone-selected-images figure { margin: 0; min-width: 0; max-width: 200px; }

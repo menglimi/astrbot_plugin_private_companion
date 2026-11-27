@@ -1245,13 +1245,15 @@
   .setup-migration-main > .setup-migration-body { padding: var(--sp-3) var(--sp-3) 0; }
   .setup-migration-source-grid { grid-template-columns: minmax(0, 1fr); }
   .setup-migration-main > .setup-migration-body > .setup-migration-wizard-actions {
+    position: static;
+    bottom: auto;
     margin-inline: calc(var(--sp-3) * -1);
     padding-inline: var(--sp-3);
     flex-direction: column;
     align-items: stretch;
   }
   .setup-migration-wizard-actions > span { flex-basis: auto; }
-  .setup-migration-wizard-actions .button { width: 100%; }
+  .setup-migration-wizard-actions .button { width: 100%; min-height: 44px; }
   .setup-migration-outcomes > article,
   .setup-migration-outcomes > article:first-child { padding: var(--sp-3); }
   .setup-migration-body .setup-migration-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1299,7 +1301,7 @@
 .setup-migration-batch-head span { color: var(--t-text-faint); font-size: var(--fs-micro); }
 .setup-migration-batch ul {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(142px, 100%), 1fr));
   gap: var(--sp-2);
   margin: 0;
   padding: 0;
@@ -1327,6 +1329,9 @@
 @media (max-width: 760px) {
   .setup-migration-role-form .setup-legacy-scope { grid-template-columns: minmax(0, 1fr); }
   .setup-migration-batch ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 430px) {
+  .setup-migration-batch ul { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 小屏上动作条保持一行按钮：144px 的两行提示条会吃掉可见内容。 */

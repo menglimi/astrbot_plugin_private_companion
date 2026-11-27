@@ -2454,6 +2454,7 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   .maint-efficiency-sample-timings > div { padding:var(--sp-2); }
   .maint-efficiency-detail { padding-left:0; }
   .maint-efficiency-detail { gap:var(--sp-3); }
+  .maint-efficiency-cumulative-grid { grid-template-columns:minmax(0,1fr); }
   .maint-efficiency-cumulative-item { padding:var(--sp-2); }
   .maint-efficiency-cumulative-item strong { font-size:var(--fs-micro); }
   .maint-efficiency-event-copy { display:grid; gap:2px; }

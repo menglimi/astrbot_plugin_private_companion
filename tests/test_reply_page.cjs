@@ -1016,7 +1016,8 @@ test('expression voice tab hosts the shared reply editor with only TTS settings 
   assert.ok(expressionCss.includes('expression-platform-focus .wb-section-sidebar{display:block}'));
   assert.ok(expressionCss.includes('#replyWorkspace.expression-voice-focus>[data-reply-part="preview"]{display:none}'));
   assert.match(expressionCss, /container-name:expression-modules;container-type:inline-size/);
-  assert.match(narrowExpressionLayouts, /\.expression-module-nav\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(narrowExpressionLayouts, /\.expression-module-nav\{display:flex;flex-wrap:nowrap;overflow-x:auto;/);
+  assert.match(narrowExpressionLayouts, /\.expression-module-nav button\{[^}]*min-height:44px/);
   assert.match(narrowExpressionLayouts, /\.expression-platform-workspace\{grid-template-columns:minmax\(0,1fr\)\}/);
   assert.match(narrowExpressionLayouts, /\.semantic-providers\{grid-template-columns:minmax\(0,1fr\)\}/);
   for (const field of ['voice_trigger_mode', 'voice_provider_id', 'voice_delivery_mode',

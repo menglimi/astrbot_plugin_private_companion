@@ -92,8 +92,10 @@
   .perception-config-grid #perception-detail-health{grid-column:1;grid-row:auto}
 }
 @media(max-width:560px){
-  .perception-config-nav{grid-template-columns:repeat(2,minmax(0,1fr));position:static}
-  .perception-config-nav button{justify-content:flex-start;padding-inline:var(--sp-2);font-size:var(--fs-tiny)}
+  .perception-config-nav{display:flex;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;position:static}
+  .perception-config-nav::-webkit-scrollbar{display:none}
+  .perception-config-nav button{flex:0 0 auto;justify-content:center;min-height:44px;padding-inline:var(--sp-3);font-size:var(--fs-tiny);white-space:nowrap;scroll-snap-align:start}
+  .perception-config-grid .button.small{min-height:44px}
   .perception-config-page-heading{margin-bottom:var(--sp-2);padding-bottom:var(--sp-2)}
   .perception-config-page-heading h2{font-size:var(--fs-lead)}
   .perception-subpanel>summary{padding-inline:var(--sp-3)}
