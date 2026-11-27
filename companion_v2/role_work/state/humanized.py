@@ -157,9 +157,9 @@ def _sleep_execution_text(simulation):
         return "睡眠刚被唤醒，人还有点困意"
     if state == "awake" and execution.get("ended_at"):
         awake_minutes = execution.get("awake_minutes")
-        if type(awake_minutes) is int and awake_minutes <= 25:
+        if type(awake_minutes) is int and 0 <= awake_minutes <= 25:
             return "刚睡醒不久，还带着一点睡醒后的迷糊感"
-        return "刚睡醒"
+        return ""
     return ""
 
 
@@ -174,7 +174,7 @@ def is_sleepy(simulation):
             return True
         if state == "awake":
             awake_minutes = execution.get("awake_minutes")
-            if type(awake_minutes) is int and awake_minutes <= 25:
+            if type(awake_minutes) is int and 0 <= awake_minutes <= 25:
                 return True
     return False
 

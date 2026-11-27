@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import json
 
 from companion_v2.execution.models import encode, stamp
+from companion_v2.model_gateway.task_failure_summary import read_task_failure_summary
 
 
 REVIEW_HOURS = (0, 6, 12, 18)
@@ -50,11 +51,13 @@ def task_result(planner, context, identifier):
     last = json.loads(saved["value"]) if saved else stored_result(planner, context)
     report = last if last and last.get("task_id") == identifier else {
         "task_id": identifier, "state": row["state"], "code": data.get("reason"), "observed_at": row["updated_at"]}
-    if report.get("code") in ("worker_error", "model_usage_unknown"):
-        failure = planner.runtime.read_one("""SELECT f.code FROM model_calls c
-            JOIN model_call_failures f USING(call_id) WHERE c.task_id = ? ORDER BY c.position DESC LIMIT 1""", (identifier,))
-        if failure is not None:
-            report = {**report, "code": failure["code"]}
+    summary = read_task_failure_summary(planner.runtime, identifier)
+    if report.get("code") in ("worker_error", "model_usage_unknown") and summary.get("code"):
+        report = {**report, "code": summary["code"]}
+    if report.get("state") in ("failed", "expired", "cancelled", "dead_letter", "uncertain"):
+        for field in ("http_status", "provider", "fallback_attempted"):
+            if field in summary and field not in report:
+                report = {**report, field: summary[field]}
     return {**report, "effect": data.get("effect", "none"),
             "committed": operation_state == "completed", "operation_unknown": operation_state == "unknown"}
 

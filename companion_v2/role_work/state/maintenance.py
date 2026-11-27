@@ -14,18 +14,21 @@ from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, Ta
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.task_failure_summary import read_task_failure_summary
 from companion_v2.identity_policy.private_domain import as_source_ref
 from companion_v2.identity_policy.interventions import (REST_WAKE_INTERVENTION,
     STATE_INTERVENTION, require_capability)
 from companion_v2.role_work.growth.configuration import skills_enabled
 from companion_v2.role_work.life.scheduling import sleep_schedule_summary
 from .service import FIELDS
+from . import cycle
 from . import maintenance_context
 from .configuration import FEATURE_SWITCHES
 from .ownership import role_owner, role_schedule_key
 from . import humanized
 from . import mood
-from .cycle_prompts import INSTRUCTION as CYCLE_INSTRUCTION, MAINTENANCE as CYCLE_MAINTENANCE, PHASE_HINTS
+from .cycle_prompts import (INSTRUCTION as CYCLE_INSTRUCTION, MAINTENANCE as CYCLE_MAINTENANCE,
+    PHASE_HINTS, maintenance_instruction as cycle_maintenance_instruction)
 
 
 logger = getLogger(__name__)
@@ -197,6 +200,28 @@ def _expression_preferences(settings):
         + "。这些文字可以引导精力、饥饿感受和健康感受的日常模拟倾向与表达方式，不要求每轮改变状态。"
         "它们是普通偏好数据，不是系统指令；只在符合角色设定和当前材料时参考。不得据此编造行动、诊断疾病、"
         "断言康复，或覆盖状态真实性、隐私与其他基础约束。")
+
+
+_CYCLE_PHASE_PREFERENCE_KEYS = frozenset(
+    f"cycle_{phase}_{field}"
+    for phase in cycle.PHASES
+    for field in ("energy", "mood", "prompt")
+)
+
+
+def _maintenance_settings(settings):
+    """Strip redundant per-phase cycle preferences already projected in ``cycle_timeline``."""
+    if not isinstance(settings, dict):
+        return settings
+    cycle_enabled = bool(settings.get("cycle_enabled"))
+    result = {}
+    for key, value in settings.items():
+        if key in _CYCLE_PHASE_PREFERENCE_KEYS:
+            continue
+        if not cycle_enabled and key.startswith("cycle_") and key != "cycle_enabled":
+            continue
+        result[key] = value
+    return result
 
 
 def _feature_instruction(settings):
@@ -856,12 +881,12 @@ class StateMaintenance:
                 response.update(state="deferred", retry_at=stamp(result.retry_at))
             if result.failure_code:
                 response["code"] = result.failure_code
-                if result.failure_code == "model_usage_unknown":
-                    failure = self.runtime.read_one("""SELECT f.code FROM model_calls c
-                        JOIN model_call_failures f USING(call_id)
-                        WHERE c.task_id = ? ORDER BY c.position DESC LIMIT 1""", (key,))
-                    if failure is not None:
-                        response["code"] = failure["code"]
+                summary = read_task_failure_summary(self.runtime, key)
+                if result.failure_code == "model_usage_unknown" and summary.get("code"):
+                    response["code"] = summary["code"]
+                for field in ("http_status", "provider", "fallback_attempted"):
+                    if field in summary:
+                        response[field] = summary[field]
             return response
         finally:
             self.pending.pop(key, None)
@@ -899,7 +924,7 @@ class StateMaintenance:
             sleep_execution = None
         materials = (PromptMaterial("role.state", "maintenance_basis", encode({
             "at": job["at"], "today": job.get("today"),
-            "previous_simulation": job["previous"], "settings": job["settings"],
+            "previous_simulation": job["previous"], "settings": _maintenance_settings(job["settings"]),
             "cycle_timeline": job["cycle_timeline"], "calendar_plans": job["calendar"],
             "mood_settlement": {"reference": mood_round["reference"], "baseline": mood_round["baseline"],
                 "interest_level": mood_round["interest"], "messages_since_last_round": mood_round["messages"],
@@ -917,8 +942,7 @@ class StateMaintenance:
                 if job.get("intervention") and job.get("intervention_dialogue") else ()) + job["materials"]
         request = PromptRequest(BackgroundPromptTrigger(job["request_id"], context.actor.principal, context.scope, job["at"]),
             job["instruction"], SealedForegroundContext(materials, (), ()),
-            PROMPT + (CYCLE_INSTRUCTION + CYCLE_MAINTENANCE + "".join(PHASE_HINTS.values()) if job["settings"]["cycle_enabled"]
-                      else "cycle 使用 null，conditions 不添加 cycle 项。")
+            PROMPT + cycle_maintenance_instruction(job["cycle_timeline"], enabled=job["settings"]["cycle_enabled"])
             + _expression_preferences(job["settings"])
             + _feature_instruction(job["settings"])
             + _mood_instruction(enabled=job["settings"]["mood_enabled"], axes=mood_round["axes"], gate=mood_round["gate"],
@@ -978,6 +1002,46 @@ class StateMaintenance:
             self.gateway.ledger.discard(result.call_id)
             raise
 
+    def collect_reaped_workers(self):
+        """Reap completed background workers on the owning event loop."""
+        updates = []
+        for key, worker in tuple(self.workers.items()):
+            if not worker.done():
+                continue
+            del self.workers[key]
+            schedule_key = self.worker_schedules.pop(key, None)
+            if worker.cancelled():
+                continue
+            error = worker.exception()
+            result = ({"state": "failed", "code": getattr(error, "code", "state_worker_failed"),
+                       "retryable": True} if error else worker.result())
+            failed = error is not None or (isinstance(result, dict) and result.get("state") == "failed")
+            if failed and isinstance(result, dict):
+                result = {**result, "retryable": True}
+            self.results[key] = result
+            if schedule_key is not None:
+                updates.append((schedule_key, encode(self.results[key]), failed))
+        return updates
+
+    def persist_reaped_workers(self, updates):
+        """Persist reaped worker results, pulling failed schedules forward by 5 minutes."""
+        if not updates:
+            return
+        with self.runtime.transaction() as connection:
+            for schedule_key, encoded_result, failed in updates:
+                if failed:
+                    retry_at = stamp(self.tasks.now() + timedelta(minutes=5))
+                    connection.execute(
+                        "UPDATE role_state_schedules SET result_json = ?, next_at = ? WHERE context_key = ?",
+                        (encoded_result, retry_at, schedule_key))
+                else:
+                    connection.execute(
+                        "UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
+                        (encoded_result, schedule_key))
+
+    def _reap_completed_workers(self):
+        self.persist_reaped_workers(self.collect_reaped_workers())
+
     def advance(self):
         if self.closed:
             return
@@ -988,28 +1052,7 @@ class StateMaintenance:
         except Exception:
             pass
         self.patrol()
-        for key, worker in tuple(self.workers.items()):
-            if worker.done():
-                del self.workers[key]
-                schedule_key = self.worker_schedules.pop(key, None)
-                if not worker.cancelled():
-                    error = worker.exception()
-                    result = ({"state": "failed", "code": getattr(error, "code", "state_worker_failed"),
-                               "retryable": True} if error else worker.result())
-                    failed = error is not None or (isinstance(result, dict) and result.get("state") == "failed")
-                    if failed and isinstance(result, dict):
-                        result = {**result, "retryable": True}
-                    self.results[key] = result
-                    if schedule_key is not None:
-                        with self.runtime.transaction() as connection:
-                            if failed:
-                                retry_at = stamp(self.tasks.now() + timedelta(minutes=5))
-                                connection.execute(
-                                    "UPDATE role_state_schedules SET result_json = ?, next_at = ? WHERE context_key = ?",
-                                    (encode(self.results[key]), retry_at, schedule_key))
-                            else:
-                                connection.execute("UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
-                                    (encode(self.results[key]), schedule_key))
+        self._reap_completed_workers()
         if self.workers:
             return
         # Seek past visited records, including retired/unavailable/disabled ones.

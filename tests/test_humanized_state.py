@@ -138,8 +138,17 @@ class HumanizedBandTests(unittest.TestCase):
         self.assertIn("刚入睡不久被唤醒", " ".join(humanized.facets(interrupted, intensity=100)))
         self.assertTrue(humanized.is_sleepy(interrupted))
         fully_awake = dict(SIMULATION, sleep_execution={"state": "awake", "ended_at": "2026-09-21T07:30:00+00:00", "awake_minutes": 60})
-        self.assertIn("刚睡醒", " ".join(humanized.facets(fully_awake, intensity=100)))
+        self.assertNotIn("刚睡醒", " ".join(humanized.facets(fully_awake, intensity=100)))
         self.assertFalse(humanized.is_sleepy({"values": {"energy": 80}, "sleep_execution": {"state": "awake", "ended_at": "2026-09-21T07:30:00+00:00", "awake_minutes": 60}}))
+        # Boundary checks for #903: only 0 <= awake_minutes <= 25 injects the freshly-awake hint.
+        for mins in (0, 1, 25):
+            sample = dict(SIMULATION, sleep_execution={"state": "awake", "ended_at": "2026-09-21T07:30:00+00:00", "awake_minutes": mins})
+            self.assertIn("刚睡醒不久，还带着一点睡醒后的迷糊感", humanized.facets(sample, intensity=100), mins)
+            self.assertTrue(humanized.is_sleepy(sample), mins)
+        for mins in (-5, -1, 26, 60, 480, None, "10", True):
+            sample = dict(SIMULATION, sleep_execution={"state": "awake", "ended_at": "2026-09-21T07:30:00+00:00", "awake_minutes": mins})
+            self.assertNotIn("刚睡醒", " ".join(humanized.facets(sample, intensity=100)), mins)
+            self.assertFalse(humanized.is_sleepy(sample), mins)
         # Without material the dial adds nothing rather than a generic claim.
         self.assertEqual(humanized.instruction({"values": {}}, intensity=100), "")
 

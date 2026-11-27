@@ -1179,20 +1179,7 @@ def stage_state_maintenance(sm: StateMaintenance) -> StagedOffload | None:
         return None
     if sm.closed:
         return StagedOffload("skip")
-    reaped_updates = []
-    for key, worker in tuple(sm.workers.items()):
-        if worker.done():
-            del sm.workers[key]
-            if not worker.cancelled():
-                error = worker.exception()
-                sm.results[key] = (
-                    {"state": "failed", "code": getattr(error, "code", "state_worker_failed")}
-                    if error
-                    else worker.result()
-                )
-                schedule_key = sm.worker_schedules.pop(key, None)
-                if schedule_key is not None:
-                    reaped_updates.append((encode(sm.results[key]), schedule_key))
+    reaped_updates = sm.collect_reaped_workers()
     has_active_workers = bool(sm.workers)
     active_worker_keys = frozenset(sm.workers)
 
@@ -1204,13 +1191,7 @@ def stage_state_maintenance(sm: StateMaintenance) -> StagedOffload | None:
                 return None, False
         except Exception:
             pass
-        if reaped_updates:
-            with sm.runtime.transaction() as connection:
-                for encoded_result, schedule_key in reaped_updates:
-                    connection.execute(
-                        "UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
-                        (encoded_result, schedule_key),
-                    )
+        sm.persist_reaped_workers(reaped_updates)
         sm.patrol()
         if has_active_workers:
             return None, False

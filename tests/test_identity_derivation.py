@@ -84,10 +84,20 @@ class DerivationTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "host_identity_invalid")
 
     def test_an_invalid_native_account_is_refused(self):
-        for bad in ("", "   ", "alice!", "10002 ", "1.0", None, 10002):
+        for bad in ("", "   ", "alice!", "10002 ", ".", "..", "a..b", ".hidden", "trail.",
+                    "a/b", "a\\b", "a:b", "@@@", "---", None, 10002):
             with self.subTest(value=bad):
                 with self.assertRaises(HostControlError):
                     derive_bot_id(bad)
+
+    def test_weixin_oc_account_with_at_and_dot_is_accepted_and_stable(self):
+        first = identity(platform_id="wx-main", account_id="wx-main",
+                         participant_id="o9cq8043@im.wechat", persona_id="晚星")
+        self.assertEqual(first["participant_id"], "o9cq8043@im.wechat")
+        self.assertEqual(first, identity(platform_id="wx-main", account_id="wx-main",
+                                         participant_id="o9cq8043@im.wechat", persona_id="晚星"))
+        self.assertEqual(derive_bot_id("bot.01@im.wechat"), "bot-bot.01@im.wechat")
+        self.assertTrue(derive_role_id("bot.01@im.wechat", "晚星").startswith("role-bot.01@im.wechat-"))
 
     def test_an_opaque_official_account_is_accepted(self):
         self.assertTrue(derive_bot_id("607097777B7E7FE3E162A8F56825F8521").startswith("bot-"))
