@@ -89,10 +89,13 @@
       return sanitizeDocument(JSON.parse(raw), mode);
     } catch { return null; }
   }
+  const MAX_LOCAL_DRAFT_BYTES = 500000;
   function writeDirectLocal(mode, document) {
     try {
-      if (document === null) localStorage.removeItem(LOCAL_PREFIX + mode);
-      else localStorage.setItem(LOCAL_PREFIX + mode, JSON.stringify(document));
+      if (document === null) { localStorage.removeItem(LOCAL_PREFIX + mode); return; }
+      const encoded = JSON.stringify(document);
+      if (encoded.length > MAX_LOCAL_DRAFT_BYTES) return;
+      localStorage.setItem(LOCAL_PREFIX + mode, encoded);
     } catch {}
   }
   function unwrap(response) {
@@ -117,11 +120,13 @@
       api("POST", "designer/local-draft", {mode, document: documentOrNull}).catch(() => {});
     }
   }
-  function persist() {
+  function persist(syncMode = null) {
     if (disposed || !bridge) return Promise.resolve();
-    const active = root.activeMode;
-    const currentDoc = root.sessions[active]?.document;
-    if (currentDoc) syncLocalDraft(active, hasDocumentContent(currentDoc) ? currentDoc : null);
+    const modes = syncMode && syncMode !== root.activeMode ? [root.activeMode, syncMode] : [root.activeMode];
+    for (const mode of modes) {
+      const currentDoc = root.sessions[mode]?.document;
+      if (currentDoc) syncLocalDraft(mode, hasDocumentContent(currentDoc) ? currentDoc : null);
+    }
     return api("POST", "designer/client-state", root).catch(() => {
       notice("页面内的进度暂未同步，请先保存草稿，再切换其他页面。", true);
     });
@@ -228,12 +233,18 @@
     });
     const countEl = $("persona-match-count");
     if (countEl) countEl.textContent = items.length ? (query ? `${filtered.length}/${items.length} 份` : `共 ${items.length} 份`) : "";
+    const activeEl = document.activeElement;
+    const hadGridFocus = Boolean(activeEl && grid.contains(activeEl));
+    const prevFocusedId = hadGridFocus ? (activeEl.dataset?.personaCard || "") : "";
     grid.replaceChildren();
     if (!filtered.length) {
       grid.append(node("p", items.length ? "没有匹配该关键词的人设，可清空搜索重试。" : "暂无可选 AstrBot 人设。", "persona-pick-empty"));
       return;
     }
-    filtered.forEach(item => {
+    const selectedIndex = filtered.findIndex(item => item.id === currentVal);
+    const tabIndexTarget = selectedIndex >= 0 ? selectedIndex : 0;
+    const renderedCards = [];
+    filtered.forEach((item, index) => {
       const label = item.name || item.id;
       const summary = summaries[item.id];
       const selected = item.id === currentVal;
@@ -242,6 +253,7 @@
       card.type = "button";
       card.setAttribute("role", "option");
       card.setAttribute("aria-selected", String(selected));
+      card.tabIndex = index === tabIndexTarget ? 0 : -1;
       card.dataset.personaCard = item.id;
 
       const avatar = node("span", Array.from(label)[0] || "人", "persona-pick-avatar");
@@ -265,7 +277,16 @@
         $("persona-form").requestSubmit();
       });
       grid.append(card);
+      renderedCards.push(card);
     });
+    if (hadGridFocus && renderedCards.length) {
+      const targetId = currentVal || prevFocusedId;
+      const target = renderedCards.find(c => c.dataset.personaCard === targetId) || renderedCards[tabIndexTarget] || renderedCards[0];
+      if (target) {
+        renderedCards.forEach(c => { c.tabIndex = c === target ? 0 : -1; });
+        target.focus({preventScroll: true});
+      }
+    }
   }
   function ensureDefaultModelSelected() {
     if (!options.models.length) return false;
@@ -405,7 +426,7 @@
           if (pending.input !== null && current.document.input === pending.input) current.document.input = "";
         } catch (error) { failure = errorText(error); current.retry = {action: pending.action, state: pending.state}; current.error = failure; }
         delete current.pending;
-        await persist();
+        await persist(mode);
         await api("POST", "designer/client-ack", {id: "turn:" + pending.id});
         if (mode === root.activeMode) { notice(failure || "", !!failure); render(); }
         else { notice(LABELS[mode] + (failure ? "本轮未完成，可切回重试。" : "本轮已完成，可以切回查看。"), !!failure); controls(); }
@@ -537,6 +558,24 @@
     $("persona-search").addEventListener("input", () => {
       pickerFilter = $("persona-search").value;
       paintPersonaCards();
+    });
+  }
+  if ($("persona-card-grid")) {
+    $("persona-card-grid").addEventListener("keydown", event => {
+      const cards = Array.from($("persona-card-grid").querySelectorAll(".persona-pick-card:not(:disabled)"));
+      if (!cards.length) return;
+      const current = event.target.closest(".persona-pick-card");
+      const index = cards.indexOf(current);
+      if (index < 0) return;
+      let next = -1;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % cards.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + cards.length) % cards.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = cards.length - 1;
+      if (next < 0) return;
+      event.preventDefault();
+      cards.forEach((card, idx) => { card.tabIndex = idx === next ? 0 : -1; });
+      cards[next].focus();
     });
   }
   $("persona-select").addEventListener("change", () => paintPersonaCards($("persona-select").value));

@@ -192,3 +192,58 @@ test("persona designer beginner UX: auto model select, optimize quick chips, loc
   assert.match(js, /companion\.persona-designer\.v1\./);
   assert.match(mem, /designer\/local-draft/);
 });
+
+test("card pickers keep hidden selects out of tab order and support roving tabindex keyboard navigation", () => {
+  const workshopHtml = read("pages/人物设定工坊/workspace.html");
+  const designerHtml = read("pages/新的她/workspace.html");
+  const workshopJs = read("pages/人物设定工坊/app.js");
+  const designerJs = read("pages/新的她/app.js");
+
+  assert.match(workshopHtml, /id="source-persona"[^>]*tabindex="-1"[^>]*aria-hidden="true"/);
+  assert.match(designerHtml, /id="persona-select"[^>]*tabindex="-1"[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(designerHtml, /id="persona-select"[^>]*\brequired\b/);
+
+  for (const [label, src] of [["workshop", workshopJs], ["designer", designerJs]]) {
+    assert.match(src, /ArrowRight.*ArrowDown/, `${label} must handle ArrowRight/ArrowDown`);
+    assert.match(src, /ArrowLeft.*ArrowUp/, `${label} must handle ArrowLeft/ArrowUp`);
+    assert.match(src, /event\.key === "Home"/, `${label} must handle Home`);
+    assert.match(src, /event\.key === "End"/, `${label} must handle End`);
+    assert.match(src, /card\.tabIndex = index === tabIndexTarget \? 0 : -1/, `${label} must use roving tabindex`);
+    assert.match(src, /target\.focus\(\{preventScroll: true\}\)/, `${label} must restore focus after repaint`);
+  }
+});
+
+test("designer writeDirectLocal enforces 500KB limit, poll syncs background mode, and workshop generateDraft clears rightRaw", () => {
+  const designerJs = read("pages/新的她/app.js");
+  const workshopJs = read("pages/人物设定工坊/app.js");
+
+  // 1. writeDirectLocal enforces MAX_LOCAL_DRAFT_BYTES = 500000
+  const start = designerJs.indexOf("  const MAX_LOCAL_DRAFT_BYTES = 500000;");
+  const end = designerJs.indexOf("  function unwrap(", start);
+  assert.ok(start > 0 && end > start);
+  const store = new Map();
+  const ctx = vm.createContext({
+    LOCAL_PREFIX: "companion.persona-designer.v1.",
+    localStorage: {
+      getItem: k => store.has(k) ? store.get(k) : null,
+      setItem: (k, v) => store.set(k, String(v)),
+      removeItem: k => store.delete(k),
+    },
+  });
+  vm.runInContext(designerJs.slice(start, end), ctx);
+  ctx.writeDirectLocal("create", {draft: "small"});
+  assert.ok(store.has("companion.persona-designer.v1.create"));
+  ctx.writeDirectLocal("optimize", {draft: "x".repeat(500001)});
+  assert.ok(!store.has("companion.persona-designer.v1.optimize"), "payloads over 500KB must not be written");
+
+  // 2. poll() calls persist(mode) and persist syncs both active and completed background mode
+  assert.match(designerJs, /function persist\(syncMode = null\)/);
+  assert.match(designerJs, /await persist\(mode\);/);
+
+  // 3. workshop generateDraft clears rightRaw on draft.sections and preserves extractCanonical style/examples
+  const genStart = workshopJs.indexOf("  async function generateDraft()");
+  const genEnd = workshopJs.indexOf("  async function generateTryouts()", genStart);
+  const genBlock = workshopJs.slice(genStart, genEnd);
+  assert.match(genBlock, /if \(draft\.sections\) \{[\s\S]*rightStyle = ""; rightExamples = ""; rightRaw = "";[\s\S]*\} else \{/);
+  assert.doesNotMatch(genBlock, /\}\s*\n\s*rightStyle = ""; rightExamples = "";/);
+});

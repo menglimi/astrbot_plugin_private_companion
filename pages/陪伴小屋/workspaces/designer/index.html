@@ -78,7 +78,7 @@
           <button id="refresh-personas" type="button" class="button small">重新读取</button>
         </div>
         <div id="persona-card-grid" class="persona-card-grid" role="listbox" aria-label="AstrBot 人设列表"></div>
-        <select id="persona-select" class="sr-only" required aria-label="AstrBot 人设"></select>
+        <select id="persona-select" class="sr-only" tabindex="-1" aria-hidden="true" aria-label="AstrBot 人设"></select>
         <p id="persona-empty" class="muted" hidden>暂时没有读到人设，你仍可粘贴文本或从零设计。</p>
         <p class="footnote">切换为另一人设会开启新的设计，请先保存当前草稿。重新载入同一人设会保留讨论与成稿。</p>
         <div class="dialog-foot"><button type="button" data-close class="button">取消</button><button id="load-persona" type="submit" class="button primary">载入人设</button></div>

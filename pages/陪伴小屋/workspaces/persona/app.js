@@ -278,8 +278,11 @@
     for (const ch of String(name || "")) hash = (hash * 31 + ch.codePointAt(0)) % 4;
     return String(hash);
   }
+  let pendingPickerFocusId = "";
   function selectPersonaCard(value) {
     if (!value || value === sourceId || busy) return;
+    const grid = $("persona-picker-grid");
+    if (grid && document.activeElement && grid.contains(document.activeElement)) pendingPickerFocusId = value;
     persist();
     sourceId = value;
     $("source-persona").value = value;
@@ -300,6 +303,9 @@
 
     const grid = $("persona-picker-grid");
     if (!grid) return;
+    const activeEl = document.activeElement;
+    const hadGridFocus = Boolean(activeEl && grid.contains(activeEl));
+    const prevFocusedId = hadGridFocus ? (activeEl.dataset && activeEl.dataset.personaCard || "") : "";
     grid.replaceChildren();
     const query = pickerFilter.trim().toLowerCase();
     const currentId = persona().persona_id;
@@ -315,19 +321,24 @@
       grid.append(node("p", choices.length ? "没有匹配该关键词的人格，可清空搜索重试。" : "暂无可选 AstrBot 人格，可切换到「粘贴人格文本」。", "persona-pick-empty"));
       return;
     }
-    filtered.forEach(item => {
+    const effectiveSelected = sourceId || currentId;
+    const selectedIndex = filtered.findIndex(item => item.value === effectiveSelected);
+    const tabIndexTarget = selectedIndex >= 0 ? selectedIndex : 0;
+    const renderedCards = [];
+    filtered.forEach((item, index) => {
       const label = item.label || item.value;
       const summary = summaries[item.value] || (item.value === currentId ? {
         chars: count(persona().text),
         preview: String(persona().text || "").replace(/\s+/g, " ").trim().slice(0, 120),
         active: Boolean(persona().resolved),
       } : null);
-      const isSelected = item.value === (sourceId || currentId);
+      const isSelected = item.value === effectiveSelected;
       const isActive = Boolean(summary && summary.active) || (item.value === currentId && persona().resolved);
       const card = node("button", undefined, "persona-pick-card" + (isSelected ? " is-selected" : ""));
       card.type = "button";
       card.setAttribute("role", "option");
       card.setAttribute("aria-selected", String(isSelected));
+      card.tabIndex = index === tabIndexTarget ? 0 : -1;
       card.dataset.personaCard = item.value;
       card.disabled = busy;
 
@@ -346,7 +357,17 @@
       card.append(avatar, body);
       card.addEventListener("click", () => selectPersonaCard(item.value));
       grid.append(card);
+      renderedCards.push(card);
     });
+    if (!busy && (hadGridFocus || pendingPickerFocusId) && renderedCards.length) {
+      const targetId = pendingPickerFocusId || effectiveSelected || prevFocusedId;
+      const target = renderedCards.find(c => c.dataset.personaCard === targetId) || renderedCards[tabIndexTarget] || renderedCards[0];
+      if (target) {
+        renderedCards.forEach(c => { c.tabIndex = c === target ? 0 : -1; });
+        target.focus({preventScroll: true});
+      }
+      pendingPickerFocusId = "";
+    }
   }
   function paintScope() {
     const item = persona(), name = item.name || item.persona_id || (item.resolved ? "未命名人格" : "未选中人格");
@@ -734,13 +755,14 @@
       const result = await post("persona/standardize", body, LONG_MODEL_TIMEOUT);
       if (ticket !== genTicket) return;
       const draft = result.draft || {};
-      if (draft.sections) rightSections = cleanRecord(draft.sections, sectionRows.map(item => item.key), 10000, emptySections());
-      else {
+      if (draft.sections) {
+        rightSections = cleanRecord(draft.sections, sectionRows.map(item => item.key), 10000, emptySections());
+        rightStyle = ""; rightExamples = ""; rightRaw = "";
+      } else {
         const parsed = extractCanonical(draft.text || "");
         if (parsed) { rightSections = parsed.sections; rightStyle = parsed.style; rightExamples = parsed.examples; rightRaw = ""; }
         else { rightSections = emptySections(); rightStyle = ""; rightExamples = ""; rightRaw = draft.text || ""; }
       }
-      rightStyle = ""; rightExamples = "";
       styleNotes = Array.isArray(draft.notes) ? draft.notes.filter(item => typeof item === "string").slice(0, 30) : [];
       startComparison(original); tryoutRows = []; tryoutIndex = 0; tryoutBatch = 0; tryoutSelections = {};
       unlockedStep = 5; activeStep = 2;
@@ -871,6 +893,22 @@
   $("persona-search").addEventListener("input", () => {
     pickerFilter = $("persona-search").value;
     paintPersonaChoices();
+  });
+  $("persona-picker-grid").addEventListener("keydown", event => {
+    const cards = Array.from($("persona-picker-grid").querySelectorAll(".persona-pick-card:not(:disabled)"));
+    if (!cards.length) return;
+    const current = event.target.closest(".persona-pick-card");
+    const index = cards.indexOf(current);
+    if (index < 0) return;
+    let next = -1;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % cards.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + cards.length) % cards.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = cards.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    cards.forEach((card, idx) => { card.tabIndex = idx === next ? 0 : -1; });
+    cards[next].focus();
   });
   for (const select of [$("workshop-provider"), $("ctx-provider")]) {
     select.addEventListener("change", () => {

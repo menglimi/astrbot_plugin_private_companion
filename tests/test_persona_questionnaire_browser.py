@@ -177,6 +177,39 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.frame.locator("#notice").filter(has_text="新的她").wait_for()
         self.assertFalse(self.browser_errors, self.browser_errors)
 
+    def test_workshop_card_picker_keyboard_and_structured_draft_clears_stale_raw_block(self):
+        # 1. Hidden select excluded from tab order; roving tabindex + ArrowDown + Enter keeps focus after async load
+        self.assertEqual(self.frame.locator("#source-persona").get_attribute("tabindex"), "-1")
+        self.assertEqual(self.frame.locator("#source-persona").get_attribute("aria-hidden"), "true")
+        first_card = self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="original"]')
+        first_card.focus()
+        self.assertEqual(first_card.get_attribute("tabindex"), "0")
+        self.page.keyboard.press("ArrowDown")
+        second_card = self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="second"]')
+        self.assertEqual(second_card.get_attribute("tabindex"), "0")
+        self.assertTrue(second_card.evaluate("el => el === document.activeElement"))
+        self.page.keyboard.press("Enter")
+        self.frame.locator("#persona-name").filter(has_text="second").wait_for()
+        self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="second"]:not([disabled])').wait_for()
+        selected_second = self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="second"]')
+        self.assertEqual(selected_second.get_attribute("aria-selected"), "true")
+        self.assertTrue(selected_second.evaluate("el => el === document.activeElement"),
+                        "focus must be restored to the selected persona card after load completes")
+
+        # 2. Switch back to original (which has unstructured saved draft v1), load it into rightRaw,
+        #    then re-run standardize returning structured draft.sections -> ghost rightRaw must disappear
+        self.frame.locator('[data-persona-card="original"]').click()
+        self.frame.locator("#persona-name").filter(has_text="original").wait_for()
+        self.frame.locator("#load-version").click()
+        self.frame.locator("[data-review-raw]").wait_for(state="visible")
+        self.frame.locator('[data-flow-btn="1"]').click()
+        self.frame.locator("#generate-draft").click()
+        self.frame.locator("#notice").filter(has_text="基础稿已生成").wait_for()
+        self.assertEqual(self.frame.locator("[data-review-raw]").count(), 0)
+        self.frame.locator('[data-flow-btn="5"]').click()
+        self.assertEqual(self.frame.locator('[data-pair="raw"] [data-side="right"]').input_value(), "")
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
 
 if __name__ == "__main__":
     unittest.main()

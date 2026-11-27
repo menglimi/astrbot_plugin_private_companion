@@ -449,6 +449,50 @@ class PersonaDesignerBrowserTests(unittest.TestCase):
         self.assertEqual(self.frame.locator("#chat-input").input_value(), "")
         self.assertFalse(self.browser_errors, self.browser_errors)
 
+    def test_persona_picker_keyboard_navigation_and_background_mode_local_sync(self):
+        # 1. Card picker keyboard accessibility: hidden select excluded from tab order,
+        #    ArrowDown/Home/End move roving tabindex, Enter selects without losing focus.
+        self.frame.locator("#choose-persona").click()
+        self.frame.locator("#persona-dialog").wait_for(state="visible")
+        self.assertEqual(self.frame.locator("#persona-select").get_attribute("tabindex"), "-1")
+        self.assertEqual(self.frame.locator("#persona-select").get_attribute("aria-hidden"), "true")
+        self.assertIsNone(self.frame.locator("#persona-select").get_attribute("required"))
+        first_card = self.frame.locator('#persona-card-grid .persona-pick-card[data-persona-card="configured"]')
+        first_card.focus()
+        self.assertEqual(first_card.get_attribute("tabindex"), "0")
+        self.page.keyboard.press("ArrowDown")
+        second_card = self.frame.locator('#persona-card-grid .persona-pick-card[data-persona-card="other"]')
+        self.assertEqual(second_card.get_attribute("tabindex"), "0")
+        self.assertTrue(second_card.evaluate("el => el === document.activeElement"))
+        self.page.keyboard.press("Enter")
+        selected_other = self.frame.locator('#persona-card-grid .persona-pick-card[data-persona-card="other"]')
+        self.assertEqual(selected_other.get_attribute("aria-selected"), "true")
+        self.assertTrue(selected_other.evaluate("el => el === document.activeElement"),
+                        "focus must stay on the selected persona card after repaint")
+        self.frame.locator('#persona-dialog [data-close]').first.click()
+        self.frame.locator("#persona-dialog").wait_for(state="hidden")
+
+        # 2. Background mode completion while user switched to another mode still syncs localStorage
+        self.frame.locator('[data-mode="create"]').click()
+        self.page.evaluate("mock.hold=true")
+        self.frame.locator("#generate-draft").click()
+        self.page.wait_for_function("typeof mock.release==='function'")
+        self.frame.locator('[data-mode="optimize"]').click()
+        self.page.evaluate("mock.release()")
+        self.frame.locator("#notice").filter(has_text="本轮已完成").wait_for()
+        # Verify companion.persona-designer.v1.create was written while optimize was active
+        saved_create = self.page.evaluate("localStorage.getItem('companion.persona-designer.v1.create')")
+        self.assertIsNotNone(saved_create)
+        self.assertIn("保留用户的原话", saved_create)
+        # F5 reload while still in optimize mode must retain the background-completed create draft & reply
+        self.page.reload()
+        self.frame.locator("#source-text").wait_for()
+        self.frame.locator('[data-mode="create"]').click()
+        self.assertIn("先从她与你的关系开始", self.frame.locator(".chat-message.assistant").inner_text())
+        self.assertEqual(self.frame.locator("#confirmed").input_value(), "关系：搭档")
+        self.assertEqual(self.frame.locator("#draft-text").input_value(), "# 人设\n保留用户的原话。")
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
 
 if __name__ == "__main__":
     unittest.main()
