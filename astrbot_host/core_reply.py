@@ -346,7 +346,9 @@ def prepare_core_reply_event(
                 await _pace_qq_send(current_has_record=current_has_record)
                 try:
                     await authorize_delivery()
-                    wire = await native_wire_message(event, part)
+                    from .core_reply_t2i import apply_deferred_core_t2i
+                    rendered = await apply_deferred_core_t2i(event, part)
+                    wire = await native_wire_message(event, rendered)
                     assert_core_reply_connection(event)
                 except BaseException:
                     release_pending_voice_claim(event)
@@ -566,6 +568,7 @@ def prepare_core_reply_event(
     state.pop("_text_presentation", None)
     state.pop("_text_presentation_removed", None)
     state.pop("_prepared_decoration", None)
+    state.pop("_deferred_t2i", None)
     old_task, old_callback = state.pop("_presence_owner_task", None), state.pop("_presence_task_done", None)
     if old_task is not None and old_callback is not None:
         old_task.remove_done_callback(old_callback)
@@ -717,6 +720,7 @@ def restore_core_reply_event(event: Any) -> None:
         return
     state["delivery_guard_active"] = False
     state.pop("_prepared_decoration", None)
+    state.pop("_deferred_t2i", None)
     event.send = state["_original_send"]
     original_streaming = state.get("_original_send_streaming")
     if callable(original_streaming):

@@ -9,7 +9,7 @@ from companion_v2.foundation.refs import ScopeKind
 from .configuration import GROUP
 from .runtime import RoleLifeRuntime
 from .configuration import values
-from .scheduling import next_bedtime, sleep_rhythm
+from .scheduling import next_bedtime, project_sleep_occurrence, sleep_rhythm
 from .physiology import recommended_sleep_minutes
 
 
@@ -142,8 +142,9 @@ class RoleLifeCoordinator:
             else (None, None)
         )
         if settings["sleep_enabled"] and next_at is None:
-            next_at = next_bedtime(now, routine.owner, settings["sleep_timezone"],
-                time.fromisoformat(settings["sleep_time"]), settings["sleep_variation_minutes"])
+            _, next_at = project_sleep_occurrence(
+                self.app.role_state.body_clock, routine.context, routine.owner, settings, now
+            )
         active_sleep = (
             body_sleep
             if body_sleep is not None

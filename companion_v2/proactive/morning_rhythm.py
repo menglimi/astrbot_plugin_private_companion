@@ -300,15 +300,39 @@ class MorningStep:
                 "window": self.window.document()}
 
 
+def manual_wake_window(*, at, zone=None, morning_start_minutes=5 * 60, morning_end_minutes=12 * 60):
+    """Build a direct WakeWindow from manual morning start/end minutes when learning is off."""
+    zone_name = zone or "Asia/Shanghai"
+    tz = ZoneInfo(zone_name)
+    local = _as_utc(at, field="wake window time").astimezone(tz)
+    start_m = max(0, min(1439, int(morning_start_minutes)))
+    end_m = max(0, min(1440, int(morning_end_minutes)))
+    if end_m <= start_m:
+        end_m = min(1440, start_m + 60)
+    day_start = datetime.combine(local.date(), time.min, tzinfo=tz)
+    start_at = day_start + timedelta(minutes=start_m)
+    end_at = day_start + timedelta(minutes=end_m)
+    center_at = start_at + (end_at - start_at) / 2
+    return WakeWindow(
+        start_at=start_at,
+        center_at=center_at,
+        end_at=end_at,
+        confidence=1.0,
+        source="manual",
+        zone=zone_name,
+    )
+
+
 def morning_plan(profile, *, at, zone=None, role_woke_at=None, contact=None,
                  user_last_input_at=None, negative_evidence_at=None,
                  nudge_delay_minutes=25, max_nudges=1, role_morning_grace_minutes=180,
                  morning_start_minutes=5 * 60, morning_end_minutes=12 * 60,
-                 wake_confidence_floor=0.2):
+                 wake_confidence_floor=0.2, window=None):
     """Plan the next morning step; this function never sends anything."""
     at = _as_utc(at, field="morning plan time")
-    window = predict_wake_window(profile, at=at, zone=zone,
-                                 confidence_floor=wake_confidence_floor)
+    if window is None:
+        window = predict_wake_window(profile, at=at, zone=zone,
+                                     confidence_floor=wake_confidence_floor)
     local = at.astimezone(ZoneInfo(window.zone))
     local_minute = local.hour * 60 + local.minute
     if not int(morning_start_minutes) <= local_minute < int(morning_end_minutes):
@@ -325,10 +349,11 @@ def morning_plan(profile, *, at, zone=None, role_woke_at=None, contact=None,
     if replied:
         return MorningStep("skip", "user_engaged", window)
     if contact.sent_at is None:
-        earliest = window.start_at - timedelta(minutes=30)
+        earliest = window.start_at if window.source == "manual" else window.start_at - timedelta(minutes=30)
         if at < earliest:
             return MorningStep("hold", "before_wake_window", window, due_at=earliest)
-        if at > window.end_at + timedelta(minutes=60):
+        latest = window.end_at if window.source == "manual" else window.end_at + timedelta(minutes=60)
+        if at > latest:
             return MorningStep("skip", "wake_window_closed", window)
         if role_woke_at is None:
             return MorningStep("hold", "role_not_awake", window)
@@ -355,23 +380,38 @@ def morning_plan(profile, *, at, zone=None, role_woke_at=None, contact=None,
     return MorningStep("wake_nudge", "no_user_reply_yet", window)
 
 
-def role_wake_at(body_sleep):
-    """The role's own wake receipt, never used as evidence about the user."""
-    if not isinstance(body_sleep, Mapping) or body_sleep.get("state") != "awake":
+def role_wake_at(source):
+    """Read the role's own wake receipt from ``sleep_execution`` or legacy ``body_sleep``.
+
+    Accepts either a full ``role_state.read()`` mapping or a direct sleep
+    receipt mapping, preferring ``sleep_execution.ended_at`` and falling back
+    to legacy ``body_sleep.last_completed.completed_at``. Never used as
+    evidence about the user.
+    """
+    if not isinstance(source, Mapping):
         return None
-    last = body_sleep.get("last_completed")
-    if not isinstance(last, Mapping):
+    sleep = source
+    if "sleep_execution" in source or "body_sleep" in source:
+        sleep = source.get("sleep_execution")
+        if not isinstance(sleep, Mapping):
+            sleep = source.get("body_sleep")
+    if not isinstance(sleep, Mapping) or sleep.get("state") != "awake":
         return None
-    value = last.get("completed_at")
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed.astimezone(timezone.utc)
+    candidates = [sleep.get("ended_at")]
+    last = sleep.get("last_completed")
+    if isinstance(last, Mapping):
+        candidates.append(last.get("completed_at"))
+    for value in candidates:
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            continue
+        return parsed.astimezone(timezone.utc)
+    return None
 
 def _in_window(minute, start, end):
     minute, start, end = minute % 1440, start % 1440, end % 1440

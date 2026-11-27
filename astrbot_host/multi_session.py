@@ -1327,6 +1327,11 @@ class MultiHostSession:
                             "streaming", "part_gap_mode", "part_gap_ms", "part_gap_min_ms",
                             "part_gap_max_ms", "part_gap_log_base"}
                         segmentation_settings = {name: snapshot.values[GROUP + "." + name] for name in names}
+                        t2i_mode = snapshot.values.get(GROUP + ".t2i_segmentation_mode", "per_segment")
+                        if t2i_mode in ("per_segment", "whole_reply", "off"):
+                            segmentation_settings["t2i_segmentation_mode"] = t2i_mode
+                        else:
+                            segmentation_settings["t2i_segmentation_mode"] = "per_segment"
                         if context.scope.kind is ScopeKind.PRIVATE:
                             try:
                                 from companion_v2.role_work.state import humanized

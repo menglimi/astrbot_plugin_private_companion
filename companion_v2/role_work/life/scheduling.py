@@ -37,21 +37,70 @@ def bedtime_at(owner, local_day: date, timezone_id: str, local_time: time, maxim
     return local.replace(tzinfo=ZoneInfo(timezone_id)).astimezone(timezone.utc)
 
 
-def next_bedtime(now: datetime, owner, timezone_id: str, local_time: time, maximum_minutes: int) -> datetime:
+def next_bedtime_occurrence(
+    now: datetime,
+    owner,
+    timezone_id: str,
+    local_time: time,
+    maximum_minutes: int,
+    *,
+    after_day: date | None = None,
+) -> tuple[date, datetime]:
+    """Return ``(schedule_day, bedtime_utc)`` for the next bedtime at or after ``now``.
+
+    Starts scanning from ``local_day - 1`` so late-night bedtimes shifted past
+    midnight (including across DST fall-back days) are never missed, and carries
+    the nominal ``schedule_day`` forward so deduplication keys never collide
+    across consecutive nights.
+    """
     zone = ZoneInfo(timezone_id)
-    # A late bedtime from the previous date can fall after midnight.
-    day = (now.astimezone(zone) - timedelta(minutes=maximum_minutes)).date()
+    day = now.astimezone(zone).date() - timedelta(days=1)
+    if after_day is not None and day <= after_day:
+        day = after_day + timedelta(days=1)
     while True:
         candidate = bedtime_at(owner, day, timezone_id, local_time, maximum_minutes)
         if candidate >= now:
-            return candidate
+            return day, candidate
         day += timedelta(days=1)
+
+
+def next_bedtime(now: datetime, owner, timezone_id: str, local_time: time, maximum_minutes: int) -> datetime:
+    _, candidate = next_bedtime_occurrence(now, owner, timezone_id, local_time, maximum_minutes)
+    return candidate
 
 
 def sleep_due_window_expired(now: datetime, next_sleep: datetime, *, window_minutes: int, sleep_minutes: int) -> bool:
     """Return True when a missed bedtime is far enough in the past that starting night sleep now would be stale."""
     grace_minutes = max(int(window_minutes), 60) + max(int(sleep_minutes) // 2, 120)
     return now >= next_sleep + timedelta(minutes=grace_minutes)
+
+
+def project_sleep_occurrence(body_clock, context, owner, settings: dict, now: datetime) -> tuple[date, datetime]:
+    """Project the active or next night sleep occurrence, shared by runtime and status reads."""
+    timezone_id = settings["sleep_timezone"]
+    bedtime = time.fromisoformat(settings["sleep_time"])
+    variation = settings["sleep_variation_minutes"]
+    window_minutes = settings["sleep_window_minutes"]
+    sleep_minutes = settings["sleep_minutes"]
+    window = timedelta(minutes=window_minutes)
+    schedule_day, due = next_bedtime_occurrence(now - window, owner, timezone_id, bedtime, variation)
+    request_id = "daily-sleep-" + schedule_day.isoformat()
+    expired = due <= now and sleep_due_window_expired(
+        now, due, window_minutes=window_minutes, sleep_minutes=sleep_minutes
+    )
+    covered = body_clock.night_sleep_covered(
+        context, request_id, due_at=due, window_minutes=window_minutes
+    )
+    if expired or covered:
+        return next_bedtime_occurrence(
+            max(now, due) + timedelta(microseconds=1),
+            owner,
+            timezone_id,
+            bedtime,
+            variation,
+            after_day=schedule_day,
+        )
+    return schedule_day, due
 
 
 def sleep_schedule_summary(settings: dict | None) -> dict | None:

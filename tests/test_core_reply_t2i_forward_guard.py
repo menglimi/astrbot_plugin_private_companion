@@ -76,6 +76,9 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         *,
         t2i=False,
         t2i_word_threshold=500,
+        t2i_segmentation_mode="per_segment",
+        t2i_use_file_service=False,
+        callback_api_base="",
         forward_threshold=1500,
         segmented=False,
         words_count_threshold=150,
@@ -84,6 +87,9 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         segmentation_policy=None,
         install_segmentation=True,
         voice_policy=None,
+        voice_side_effect=None,
+        t2i_side_effect=None,
+        t2i_return_value="https://example.invalid/rendered.png",
         presentation=None,
         outbound_settings=None,
         channel="private",
@@ -113,6 +119,7 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
             "presentation_settings": presentation if presentation is not None else {"content_cleanup_enabled": False},
             "voice_reply_policy": voice_policy,
             "outbound_settings": outbound_settings,
+            "t2i_segmentation_mode": t2i_segmentation_mode,
         }
         if install_segmentation:
             policy = segmentation_policy or SegmentationPolicy(enabled=True, llm_controlled=True)
@@ -121,9 +128,12 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
                 "streaming": False,
                 "part_gap_mode": "fixed",
                 "part_gap_ms": 0,
+                "t2i_segmentation_mode": t2i_segmentation_mode,
             }
 
         voice_mock = AsyncMock(return_value={"type": "record", "data": {"file": "base64://YQ=="}})
+        if voice_side_effect is not None:
+            voice_mock.side_effect = voice_side_effect
         plugin.staging = NS(
             claims=lambda _event: claim_event,
             target_for_event=lambda _event: target if claim_event else None,
@@ -152,7 +162,8 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         config = deepcopy(DEFAULT_CONFIG)
         config["t2i"] = t2i
         config["t2i_word_threshold"] = t2i_word_threshold
-        config["t2i_use_file_service"] = False
+        config["t2i_use_file_service"] = t2i_use_file_service
+        config["callback_api_base"] = callback_api_base
         config["provider_tts_settings"].update(enable=native_tts, dual_output=False, use_file_service=False)
         config["platform_settings"]["forward_threshold"] = forward_threshold
         config["platform_settings"]["reply_prefix"] = reply_prefix
@@ -208,7 +219,9 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
             await plugin.observe_companion_core_reply_sent(current)
             return False
 
-        render_t2i = AsyncMock(return_value="https://example.invalid/rendered.png")
+        render_t2i = AsyncMock(return_value=t2i_return_value)
+        if t2i_side_effect is not None:
+            render_t2i.side_effect = t2i_side_effect
         with patch.object(decorate_module.star_handlers_registry, "get_handlers_by_event_type", return_value=handlers), \
                 patch.dict(decorate_module.star_map, {"core_test": NS(name="core_test")}), \
                 patch.object(decorate_module.html_renderer, "render_t2i", render_t2i), \
@@ -249,24 +262,43 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE_COMPANION_SPLIT", str(event.sent))
         self.assertNotIn("pc_tts", str(event.sent))
 
-    async def test_long_single_voice_reply_without_splits_skips_t2i_and_preserves_authored_tts(self):
+    async def test_long_single_voice_reply_without_splits_defers_t2i_and_preserves_authored_tts(self):
         body = "这段长独白不带分段标记，但本身带着口语演绎与配音，不能被文本转图片吞掉。" * 16
         self.assertGreater(len(body), 500)
         voice_policy = VoiceReplyPolicy(
             generation_mode="model_tag", language="ja", foreign_text_mode="translation", segment_mode="whole",
         )
-        _, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
+        plugin, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
             f"<pc_tts>長い独白ですが音声を残します。</pc_tts>{body}",
             t2i=True,
             t2i_word_threshold=500,
             segmentation_policy=SegmentationPolicy(enabled=False),
             voice_policy=voice_policy,
         )
-        render_t2i.assert_not_awaited()
+        render_t2i.assert_awaited_once()
+        self.assertEqual(render_t2i.await_args.args[0], body)
+        self.assertNotIn("pc_tts", render_t2i.await_args.args[0])
         self.assertEqual([call.args[1] for call in voice_mock.await_args_list],
                          ["長い独白ですが音声を残します。"])
-        self.assertEqual([comp.text for chain in event.sent for comp in chain if isinstance(comp, Plain)], [body])
+        self.assertEqual(sum(isinstance(comp, Image) for chain in event.sent for comp in chain), 1)
         self.assertEqual(sum(isinstance(comp, Record) for chain in event.sent for comp in chain), 1)
+        observed_texts = [text for text, _ in plugin.staging.session.core_reply_observations.outputs]
+        self.assertIn(body, observed_texts)
+
+        # In t2i_segmentation_mode="off", T2I is skipped and plain text + voice are preserved.
+        _, event_off, render_t2i_off, voice_mock_off, _ = await self.run_core_pipeline(
+            f"<pc_tts>長い独白ですが音声を残します。</pc_tts>{body}",
+            t2i=True,
+            t2i_word_threshold=500,
+            t2i_segmentation_mode="off",
+            segmentation_policy=SegmentationPolicy(enabled=False),
+            voice_policy=voice_policy,
+        )
+        render_t2i_off.assert_not_awaited()
+        self.assertEqual([call.args[1] for call in voice_mock_off.await_args_list],
+                         ["長い独白ですが音声を残します。"])
+        self.assertEqual([comp.text for chain in event_off.sent for comp in chain if isinstance(comp, Plain)], [body])
+        self.assertEqual(sum(isinstance(comp, Record) for chain in event_off.sent for comp in chain), 1)
 
     async def test_unsegmented_non_voice_t2i_reply_sanitizes_stray_split_marker_and_secrets(self):
         secret = "ghp_" + "a" * 32
@@ -307,7 +339,7 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
                     generation_mode="model_tag", language="ja", foreign_text_mode="translation",
                     segment_mode=mode,
                 )
-                _, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
+                plugin, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
                     draft,
                     t2i=True,
                     t2i_word_threshold=500,
@@ -316,14 +348,21 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
                     voice_policy=voice_policy,
                     outbound_settings={"reply_quote_enabled": True, "reply_mention_speaker_enabled": True},
                 )
-                render_t2i.assert_not_awaited()
+                # seg1 (696), seg2 (720), and seg3 (528) all exceed 500 -> deferred T2I on each segment.
+                self.assertEqual(render_t2i.await_count, 3)
+                rendered_inputs = [call.args[0].strip() for call in render_t2i.await_args_list]
+                self.assertEqual(rendered_inputs, [seg1, seg2, seg3])
                 self.assertFalse(any(isinstance(comp, Node) for chain in event.sent for comp in chain))
                 sent_texts = [comp.text.strip() for chain in event.sent for comp in chain if isinstance(comp, Plain)]
-                self.assertEqual(sent_texts, [seg1, seg2, seg3])
+                self.assertEqual(sent_texts, [])
+                self.assertEqual(sum(isinstance(comp, Image) for chain in event.sent for comp in chain), 3)
+                observed_texts = [text.strip() for text, _ in plugin.staging.session.core_reply_observations.outputs]
+                for seg in (seg1, seg2, seg3):
+                    self.assertIn(seg, observed_texts)
                 self.assertNotIn("PRIVATE_COMPANION_SPLIT", str(event.sent))
                 self.assertNotIn("pc_tts", str(event.sent))
                 first_chain_types = [type(comp) for comp in event.sent[0]]
-                self.assertEqual(first_chain_types, [Reply, At, Plain])
+                self.assertEqual(first_chain_types, [Reply, At, Image])
                 if mode == "each":
                     self.assertEqual([call.args[1] for call in voice_mock.await_args_list],
                                      ["一回目の音声です。", "二回目の音声です。", "三回目の音声です。"])
@@ -332,6 +371,22 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual([call.args[1] for call in voice_mock.await_args_list],
                                      ["一回目の音声です。\n二回目の音声です。\n三回目の音声です。"])
                     self.assertEqual(sum(isinstance(comp, Record) for chain in event.sent for comp in chain), 1)
+
+                # With t2i_segmentation_mode="off", all three stay plain bubbles.
+                _, event_off, render_t2i_off, _, _ = await self.run_core_pipeline(
+                    draft,
+                    t2i=True,
+                    t2i_word_threshold=500,
+                    t2i_segmentation_mode="off",
+                    forward_threshold=1500,
+                    channel="group",
+                    voice_policy=voice_policy,
+                    outbound_settings={"reply_quote_enabled": True, "reply_mention_speaker_enabled": True},
+                )
+                render_t2i_off.assert_not_awaited()
+                self.assertEqual([comp.text.strip() for chain in event_off.sent for comp in chain if isinstance(comp, Plain)],
+                                 [seg1, seg2, seg3])
+                self.assertEqual([type(comp) for comp in event_off.sent[0]], [Reply, At, Plain])
 
     async def test_over_forward_threshold_without_segmentation_or_voice_keeps_clean_forward_node(self):
         body1 = "关闭分段且无语音时的长回复前半部分。" * 50
@@ -379,7 +434,7 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         voice_policy = VoiceReplyPolicy(
             generation_mode="model_tag", language="ja", foreign_text_mode="translation",
         )
-        _, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
+        plugin, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
             f"<pc_tts>長い返信でも音声は届きます。</pc_tts>{body}",
             t2i=True,
             t2i_word_threshold=500,
@@ -387,12 +442,14 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
             install_segmentation=False,
             voice_policy=voice_policy,
         )
-        render_t2i.assert_not_awaited()
+        render_t2i.assert_awaited_once()
+        self.assertEqual(render_t2i.await_args.args[0], body)
         self.assertFalse(any(isinstance(comp, Node) for chain in event.sent for comp in chain))
         self.assertEqual([call.args[1] for call in voice_mock.await_args_list],
                          ["長い返信でも音声は届きます。"])
-        self.assertEqual([comp.text for chain in event.sent for comp in chain if isinstance(comp, Plain)], [body])
+        self.assertEqual(sum(isinstance(comp, Image) for chain in event.sent for comp in chain), 1)
         self.assertEqual(sum(isinstance(comp, Record) for chain in event.sent for comp in chain), 1)
+        self.assertIn(body, [text for text, _ in plugin.staging.session.core_reply_observations.outputs])
 
     async def test_skills_like_uncaptured_voice_tag_and_merged_max_segments_keep_all_speech(self):
         seg1 = "第一句稍微长一些的中文回应。" * 10
@@ -474,10 +531,11 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
             words_count_threshold=3000,
             reply_prefix="[前缀] ",
         )
-        render_t2i.assert_not_awaited()
+        self.assertEqual(render_t2i.await_count, 3)
+        self.assertEqual([call.args[0].strip() for call in render_t2i.await_args_list],
+                         ["[前缀] " + seg1, seg2, seg3])
         self.assertFalse(any(isinstance(comp, Node) for chain in event.sent for comp in chain))
-        sent_texts = [comp.text.strip() for chain in event.sent for comp in chain if isinstance(comp, Plain)]
-        self.assertEqual(sent_texts, ["[前缀] " + seg1, seg2, seg3])
+        self.assertEqual(sum(isinstance(comp, Image) for chain in event.sent for comp in chain), 3)
 
     async def test_rule_segmentation_above_t2i_threshold_skips_t2i_and_sends_bubbles(self):
         s1 = "第一句通过规则切分保留为独立气泡，" * 18 + "以便跨过阈值。"
@@ -512,7 +570,7 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
                 (seg1 + "\n", seg2),
             )
 
-        _, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
+        plugin, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
             draft,
             t2i=True,
             t2i_word_threshold=500,
@@ -520,12 +578,16 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
             voice_policy=voice_policy,
             extra_decorator=attach_repaired_plan,
         )
-        render_t2i.assert_not_awaited()
+        self.assertEqual(render_t2i.await_count, 2)
+        self.assertEqual([call.args[0].strip() for call in render_t2i.await_args_list], [seg1, seg2])
         self.assertFalse(any(isinstance(comp, Node) for chain in event.sent for comp in chain))
         self.assertEqual([call.args[1] for call in voice_mock.await_args_list],
                          ["一つ目の補完音声です。", "二つ目の補完音声です。"])
-        sent_texts = [comp.text.strip() for chain in event.sent for comp in chain if isinstance(comp, Plain)]
-        self.assertEqual(sent_texts, [seg1, seg2])
+        self.assertEqual(sum(isinstance(comp, Image) for chain in event.sent for comp in chain), 2)
+        self.assertEqual(sum(isinstance(comp, Record) for chain in event.sent for comp in chain), 2)
+        observed_texts = [text.strip() for text, _ in plugin.staging.session.core_reply_observations.outputs]
+        self.assertIn(seg1, observed_texts)
+        self.assertIn(seg2, observed_texts)
 
     async def test_non_companion_event_keeps_standard_astrbot_t2i_behavior(self):
         long_text = "非陪伴插件托管的普通原生指令长结果，应当保持 AstrBot 默认文本转图片行为。" * 15
@@ -538,6 +600,125 @@ class CoreReplyDecorationGuardTests(unittest.IsolatedAsyncioTestCase):
         )
         render_t2i.assert_awaited_once()
         self.assertEqual([[type(comp) for comp in chain] for chain in event.sent], [[Image]])
+
+    async def test_long_single_reply_with_plain_voice_policy_triggers_deferred_t2i_and_keeps_observations(self):
+        body = "今天天气很好，我在窗边练完了一整首曲子，把每段感受和细节一口气写给你看，" * 5 + "整段不分气泡发送。"
+        self.assertGreater(len(body), 100)
+        # No sentence-end split punctuation inside the body, while voice_policy owns delivery.
+        voice_policy = VoiceReplyPolicy(trigger_mode="request", generation_mode="plain")
+        plugin, event, render_t2i, voice_mock, _ = await self.run_core_pipeline(
+            body,
+            t2i=True,
+            t2i_word_threshold=100,
+            segmentation_policy=SegmentationPolicy(enabled=False),
+            voice_policy=voice_policy,
+        )
+        voice_mock.assert_awaited_once()
+        render_t2i.assert_awaited_once()
+        self.assertEqual(render_t2i.await_args.args[0], body)
+        self.assertEqual(sum(isinstance(comp, Image) for chain in event.sent for comp in chain), 1)
+        self.assertEqual(sum(isinstance(comp, Record) for chain in event.sent for comp in chain), 1)
+        observed = [text for text, _ in plugin.staging.session.core_reply_observations.outputs]
+        self.assertIn(body, observed)
+
+    async def test_deferred_t2i_voice_only_skips_on_tts_success_and_renders_on_tts_fallback(self):
+        body = "这是一段超过一百字的哄睡语音独白，成功合成时只发语音，失败回退文字时转成图片，" * 4 + "不会拆成多段。"
+        self.assertGreater(len(body), 100)
+        voice_policy = VoiceReplyPolicy(
+            trigger_mode="always",
+            generation_mode="plain",
+            delivery_mode="voice_only",
+            segment_mode="whole",
+        )
+        _, event_ok, render_ok, voice_ok, _ = await self.run_core_pipeline(
+            body,
+            t2i=True,
+            t2i_word_threshold=100,
+            segmentation_policy=SegmentationPolicy(enabled=False),
+            voice_policy=voice_policy,
+        )
+        voice_ok.assert_awaited_once()
+        render_ok.assert_not_awaited()
+        self.assertEqual([[type(comp) for comp in chain] for chain in event_ok.sent], [[Record]])
+
+        plugin_fail, event_fail, render_fail, voice_fail, _ = await self.run_core_pipeline(
+            body,
+            t2i=True,
+            t2i_word_threshold=100,
+            segmentation_policy=SegmentationPolicy(enabled=False),
+            voice_policy=voice_policy,
+            voice_side_effect=RuntimeError("tts_unavailable"),
+        )
+        voice_fail.assert_awaited_once()
+        render_fail.assert_awaited_once()
+        self.assertEqual(render_fail.await_args.args[0], body)
+        self.assertEqual([[type(comp) for comp in chain] for chain in event_fail.sent], [[Image]])
+        self.assertEqual([text for text, _ in plugin_fail.staging.session.core_reply_observations.outputs], [body])
+
+    async def test_deferred_t2i_whole_reply_mode_collapses_short_segments_over_total_threshold(self):
+        seg1 = "第一段短消息大约七十个字左右，单独看不会触发一百字的图片渲染阈值，继续补充这一段轻松自然的日常细节和窗边看到的晚霞颜色。"
+        seg2 = "第二段短消息也是大约七十个字左右，单独看同样保持普通的纯文字气泡，继续补充这一段关于明天早晨出发前的小提醒和心情。"
+        self.assertLessEqual(len(seg1), 100)
+        self.assertLessEqual(len(seg2), 100)
+        self.assertGreater(len(seg1) + len(seg2), 100)
+        draft = f"{seg1}\n{MARKER}\n{seg2}"
+
+        _, event_per, render_per, _, _ = await self.run_core_pipeline(
+            draft,
+            t2i=True,
+            t2i_word_threshold=100,
+            t2i_segmentation_mode="per_segment",
+            segmentation_policy=SegmentationPolicy(enabled=True, llm_controlled=True),
+        )
+        render_per.assert_not_awaited()
+        self.assertEqual([comp.text.strip() for chain in event_per.sent for comp in chain if isinstance(comp, Plain)],
+                         [seg1, seg2])
+
+        plugin_whole, event_whole, render_whole, _, _ = await self.run_core_pipeline(
+            draft,
+            t2i=True,
+            t2i_word_threshold=100,
+            t2i_segmentation_mode="whole_reply",
+            segmentation_policy=SegmentationPolicy(enabled=True, llm_controlled=True),
+        )
+        render_whole.assert_awaited_once()
+        self.assertEqual(render_whole.await_args.args[0], f"{seg1}\n\n{seg2}")
+        self.assertEqual([[type(comp) for comp in chain] for chain in event_whole.sent], [[Image]])
+        self.assertEqual([text for text, _ in plugin_whole.staging.session.core_reply_observations.outputs],
+                         [f"{seg1}\n\n{seg2}"])
+
+    async def test_deferred_t2i_render_error_falls_back_to_plain_text_and_file_service_works(self):
+        body = "长文本在渲染器故障时必须安全降级为纯文本，绝不能丢弃已经生成的回复，" * 5 + "保持完整送达。"
+        self.assertGreater(len(body), 100)
+        voice_policy = VoiceReplyPolicy(trigger_mode="request", generation_mode="plain")
+
+        _, event_fb, render_fb, _, _ = await self.run_core_pipeline(
+            body,
+            t2i=True,
+            t2i_word_threshold=100,
+            segmentation_policy=SegmentationPolicy(enabled=False),
+            voice_policy=voice_policy,
+            t2i_side_effect=RuntimeError("renderer_down"),
+        )
+        render_fb.assert_awaited_once()
+        self.assertEqual([comp.text for chain in event_fb.sent for comp in chain if isinstance(comp, Plain)], [body])
+
+        register_mock = AsyncMock(return_value="tok-abc")
+        with patch.object(decorate_module.file_token_service, "register_file", register_mock):
+            _, event_fs, _, _, _ = await self.run_core_pipeline(
+                body,
+                t2i=True,
+                t2i_word_threshold=100,
+                t2i_use_file_service=True,
+                callback_api_base="http://127.0.0.1:6185",
+                t2i_return_value="/tmp/rendered.png",
+                segmentation_policy=SegmentationPolicy(enabled=False),
+                voice_policy=voice_policy,
+            )
+        register_mock.assert_awaited_once_with("/tmp/rendered.png")
+        images = [comp for chain in event_fs.sent for comp in chain if isinstance(comp, Image)]
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].file, "http://127.0.0.1:6185/api/file/tok-abc")
 
 
 if __name__ == "__main__":

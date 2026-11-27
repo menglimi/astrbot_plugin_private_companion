@@ -50,6 +50,35 @@ class RoleBodyClock:
     def scheduled_sleep(self, context, request_id):
         return next(iter(self._records(context, kind="sleep", request_id=request_id, limit=1)), None)
 
+    def night_sleep_covered(self, context, request_id, *, due_at, window_minutes):
+        """Return True when tonight's scheduled sleep has already been fulfilled.
+
+        Matches either the canonical ``daily-sleep-{schedule_day}`` receipt or a
+        non-cancelled night sleep (``kind == 'night'``, or ``kind == 'manual'``
+        with ``target_minutes > 60`` matching ``physiology.sleep_profile``)
+        started within the night-sleep coverage window. Short naps (``kind ==
+        'nap'`` or manual sleeps ``<= 60`` minutes) never suppress night sleep.
+        """
+        if self.scheduled_sleep(context, request_id) is not None:
+            return True
+        start_floor = due_at - timedelta(hours=4)
+        end_ceiling = due_at + timedelta(minutes=max(0, int(window_minutes)))
+        for item in self._records(context, kind="sleep", limit=32):
+            if item.state is State.CANCELLED:
+                continue
+            receipt = item.sleep
+            kind = receipt.kind if receipt else "night"
+            target_minutes = (
+                receipt.target_minutes
+                if receipt
+                else max(1, round((item.work.due_at - item.started_at).total_seconds() / 60))
+            )
+            if kind == "nap" or (kind == "manual" and target_minutes <= 60):
+                continue
+            if start_floor <= item.started_at <= end_ceiling:
+                return True
+        return False
+
     def workload(self, context, *, now=None):
         now = now or self.tasks.now()
         cutoff = stamp(now - timedelta(hours=24))
