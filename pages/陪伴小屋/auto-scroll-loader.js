@@ -182,10 +182,15 @@
     let observedSentinel = null;
     let observedHost = null;
     let observerScrollRoot = undefined;
+    const loadScrollSettleMs = options.loadScrollSettleMs === undefined
+      ? 150
+      : Math.max(0, Number(options.loadScrollSettleMs) || 0);
     let boundHost = null;
     let boundScrollTarget = null;
     let ignoringProgrammaticScroll = false;
     let programmaticScrollTimer = null;
+    let ignoringLoadScroll = false;
+    let loadScrollGuardTimer = null;
 
     function readHasMore(){
       return Boolean(readVal(options.hasMore, false));
@@ -282,27 +287,30 @@
 
     function unbindScrollListeners(){
       if(boundScrollTarget){
-        boundScrollTarget.removeEventListener?.("scroll", handleUserScroll);
-        boundScrollTarget.removeEventListener?.("wheel", handleUserScroll);
-        boundScrollTarget.removeEventListener?.("touchmove", handleUserScroll);
+        boundScrollTarget.removeEventListener?.("scroll", handleScrollEvent);
+        boundScrollTarget.removeEventListener?.("wheel", handleDirectUserScroll);
+        boundScrollTarget.removeEventListener?.("touchmove", handleDirectUserScroll);
         boundScrollTarget = null;
       }
     }
 
     function bindScrollListeners(){
+      if(!host){
+        unbindScrollListeners();
+        return;
+      }
       const target = scrollRoot || global;
       if(target === boundScrollTarget)return;
       unbindScrollListeners();
       if(target && typeof target.addEventListener === "function"){
-        target.addEventListener("scroll", handleUserScroll, { passive: true });
-        target.addEventListener("wheel", handleUserScroll, { passive: true });
-        target.addEventListener("touchmove", handleUserScroll, { passive: true });
+        target.addEventListener("scroll", handleScrollEvent, { passive: true });
+        target.addEventListener("wheel", handleDirectUserScroll, { passive: true });
+        target.addEventListener("touchmove", handleDirectUserScroll, { passive: true });
         boundScrollTarget = target;
       }
     }
 
-    function handleUserScroll(){
-      if(destroyed || ignoringProgrammaticScroll)return;
+    function resetBurstAfterUserScroll(){
       if(burstCount === 0 && !burstPaused)return;
       const wasPaused = burstPaused;
       burstCount = 0;
@@ -311,6 +319,16 @@
         render();
         syncObserver();
       }
+    }
+
+    function handleScrollEvent(){
+      if(destroyed || ignoringProgrammaticScroll || ignoringLoadScroll || inFlight)return;
+      resetBurstAfterUserScroll();
+    }
+
+    function handleDirectUserScroll(){
+      if(destroyed || ignoringProgrammaticScroll)return;
+      resetBurstAfterUserScroll();
     }
 
     function scrollToTop(){
@@ -390,7 +408,6 @@
       if(observer && observerScrollRoot === nextRoot && observedSentinel === sentinel){
         return;
       }
-      const preserveIntersecting = Boolean(observer && observedHost === host && observerScrollRoot === nextRoot && intersecting);
       disconnectObserver();
       try{
         observer = new global.IntersectionObserver(handleIntersect, {
@@ -400,7 +417,6 @@
         observerScrollRoot = nextRoot;
         observedSentinel = sentinel;
         observedHost = host;
-        intersecting = preserveIntersecting;
         observer.observe(sentinel);
       }catch{
         disconnectObserver();
@@ -441,6 +457,11 @@
       const beforeCount = trackCount ? readLoadedCount() : null;
 
       inFlight = true;
+      ignoringLoadScroll = true;
+      if(loadScrollGuardTimer !== null){
+        global.clearTimeout(loadScrollGuardTimer);
+        loadScrollGuardTimer = null;
+      }
       lastTriggerAt = nowMs();
       if(!isManual){
         burstCount += 1;
@@ -458,6 +479,19 @@
           : "";
       }finally{
         inFlight = false;
+        if(!destroyed){
+          if(loadScrollGuardTimer !== null){
+            global.clearTimeout(loadScrollGuardTimer);
+          }
+          if(loadScrollSettleMs > 0){
+            loadScrollGuardTimer = global.setTimeout(() => {
+              ignoringLoadScroll = false;
+              loadScrollGuardTimer = null;
+            }, loadScrollSettleMs);
+          }else{
+            ignoringLoadScroll = false;
+          }
+        }
       }
 
       if(destroyed)return false;
@@ -481,10 +515,6 @@
 
       render();
       syncObserver();
-
-      if(intersecting && canAutoLoad()){
-        scheduleAutoLoad();
-      }
       return !hasErr && !stalled;
     }
 
@@ -513,7 +543,11 @@
     }
 
     function bindHostListeners(){
-      if(!host || host === boundHost)return;
+      if(!host){
+        unbindHostListeners();
+        return;
+      }
+      if(host === boundHost)return;
       unbindHostListeners();
       if(typeof host.addEventListener === "function"){
         host.addEventListener("click", handleHostClick);
@@ -702,6 +736,12 @@
         global.clearTimeout(programmaticScrollTimer);
         programmaticScrollTimer = null;
       }
+      if(loadScrollGuardTimer !== null){
+        global.clearTimeout(loadScrollGuardTimer);
+        loadScrollGuardTimer = null;
+      }
+      ignoringProgrammaticScroll = false;
+      ignoringLoadScroll = false;
       disconnectObserver();
       unbindHostListeners();
       unbindScrollListeners();

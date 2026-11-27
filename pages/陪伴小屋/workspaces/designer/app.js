@@ -284,18 +284,23 @@
   const DRAFT_MIN_INTERVAL_MS = 260;
   const DRAFT_MAX_AUTO_BURST = 12;
   const DRAFT_TOP_THRESHOLD = 16;
-  let draftAutoEnabled = (() => {
+  function readDraftAutoPref() {
     try {
       const raw = localStorage.getItem(DRAFT_AUTOLOAD_KEY);
       if (raw === "0" || raw === "false") return false;
       if (raw === "1" || raw === "true") return true;
     } catch {}
     return true;
-  })();
+  }
+  let draftAutoEnabled = readDraftAutoPref();
   let draftCount = 0, draftAppendError = "", draftAutoBurst = 0, draftBurstPaused = false, draftStalled = false;
   let draftLastTriggerAt = 0, draftIntersecting = false, draftDebounceTimer = null, draftObserver = null;
   let draftProgrammaticScroll = false, draftProgrammaticTimer = null;
+  let draftReqSeq = 0;
 
+  function isDraftsDialogOpen() {
+    return !disposed && Boolean($("drafts-dialog")?.open);
+  }
   function writeDraftAutoPref(enabled) {
     draftAutoEnabled = Boolean(enabled);
     try { localStorage.setItem(DRAFT_AUTOLOAD_KEY, draftAutoEnabled ? "1" : "0"); } catch {}
@@ -310,7 +315,7 @@
     clearDraftAutoTimer();
   }
   function canDraftAutoLoad() {
-    return !disposed && draftAutoEnabled && typeof IntersectionObserver === "function"
+    return isDraftsDialogOpen() && draftAutoEnabled && typeof IntersectionObserver === "function"
       && Boolean(nextBefore) && !loadingDrafts && !draftAppendError && !draftStalled
       && !draftBurstPaused && draftAutoBurst < DRAFT_MAX_AUTO_BURST;
   }
@@ -334,7 +339,7 @@
     list.querySelector("[data-draft-sentinel]")?.remove();
     list.querySelector("[data-draft-scroll-bar]")?.remove();
     $("more-drafts").hidden = true;
-    if (!draftCount && !nextBefore && !loadingDrafts && !draftAppendError) {
+    if (!isDraftsDialogOpen() || (!draftCount && !nextBefore && !loadingDrafts && !draftAppendError)) {
       disconnectDraftObserver();
       return;
     }
@@ -424,7 +429,7 @@
     disconnectDraftObserver();
     if (sentinel && showSentinel) {
       draftObserver = new IntersectionObserver(entries => {
-        if (disposed) return;
+        if (!isDraftsDialogOpen()) return;
         const hit = entries.some(entry => Boolean(entry && entry.isIntersecting));
         draftIntersecting = hit;
         if (!hit) { clearDraftAutoTimer(); return; }
@@ -442,9 +447,11 @@
     if (wasPaused) renderDraftScrollBar();
   }
   async function listDrafts(before = 0, options = {}) {
-    if (loadingDrafts) return;
+    if (!isDraftsDialogOpen()) return;
+    if (before && loadingDrafts) return;
     const isAuto = options && options.auto === true;
     if (isAuto && !canDraftAutoLoad()) return;
+    const reqSeq = ++draftReqSeq;
     loadingDrafts = true;
     draftLastTriggerAt = Date.now();
     if (!before) {
@@ -467,6 +474,7 @@
     const prevCount = draftCount;
     try {
       const result = await api("GET", "designer/drafts", before ? {before} : {});
+      if (reqSeq !== draftReqSeq || !isDraftsDialogOpen()) return;
       if (!Array.isArray(result.items)) throw new Error("persona_designer_response_invalid");
       if (!before) $("draft-list").replaceChildren();
       if (!result.items.length && !before) $("draft-list").append(node("p", "还没有手动保存过的草稿。", "muted"));
@@ -501,6 +509,7 @@
         draftBurstPaused = true;
       }
     } catch (error) {
+      if (reqSeq !== draftReqSeq || !isDraftsDialogOpen()) return;
       if (!before) {
         $("draft-list").replaceChildren(node("p", errorText(error), "muted"));
       } else {
@@ -508,9 +517,12 @@
       }
     }
     finally {
-      loadingDrafts = false;
-      $("more-drafts").disabled = false;
-      renderDraftScrollBar();
+      if (reqSeq === draftReqSeq) {
+        loadingDrafts = false;
+        $("more-drafts").disabled = false;
+        if (isDraftsDialogOpen()) renderDraftScrollBar();
+        else disconnectDraftObserver();
+      }
     }
   }
   async function copyText(id) {
@@ -599,12 +611,39 @@
     event.preventDefault(); const title = $("draft-title").value.trim(); if (!title) return;
     const snapshot = {id: uid(), title, state: copy(doc())}; $("save-dialog").close(); saveSnapshot(snapshot);
   });
-  $("open-drafts").addEventListener("click", () => { $("drafts-dialog").showModal(); listDrafts(); });
-  $("drafts-dialog").addEventListener("close", () => { disconnectDraftObserver(); clearTimeout(draftProgrammaticTimer); });
+  $("open-drafts").addEventListener("click", () => {
+    draftAutoEnabled = readDraftAutoPref();
+    $("drafts-dialog").showModal();
+    listDrafts();
+  });
+  $("drafts-dialog").addEventListener("close", () => {
+    draftReqSeq += 1;
+    loadingDrafts = false;
+    $("more-drafts").disabled = false;
+    disconnectDraftObserver();
+    clearTimeout(draftProgrammaticTimer);
+  });
+  window.addEventListener("storage", event => {
+    if (disposed || !event || event.key !== DRAFT_AUTOLOAD_KEY) return;
+    const raw = event.newValue;
+    const next = (raw === "0" || raw === "false") ? false
+      : (raw === "1" || raw === "true") ? true
+      : readDraftAutoPref();
+    if (next === draftAutoEnabled) return;
+    draftAutoEnabled = next;
+    if (draftAutoEnabled) { draftAutoBurst = 0; draftBurstPaused = false; }
+    else clearDraftAutoTimer();
+    if (isDraftsDialogOpen()) renderDraftScrollBar();
+  });
   $("draft-list").addEventListener("scroll", handleDraftListScroll, {passive: true});
   $("draft-list").addEventListener("wheel", handleDraftListScroll, {passive: true});
   $("draft-list").addEventListener("touchmove", handleDraftListScroll, {passive: true});
-  window.addEventListener("pagehide", () => { disconnectDraftObserver(); clearTimeout(draftProgrammaticTimer); });
+  window.addEventListener("pagehide", () => {
+    draftReqSeq += 1;
+    loadingDrafts = false;
+    disconnectDraftObserver();
+    clearTimeout(draftProgrammaticTimer);
+  });
   $("more-drafts").addEventListener("click", () => listDrafts(nextBefore));
   $("new-design").addEventListener("click", () => { $("drafts-dialog").close(); $("reset-dialog").showModal(); });
   $("confirm-reset").addEventListener("click", () => {

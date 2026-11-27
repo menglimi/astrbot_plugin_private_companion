@@ -1172,9 +1172,13 @@ window.CompanionMemoryPage = (() => {
       notice("");
     } catch (error) {
       if (live(ticket)) {
-        factsAppendError = true;
-        factsAppendErrorText = reason(error?.code) || "继续读取更早事实时失败，已保留已加载记录。";
-        failure(error, {preserveCorpus: true});
+        if (denied.has(error?.code)) {
+          failure(error);
+        } else {
+          factsAppendError = true;
+          factsAppendErrorText = error?.code ? reason(error.code) : "继续读取更早事实时失败，已保留已加载记录。";
+          notice(factsAppendErrorText, true);
+        }
       }
     }
     finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
@@ -1344,9 +1348,9 @@ window.CompanionMemoryPage = (() => {
       notice("");
     } catch (error) {
       if (live(ticket)) {
-        if (next) {
+        if (next && !denied.has(error?.code)) {
           queryAppendError = true;
-          queryAppendErrorText = reason(error?.code) || "读取下一页查询结果失败，已保留当前结果。";
+          queryAppendErrorText = error?.code ? reason(error.code) : "读取下一页查询结果失败，已保留当前结果。";
           notice(queryAppendErrorText, true);
         } else {
           failure(error);
@@ -1719,7 +1723,7 @@ window.CompanionMemoryPage = (() => {
       return;
     }
     if (el.dataset.batchIndex !== undefined) { selectBatch(data.items[Number(el.dataset.batchIndex)].batch_id); return; }
-    if (el.dataset.filter !== undefined) { data.filter = el.dataset.filter; render(); return; }
+    if (el.dataset.filter !== undefined) { data.filter = el.dataset.filter; factsAutoLoader?.reset?.(); render(); return; }
     if (id === "memory-archive-confirm") { commitArchive(); return; }
     if (id === "memory-archive-restore-submit") { restoreArchive(); return; }
     if (id === "memory-export-run") { runExport(); return; }
@@ -1750,7 +1754,7 @@ window.CompanionMemoryPage = (() => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       const corpus = root?.querySelector(".mem-corpus");
-      if (!corpus) { render(); return; }
+      if (!corpus) { factsAutoLoader?.reset?.(); render(); return; }
       corpus.innerHTML = data.loading && !data.corpus.length
         ? `<div class="mem-skeleton"><i></i><i></i><i></i></div>` : corpusMarkup();
       const chips = root.querySelector(".mem-filters");
@@ -1760,6 +1764,7 @@ window.CompanionMemoryPage = (() => {
       const search = root.querySelector("#memory-search");
       if (search && document.activeElement !== search) { /* 保持原输入框，不重建 */ }
       syncAutoLoaders();
+      factsAutoLoader?.reset?.();
     }, 140);
   }
 

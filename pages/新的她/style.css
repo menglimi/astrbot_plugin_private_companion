@@ -29,6 +29,7 @@ dialog{width:min(540px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:
 .draft-scroll-sentinel{width:100%;height:1px;pointer-events:none}
 .draft-scroll-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;margin-top:4px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-muted);color:var(--muted);font-size:.82em;line-height:1.45}
 .draft-scroll-bar[data-state="error"]{border-color:var(--danger);background:var(--surface);color:var(--danger)}
+.draft-scroll-bar[data-state="warn"]{border-color:color-mix(in srgb,var(--accent) 42%,var(--line-strong));background:var(--accent-soft);color:var(--accent-strong,var(--accent))}
 .draft-scroll-bar[data-state="complete"]{background:transparent;border-style:dashed;color:var(--ink-soft)}
 .draft-scroll-status{display:inline-flex;align-items:center;gap:6px}
 .draft-scroll-dots{display:inline-flex;align-items:center;gap:4px}
@@ -40,6 +41,7 @@ dialog{width:min(540px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:
 .draft-scroll-toggle{display:inline-flex;align-items:center;gap:4px;color:var(--ink-soft);cursor:pointer;user-select:none}
 .draft-scroll-toggle input{width:auto;margin:0;accent-color:var(--accent);cursor:pointer}
 @media(prefers-reduced-motion:reduce){.draft-scroll-dots i{animation:none;opacity:.72}}
+:root:is([data-motion="low"],[data-motion="off"]) .draft-scroll-dots i{animation:none;opacity:.72}
 
 /* 嵌入「人格处理」时由外层模式卡导航，隐藏重复的标题与模式开关 */
 .is-embedded .workbench-head .heading{display:none}

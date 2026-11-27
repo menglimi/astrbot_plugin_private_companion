@@ -1285,7 +1285,7 @@ window.CompanionOutputPage=(()=>{
     if(action==="album-load-batch"){void loadAlbumBatch(ALBUM_BATCH_PAGES);return;}
     if(action==="album-filter"){
       const next=target.dataset.outputAlbumFilter||"all";
-      if(ALBUM_FILTERS.some(([id])=>id===next)&&next!==albumFilter){albumFilter=next;albumSelectedIds.clear();renderAlbum();}
+      if(ALBUM_FILTERS.some(([id])=>id===next)&&next!==albumFilter){albumFilter=next;albumSelectedIds.clear();albumAutoLoader?.reset?.();renderAlbum();}
       return;
     }
     if(action==="album-page-size"){

@@ -3636,6 +3636,8 @@ function qzoneImageScope(){
   const scope=qzoneRoute('publish');
   if(qzoneState.imageScope!==scope){
     qzoneState.publishImages=[];qzoneState.album=null;qzoneState.albumOpen=false;
+    qzoneState.albumAppendError=false;qzoneState.albumAppendErrorText='';
+    destroyQzoneAlbumAutoLoader();
     qzoneState.imageScope=scope;
   }
   return scope;

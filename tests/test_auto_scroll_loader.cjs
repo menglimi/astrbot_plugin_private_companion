@@ -55,7 +55,7 @@ class FakeElement {
   set innerHTML(html) {
     this._innerHTML = String(html || "");
     this.children = [];
-    const tagRe = /<(div|button|input|label|span|p|article)\b([^>]*)>/gi;
+    const tagRe = /<(div|button|input|label|span|p|article|select|section|form)\b([^>]*)>/gi;
     let m;
     while ((m = tagRe.exec(this._innerHTML))) {
       const child = new FakeElement(m[1], parseAttrs(m[2]));
@@ -65,7 +65,12 @@ class FakeElement {
   }
 
   getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    if (Object.prototype.hasOwnProperty.call(this.attrs, name)) return this.attrs[name];
+    if (name.startsWith("data-")) {
+      const camel = name.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+      if (Object.prototype.hasOwnProperty.call(this.dataset, camel)) return String(this.dataset[camel]);
+    }
+    return null;
   }
 
   setAttribute(name, value) {
@@ -79,7 +84,20 @@ class FakeElement {
   }
 
   hasAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attrs, name);
+    if (Object.prototype.hasOwnProperty.call(this.attrs, name)) return true;
+    if (name.startsWith("data-")) {
+      const camel = name.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+      return Object.prototype.hasOwnProperty.call(this.dataset, camel);
+    }
+    return false;
+  }
+
+  contains(node) {
+    if (node === this) return true;
+    for (const child of this.children) {
+      if (child.contains(node)) return true;
+    }
+    return false;
   }
 
   matches(selector) {
@@ -450,6 +468,7 @@ test("CompanionAutoScroll: stall guard halts loop when cursor and count fail to 
   assert.equal(ctrl.getState().stalled, false);
 
   h.advanceTime(300);
+  h.activeObservers()[0].trigger(true);
   await flushMicrotasks();
   assert.equal(calls, 2);
   assert.equal(ctrl.getState().stalled, true);
@@ -491,16 +510,18 @@ test("CompanionAutoScroll: continuous auto-burst safety valve pauses at maxAutoB
     },
   });
 
-  // Trigger continuous auto-loads with sentinel staying visible
+  // Trigger continuous auto-loads with sentinel staying visible after each render
   h.activeObservers()[0].trigger(true);
   await flushMicrotasks();
   assert.equal(page, 1);
 
   h.advanceTime(260);
+  h.activeObservers()[0].trigger(true);
   await flushMicrotasks();
   assert.equal(page, 2);
 
   h.advanceTime(260);
+  h.activeObservers()[0].trigger(true);
   await flushMicrotasks();
   assert.equal(page, 3);
   assert.equal(ctrl.getState().burstPaused, true);
@@ -512,7 +533,7 @@ test("CompanionAutoScroll: continuous auto-burst safety valve pauses at maxAutoB
   await flushMicrotasks();
   assert.equal(page, 3);
 
-  // User manual scroll resets burst counter & resumes observer
+  // User manual scroll (after settle window) resets burst counter & resumes observer
   h.dispatchWindow("scroll");
   assert.equal(ctrl.getState().burstPaused, false);
   assert.equal(ctrl.getState().burstCount, 0);
@@ -520,8 +541,8 @@ test("CompanionAutoScroll: continuous auto-burst safety valve pauses at maxAutoB
 
   // Hit pause again, then verify clicking "点击继续加载" recovers
   for (let i = 0; i < 3; i += 1) {
-    if (i === 0) h.activeObservers()[0].trigger(true);
-    else h.advanceTime(260);
+    if (i > 0) h.advanceTime(260);
+    h.activeObservers()[0].trigger(true);
     await flushMicrotasks();
   }
   assert.equal(page, 6);
@@ -911,5 +932,430 @@ test("Integration: output-page.js delegates album sentinel & header toggle to Co
   assert.equal(h.activeObservers().length, 0);
 
   h.window.CompanionOutputPage.unmount();
+});
+
+test("CompanionAutoScroll: slow request (>=260ms) does not cascade runaway auto-loads before new sentinel intersects", async () => {
+  const h = createLoaderHarness();
+  const host = new FakeElement("div");
+  let page = 1;
+  let calls = 0;
+
+  const ctrl = h.CompanionAutoScroll.mount({
+    host,
+    minIntervalMs: 260,
+    maxAutoBurst: 12,
+    hasMore: () => page < 20,
+    loadedCount: () => page * 10,
+    cursor: () => `cur-${page}`,
+    onLoadMore: async () => {
+      calls += 1;
+      // Simulate real API round-trip >= 260ms so elapsed >= minIntervalMs upon resolve
+      h.advanceTime(350);
+      page += 1;
+    },
+  });
+
+  // Single scroll-to-bottom triggers page 2; new items push rebuilt sentinel out of viewport
+  h.activeObservers()[0].trigger(true);
+  await flushMicrotasks();
+  assert.equal(calls, 1);
+  assert.equal(page, 2);
+  assert.equal(ctrl.getState().intersecting, false, "rebuilt sentinel must start non-intersecting until measured");
+
+  // Even after waiting long past minIntervalMs, must NOT auto-load again without new IO intersection
+  h.advanceTime(2000);
+  await flushMicrotasks();
+  assert.equal(calls, 1, "must not cascade-load when new sentinel has not intersected");
+
+  // Explicitly reporting non-intersection keeps calls at 1
+  h.activeObservers()[0].trigger(false);
+  h.advanceTime(500);
+  await flushMicrotasks();
+  assert.equal(calls, 1);
+
+  // Only when user actually scrolls again and new sentinel intersects does next load fire
+  h.activeObservers()[0].trigger(true);
+  await flushMicrotasks();
+  assert.equal(calls, 2);
+  ctrl.destroy();
+});
+
+test("CompanionAutoScroll: refresh(null) detaches host and scroll listeners without leaking onto window", () => {
+  const h = createLoaderHarness();
+  const scrollBox = new FakeElement("div", { class: "mem-corpus" });
+  const host = new FakeElement("div");
+
+  const ctrl = h.CompanionAutoScroll.mount({
+    host,
+    scrollRoot: scrollBox,
+    hasMore: () => true,
+    loadedCount: () => 5,
+    onLoadMore: async () => {},
+  });
+
+  assert.equal(host.listeners.get("click").size, 1);
+  assert.equal(host.listeners.get("change").size, 1);
+  assert.equal(scrollBox.listeners.get("scroll").size, 1);
+  assert.equal(h.windowListeners.get("scroll")?.size || 0, 0);
+
+  // Detaching via refresh(null) must release old host & scroll listeners and NOT bind window
+  ctrl.refresh(null, null);
+  assert.equal(host.listeners.get("click").size, 0, "old host click listener must be removed");
+  assert.equal(host.listeners.get("change").size, 0, "old host change listener must be removed");
+  assert.equal(scrollBox.listeners.get("scroll").size, 0, "old scrollRoot scroll listener must be removed");
+  assert.equal(h.windowListeners.get("scroll")?.size || 0, 0, "must not attach scroll listener to window when host is null");
+  assert.equal(h.windowListeners.get("wheel")?.size || 0, 0, "must not attach wheel listener to window when host is null");
+  assert.equal(h.activeObservers().length, 0);
+
+  ctrl.destroy();
+});
+
+test("CompanionAutoScroll: programmatic restoreScroll during load settle window does not clear burstCount, while wheel resets immediately", async () => {
+  const h = createLoaderHarness();
+  const host = new FakeElement("div");
+  let page = 0;
+
+  const ctrl = h.CompanionAutoScroll.mount({
+    host,
+    maxAutoBurst: 2,
+    minIntervalMs: 260,
+    hasMore: () => page < 10,
+    loadedCount: () => page * 5,
+    cursor: () => `p-${page}`,
+    onLoadMore: async () => {
+      page += 1;
+      // Simulate page restoreScroll() firing window scroll during load
+      h.dispatchWindow("scroll");
+    },
+  });
+
+  // Load 1 + immediate async programmatic scroll (within 150ms settle window)
+  h.activeObservers()[0].trigger(true);
+  await flushMicrotasks();
+  h.advanceTime(40);
+  h.dispatchWindow("scroll");
+  assert.equal(ctrl.getState().burstCount, 1, "programmatic scroll inside settle window must not reset burstCount");
+
+  // Advance past minIntervalMs without firing user scroll, then trigger load 2 -> hits safety valve
+  h.advanceTime(220);
+  h.activeObservers()[0].trigger(true);
+  await flushMicrotasks();
+  h.advanceTime(40);
+  h.dispatchWindow("scroll");
+  assert.equal(page, 2);
+  assert.equal(ctrl.getState().burstCount, 2);
+  assert.equal(ctrl.getState().burstPaused, true, "maxAutoBurst=2 must pause even with restoreScroll events");
+
+  // Genuine user wheel event immediately resets burstPaused even inside settle window
+  h.dispatchWindow("wheel");
+  assert.equal(ctrl.getState().burstCount, 0);
+  assert.equal(ctrl.getState().burstPaused, false);
+  assert.equal(h.activeObservers().length, 1);
+
+  ctrl.destroy();
+});
+
+test("Integration: memory-page.js preserves cursor & corpus on append failure, avoids misleading fallback, and recovers on retry", async () => {
+  const h = createLoaderHarness();
+  const memorySource = fs.readFileSync(path.join(ROOT, "pages", "陪伴小屋", "memory-page.js"), "utf8");
+  const getCalls = [];
+  const postCalls = [];
+  let failFactsAppendOnce = true;
+  let failQueryAppendOnce = true;
+
+  h.window.CSS = { escape: (v) => String(v) };
+  h.window.Intl = Intl;
+  h.window.crypto = { randomUUID: () => "uuid-1" };
+  h.window.requestAnimationFrame = () => 0;
+  h.window.performance = { now: () => 0 };
+  h.window.document = {
+    documentElement: { dataset: { motion: "normal" } },
+    addEventListener: () => {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: (tag) => new FakeElement(tag),
+    body: { classList: { add() {}, remove() {}, toggle() {} } },
+    title: "",
+    hidden: false,
+  };
+  h.window.AstrBotPluginPage = {
+    ready: async () => ({ pluginName: "astrbot_plugin_private_companion" }),
+    apiGet: async (route, params) => {
+      getCalls.push({ route, params });
+      if (route === "page/ownership") return { owner: "self", reason: "owner_module_absent", display_name: "" };
+      if (route === "page/targets") {
+        return {
+          status: "ok",
+          data: {
+            installation_id: "inst",
+            operator_id: "op",
+            targets: [{
+              target_id: "t1", scope_kind: "private", participant_id: "u1", platform_id: "p1", account_id: "a1",
+              roles: [{ role_id: "r1", memory_api: "/astrbot_plugin_private_companion/memory" }],
+            }],
+          },
+        };
+      }
+      if (route === "memory/overview") {
+        return { status: "ok", data: { local: { facts: { total: 6 }, reflections: { total: 0, by_state: {} } } } };
+      }
+      if (route === "memory") {
+        const after = params?.after_id || "";
+        if (!after) {
+          return {
+            status: "ok",
+            data: {
+              items: [{ atom_id: "a1", revision: 1, state: "active", representation: "喜欢晴天" }],
+              next_cursor: "cur-p2",
+            },
+          };
+        }
+        if (after === "cur-p2") {
+          return { status: "ok", data: { items: [{ atom_id: "a2", revision: 1, state: "active", representation: "养了一只猫" }], next_cursor: "cur-p3" } };
+        }
+        if (after === "cur-p3") {
+          return { status: "ok", data: { items: [{ atom_id: "a3", revision: 1, state: "active", representation: "爱喝拿铁" }], next_cursor: "cur-p4" } };
+        }
+        if (after === "cur-p4") {
+          return { status: "ok", data: { items: [{ atom_id: "a4", revision: 1, state: "active", representation: "早睡早起" }], next_cursor: "cur-facts-5" } };
+        }
+        if (after === "cur-facts-5" && failFactsAppendOnce) {
+          failFactsAppendOnce = false;
+          throw new Error("Failed to fetch");
+        }
+        return {
+          status: "ok",
+          data: {
+            items: [{ atom_id: "a5", revision: 1, state: "active", representation: "周末爱看电影" }],
+            next_cursor: null,
+          },
+        };
+      }
+      return { status: "ok", data: {} };
+    },
+    apiPost: async (route, body) => {
+      postCalls.push({ route, body });
+      if (route === "memory/query") {
+        if (!body.cursor) {
+          return {
+            status: "ok",
+            data: {
+              session_id: "qs-1",
+              items: [{ atom_id: "q1", excerpt: "第一页命中片段" }],
+              next_cursor: "cur-q-2",
+            },
+          };
+        }
+        if (failQueryAppendOnce) {
+          failQueryAppendOnce = false;
+          throw new Error("Network down");
+        }
+        return {
+          status: "ok",
+          data: {
+            session_id: "qs-1",
+            items: [{ atom_id: "q2", excerpt: "第二页命中片段" }],
+            next_cursor: null,
+          },
+        };
+      }
+      return { status: "ok", data: {} };
+    },
+  };
+  h.window.CompanionProduct = {
+    hosted: () => true,
+    selection: () => null,
+    choose: () => {},
+    bridgeNow: () => h.window.AstrBotPluginPage,
+    bridgeFor: async () => h.window.AstrBotPluginPage,
+  };
+
+  vm.runInNewContext(memorySource, h.window, { filename: "memory-page.js" });
+
+  const root = new FakeElement("div");
+  await h.window.CompanionMemoryPage.mount(root);
+  await flushMicrotasks(12);
+
+  assert.match(root.innerHTML, /喜欢晴天/);
+  assert.equal(h.activeObservers().length, 1);
+
+  // Trigger page-2 facts load -> fails with codeless network error
+  h.activeObservers()[0].trigger(true);
+  await flushMicrotasks(12);
+
+  assert.match(root.innerHTML, /喜欢晴天/, "loaded facts must be preserved on append failure");
+  assert.match(root.innerHTML, /继续读取更早事实时失败，已保留已加载记录。/, "codeless error must use Chinese fallback");
+  assert.doesNotMatch(root.innerHTML, /暂无具体原因/, "must not show misleading '暂无具体原因'");
+
+  // Clicking retry must still have data.next === 'cur-facts-2' and load page 2!
+  const retryFactsBtn = root.querySelector('[data-casl-action="retry"]');
+  assert.ok(retryFactsBtn, "retry button must be rendered");
+  retryFactsBtn.dispatchEvent({ type: "click" });
+  await flushMicrotasks(12);
+
+  const appendCalls = getCalls.filter((c) => c.route === "memory" && c.params?.after_id === "cur-facts-5");
+  assert.equal(appendCalls.length, 2, "retry must re-request using preserved data.next cursor");
+  assert.match(root.innerHTML, /周末爱看电影/, "retry must append page 5 facts");
+
+  // Switch to query area and verify runQuery({next: true}) append error fallback + retry
+  const queryTab = root.querySelector("#memory-area-query");
+  assert.ok(queryTab);
+  queryTab.dispatchEvent({ type: "click" });
+  await flushMicrotasks(8);
+
+  const qInput = root.querySelector("#memory-query-text");
+  const qKind = root.querySelector("#memory-query-kind");
+  const qForm = root.querySelector("#memory-query-form");
+  qInput.value = "晴天";
+  qKind.value = "all";
+  qForm.dispatchEvent({ type: "submit" });
+  await flushMicrotasks(12);
+
+  assert.match(root.innerHTML, /第一页命中片段/);
+  assert.equal(h.activeObservers().length, 1);
+
+  // Next query page fails with codeless network error
+  h.activeObservers()[0].trigger(true);
+  await flushMicrotasks(12);
+
+  assert.match(root.innerHTML, /第一页命中片段/, "query items must stay preserved on next-page failure");
+  assert.match(root.innerHTML, /读取下一页查询结果失败，已保留当前结果。/);
+  assert.doesNotMatch(root.innerHTML, /暂无具体原因/);
+
+  const retryQueryBtn = root.querySelector('[data-casl-action="retry"]');
+  assert.ok(retryQueryBtn);
+  retryQueryBtn.dispatchEvent({ type: "click" });
+  await flushMicrotasks(12);
+
+  assert.match(root.innerHTML, /第二页命中片段/, "query retry must append page 2 results");
+  h.window.CompanionMemoryPage.unmount();
+});
+
+test("Integration: pages/新的她/app.js handles dialog close race with draftReqSeq, syncs storage preference, and has warn/data-motion CSS", async () => {
+  const h = createLoaderHarness();
+  const designerJs = fs.readFileSync(DESIGNER_APP_PATH, "utf8");
+  const designerCss = fs.readFileSync(path.join(ROOT, "pages", "新的她", "style.css"), "utf8");
+  assert.match(designerCss, /\.draft-scroll-bar\[data-state="warn"\]/);
+  assert.match(designerCss, /:root:is\(\[data-motion="low"\],\[data-motion="off"\]\)\s+\.draft-scroll-dots\s+i/);
+
+  const elementsById = new Map();
+  function makeDesignerEl(tag, id = "") {
+    const el = new FakeElement(tag, id ? { id } : {});
+    el.open = false;
+    el.classList = { add() {}, remove() {}, toggle() {} };
+    el.focus = () => {};
+    el.select = () => {};
+    el.showModal = () => { el.open = true; };
+    el.close = () => {
+      if (el.open) {
+        el.open = false;
+        el.dispatchEvent({ type: "close" });
+      }
+    };
+    return el;
+  }
+  const modeSwitch = makeDesignerEl("div");
+  h.window.parent = h.window;
+  h.window.crypto = { getRandomValues: (arr) => arr };
+  h.window.Intl = Intl;
+  h.window.document = {
+    documentElement: {
+      dataset: { motion: "normal" },
+      classList: { add() {}, remove() {}, toggle() {} },
+    },
+    getElementById(id) {
+      if (!elementsById.has(id)) elementsById.set(id, makeDesignerEl(id.endsWith("dialog") ? "dialog" : "div", id));
+      return elementsById.get(id);
+    },
+    createElement(tag) {
+      return makeDesignerEl(tag);
+    },
+    querySelector(sel) {
+      if (sel === ".mode-switch") return modeSwitch;
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+
+  const pendingDraftReqs = [];
+  h.window.AstrBotPluginPage = {
+    ready: async () => ({ tab: "" }),
+    apiGet: async (route, params) => {
+      if (route === "designer/client-state") return { status: "ok", data: { state: null } };
+      if (route === "designer/options") return { status: "ok", data: { models: [], personas: [] } };
+      if (route === "designer/drafts") {
+        return new Promise((resolve) => {
+          pendingDraftReqs.push({ params, resolve });
+        });
+      }
+      return { status: "ok", data: {} };
+    },
+    apiPost: async () => ({ status: "ok", data: {} }),
+  };
+
+  vm.runInNewContext(designerJs, h.window, { filename: "designer-app.js" });
+  await flushMicrotasks(10);
+
+  const openBtn = elementsById.get("open-drafts");
+  const dialog = elementsById.get("drafts-dialog");
+  const draftList = elementsById.get("draft-list");
+
+  // 1) Open dialog -> request #1 in-flight -> close dialog before response arrives
+  openBtn.dispatchEvent({ type: "click" });
+  await flushMicrotasks(4);
+  assert.equal(pendingDraftReqs.length, 1);
+  assert.equal(dialog.open, true);
+
+  dialog.close();
+  assert.equal(h.activeObservers().length, 0);
+
+  // Stale request #1 settles after dialog closed -> MUST NOT resurrect observer
+  pendingDraftReqs[0].resolve({
+    status: "ok",
+    data: { items: [{ id: "d1", title: "旧稿", created_at: "2026-11-27T01:00:00Z" }], next_before: 10 },
+  });
+  await flushMicrotasks(8);
+  assert.equal(h.activeObservers().length, 0, "closed dialog must not resurrect IntersectionObserver");
+
+  // 2) Open dialog -> request #2 pending -> close and immediately reopen -> request #3 must NOT be swallowed
+  openBtn.dispatchEvent({ type: "click" });
+  await flushMicrotasks(4);
+  assert.equal(pendingDraftReqs.length, 2);
+  dialog.close();
+
+  // Also test cross-page localStorage update before reopen
+  h.store.set("companion.autoload.v1", "0");
+  openBtn.dispatchEvent({ type: "click" });
+  await flushMicrotasks(4);
+  assert.equal(pendingDraftReqs.length, 3, "reopening dialog must start fresh request rather than being blocked by stale loadingDrafts");
+
+  // Resolve stale #2 first -> ignored
+  pendingDraftReqs[1].resolve({
+    status: "ok",
+    data: { items: [{ id: "d-stale", title: "过期响应", created_at: "2026-11-27T01:00:00Z" }], next_before: 99 },
+  });
+  await flushMicrotasks(6);
+
+  // Resolve current #3 -> rendered, and respects companion.autoload.v1 === '0' (observer not attached)
+  pendingDraftReqs[2].resolve({
+    status: "ok",
+    data: { items: [{ id: "d-fresh", title: "最新草稿", created_at: "2026-11-27T02:00:00Z" }], next_before: 20 },
+  });
+  await flushMicrotasks(8);
+  assert.equal(h.activeObservers().length, 0, "reopening dialog must re-read companion.autoload.v1='0'");
+
+  // 3) Cross-tab storage event turns autoload back ON -> mounts observer immediately
+  h.store.set("companion.autoload.v1", "1");
+  h.dispatchWindow("storage", { key: "companion.autoload.v1", newValue: "1" });
+  await flushMicrotasks(4);
+  assert.equal(h.activeObservers().length, 1, "storage event enabling autoload must attach observer");
+  const toggleInput = draftList.querySelector("input");
+  assert.ok(toggleInput);
+  assert.equal(toggleInput.checked, true);
+
+  dialog.close();
+  assert.equal(h.activeObservers().length, 0);
 });
 

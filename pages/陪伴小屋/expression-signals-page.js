@@ -1055,7 +1055,7 @@ window.CompanionExpressionSignalsPage = (() => {
     const dimension = event.target.closest("[data-signal-dimension-filter]");
     if (dimension) { const next = FILTERS.some(([key]) => key === dimension.value) ? dimension.value : "all"; if (next !== filter) { filter = next; appendError = false; autoLoader?.reset?.(); void read(mountTicket); } return; }
     const source = event.target.closest("[data-rule-source-filter]");
-    if (source) {sourceFilter=source.value;rebuildItems();render();return;}
+    if (source) {sourceFilter=source.value;autoLoader?.reset?.();rebuildItems();render();return;}
     const destination=event.target.closest("[data-share-target]");
     if(destination){importSourceKey=destination.value;importPreview=null;transferNotice="";transferError=false;return;}
     const checkbox = event.target.closest("[data-signal-export]");
