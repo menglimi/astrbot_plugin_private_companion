@@ -222,6 +222,66 @@ window.CompanionLearningPage = (() => {
   }
   function notice(message, error = false) { data.notice = message; data.error = error; }
   let opCounter = 0;
+  let listAutoLoader = null, reviewAutoLoader = null;
+  let listAppendError = false, listAppendErrorText = "";
+  let reviewAppendError = false, reviewAppendErrorText = "";
+  function destroyAutoLoaders() {
+    try { listAutoLoader?.destroy?.(); } catch (_) {}
+    try { reviewAutoLoader?.destroy?.(); } catch (_) {}
+    listAutoLoader = null;
+    reviewAutoLoader = null;
+  }
+  function syncAutoLoaders() {
+    if (!window.CompanionAutoScroll || !root || !data) { destroyAutoLoaders(); return; }
+    const listHost = root.querySelector?.("[data-lea-list-autoscroll]") || null;
+    if (listHost) {
+      if (!listAutoLoader) {
+        listAutoLoader = window.CompanionAutoScroll.mount({
+          host: listHost,
+          hasMore: () => Boolean(data?.next),
+          isLoading: () => Boolean(data?.loading),
+          hasError: () => listAppendError,
+          errorMessage: () => listAppendErrorText || "读取下一页成长记录失败，已保留当前内容。",
+          loadedCount: () => (data?.items || []).length,
+          cursor: () => Object.entries(data?.listCursors || {}).sort(),
+          itemLabel: "条记录",
+          manualButtonAttrs: () => ({"data-action": "more", ...(data?.loading ? {disabled: ""} : {})}),
+          manualButtonLabel: "读取下一页",
+          scrollTopTarget: () => root?.querySelector?.(".lea-chain-list, .lea-track"),
+          onLoadMore: () => loadMore(),
+          onRetry: () => { listAppendError = false; listAppendErrorText = ""; return loadMore(); },
+        });
+      } else {
+        listAutoLoader.refresh(listHost);
+      }
+    } else if (listAutoLoader) {
+      listAutoLoader.refresh(null);
+    }
+    const reviewHost = root.querySelector?.("[data-lea-review-autoscroll]") || null;
+    if (reviewHost) {
+      if (!reviewAutoLoader) {
+        reviewAutoLoader = window.CompanionAutoScroll.mount({
+          host: reviewHost,
+          hasMore: () => Boolean(data?.reviewNext),
+          isLoading: () => Boolean(data?.loadingReviews),
+          hasError: () => reviewAppendError,
+          errorMessage: () => reviewAppendErrorText || "读取下一页审阅记录失败，已保留当前内容。",
+          loadedCount: () => (data?.reviews || []).length,
+          cursor: () => Object.entries(data?.reviewCursors || {}).sort(),
+          itemLabel: "条待审阅",
+          manualButtonAttrs: () => ({"data-action": "more-reviews", ...(data?.loadingReviews ? {disabled: ""} : {})}),
+          manualButtonLabel: "读取下一页审阅",
+          scrollTopTarget: () => root?.querySelector?.(".lea-reviews"),
+          onLoadMore: () => loadMoreReviews(),
+          onRetry: () => { reviewAppendError = false; reviewAppendErrorText = ""; return loadMoreReviews(); },
+        });
+      } else {
+        reviewAutoLoader.refresh(reviewHost);
+      }
+    } else if (reviewAutoLoader) {
+      reviewAutoLoader.refresh(null);
+    }
+  }
   function operationKey(kind) {
     const nonce = window.crypto?.randomUUID?.()
       || Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) + "-" + opCounter++;
@@ -327,7 +387,7 @@ window.CompanionLearningPage = (() => {
     const ticket = version;
     const request = ++listTicket;
     const previous = reset ? [] : data.items.slice();
-    if (reset) { data.listCursors = {}; data.listPages = {}; data.accesses = {}; data.refreshedAt = ""; }
+    if (reset) { data.listCursors = {}; data.listPages = {}; data.accesses = {}; data.refreshedAt = ""; listAppendError = false; listAppendErrorText = ""; listAutoLoader?.reset?.(); }
     else if (manual) { notice(""); }
     data.loading = true;
     data.refreshing = refresh;
@@ -456,6 +516,7 @@ window.CompanionLearningPage = (() => {
   async function loadMore() {
     if (!data.next || data.loading || !data.sources.length) return;
     const ticket = version;
+    listAppendError = false; listAppendErrorText = "";
     data.loading = true; render();
     try {
       const sources=data.sources.filter(source=>data.listCursors[sourceKey(source)]);
@@ -476,9 +537,20 @@ window.CompanionLearningPage = (() => {
         data.listPages[key]=Number(data.listPages[key]||1)+1;
       }
       data.next=Object.values(data.listCursors).some(Boolean)?"more":null;
-      if(valid.length<pages.length)notice("部分记录归属暂不可读取，已显示其余记录。",true);
+      if(valid.length<pages.length){
+        listAppendError=true;
+        listAppendErrorText="部分记录归属暂不可读取，已显示其余记录。";
+        notice(listAppendErrorText,true);
+      }else{
+        listAppendError=false;
+        listAppendErrorText="";
+      }
     } catch (error) {
-      if (live(ticket)) notice(error.code ? reason(error.code) : "下一页没有读到。", true);
+      if (live(ticket)) {
+        listAppendError = true;
+        listAppendErrorText = error.code ? reason(error.code) : "下一页没有读到。";
+        notice(listAppendErrorText, true);
+      }
     } finally {
       if (live(ticket)) { data.loading = false; render(); }
     }
@@ -502,7 +574,7 @@ window.CompanionLearningPage = (() => {
     const ticket = version;
     const request = ++reviewTicket;
     const previous = reset ? [] : data.reviews.slice();
-    if (reset) { data.reviewCursors = {}; data.reviewPages = {}; }
+    if (reset) { data.reviewCursors = {}; data.reviewPages = {}; reviewAppendError = false; reviewAppendErrorText = ""; reviewAutoLoader?.reset?.(); }
     data.loadingReviews = true; render();
     try {
       const results=await Promise.allSettled(data.sources.map(async source=>{
@@ -560,6 +632,7 @@ window.CompanionLearningPage = (() => {
   async function loadMoreReviews() {
     if (!data.reviewNext || data.loadingReviews) return;
     const ticket = version;
+    reviewAppendError = false; reviewAppendErrorText = "";
     data.loadingReviews = true; render();
     try {
       const sources=data.sources.filter(source=>data.reviewCursors[sourceKey(source)]);
@@ -579,8 +652,20 @@ window.CompanionLearningPage = (() => {
         data.reviewPages[key]=Number(data.reviewPages[key]||1)+1;
       }
       data.reviewNext=Object.values(data.reviewCursors).some(Boolean)?"more":null;
+      if(valid.length<pages.length){
+        reviewAppendError=true;
+        reviewAppendErrorText="部分审阅记录归属暂不可读取，已显示其余记录。";
+        notice(reviewAppendErrorText,true);
+      }else{
+        reviewAppendError=false;
+        reviewAppendErrorText="";
+      }
     } catch (error) {
-      if (live(ticket)) notice(error.code ? reason(error.code) : "下一页审阅没有读到。", true);
+      if (live(ticket)) {
+        reviewAppendError = true;
+        reviewAppendErrorText = error.code ? reason(error.code) : "下一页审阅没有读到。";
+        notice(reviewAppendErrorText, true);
+      }
     } finally {
       if (live(ticket)) { data.loadingReviews = false; render(); }
     }
@@ -795,7 +880,9 @@ window.CompanionLearningPage = (() => {
           ${unknown.map(row => card(row)).join("")}</section>` : ""}
       </div>
       ${confirmMarkup()}
-      ${data.next ? `<button type="button" class="lea-btn is-wide" data-action="more"${data.loading ? " disabled" : ""}>${ICON.refresh}<span>读取下一页</span></button>` : ""}
+      ${window.CompanionAutoScroll
+        ? (data.next || data.items.length ? `<div data-lea-list-autoscroll></div>` : "")
+        : (data.next ? `<button type="button" class="lea-btn is-wide" data-action="more"${data.loading ? " disabled" : ""}>${ICON.refresh}<span>读取下一页</span></button>` : "")}
     </div>`;
   }
   function filterBar() {
@@ -909,7 +996,9 @@ window.CompanionLearningPage = (() => {
     return `<div class="lea-chain-grid">
       <div class="lea-chain-left"><section class="lea-chain-list lea-block"><header><h3>记录列表</h3><span>${data.items.length} 条</span></header>
         ${data.loading&&!data.items.length?`<p class="lea-lane-empty">正在读取…</p>`:rows||`<p class="lea-lane-empty">暂无成长记录</p>`}
-        ${data.next?`<button type="button" class="lea-btn is-wide" data-action="more"${data.loading?" disabled":""}>读取下一页</button>`:""}</section>
+        ${window.CompanionAutoScroll
+          ?(data.next||data.items.length?`<div data-lea-list-autoscroll></div>`:"")
+          :(data.next?`<button type="button" class="lea-btn is-wide" data-action="more"${data.loading?" disabled":""}>读取下一页</button>`:"")}</section>
         <section class="lea-chain-evidence lea-block"><header><h3>依据与凭证</h3><span>${current?e(current.source_count??0)+" 条记录":"—"}</span></header>${evidence}</section></div>
       <div class="lea-chain-right"><section class="lea-chain-detail lea-block"><header><h3>记录详情 · 工作台</h3><span class="refresh-cluster">${data.refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>` : ""}<button type="button" class="lh-refresh${data.refreshing ? " is-refreshing" : ""}" data-action="refresh" aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing ? "true" : "false"}"${data.loading || data.writing ? " disabled" : ""}>${ICON.refresh}</button></span></header>${detailView()}</section>
       ${current?.actions?.includes("revise")?`<section class="lea-chain-revision"><header><h3>修订 · 生成新版本</h3></header>${reviseForm(current)}</section>`:""}</div>
@@ -975,7 +1064,9 @@ window.CompanionLearningPage = (() => {
             ? `<p class="lea-review-warn">依据不可读取，无法采纳。</p>` : ""}
         </article>`;
       }).join("")}
-      ${data.reviewNext ? `<button type="button" class="lea-btn is-wide" data-action="more-reviews"${data.loadingReviews ? " disabled" : ""}>读取下一页审阅</button>` : ""}
+      ${window.CompanionAutoScroll
+        ? (data.reviewNext || data.reviews.length ? `<div data-lea-review-autoscroll></div>` : "")
+        : (data.reviewNext ? `<button type="button" class="lea-btn is-wide" data-action="more-reviews"${data.loadingReviews ? " disabled" : ""}>读取下一页审阅</button>` : "")}
     </div>`;
   }
 
@@ -1007,10 +1098,12 @@ window.CompanionLearningPage = (() => {
     const view = snapshotView();
     if(data.layout==="chain"){
       root.innerHTML=`<div class="lea-chain-workspace">${gateView()}${!data.ready?emptyMarkup():chainWorkView()}</div>`;
+      syncAutoLoaders();
       restoreView(view);
       return;
     }
     root.innerHTML = `<div class="lea-app">${railMarkup()}<div class="lea-main">${headMarkup()}${noticeMarkup()}${gateView()}${body()}</div></div>`;
+    syncAutoLoaders();
     restoreView(view);
   }
 
@@ -1229,6 +1322,9 @@ window.CompanionLearningPage = (() => {
     }
   }
   function unmount() {
+    destroyAutoLoaders();
+    listAppendError = false; listAppendErrorText = "";
+    reviewAppendError = false; reviewAppendErrorText = "";
     ++version; ++listTicket; ++reviewTicket;
     if (!root) { data = null; bridge = null; getSourcesFn = null; return; }
     root.removeEventListener("click", onClick);

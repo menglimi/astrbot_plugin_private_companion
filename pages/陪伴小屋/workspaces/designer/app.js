@@ -280,11 +280,191 @@
     api("POST", "designer/drafts", snapshot).catch(() => {}).finally(() => { if (!disposed) poll(); });
     schedulePoll();
   }
-  async function listDrafts(before = 0) {
+  const DRAFT_AUTOLOAD_KEY = "companion.autoload.v1";
+  const DRAFT_MIN_INTERVAL_MS = 260;
+  const DRAFT_MAX_AUTO_BURST = 12;
+  const DRAFT_TOP_THRESHOLD = 16;
+  let draftAutoEnabled = (() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_AUTOLOAD_KEY);
+      if (raw === "0" || raw === "false") return false;
+      if (raw === "1" || raw === "true") return true;
+    } catch {}
+    return true;
+  })();
+  let draftCount = 0, draftAppendError = "", draftAutoBurst = 0, draftBurstPaused = false, draftStalled = false;
+  let draftLastTriggerAt = 0, draftIntersecting = false, draftDebounceTimer = null, draftObserver = null;
+  let draftProgrammaticScroll = false, draftProgrammaticTimer = null;
+
+  function writeDraftAutoPref(enabled) {
+    draftAutoEnabled = Boolean(enabled);
+    try { localStorage.setItem(DRAFT_AUTOLOAD_KEY, draftAutoEnabled ? "1" : "0"); } catch {}
+  }
+  function clearDraftAutoTimer() {
+    if (draftDebounceTimer !== null) { clearTimeout(draftDebounceTimer); draftDebounceTimer = null; }
+  }
+  function disconnectDraftObserver() {
+    try { draftObserver?.disconnect?.(); } catch {}
+    draftObserver = null;
+    draftIntersecting = false;
+    clearDraftAutoTimer();
+  }
+  function canDraftAutoLoad() {
+    return !disposed && draftAutoEnabled && typeof IntersectionObserver === "function"
+      && Boolean(nextBefore) && !loadingDrafts && !draftAppendError && !draftStalled
+      && !draftBurstPaused && draftAutoBurst < DRAFT_MAX_AUTO_BURST;
+  }
+  function scheduleDraftAutoLoad() {
+    if (!canDraftAutoLoad()) return;
+    const elapsed = draftLastTriggerAt > 0 ? Date.now() - draftLastTriggerAt : DRAFT_MIN_INTERVAL_MS;
+    if (elapsed >= DRAFT_MIN_INTERVAL_MS) {
+      clearDraftAutoTimer();
+      void listDrafts(nextBefore, {auto: true});
+      return;
+    }
+    if (draftDebounceTimer !== null) return;
+    draftDebounceTimer = setTimeout(() => {
+      draftDebounceTimer = null;
+      if (draftIntersecting && canDraftAutoLoad()) void listDrafts(nextBefore, {auto: true});
+    }, Math.max(0, DRAFT_MIN_INTERVAL_MS - elapsed));
+  }
+  function renderDraftScrollBar() {
+    const list = $("draft-list");
+    if (!list) return;
+    list.querySelector("[data-draft-sentinel]")?.remove();
+    list.querySelector("[data-draft-scroll-bar]")?.remove();
+    $("more-drafts").hidden = true;
+    if (!draftCount && !nextBefore && !loadingDrafts && !draftAppendError) {
+      disconnectDraftObserver();
+      return;
+    }
+    const ioSupported = typeof IntersectionObserver === "function";
+    const showSentinel = Boolean(nextBefore) && draftAutoEnabled && ioSupported && !draftAppendError && !draftStalled && !draftBurstPaused;
+    let sentinel = null;
+    if (showSentinel) {
+      sentinel = node("div", undefined, "draft-scroll-sentinel");
+      sentinel.dataset.draftSentinel = "";
+      sentinel.setAttribute("aria-hidden", "true");
+      list.append(sentinel);
+    }
+    const bar = node("div", undefined, "draft-scroll-bar");
+    bar.dataset.draftScrollBar = "";
+    const status = node("span", undefined, "draft-scroll-status");
+    status.setAttribute("role", "status");
+    const actions = node("div", undefined, "draft-scroll-actions");
+    if (loadingDrafts) {
+      bar.dataset.state = "loading";
+      const dots = node("span", undefined, "draft-scroll-dots");
+      dots.setAttribute("aria-hidden", "true");
+      dots.append(node("i"), node("i"), node("i"));
+      status.append(dots, node("span", "正在加载更早的版本…"));
+    } else if (draftAppendError) {
+      bar.dataset.state = "error";
+      status.textContent = draftAppendError;
+      const retry = node("button", "点击重试", "button small");
+      retry.type = "button";
+      retry.addEventListener("click", () => { draftAppendError = ""; draftStalled = false; draftBurstPaused = false; draftAutoBurst = 0; void listDrafts(nextBefore); });
+      actions.append(retry);
+    } else if (draftStalled) {
+      bar.dataset.state = "warn";
+      status.textContent = "暂未读取到更早的版本，已暂停自动加载";
+      const retry = node("button", "点击重试", "button small");
+      retry.type = "button";
+      retry.addEventListener("click", () => { draftStalled = false; draftBurstPaused = false; draftAutoBurst = 0; void listDrafts(nextBefore); });
+      actions.append(retry);
+    } else if (draftBurstPaused) {
+      bar.dataset.state = "warn";
+      status.textContent = `已连续自动加载 ${draftAutoBurst} 次，已暂停`;
+      const cont = node("button", "点击继续加载", "button small");
+      cont.type = "button";
+      cont.addEventListener("click", () => { draftBurstPaused = false; draftAutoBurst = 0; void listDrafts(nextBefore); });
+      actions.append(cont);
+    } else if (!nextBefore) {
+      bar.dataset.state = "complete";
+      status.textContent = `已加载全部 ${draftCount} 个版本`;
+      if (draftCount >= DRAFT_TOP_THRESHOLD) {
+        const topBtn = node("button", "↑ 回到顶部", "button small");
+        topBtn.type = "button";
+        topBtn.addEventListener("click", () => {
+          const reduced = document.documentElement?.dataset?.motion === "off"
+            || document.documentElement?.dataset?.motion === "low"
+            || Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+          draftProgrammaticScroll = true;
+          clearTimeout(draftProgrammaticTimer);
+          draftProgrammaticTimer = setTimeout(() => { draftProgrammaticScroll = false; }, 450);
+          if (typeof list.scrollTo === "function") list.scrollTo({top: 0, behavior: reduced ? "auto" : "smooth"});
+          else list.scrollTop = 0;
+        });
+        actions.append(topBtn);
+      }
+    } else {
+      bar.dataset.state = !ioSupported ? "fallback" : draftAutoEnabled ? "idle" : "manual";
+      status.textContent = !ioSupported ? "当前环境不支持自动滚动" : draftAutoEnabled ? "下滑自动加载更早版本" : "自动滚动加载已关闭";
+      const moreBtn = node("button", "更早的版本", "button small");
+      moreBtn.type = "button";
+      moreBtn.addEventListener("click", () => { draftBurstPaused = false; draftAutoBurst = 0; void listDrafts(nextBefore); });
+      actions.append(moreBtn);
+    }
+    if (ioSupported) {
+      const toggleLabel = node("label", undefined, "draft-scroll-toggle");
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = draftAutoEnabled;
+      toggle.addEventListener("change", () => {
+        writeDraftAutoPref(toggle.checked);
+        if (draftAutoEnabled) { draftAutoBurst = 0; draftBurstPaused = false; }
+        else clearDraftAutoTimer();
+        renderDraftScrollBar();
+      });
+      toggleLabel.append(toggle, node("span", "自动滚动加载"));
+      actions.append(toggleLabel);
+    }
+    bar.append(status, actions);
+    list.append(bar);
+    disconnectDraftObserver();
+    if (sentinel && showSentinel) {
+      draftObserver = new IntersectionObserver(entries => {
+        if (disposed) return;
+        const hit = entries.some(entry => Boolean(entry && entry.isIntersecting));
+        draftIntersecting = hit;
+        if (!hit) { clearDraftAutoTimer(); return; }
+        if (canDraftAutoLoad()) scheduleDraftAutoLoad();
+      }, {root: list, rootMargin: "160px 0px"});
+      draftObserver.observe(sentinel);
+    }
+  }
+  function handleDraftListScroll() {
+    if (disposed || draftProgrammaticScroll) return;
+    if (draftAutoBurst === 0 && !draftBurstPaused) return;
+    const wasPaused = draftBurstPaused;
+    draftAutoBurst = 0;
+    draftBurstPaused = false;
+    if (wasPaused) renderDraftScrollBar();
+  }
+  async function listDrafts(before = 0, options = {}) {
     if (loadingDrafts) return;
+    const isAuto = options && options.auto === true;
+    if (isAuto && !canDraftAutoLoad()) return;
     loadingDrafts = true;
+    draftLastTriggerAt = Date.now();
+    if (!before) {
+      draftCount = 0;
+      draftAppendError = "";
+      draftAutoBurst = 0;
+      draftBurstPaused = false;
+      draftStalled = false;
+      nextBefore = 0;
+      disconnectDraftObserver();
+      $("draft-list").replaceChildren(node("p", "正在读取…", "muted"));
+    } else {
+      draftAppendError = "";
+      if (isAuto) draftAutoBurst += 1;
+      else { draftAutoBurst = 0; draftBurstPaused = false; draftStalled = false; }
+      renderDraftScrollBar();
+    }
     $("more-drafts").disabled = true;
-    if (!before) $("draft-list").replaceChildren(node("p", "正在读取…", "muted"));
+    const prevBefore = before;
+    const prevCount = draftCount;
     try {
       const result = await api("GET", "designer/drafts", before ? {before} : {});
       if (!Array.isArray(result.items)) throw new Error("persona_designer_response_invalid");
@@ -311,11 +491,27 @@
           } catch (error) { notice(errorText(error), true); } finally { working = false; button.disabled = false; controls(); }
         });
         row.append(description, button); $("draft-list").append(row);
+        draftCount += 1;
       }
-      nextBefore = result.next_before;
-      $("more-drafts").hidden = !nextBefore;
-    } catch (error) { $("draft-list").replaceChildren(node("p", errorText(error), "muted")); }
-    finally { loadingDrafts = false; $("more-drafts").disabled = false; }
+      nextBefore = result.next_before || 0;
+      if (before && nextBefore && nextBefore === prevBefore && draftCount === prevCount) {
+        draftStalled = true;
+      }
+      if (isAuto && !draftStalled && nextBefore && draftAutoBurst >= DRAFT_MAX_AUTO_BURST) {
+        draftBurstPaused = true;
+      }
+    } catch (error) {
+      if (!before) {
+        $("draft-list").replaceChildren(node("p", errorText(error), "muted"));
+      } else {
+        draftAppendError = errorText(error);
+      }
+    }
+    finally {
+      loadingDrafts = false;
+      $("more-drafts").disabled = false;
+      renderDraftScrollBar();
+    }
   }
   async function copyText(id) {
     const input = $(id);
@@ -404,6 +600,11 @@
     const snapshot = {id: uid(), title, state: copy(doc())}; $("save-dialog").close(); saveSnapshot(snapshot);
   });
   $("open-drafts").addEventListener("click", () => { $("drafts-dialog").showModal(); listDrafts(); });
+  $("drafts-dialog").addEventListener("close", () => { disconnectDraftObserver(); clearTimeout(draftProgrammaticTimer); });
+  $("draft-list").addEventListener("scroll", handleDraftListScroll, {passive: true});
+  $("draft-list").addEventListener("wheel", handleDraftListScroll, {passive: true});
+  $("draft-list").addEventListener("touchmove", handleDraftListScroll, {passive: true});
+  window.addEventListener("pagehide", () => { disconnectDraftObserver(); clearTimeout(draftProgrammaticTimer); });
   $("more-drafts").addEventListener("click", () => listDrafts(nextBefore));
   $("new-design").addEventListener("click", () => { $("drafts-dialog").close(); $("reset-dialog").showModal(); });
   $("confirm-reset").addEventListener("click", () => {

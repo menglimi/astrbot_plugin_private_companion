@@ -45,7 +45,7 @@ window.CompanionOutputPage=(()=>{
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",observationSeq=0,observationRefreshedAt="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
   const formatClock=(date=new Date())=>`${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}:${String(date.getSeconds()).padStart(2,"0")}`;
   let albumSources=[],albumItems=[],albumCursor=null,albumTotal=null,albumLoaded=false,albumLoading=false,albumBatchLoading=false,albumBatchStep=0,albumBatchTotal=0,albumError="",albumSelected=-1,albumSelectedId="",albumSelectedIds=new Set(),albumNotice="",albumBusy="";
-  let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null,albumStandaloneItem=null;
+  let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumAutoLoader=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null,albumStandaloneItem=null;
   const fullImageCache=new Map(),fullImagePending=new Map(),albumFullError=new Map();
   let albumReferenceOpen=false,albumReferenceImageId="",albumReferenceLabel="",albumReferenceRoles=new Set(["identity"]),albumReferenceError="";
   let naiStatus=null;
@@ -240,6 +240,52 @@ window.CompanionOutputPage=(()=>{
     try{albumObserver?.disconnect?.();}catch{}
     albumObserver=null;
   }
+  function destroyAlbumAutoLoader(){
+    try{albumAutoLoader?.destroy?.();}catch{}
+    albumAutoLoader=null;
+  }
+  function syncAlbumAutoLoader(){
+    const loaderHost=root?.querySelector?.("[data-output-album-loader]");
+    if(!window.CompanionAutoScroll){destroyAlbumAutoLoader();bindAlbumSentinel();return;}
+    if(!loaderHost){
+      if(albumAutoLoader)albumAutoLoader.refresh(null);
+      return;
+    }
+    if(!albumAutoLoader){
+      albumAutoLoader=window.CompanionAutoScroll.mount({
+        host:loaderHost,
+        rootMargin:"300px 0px",
+        sentinelAttr:"data-output-album-sentinel",
+        hasMore:()=>Boolean(albumCursor),
+        isLoading:()=>Boolean(albumLoading||albumBatchLoading),
+        hasError:()=>Boolean(albumError),
+        errorMessage:()=>albumError,
+        loadedCount:()=>albumItems.length,
+        totalCount:()=>albumTotal!==null?albumTotal:albumItems.length,
+        cursor:()=>albumSources.map(source=>`${source.endpoint}:${source.done?"done":(source.cursor||"")}`),
+        itemLabel:"张",
+        showToggle:false,
+        manualButtonAttrs:()=>({"data-output-native-action":"album-more",...(albumLoading||albumBatchLoading?{disabled:""}:{})}),
+        manualButtonLabel:()=>albumLoading&&!albumBatchLoading?"正在读取…":`再加载 ${albumPageSize} 张`,
+        extraActionsHtml:()=>{
+          const batchLabel=albumBatchLoading?`正在连续加载（${albumBatchStep}/${albumBatchTotal}）…`:"连续加载多批";
+          const batchBtn=albumCursor?`<button type="button" class="button small" data-output-native-action="album-load-batch"${albumLoading||albumBatchLoading?" disabled":""}>${batchLabel}</button>`:"";
+          const topBtn=albumCursor&&albumItems.length>=16?`<button type="button" class="button small output-album-top" data-output-native-action="album-top">${icon("arrow-up")}<span>回到顶部</span></button>`:"";
+          return batchBtn+topBtn;
+        },
+        scrollTopTarget:()=>root?.querySelector?.("#outputAlbumWorkspace"),
+        onLoadMore:()=>loadAlbum(true),
+        onRetry:()=>{albumError="";albumNotice="";return loadAlbum(true);},
+        onToggle:next=>{
+          albumAutoLoad=Boolean(next);
+          const checkbox=root?.querySelector?.("[data-output-album-autoload]");
+          if(checkbox)checkbox.checked=albumAutoLoad;
+        },
+      });
+    }else{
+      albumAutoLoader.refresh(loaderHost);
+    }
+  }
   function bindAlbumSentinel(){
     disconnectAlbumObserver();
     if(!albumAutoLoad||!albumCursor||albumLoading||albumBatchLoading||albumError)return;
@@ -349,7 +395,11 @@ window.CompanionOutputPage=(()=>{
       if(visible.length)body+='<div class="output-album-grid">'+visible.map(albumCard).join('')+'</div>';
       else body+='<div class="output-album-state"><strong>当前筛选条件下暂无已加载图片</strong><span>可切换回「全部」，或继续加载更早的产出。</span><button type="button" class="button small" data-output-native-action="album-filter" data-output-album-filter="all">显示全部</button></div>';
     }
-    if(albumCursor||albumItems.length>=16){
+    if(window.CompanionAutoScroll){
+      if(albumItems.length||albumCursor){
+        body+='<div class="output-album-more" data-output-album-loader></div>';
+      }
+    }else if(albumCursor||albumItems.length>=16){
       const batchLabel=albumBatchLoading?`正在连续加载（${albumBatchStep}/${albumBatchTotal}）…`:`连续加载多批`;
       const moreLabel=albumLoading&&!albumBatchLoading?"正在读取…":`再加载 ${albumPageSize} 张`;
       body+='<div class="output-album-more">'
@@ -359,7 +409,7 @@ window.CompanionOutputPage=(()=>{
         +'</div>';
     }
     host.innerHTML=body;
-    bindAlbumSentinel();
+    syncAlbumAutoLoader();
     renderAlbumLightbox();
     window.lucide?.createIcons?.({attrs:{'aria-hidden':'true'}});
   }
@@ -367,7 +417,7 @@ window.CompanionOutputPage=(()=>{
     if(albumLoading||(append&&!albumCursor))return;
     const id=ticket;
     albumLoading=true;
-    if(!append){albumError="";albumNotice="";albumTotal=null;}
+    if(!append){albumError="";albumNotice="";albumTotal=null;albumAutoLoader?.reset?.();}
     renderAlbum();
     try{
       const sources=append?albumSources:roleAlbumSources();
@@ -1147,7 +1197,10 @@ window.CompanionOutputPage=(()=>{
     }
     if(target.matches("[data-output-album-autoload]")){
       albumAutoLoad=Boolean(target.checked);
-      if(albumAutoLoad)bindAlbumSentinel();else disconnectAlbumObserver();
+      if(window.CompanionAutoScroll){
+        window.CompanionAutoScroll.setEnabled(albumAutoLoad);
+        syncAlbumAutoLoader();
+      }else if(albumAutoLoad)bindAlbumSentinel();else disconnectAlbumObserver();
       return;
     }
     if(target.matches("[data-output-album-select-all]")){selectAllAlbums(target.checked);return;}
@@ -1305,14 +1358,14 @@ window.CompanionOutputPage=(()=>{
     if(event.key==="ArrowRight"){event.preventDefault?.();stepAlbum(1);}
   }
   function unmount(){
-    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();destroyAlbumAutoLoader();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
     root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;observationSeq++;observationRefreshedAt="";sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
     albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumStandaloneItem=null;albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
     albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";
     authoringStatus=null;
   }
   function mount(node){
-    unmount();root=node;scope=product()?.scopeKey?.()||"";works=[];worksLoaded=false;worksBusy=false;workSelection=null;authoringStatus=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
+    unmount();root=node;scope=product()?.scopeKey?.()||"";albumAutoLoad=window.CompanionAutoScroll?window.CompanionAutoScroll.isEnabled():true;works=[];worksLoaded=false;worksBusy=false;workSelection=null;authoringStatus=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
     if(!root)return;
     abort=new AbortController();
     root.addEventListener("input",input,{signal:abort.signal});

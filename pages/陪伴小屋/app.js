@@ -1199,6 +1199,7 @@ function paintPanel(){
   const commit=()=>{
     product.unmountWorkspace?.();
     unmountConfigEditors();
+    destroyQzoneAlbumAutoLoader();
     host.innerHTML=furniture?renderFurniturePanel(furniture)
       :section?renderSectionPanel(section)
       :view?renderViewPanel(view)
@@ -2801,12 +2802,45 @@ const qzoneState={phase:'idle',status:null,feeds:{},scope:'friends',notice:null,
      动作结束后整块重画，选择不该跟着丢。目录本身不缓存——每份都从最近一次
      status 里取，宿主换了目录（升级、改配置）下次读取就会跟上。 */
   publishTopic:'',publishScene:'',confirmDisable:false,publishImages:[],album:null,albumOpen:false,
+  albumAppendError:false,albumAppendErrorText:'',
   imageScope:'',imageLoading:false,
   /* 日程建议的处理态。回执框一次只开在一条建议上，输入留在这里而不是留在
      节点上——动作结束后整块重画，重画时填了一半的回执不该跟着丢。
      confirmSuggestionFor 与它互斥：同一条建议上不会同时开着回执框和忽略确认。 */
   suggestionReceiptFor:'',suggestionReceiptDraft:'',suggestionResultRefDraft:'',
   suggestionConfirmFor:''};
+let qzoneAlbumAutoLoader=null;
+function destroyQzoneAlbumAutoLoader(){
+  try{qzoneAlbumAutoLoader?.destroy?.();}catch{}
+  qzoneAlbumAutoLoader=null;
+}
+function syncQzoneAlbumAutoLoader(){
+  const host=document.querySelector('#actionQzoneBody [data-qzone-album-autoscroll]');
+  if(!host||!qzoneState.albumOpen||!window.CompanionAutoScroll){destroyQzoneAlbumAutoLoader();return;}
+  if(!qzoneAlbumAutoLoader){
+    qzoneAlbumAutoLoader=window.CompanionAutoScroll.mount({
+      host,
+      hasMore:()=>Boolean(qzoneState.album?.next_cursor),
+      isLoading:()=>Boolean(qzoneState.busy&&qzoneState.acting==='album'),
+      hasError:()=>Boolean(qzoneState.albumAppendError),
+      errorMessage:()=>qzoneState.albumAppendErrorText||'读取相册图片失败，已保留已加载图片。',
+      loadedCount:()=>(qzoneState.album?.items||[]).length,
+      cursor:()=>qzoneState.album?.next_cursor||'',
+      itemLabel:'张',
+      manualButtonAttrs:()=>({'data-qzone-action':'album-next',...(qzoneState.busy||qzoneState.imageLoading?{disabled:''}:{})}),
+      manualButtonLabel:'加载更多',
+      scrollTopTarget:()=>document.querySelector('#actionQzoneBody [aria-label="选择相册图片"]'),
+      onLoadMore:()=>qzoneRun('album',()=>qzoneLoadAlbum(qzoneState.album?.next_cursor)),
+      onRetry:()=>{
+        qzoneState.albumAppendError=false;
+        qzoneState.albumAppendErrorText='';
+        return qzoneRun('album',()=>qzoneLoadAlbum(qzoneState.album?.next_cursor));
+      },
+    });
+  }else{
+    qzoneAlbumAutoLoader.refresh(host);
+  }
+}
 function qzoneStatus(){const status=qzoneState.status;return status&&typeof status==='object'?status:null;}
 /* 凭据行的当前结论。缺字段按 unknown 处理：那是「不知道」，不是「失败」。 */
 function qzoneCredentialState(){
@@ -3643,13 +3677,32 @@ async function qzoneChooseImages(files){
 }
 async function qzoneLoadAlbum(cursor){
   const scope=qzoneImageScope();
+  qzoneState.albumAppendError=false;
+  qzoneState.albumAppendErrorText='';
+  if(!cursor)qzoneAlbumAutoLoader?.reset?.();
   const result=await qzoneFetch('GET','album',cursor?{cursor}:undefined,false);
   if(scope!==qzoneImageScope())return;
-  if(!result.ok){qzoneNotice(result.text,true);return;}
+  if(!result.ok){
+    qzoneNotice(result.text,true);
+    if(cursor){
+      qzoneState.albumAppendError=true;
+      qzoneState.albumAppendErrorText=result.text||'读取相册图片失败，请重试。';
+    }
+    return;
+  }
   const data=result.data;
-  if(!Array.isArray(data?.items)){qzoneNotice('没有读到相册图片，请重新读取。',true);return;}
+  if(!Array.isArray(data?.items)){
+    qzoneNotice('没有读到相册图片，请重新读取。',true);
+    if(cursor){
+      qzoneState.albumAppendError=true;
+      qzoneState.albumAppendErrorText='没有读到相册图片，请重新读取。';
+    }
+    return;
+  }
   qzoneState.album={items:cursor?[...(qzoneState.album?.items||[]),...data.items]:data.items,next_cursor:data.next_cursor};
   qzoneState.albumOpen=true;
+  qzoneState.albumAppendError=false;
+  qzoneState.albumAppendErrorText='';
 }
 function qzoneImagePickerMarkup(){
   const disabled=qzoneState.busy||qzoneState.imageLoading;
@@ -3665,7 +3718,9 @@ function qzoneImagePickerMarkup(){
       <figcaption>${escapeHTML(item.name||'相册图片')}</figcaption><button type="button" class="button small" data-qzone-action="image-remove" data-qzone-image="${index}" aria-label="移除第 ${index+1} 张图片" ${disabled?'disabled':''}>移除</button></figure>`).join('')}</div>
     ${qzoneState.albumOpen?`<section aria-label="选择相册图片"><div class="action-qzone-row"><strong>当前角色相册</strong><button type="button" class="button small" data-qzone-action="album-close" ${disabled?'disabled':''}>收起</button></div>
       <div class="qzone-album-images">${(qzoneState.album?.items||[]).map((item,index)=>`<button type="button" data-qzone-action="album-select" data-qzone-image="${index}" aria-label="选择相册图片 ${index+1}" ${disabled||pictures.some(p=>p.image_id===item.image_id)?'disabled':''}><img src="${escapeHTML(preview(item))}" alt="相册图片 ${index+1}"><span>${pictures.some(p=>p.image_id===item.image_id)?'已选择':'选择'}</span></button>`).join('')||'<p>相册里还没有图片，可先选择本地图片。</p>'}</div>
-      ${qzoneState.album?.next_cursor?`<button type="button" class="button small" data-qzone-action="album-next" ${disabled?'disabled':''}>加载更多</button>`:''}</section>`:''}
+      ${window.CompanionAutoScroll
+        ?(qzoneState.album?.next_cursor||qzoneState.album?.items?.length?'<div data-qzone-album-autoscroll></div>':'')
+        :(qzoneState.album?.next_cursor?`<button type="button" class="button small" data-qzone-action="album-next" ${disabled?'disabled':''}>加载更多</button>`:'')}</section>`:''}
   </div>`;
 }
 function qzonePublishBlocked(){
@@ -3768,12 +3823,14 @@ function paintQzone(){
   }else if(next){
     mountQzoneConfigEditor();
   }
+  syncQzoneAlbumAutoLoader();
   icons();
 }
 /* 挂载：面板每次重画都会走这里，所以这里不无条件重读——只有第一次、
  * 上次读失败、或上次读已超过一分钟才拉一次状态，免得来回切分区时反复请求。 */
 function mountQzoneSection(){
   if(!document.getElementById('actionQzoneBody'))return;
+  syncQzoneAlbumAutoLoader();
   const stale=qzoneState.phase==='ready'&&Date.now()-qzoneState.loadedAt>60000;
   if(qzoneState.phase==='idle'||qzoneState.phase==='error'||stale){
     qzoneStart('status',()=>qzoneLoadStatus({busyPaint:true}));

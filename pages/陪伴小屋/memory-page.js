@@ -489,7 +489,7 @@ window.CompanionMemoryPage = (() => {
           ${item.unavailable_reason?`<span>${e(reason(item.unavailable_reason))}</span>`:""}
         </span>
       </button>`;
-    }).join("");
+    }).join("") + (window.CompanionAutoScroll ? `<div class="mem-corpus-loader" data-memory-facts-autoscroll></div>` : "");
   }
 
   /* 状态环：conic-gradient 画置信度，环本身的颜色由 .mem-state-* 给出
@@ -733,7 +733,9 @@ window.CompanionMemoryPage = (() => {
           </li>`;
         }).join(""):`<li class="mem-empty"><h3>${e(result.index_state!=="ready"?"索引正在准备":"没有找到匹配记录")}</h3>
           <p>${e(result.index_state!=="ready"?"稍后重试，或换一个更具体的词。":"换一个词，或把资料类型改成「混合」再试一次。")}</p></li>`}</ul>
-        ${result.next_cursor?`<div style="margin-top:13px">${button("memory-query-next","继续读取下一页",data.busy||data.loading)}</div>`:""}`:""}
+        ${window.CompanionAutoScroll
+          ? (result.next_cursor || (result.items && result.items.length) ? `<div class="mem-query-loader" data-memory-query-autoscroll></div>` : "")
+          : (result.next_cursor ? `<div style="margin-top:13px">${button("memory-query-next","继续读取下一页",data.busy||data.loading)}</div>` : "")}`:""}
         ${data.sourceResult?`<blockquote class="mem-source-text"><small>原始来源 · 字符 ${e(data.sourceResult.start)}–${e(data.sourceResult.end)} / ${e(data.sourceResult.total_chars)}</small>${e(data.sourceResult.text)}${
           data.sourceResult.next_offset!==null?`<div style="margin-top:9px">${`<button type="button" class="mem-source-link" data-source-handle="${e(data.sourceResult.handle)}" data-source-session="${e(data.querySession)}" data-source-start="${e(data.sourceResult.next_offset)}">继续查看后续</button>`}</div>`:""}</blockquote>`:""}
       </div>
@@ -905,7 +907,70 @@ window.CompanionMemoryPage = (() => {
     </div>`;
     if (corpus) { const next = root.querySelector(".mem-corpus"); if (next) next.scrollTop = scroll; }
     if (focused) root.querySelector("#"+CSS.escape(focused))?.focus({preventScroll:true});
+    syncAutoLoaders();
     animate();
+  }
+
+  let factsAutoLoader = null, queryAutoLoader = null;
+  let factsAppendError = false, factsAppendErrorText = "";
+  let queryAppendError = false, queryAppendErrorText = "";
+  function destroyAutoLoaders() {
+    try { factsAutoLoader?.destroy?.(); } catch (_) {}
+    try { queryAutoLoader?.destroy?.(); } catch (_) {}
+    factsAutoLoader = null;
+    queryAutoLoader = null;
+  }
+  function syncAutoLoaders() {
+    if (!window.CompanionAutoScroll || !root || !data) { destroyAutoLoaders(); return; }
+    const factsBox = root.querySelector?.(".mem-corpus") || null;
+    const factsHost = root.querySelector?.("[data-memory-facts-autoscroll]") || null;
+    if (data.area === "facts" && factsBox && factsHost) {
+      if (!factsAutoLoader) {
+        factsAutoLoader = window.CompanionAutoScroll.mount({
+          host: factsHost,
+          scrollRoot: factsBox,
+          rootMargin: "160px 0px",
+          hasMore: () => Boolean(data?.area === "facts" && data?.hasMore && !data?.search && data?.filter === "all"),
+          isLoading: () => Boolean(data?.loading || data?.busy),
+          hasError: () => factsAppendError,
+          errorMessage: () => factsAppendErrorText || "继续读取更早事实时失败，已保留已加载记录。",
+          loadedCount: () => visibleFacts().length,
+          cursor: () => data?.next || "",
+          itemLabel: "条事实",
+          manualButtonLabel: "读取更早的事实",
+          onLoadMore: () => loadMoreFacts(),
+          onRetry: () => { factsAppendError = false; factsAppendErrorText = ""; return loadMoreFacts(); },
+        });
+      } else {
+        factsAutoLoader.refresh(factsHost, factsBox);
+      }
+    } else if (factsAutoLoader) {
+      factsAutoLoader.refresh(null, null);
+    }
+    const queryHost = root.querySelector?.("[data-memory-query-autoscroll]") || null;
+    if (data.area === "query" && queryHost) {
+      if (!queryAutoLoader) {
+        queryAutoLoader = window.CompanionAutoScroll.mount({
+          host: queryHost,
+          hasMore: () => Boolean(data?.area === "query" && data?.queryResult?.next_cursor),
+          isLoading: () => Boolean(data?.loading || data?.busy),
+          hasError: () => queryAppendError,
+          errorMessage: () => queryAppendErrorText || "读取下一页查询结果失败，已保留已加载结果。",
+          loadedCount: () => (data?.queryResult?.items || []).length,
+          cursor: () => data?.queryResult?.next_cursor || "",
+          itemLabel: "条结果",
+          manualButtonAttrs: () => ({id: "memory-query-next", ...(data?.busy || data?.loading ? {disabled: ""} : {})}),
+          manualButtonLabel: "继续读取下一页",
+          scrollTopTarget: () => root?.querySelector?.(".mem-results"),
+          onLoadMore: () => runQuery({next: true}),
+          onRetry: () => { queryAppendError = false; queryAppendErrorText = ""; return runQuery({next: true}); },
+        });
+      } else {
+        queryAutoLoader.refresh(queryHost);
+      }
+    } else if (queryAutoLoader) {
+      queryAutoLoader.refresh(null);
+    }
   }
 
   /* 动效编排。
@@ -1024,6 +1089,7 @@ window.CompanionMemoryPage = (() => {
     try {
       const path = endpoint();
       if (data.area === "facts") {
+        if (!silent) { factsAppendError = false; factsAppendErrorText = ""; factsAutoLoader?.reset?.(); }
         const [preloadResult, overviewResult] = await Promise.allSettled([
           preloadFacts(ticket), api("GET", path + "/overview"),
         ]);
@@ -1092,7 +1158,9 @@ window.CompanionMemoryPage = (() => {
      这样筛选与滚动位置都还在。 */
   async function loadMoreFacts() {
     if (!data.next || data.busy || data.loading) return;
-    const ticket = ++version; data.loading = true; render();
+    const ticket = ++version;
+    factsAppendError = false; factsAppendErrorText = "";
+    data.loading = true; render();
     try {
       const page = await api("GET", endpoint(), {limit:PAGE_SIZE, after_id:data.next});
       if (!live(ticket)) return;
@@ -1100,8 +1168,15 @@ window.CompanionMemoryPage = (() => {
       const seen = new Set(data.corpus.map(item=>item.atom_id));
       data.corpus = [...data.corpus, ...page.items.filter(item=>!seen.has(item.atom_id))];
       data.next = page.next_cursor || null; data.hasMore = Boolean(page.next_cursor);
+      factsAppendError = false; factsAppendErrorText = "";
       notice("");
-    } catch (error) { if (live(ticket)) failure(error); }
+    } catch (error) {
+      if (live(ticket)) {
+        factsAppendError = true;
+        factsAppendErrorText = reason(error?.code) || "继续读取更早事实时失败，已保留已加载记录。";
+        failure(error, {preserveCorpus: true});
+      }
+    }
     finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
   }
 
@@ -1255,6 +1330,8 @@ window.CompanionMemoryPage = (() => {
     const previous = next ? data.queryResult : null;
     const body = {query:data.queryText,kind:data.queryKind};
     if (next && previous?.next_cursor && data.querySession) Object.assign(body,{session_id:data.querySession,cursor:previous.next_cursor});
+    if (!next) { queryAppendError = false; queryAppendErrorText = ""; queryAutoLoader?.reset?.(); }
+    else { queryAppendError = false; queryAppendErrorText = ""; }
     const ticket = ++version; data.loading = true; stopTimer(); render();
     try {
       const result = await api("POST",endpoint()+"/query",body);
@@ -1262,8 +1339,20 @@ window.CompanionMemoryPage = (() => {
       if (!Array.isArray(result.items) || !result.session_id) throw problem("invalid_response");
       data.querySession = result.session_id;
       data.queryResult = previous ? {...result,items:[...(previous.items||[]),...result.items]} : result;
-      data.sourceResult = null; notice("");
-    } catch (error) { if (live(ticket)) failure(error); }
+      data.sourceResult = null;
+      queryAppendError = false; queryAppendErrorText = "";
+      notice("");
+    } catch (error) {
+      if (live(ticket)) {
+        if (next) {
+          queryAppendError = true;
+          queryAppendErrorText = reason(error?.code) || "读取下一页查询结果失败，已保留当前结果。";
+          notice(queryAppendErrorText, true);
+        } else {
+          failure(error);
+        }
+      }
+    }
     finally { if (live(ticket)) { data.loading = false; render(); } }
   }
 
@@ -1670,6 +1759,7 @@ window.CompanionMemoryPage = (() => {
       if (chips) chips.replaceWith(fresh.firstElementChild);
       const search = root.querySelector("#memory-search");
       if (search && document.activeElement !== search) { /* 保持原输入框，不重建 */ }
+      syncAutoLoaders();
     }, 140);
   }
 
@@ -1686,9 +1776,10 @@ window.CompanionMemoryPage = (() => {
     else if(event.target.id==="memory-add-form") {event.preventDefault();addMemory();}
   }
 
-  /* 滚动到底自动续读：语料超出预读窗口时，用户滚到底就该继续拿到更早的条目，
-     而不是去找一个「下一页」按钮。 */
+  /* 滚动到底自动续读：优先由 CompanionAutoScroll（IntersectionObserver + 节流 + 熔断）接管；
+     未加载共享脚本时回退到原生滚动判定。 */
   function scroll(event) {
+    if (window.CompanionAutoScroll) return;
     const box = event.target;
     if (!box.classList?.contains("mem-corpus")) return;
     if (data.area !== "facts" || !data.hasMore || data.loading || data.busy) return;
@@ -1761,6 +1852,9 @@ window.CompanionMemoryPage = (() => {
     });
   }
   function unmount() {
+    destroyAutoLoaders();
+    factsAppendError = false; factsAppendErrorText = "";
+    queryAppendError = false; queryAppendErrorText = "";
     ++version; stopTimer(); clearTimeout(searchTimer); backgroundLoading = false;
     root?.removeEventListener("click",click); root?.removeEventListener("change",change);
     root?.removeEventListener("submit",submit); root?.removeEventListener("input",input);
