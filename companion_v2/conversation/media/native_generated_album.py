@@ -2,13 +2,14 @@
 
 import json
 import sqlite3
-from dataclasses import replace
 
 from companion_v2.capabilities.native import SCHEMA as NATIVE_SCHEMA
 from companion_v2.execution.models import ProviderBinding, SideEffect, TaskError, TaskSpec, digest, encode, require
 from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
-from companion_v2.conversation.native_tool_results import PREFIX, PREFIX_END, operation_row
+from companion_v2.conversation.native_tool_results import (
+    PREFIX, PREFIX_END, match_core_tool_definition, operation_row,
+)
 from companion_v2.sources.models import GovernanceState
 from companion_v2.storage.image_payloads import load_image
 
@@ -217,13 +218,12 @@ def _trusted_native_receipt(owner, context, at, row, *, origin_keys=None):
         if task is None or task["origin_key"] != current["origin_key"]:
             return None
         data = json.loads(task["record_json"])
-        definition = replace(original_descriptor.definition(), kind=PREFIX + digest(original_descriptor),
-                             owner="astrbot.core-tool")
-        if data.get("definition") != json.loads(encode(definition)):
+        matched = match_core_tool_definition(original_descriptor, data.get("definition"))
+        if matched is None:
             return None
         spec = TaskSpec.restore(data["spec"])
         if (spec.task_id, spec.kind, spec.request_ref, spec.context.key) != (
-                current["task_id"], definition.kind, current["invocation_id"], current["origin_key"]):
+                current["task_id"], matched.kind, current["invocation_id"], current["origin_key"]):
             return None
         if task["state"] != "succeeded" or (
                 data.get("effect"), data.get("operation_id"), data.get("result_ref"),
