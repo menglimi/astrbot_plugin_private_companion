@@ -987,9 +987,10 @@ class AstrBotTextProvider:
             error_type, task_error_code, status_code = self._error_metadata(error)
             diagnostics = replace(diagnostics, failure=ModelFailure.PREPARATION,
                 error_type=error_type, error_code=task_error_code, status_code=status_code)
-            logger.warning("[CompanionV2] 模型请求准备失败 provider=%s failure=%s error_type=%s "
+            logger.warning("[CompanionV2] 模型请求准备失败 provider=%s model=%s failure=%s error_type=%s "
                            "task_error_code=%s status_code=%s",
-                           self.provider_id, ModelFailure.PREPARATION.value,
+                           self.provider_id, envelope.model_override or self.model,
+                           ModelFailure.PREPARATION.value,
                            error_type or "unavailable", task_error_code or "unavailable",
                            status_code if status_code is not None else "unavailable")
             return ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref=receipt,
@@ -1128,8 +1129,11 @@ class AstrBotTextProvider:
             status_label = status_code if status_code is not None else "unavailable"
             if (raw is None and transcript is None
                     and (definitely_not_sent(error) or rejected_before_generation(error))):
-                logger.warning("[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s error_type=%s status_code=%s",
-                               self.provider_id, error_type, status_label)
+                logger.warning(
+                    "[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s model=%s failure=%s "
+                    "error_type=%s task_error_code=%s status_code=%s",
+                    self.provider_id, envelope.model_override or self.model,
+                    final_failure.value, error_type, task_error_code or "unavailable", status_label)
                 return ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref=receipt,
                                         failure=final_failure, diagnostics=diagnostics)
             logger.warning(

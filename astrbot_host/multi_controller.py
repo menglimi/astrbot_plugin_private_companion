@@ -141,12 +141,12 @@ class AstrBotMultiController:
         # Use it as the shared host's read-only bootstrap default so account
         # mapping works without a redundant save on a second configuration
         # screen. An explicitly saved provider still wins.
-        bootstrap = resolve_bootstrap_provider(
-            self.context, getattr(self.native_types, "is_text_provider", None), settings.common.provider_id)
-        if (not settings.common.provider_id and bootstrap.source == "auto"
-                and bootstrap.provider_id):
-            settings = replace(settings, common=replace(
-                settings.common, provider_id=bootstrap.provider_id))
+        if not settings.common.provider_id:
+            bootstrap = resolve_bootstrap_provider(
+                self.context, getattr(self.native_types, "is_text_provider", None), "")
+            if bootstrap.source == "auto" and bootstrap.provider_id:
+                settings = replace(settings, common=replace(
+                    settings.common, provider_id=bootstrap.provider_id))
         shared_root = self.data_root / "installations" / settings.installation_key
         legacy = config.get("staging", {}) if isinstance(config, dict) else {}
         legacy_id = legacy.get("profile_id") if isinstance(legacy, dict) else None

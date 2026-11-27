@@ -685,18 +685,36 @@ class GeminiErrorStatusTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0]["response_diagnostics"]["status_code"], 403)
         self.assertTrue(all(a["spent_tokens"] == 15 and a["held_tokens"] == 0 for a in self.accounts()))
 
-    async def test_gateway_does_not_fallback_on_simulated_503_code(self):
+    async def test_gateway_fallbacks_on_simulated_503_while_preserving_unknown_state(self):
         provider_503, _ = self._failing_provider(
             lambda: SimulatedServerError(503, "unavailable", status="UNAVAILABLE"), provider_id="primary")
         self.gateway_with(provider_503.local_provider(), self.provider("fallback"))
         self._enable_large_budget()
         with self.assertLogs("companion_v2.adapters.astrbot.provider", level="WARNING") as captured:
-            with self.assertRaises(TaskError) as raised:
-                await self.gateway.generate(self.model_run("task-503"), self.request())
-        self.assertEqual(raised.exception.code, "model_usage_unknown")
-        self.assertEqual(self.called, [])
+            completion = await self.gateway.generate(self.model_run("task-503"), self.request())
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["fallback"])
         self.assertIn("status_code=503", "\n".join(captured.output))
         calls_503 = self.gateway.observe(self.context, "task-503").unwrap()["calls"]
+        self.assertEqual([(c["state"], c["actual_tokens"]) for c in calls_503], [("unknown", None), ("generated", 15)])
+        self.assertEqual(calls_503[0]["response_diagnostics"]["status_code"], 503)
+        self.assertTrue(all(a["spent_tokens"] == 15 and a["held_tokens"] == 0 for a in self.accounts()))
+
+    async def test_gateway_raises_model_usage_unknown_on_503_without_fallback(self):
+        provider_503, _ = self._failing_provider(
+            lambda: SimulatedServerError(503, "unavailable", status="UNAVAILABLE"), provider_id="primary")
+        self.gateway_with(provider_503.local_provider(), self.provider("fallback"))
+        self.patch_model(fallback="")
+        self._enable_large_budget()
+        with self.assertLogs("companion_v2.adapters.astrbot.provider", level="WARNING") as captured:
+            with self.assertRaises(TaskError) as raised:
+                await self.gateway.generate(self.model_run("task-503-only"), self.request())
+        self.assertEqual(raised.exception.code, "model_usage_unknown")
+        self.assertEqual(raised.exception.details.get("status_code"), 503)
+        self.assertEqual(raised.exception.details.get("cause"), "upstream_transient_error")
+        self.assertEqual(self.called, [])
+        self.assertIn("status_code=503", "\n".join(captured.output))
+        calls_503 = self.gateway.observe(self.context, "task-503-only").unwrap()["calls"]
         self.assertEqual(calls_503[0]["state"], "unknown")
         self.assertEqual(calls_503[0]["response_diagnostics"]["status_code"], 503)
 
@@ -744,7 +762,7 @@ class GeminiErrorStatusTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rejected_before_generation(err_resp))
 
     @unittest.skipUnless(genai_errors is not None, "google-genai 由宿主提供，未安装时跳过真实 SDK 异常契约")
-    async def test_real_google_genai_server_error_503_logs_status_without_fallback(self):
+    async def test_real_google_genai_server_error_503_logs_status_and_fallbacks(self):
         secret = "private gemini upstream error"
         err_503 = genai_errors.ServerError(503, {"error": {"code": 503, "message": secret, "status": "UNAVAILABLE"}})
         self.assertFalse(hasattr(err_503, "status_code"))
@@ -755,18 +773,17 @@ class GeminiErrorStatusTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.gateway_with(primary_503.local_provider(), self.provider("fallback"))
         self._enable_large_budget()
         with self.assertLogs("companion_v2.adapters.astrbot.provider", level="WARNING") as captured:
-            with self.assertRaises(TaskError) as raised:
-                await self.gateway.generate(self.model_run("real-genai-503"), self.request())
-        self.assertEqual(raised.exception.code, "model_usage_unknown")
-        self.assertEqual(self.called, [])
+            completion = await self.gateway.generate(self.model_run("real-genai-503"), self.request())
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["fallback"])
         logs_503 = "\n".join(captured.output)
         self.assertIn("status_code=503", logs_503)
         self.assertNotIn(secret, logs_503)
         calls_503 = self.gateway.observe(self.context, "real-genai-503").unwrap()["calls"]
-        self.assertEqual(calls_503[0]["state"], "unknown")
+        self.assertEqual([(c["state"], c["actual_tokens"]) for c in calls_503], [("unknown", None), ("generated", 15)])
         self.assertEqual(calls_503[0]["response_diagnostics"]["status_code"], 503)
 
-    async def test_gateway_keeps_unknown_when_simulated_503_chains_inner_400_cause(self):
+    async def test_gateway_keeps_unknown_state_and_fallbacks_when_simulated_503_chains_inner_400_cause(self):
         def make_chained():
             err_503 = SimulatedServerError(503, "upstream overloaded", status="UNAVAILABLE")
             err_503.__cause__ = SimulatedClientError(400, "inner client cause", status="INVALID_ARGUMENT")
@@ -780,17 +797,16 @@ class GeminiErrorStatusTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.gateway_with(primary.local_provider(), self.provider("fallback"))
         self._enable_large_budget()
         with self.assertLogs("companion_v2.adapters.astrbot.provider", level="WARNING") as captured:
-            with self.assertRaises(TaskError) as raised:
-                await self.gateway.generate(self.model_run("sim-503-cause-400"), self.request())
-        self.assertEqual(raised.exception.code, "model_usage_unknown")
-        self.assertEqual(self.called, [])
+            completion = await self.gateway.generate(self.model_run("sim-503-cause-400"), self.request())
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["fallback"])
         self.assertIn("status_code=503", "\n".join(captured.output))
         calls = self.gateway.observe(self.context, "sim-503-cause-400").unwrap()["calls"]
-        self.assertEqual(calls[0]["state"], "unknown")
+        self.assertEqual([(c["state"], c["actual_tokens"]) for c in calls], [("unknown", None), ("generated", 15)])
         self.assertEqual(calls[0]["response_diagnostics"]["status_code"], 503)
 
     @unittest.skipUnless(genai_errors is not None, "google-genai 由宿主提供，未安装时跳过真实 SDK 异常契约")
-    async def test_real_google_genai_server_error_503_chained_to_client_error_400_stays_unknown_without_fallback(self):
+    async def test_real_google_genai_server_error_503_chained_to_client_error_400_keeps_unknown_and_fallbacks(self):
         secret = "private chained gemini payload"
 
         def make_chained():
@@ -811,15 +827,14 @@ class GeminiErrorStatusTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.gateway_with(primary.local_provider(), self.provider("fallback"))
         self._enable_large_budget()
         with self.assertLogs("companion_v2.adapters.astrbot.provider", level="WARNING") as captured:
-            with self.assertRaises(TaskError) as raised:
-                await self.gateway.generate(self.model_run("real-genai-503-cause-400"), self.request())
-        self.assertEqual(raised.exception.code, "model_usage_unknown")
-        self.assertEqual(self.called, [])
+            completion = await self.gateway.generate(self.model_run("real-genai-503-cause-400"), self.request())
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["fallback"])
         logs = "\n".join(captured.output)
         self.assertIn("status_code=503", logs)
         self.assertNotIn(secret, logs)
         calls = self.gateway.observe(self.context, "real-genai-503-cause-400").unwrap()["calls"]
-        self.assertEqual(calls[0]["state"], "unknown")
+        self.assertEqual([(c["state"], c["actual_tokens"]) for c in calls], [("unknown", None), ("generated", 15)])
         self.assertEqual(calls[0]["response_diagnostics"]["status_code"], 503)
 
 

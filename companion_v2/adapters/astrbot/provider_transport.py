@@ -21,6 +21,18 @@ def definitely_not_sent(error):
 
 
 _HTTP_REJECTION_STATUSES = frozenset({400, 401, 403, 404, 405, 415, 422})
+TRANSIENT_UPSTREAM_FALLBACK_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def transient_upstream_fallback_status(status_code) -> bool:
+    """Return True for explicit upstream rate-limit or 5xx availability errors.
+
+    Unlike 4xx client rejections, these statuses do not prove zero upstream
+    billing, so the adapter keeps the original call's state as ``unknown``.
+    When no completion, tool call, or reply prefix was produced, the model
+    gateway may still safely fail over to a configured fallback provider.
+    """
+    return _valid_http_status(status_code) in TRANSIENT_UPSTREAM_FALLBACK_STATUSES
 
 
 def _valid_http_status(value):

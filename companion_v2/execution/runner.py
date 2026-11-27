@@ -29,6 +29,33 @@ logger = getLogger(__name__)
 # the reservation is unusable for this owner. A runner that keeps capacity
 # refusals opts in with ``retain_refusals=True``; see ``_unrun``.
 CAPACITY_REFUSALS = frozenset({"task_lane_full", "task_concurrency_limited"})
+_SAFE_ERROR_DETAIL_KEYS = (
+    "cause",
+    "provider",
+    "model",
+    "task_error_code",
+    "status_code",
+    "upstream_error_type",
+    "hint",
+)
+
+
+def _safe_error_detail_suffix(error: BaseException) -> str:
+    """Format whitelisted non-secret diagnostic fields from ``TaskError.details``."""
+    if not isinstance(error, TaskError) or not isinstance(error.details, Mapping):
+        return ""
+    parts = []
+    for key in _SAFE_ERROR_DETAIL_KEYS:
+        value = error.details.get(key)
+        if value is None or value == "" or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            parts.append(f"{key}={value}")
+        elif isinstance(value, str):
+            cleaned = " ".join(value.split()).strip()[:200]
+            if cleaned:
+                parts.append(f"{key}={cleaned}")
+    return (" " + " ".join(parts)) if parts else ""
 
 
 @dataclass(frozen=True)
@@ -160,12 +187,14 @@ class _TaskRunner:
                     except (Exception, asyncio.CancelledError) as error:
                         code = error.code if isinstance(error, TaskError) else "unhandled_exception"
                         if isinstance(error, TaskDeferred):
-                            logger.info("[CompanionV2] 后台任务等待本地预算 task=%s kind=%s code=%s retry_at=%s",
-                                        task.task_id, task.spec.kind, code, error.retry_at.isoformat())
+                            label = "后台任务等待账号重连" if code == "host_account_offline" else "后台任务等待本地预算"
+                            logger.info("[CompanionV2] %s task=%s kind=%s code=%s retry_at=%s",
+                                        label, task.task_id, task.spec.kind, code, error.retry_at.isoformat())
                             return Outcome.success(RunResult(require(self._stopped(claim, "worker_error")),
                                                              code, error.retry_at))
-                        logger.error("[CompanionV2] 后台任务执行失败 task=%s kind=%s code=%s error_type=%s",
-                                     task.task_id, task.spec.kind, code, type(error).__name__)
+                        detail_suffix = _safe_error_detail_suffix(error)
+                        logger.error("[CompanionV2] 后台任务执行失败 task=%s kind=%s code=%s error_type=%s%s",
+                                     task.task_id, task.spec.kind, code, type(error).__name__, detail_suffix)
                         logger.debug("[CompanionV2][开发者追踪] 后台任务异常 task=%s kind=%s code=%s",
                                      task.task_id, task.spec.kind, code, exc_info=True)
                         return Outcome.success(RunResult(require(self._stopped(claim, "worker_error")), code))

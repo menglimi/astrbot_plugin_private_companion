@@ -351,7 +351,22 @@ class TaskSupervisor:
                 self._execution_leases.pop(row["task_id"], None)
                 finished = getattr(self.execution_guard, "finished", None)
                 if finished is not None:
-                    finished(TaskSpec.restore(data["spec"]), self.registrations[row["kind"]].definition, state)
+                    entry = self.registrations.get(row["kind"])
+                    if entry is None:
+                        logger.warning(
+                            "[CompanionV2] 任务终止跳过未注册类型的守卫回调 task=%s kind=%s state=%s",
+                            row["task_id"], row["kind"], state,
+                        )
+                    else:
+                        try:
+                            spec = TaskSpec.restore(data["spec"])
+                        except (KeyError, TypeError, ValueError) as error:
+                            logger.warning(
+                                "[CompanionV2] 任务终止跳过损坏规格的守卫回调 task=%s kind=%s state=%s error_type=%s",
+                                row["task_id"], row["kind"], state, type(error).__name__,
+                            )
+                        else:
+                            finished(spec, entry.definition, state)
             return self._row(row["task_id"])
 
     @outcome
@@ -724,6 +739,80 @@ class TaskSupervisor:
                 return self._record(row)
             return self._record(self._change(row, state, reason, self._now()))
 
+    def _recover_row(self, row, now: datetime) -> None:
+        claim = TaskClaim(row["task_id"], row["attempt_id"], row["generation"])
+        attempt = self._attempt(claim)
+        data = json.loads(attempt["record_json"])
+        if data["started_at"] is not None:
+            self._change(row, "uncertain", "worker_lost", now)
+            task_data = json.loads(row["record_json"])
+            definition_data = task_data.get("definition") if isinstance(task_data, dict) else None
+            if isinstance(definition_data, dict) and definition_data.get("side_effect") == SideEffect.NONE.value:
+                data["capacity_release"] = "superseded_read_only_generation"
+                self._save_attempt(attempt, data, release_capacity=True)
+        else:
+            data.update(finished_at=stamp(now), stopped_proof="not_started")
+            self._save_attempt(attempt, data, stopped=True)
+            try:
+                entry, _, _ = self._authorize(row, now)
+                state = "retry_scheduled" if row["attempt_no"] < entry.definition.max_attempts else "dead_letter"
+                reason = "recovered_before_start" if state == "retry_scheduled" else "attempt_budget_exhausted"
+            except TaskError as error:
+                state, reason = "failed", error.code
+            if row["deadline_at"] <= stamp(now):
+                state, reason = "expired", "deadline_before_start"
+            self._change(row, state, reason, now, generation=self.generation, next_run_at=stamp(now))
+
+    def _quarantine_unrecoverable_row(self, row, now: datetime) -> bool:
+        """Persist one corrupt or orphaned task as terminal without aborting recovery."""
+        try:
+            with self.runtime.transaction() as connection:
+                attempt = connection.execute(
+                    "SELECT * FROM execution_attempts WHERE attempt_id = ? AND task_id = ?",
+                    (row["attempt_id"], row["task_id"]),
+                ).fetchone()
+                started = True
+                if attempt is not None:
+                    try:
+                        attempt_data = json.loads(attempt["record_json"])
+                        started = not isinstance(attempt_data, dict) or attempt_data.get("started_at") is not None
+                    except (TypeError, ValueError):
+                        started = True
+                    if not started:
+                        attempt_data.update(finished_at=stamp(now), stopped_proof="not_started")
+                        connection.execute(
+                            "UPDATE execution_attempts SET record_json = ?, slot_held = 0 WHERE attempt_id = ?",
+                            (encode(attempt_data), attempt["attempt_id"]),
+                        )
+                try:
+                    task_data = json.loads(row["record_json"])
+                    if not isinstance(task_data, dict):
+                        task_data = {}
+                except (TypeError, ValueError):
+                    task_data = {}
+                state = "uncertain" if started else "failed"
+                reason = "recovery_corrupt_record"
+                task_data["reason"] = reason
+                updated = connection.execute(
+                    """UPDATE execution_tasks SET revision = revision + 1, state = ?, updated_at = ?,
+                       record_json = ? WHERE task_id = ? AND revision = ?""",
+                    (state, stamp(now), encode(task_data), row["task_id"], row["revision"]),
+                )
+                if updated.rowcount != 1:
+                    return False
+                connection.execute(
+                    "INSERT INTO execution_events VALUES (?, ?, ?, ?, ?)",
+                    (row["task_id"], row["revision"] + 1, state, reason, stamp(now)),
+                )
+                self._execution_leases.pop(row["task_id"], None)
+                return True
+        except Exception as error:
+            logger.error(
+                "[CompanionV2] 隔离损坏任务记录失败 task=%s kind=%s error_type=%s",
+                row["task_id"], row["kind"], type(error).__name__,
+            )
+            return False
+
     @outcome
     def recover(self, *, limit: int = 32) -> tuple[str, ...]:
         """A bounded controller sweep. Never replay work that might have submitted."""
@@ -739,28 +828,21 @@ class TaskSupervisor:
                 (self.generation, stamp(now), limit)).fetchall()
             changed = []
             for row in rows:
-                claim = TaskClaim(row["task_id"], row["attempt_id"], row["generation"])
-                attempt = self._attempt(claim)
-                data = json.loads(attempt["record_json"])
-                if data["started_at"] is not None:
-                    self._change(row, "uncertain", "worker_lost", now)
-                    task_data = json.loads(row["record_json"])
-                    if task_data["definition"]["side_effect"] == SideEffect.NONE.value:
-                        data["capacity_release"] = "superseded_read_only_generation"
-                        self._save_attempt(attempt, data, release_capacity=True)
-                else:
-                    data.update(finished_at=stamp(now), stopped_proof="not_started")
-                    self._save_attempt(attempt, data, stopped=True)
-                    try:
-                        entry, _, _ = self._authorize(row, now)
-                        state = "retry_scheduled" if row["attempt_no"] < entry.definition.max_attempts else "dead_letter"
-                        reason = "recovered_before_start" if state == "retry_scheduled" else "attempt_budget_exhausted"
-                    except TaskError as error:
-                        state, reason = "failed", error.code
-                    if row["deadline_at"] <= stamp(now):
-                        state, reason = "expired", "deadline_before_start"
-                    self._change(row, state, reason, now, generation=self.generation, next_run_at=stamp(now))
-                changed.append(row["task_id"])
+                try:
+                    with self.runtime.transaction():
+                        self._recover_row(row, now)
+                    changed.append(row["task_id"])
+                except Exception as error:
+                    logger.warning(
+                        "[CompanionV2] 恢复单个遗留任务失败，降级标记终态 task=%s kind=%s error_type=%s",
+                        row["task_id"], row["kind"], type(error).__name__,
+                    )
+                    logger.debug(
+                        "[CompanionV2][开发者追踪] 恢复单个遗留任务异常 task=%s kind=%s",
+                        row["task_id"], row["kind"], exc_info=True,
+                    )
+                    if self._quarantine_unrecoverable_row(row, now):
+                        changed.append(row["task_id"])
             return tuple(changed)
 
     @outcome
