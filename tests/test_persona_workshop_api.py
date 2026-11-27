@@ -898,16 +898,23 @@ class WorkshopBackendBugfixTests(PersonaWorkshopFixture):
         draft_json = json.dumps({"sections": {"identity": "指定模型生成"}, "notes": []}, ensure_ascii=False)
         style_json = json.dumps({"text": "清晰短句。", "examples": "好。"}, ensure_ascii=False)
         explicit = NS(
-            provider_config={"id": "custom-workshop-model"},
+            provider_config={"id": "custom-workshop-model", "model": "demo-text-7b"},
             text_chat=AsyncMock(side_effect=[
                 NS(completion_text=draft_json),
                 NS(completion_text=self._tryout_json()),
                 NS(completion_text=style_json),
             ]),
         )
+        non_text = NS(provider_config={"id": "no-text-chat-provider", "model": "embed-only"})
         default_provider = self.controller.session.model.native
         self.controller.native_types = NS(provider=None)
-        self.controller.context.get_all_providers = lambda: [explicit]
+        self.controller.context.get_all_providers = lambda: [explicit, non_text]
+
+        status = await self.get()
+        self.assertEqual(status["status"], "ok", status)
+        providers = status["data"]["providers"]
+        self.assertEqual([item["id"] for item in providers], ["custom-workshop-model"])
+        self.assertEqual(providers[0]["model"], "demo-text-7b")
 
         with patch.object(default_provider, "text_chat", AsyncMock(side_effect=AssertionError("should not use default"))):
             r1 = await self.post_standardize({

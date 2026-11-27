@@ -51,7 +51,12 @@ from companion_v2.relationships.profile import (FIELD_LIMITS as RELATIONSHIP_PRO
 from companion_v2.relationships.profile_drafts import (build_relationship_profile_prompt,
     parse_relationship_profile_draft)
 
-from .bootstrap_provider import provider_identifier, supported_text_provider, text_provider_predicate
+from .bootstrap_provider import (
+    provider_identifier,
+    supported_text_provider,
+    text_provider_catalog,
+    text_provider_predicate,
+)
 from .management_identity import dashboard_operator
 from .legacy_config import find_v1_data_root, read_v1_host_configuration, v1_setting
 from .persona_catalog import available_personas, persona_choices
@@ -464,17 +469,30 @@ class PersonaWorkshopWebAPI:
         return self._workshop_for(controller.runtime, session, controller.now)
 
     @staticmethod
-    def _provider_for_id(controller, provider_id):
+    def _loaded_text_providers(controller):
+        expected_type = text_provider_predicate(getattr(controller, "native_types", None))
+        loaded = {}
+        for provider in list(controller.context.get_all_providers() or []):
+            try:
+                if expected_type is not None and not supported_text_provider(provider, expected_type):
+                    continue
+                if not callable(getattr(provider, "text_chat", None)):
+                    continue
+                identifier = provider_identifier(provider)
+                if identifier:
+                    loaded[identifier] = provider
+            except Exception:
+                continue
+        return loaded, expected_type
+
+    @classmethod
+    def _provider_for_id(cls, controller, provider_id):
         provider_id = provider_id.strip() if isinstance(provider_id, str) else ""
         if not provider_id:
             return None
-        expected_type = text_provider_predicate(getattr(controller, "native_types", None))
-        for provider in list(controller.context.get_all_providers() or []):
-            if expected_type is not None and not supported_text_provider(provider, expected_type):
-                continue
-            identifier = provider_identifier(provider)
-            if identifier == provider_id and callable(getattr(provider, "text_chat", None)):
-                return provider
+        loaded, _ = cls._loaded_text_providers(controller)
+        if provider_id in loaded:
+            return loaded[provider_id]
         raise TaskError("role_profile_model_unavailable", "the selected provider is not loaded")
 
     @staticmethod
@@ -576,8 +594,11 @@ class PersonaWorkshopWebAPI:
                 controller.context, [item["value"] for item in choices], active_id=snapshot.persona_id
             )
             try:
-                from .model_api import text_provider_catalog
-                providers = text_provider_catalog(controller)
+                loaded, expected_type = self._loaded_text_providers(controller)
+                providers = [
+                    item for item in text_provider_catalog(controller.context, expected_type)
+                    if item["id"] in loaded
+                ]
             except Exception:
                 providers = []
             state["providers"] = providers

@@ -17,44 +17,7 @@ _FENCE_BLOCK = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL | re.IGNORECAS
 _RESPONSE_KEYS = frozenset({"reply", "options", "confirmed", "stage", "draft", "lorebook"})
 
 
-def _extract_json_objects(text: str) -> list[str]:
-    """Find balanced top-level {...} slices without breaking on braces inside JSON strings."""
-    candidates = []
-    length = len(text)
-    index = 0
-    while index < length:
-        start = text.find("{", index)
-        if start < 0:
-            break
-        depth = 0
-        in_string = False
-        escaped = False
-        end = -1
-        for pos in range(start, length):
-            ch = text[pos]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-            else:
-                if ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = pos
-                        break
-        if end >= start:
-            candidates.append(text[start:end + 1])
-            index = end + 1
-        else:
-            break
-    return candidates
+MAX_JSON_DECODE_ATTEMPTS = 256
 
 
 def _decode_response_object(raw: str) -> dict:
@@ -69,6 +32,7 @@ def _decode_response_object(raw: str) -> dict:
     def reject_nonfinite(_token):
         raise ValueError("invalid number")
 
+    decoder = json.JSONDecoder(object_pairs_hook=unique, parse_constant=reject_nonfinite)
     text = raw.strip()
     search_spaces = []
     for match in _FENCE_BLOCK.finditer(text):
@@ -77,21 +41,29 @@ def _decode_response_object(raw: str) -> dict:
             search_spaces.append(inner)
     search_spaces.append(text)
 
-    seen = set()
+    seen_spaces = set()
     last_error = None
     for space in search_spaces:
-        for candidate in _extract_json_objects(space):
-            if candidate in seen:
-                continue
-            seen.add(candidate)
+        if space in seen_spaces:
+            continue
+        seen_spaces.add(space)
+        pos = 0
+        attempts = 0
+        while attempts < MAX_JSON_DECODE_ATTEMPTS:
+            start = space.find("{", pos)
+            if start < 0:
+                break
+            attempts += 1
             try:
-                parsed = json.loads(candidate, object_pairs_hook=unique, parse_constant=reject_nonfinite)
+                parsed, _end = decoder.raw_decode(space, start)
             except json.JSONDecodeError as error:
                 last_error = error
+                pos = start + 1
                 continue
             if type(parsed) is dict:
                 return parsed
             last_error = ValueError("response is not a JSON object")
+            pos = start + 1
     if last_error is not None:
         raise last_error
     raise ValueError("no JSON object found")

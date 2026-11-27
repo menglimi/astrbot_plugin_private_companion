@@ -102,6 +102,23 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(parsed_partial["lorebook"], "已有背景")
         self.assertEqual(parsed_partial["options"], ["继续聊口吻", "生成初稿", "调整反差"])
 
+        # 4. Leading chatter with unclosed '{' or bare '"' inside non-JSON braces still extracts the real JSON
+        unclosed_chatter = '思考：{这里忘记闭合了\n{"reply": "你好，今天想聊什么？", "stage": "positioning"}'
+        parsed_unclosed = model_response(unclosed_chatter)
+        self.assertEqual(parsed_unclosed["reply"], "你好，今天想聊什么？")
+        self.assertEqual(parsed_unclosed["stage"], "positioning")
+
+        bare_quote_chatter = '好的，按{注意"口吻}来写：{"reply": "你好", "stage": "positioning"}'
+        parsed_quote = model_response(bare_quote_chatter)
+        self.assertEqual(parsed_quote["reply"], "你好")
+        self.assertEqual(parsed_quote["stage"], "positioning")
+
+        # 5. Outermost valid JSON containing unauthorized keys (e.g. apply) must be rejected, never skipped for nested JSON
+        nested_apply = '{"apply": true, "nested": {"reply": "你好", "stage": "positioning"}}'
+        with self.assertRaises(TaskError) as raised:
+            model_response(nested_apply)
+        self.assertEqual(raised.exception.code, "persona_designer_response_invalid")
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
