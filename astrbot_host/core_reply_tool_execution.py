@@ -368,8 +368,9 @@ class CoreReplyToolExecutor:
                 if artifact_ids:
                     clean["artifact_ids"] = artifact_ids
                 clean["status_summary"] = (
-                    f"图片已成功生成并缓存（共 {image_count} 张）。请勿重复调用生图工具；"
-                    "如需发送给当前会话，请直接把缓存路径传给 send_message_to_user。"
+                    f"图片生成成功（共 {image_count} 张），本回执尚未确认投递。请勿重复调用生图工具。"
+                    "用户明确索图且图片符合请求时，请在最终回复前用 send_message_to_user 投递工具给出的缓存原件。"
+                    "仍未投递时，请说明实际原因，避免只回复配文。"
                 )
             return clean
         return result

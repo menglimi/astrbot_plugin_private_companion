@@ -2359,9 +2359,12 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_agent_done()
     async def observe_companion_core_agent_done(self, event: AstrMessageEvent, run_context, response):
+        from .astrbot_host.core_reply_image_delivery import complete_generated_image_delivery
+        from .astrbot_host.core_reply_tool_dispatch import active_core_runner
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
+        await complete_generated_image_delivery(event, response, runner=active_core_runner(event, run_context))
         await close_core_reply_turn(event, response, release=True)
         close_core_reply_tool_guard(event, run_context)
         restore_core_tool_dispatch(event, run_context)

@@ -782,8 +782,11 @@ class CoreReplyToolSession:
                         await prepare_native_input_images(self, wrapper)
                 if action in ("reality.camera.observe", "content.work.create", "content.work.save_candidate"):
                     await self.wait_source()
-                result = await executor_for(self.application).execute(
-                    self, native_call_id(wrapper, action, arguments), action, arguments)
+                call_id = native_call_id(wrapper, action, arguments)
+                if action == "qzone.post.publish":
+                    from .core_reply_image_delivery import observe_generated_image_publication
+                    observe_generated_image_publication(self, arguments)
+                result = await executor_for(self.application).execute(self, call_id, action, arguments)
             elif offered.owner == "authoring":
                 from .core_reply_authoring import execute_core_authoring
                 result = await execute_core_authoring(self, wrapper, native_call_id(wrapper, action, arguments),
@@ -842,6 +845,9 @@ class CoreReplyToolSession:
             await self.authorize(wrapper)
             images = result.pop("_images", ())
             if images:
+                if offered.owner == "external" and action in IMAGE_ACTIONS and result.get("state") == "succeeded":
+                    from .core_reply_image_delivery import offer_generated_images
+                    offer_generated_images(self, native_tool_name(action), call_id, result.get("artifact_ids", ()))
                 return CallToolResult(content=[TextContent(type="text", text=encode(result)),
                     *(ImageContent(type="image", data=native_image_data(image), mimeType=image.descriptor.mime_type)
                       for image in images)])
