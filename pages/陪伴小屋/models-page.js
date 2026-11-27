@@ -2045,7 +2045,7 @@ window.CompanionModelsPage = (() => {
   function layaField(l, key, label, hint, type = "text", badge = "", extraClass = "") {
     const value = l.draft?.[key] ?? "", disabled = l.loading || l.busy;
     const cls = `model-fd model-laya-fd${extraClass ? " " + extraClass : ""}`;
-    if (type === "bool") return `<label class="${cls}"><span class="model-laya-label"><span>${label}</span>${badge}</span><div class="model-laya-control"><label class="model-switch"><input type="checkbox" data-laya-field="${key}" ${value ? "checked" : ""} ${disabled ? "disabled" : ""}><i></i></label></div>${hint ? `<small class="model-laya-help">${hint}</small>` : ""}</label>`;
+    if (type === "bool") return `<label class="${cls}"><span class="model-laya-label"><span>${label}</span>${badge}</span><div class="model-laya-control"><span class="model-switch"><input type="checkbox" data-laya-field="${key}" ${value ? "checked" : ""} ${disabled ? "disabled" : ""}><i></i></span></div>${hint ? `<small class="model-laya-help">${hint}</small>` : ""}</label>`;
     return `<label class="${cls}"><span class="model-laya-label"><span>${label}</span>${badge}</span><div class="model-laya-control"><input type="${type}" data-laya-field="${key}" value="${esc(value)}" ${disabled ? "disabled" : ""}></div>${hint ? `<small class="model-laya-help">${hint}</small>` : ""}</label>`;
   }
   function layaPercentField(l, key, label, hint) {
@@ -2188,7 +2188,7 @@ window.CompanionModelsPage = (() => {
             <button type="button" class="button small" data-laya-refresh ${disabled ? "disabled" : ""}>刷新</button>
           </div>
         </div>
-        <div class="model-kpis model-laya-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(modeKpi, "接入模式", gpuUnavailable ? "r" : "")}${kpi(esc(activeModelKpi), activeModelLabel)}${kpi(esc(perfKpi.value), perfKpi.label, perfKpi.tone)}</div>
+        <div class="model-kpis model-laya-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(esc(modeKpi), "接入模式", gpuUnavailable ? "r" : "")}${kpi(esc(activeModelKpi), activeModelLabel)}${kpi(esc(perfKpi.value), perfKpi.label, perfKpi.tone)}</div>
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「OpenAI 兼容网关」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
@@ -2231,13 +2231,22 @@ window.CompanionModelsPage = (() => {
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">调用预览</span><h3>测试一次语义决策</h3></div></div><label class="model-fd"><span class="model-cap">测试消息<em>只提交这段文字与固定的文本类型事实</em></span><textarea data-laya-preview rows="4" ${disabled ? "disabled" : ""}>${esc(l.previewText || "")}</textarea></label><div class="model-editor-actions"><button type="button" class="button primary" data-laya-decide ${disabled || !l.data.enabled ? "disabled" : ""}>调用 Laya</button></div>${l.preview ? layaResult(l.preview) : ""}</div>
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">${l.logsUnavailable ? "当前会话" : isGroupLaya(s) ? "本群运行记录 · 最近 50 条" : l.logsScope === "current" ? "当前会话 · 最近 50 条" : "全部来源 · 最近 50 条"}</span><h3>Laya 调用日志</h3></div>${isGroupLaya(s) ? "" : `<div class="model-st2"><div class="model-seg" role="group" aria-label="日志来源筛选"><button type="button" class="${(l.logsScope || "all") === "all" ? "on" : ""}" data-laya-logs-scope="all" aria-pressed="${(l.logsScope || "all") === "all"}" ${l.loading || l.logsLoading ? "disabled" : ""}>全部来源</button><button type="button" class="${l.logsScope === "current" ? "on" : ""}" data-laya-logs-scope="current" aria-pressed="${l.logsScope === "current"}" ${l.loading || l.logsLoading ? "disabled" : ""}>仅当前会话</button></div></div>`}</div>${layaHistoryMarkup(l)}</div>
     </div>`; }
+  function layaSyncSaveButton(l) {
+    const saveBtn = root?.querySelector?.("[data-laya-save]");
+    if (saveBtn) saveBtn.disabled = !layaDirty(l) || l.loading || l.busy || l.stale;
+  }
   function layaInput(s, event) { const l = s.laya, t = event.target;
     if (event.type === "change" && t.matches("[data-laya-target]")) {
       const product = window.CompanionProduct, roleId = product?.selection?.()?.role_id;
       if (roleId) void product.choose(t.value, roleId);
       return; }
     if (t.matches("[data-laya-preview]")) { l.previewText = t.value; return; }
-    if (t.matches("[data-laya-decision]") && l.draft) { l.draft.decision_fields[t.dataset.layaDecision] = t.checked; if (event.type === "change") { l.bad = false; render(); } return; }
+    if (t.matches("[data-laya-decision]") && l.draft) {
+      l.draft.decision_fields[t.dataset.layaDecision] = t.checked;
+      layaSyncSaveButton(l);
+      if (event.type === "change") { l.bad = false; render(); }
+      return;
+    }
     const rangeKey = t.dataset?.layaRange;
     if (rangeKey && l.draft && !l.loading && !l.busy) {
       const clamped = Math.max(0, Math.min(100, Number.isFinite(Number(t.value)) ? Math.round(Number(t.value)) : 0));
@@ -2246,6 +2255,7 @@ window.CompanionModelsPage = (() => {
       if (numEl && String(numEl.value) !== String(clamped)) numEl.value = String(clamped);
       const pillEl = root?.querySelector?.(`[data-laya-rec="${rangeKey}"]`);
       if (pillEl) pillEl.textContent = clamped > 0 ? `${clamped}% · 推荐 40–55%` : "已关闭 · 推荐 40–55%";
+      layaSyncSaveButton(l);
       if (event.type === "change") { l.bad = false; render(); }
       return;
     }
@@ -2264,6 +2274,7 @@ window.CompanionModelsPage = (() => {
     // request_format only applies to the remote slot; a hidden cloudflare
     // value would otherwise follow the user into the next mode.
     if (key === "mode" && value !== "remote") l.draft.request_format = "native";
+    layaSyncSaveButton(l);
     if (event.type === "change") { l.bad = false; render(); } }
   function layaClick(s, event) { const t = event.target;
     if (t.closest("[data-laya-refresh]")) { layaRefresh(s); return; }

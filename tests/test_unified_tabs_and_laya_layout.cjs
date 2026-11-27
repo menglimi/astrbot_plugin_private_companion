@@ -9,7 +9,47 @@ const PAGE = path.resolve(__dirname, "../pages/陪伴小屋");
 const readPage = name => fs.readFileSync(path.join(PAGE, name), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-test("全站 6 套主题均声明完整玉露柔边标签页令牌且主/次标签栏全部接入", () => {
+function hexToRgb(hex) {
+  const clean = hex.trim().replace(/^#/, "");
+  const full = clean.length === 3 ? clean.split("").map(c => c + c).join("") : clean;
+  return [
+    parseInt(full.slice(0, 2), 16),
+    parseInt(full.slice(2, 4), 16),
+    parseInt(full.slice(4, 6), 16),
+  ];
+}
+
+function resolveColor(expr, vars) {
+  const value = expr.trim();
+  if (value.startsWith("#")) return hexToRgb(value);
+  const varMatch = /^var\((--[a-z0-9-]+)\)$/.exec(value);
+  if (varMatch && vars.has(varMatch[1])) return resolveColor(vars.get(varMatch[1]), vars);
+  const mixMatch = /^color-mix\(in srgb,\s*([^,]+?)\s+(\d+(?:\.\d+)?)%,\s*(.+)\)$/.exec(value);
+  if (mixMatch) {
+    const a = resolveColor(mixMatch[1], vars);
+    const pct = Number(mixMatch[2]) / 100;
+    const b = resolveColor(mixMatch[3], vars);
+    return a.map((channel, idx) => channel * pct + b[idx] * (1 - pct));
+  }
+  throw new Error(`Unsupported color expression: ${expr}`);
+}
+
+function relativeLuminance([r, g, b]) {
+  const lin = [r, g, b].map(v => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+
+function contrastRatio(rgbA, rgbB) {
+  const l1 = relativeLuminance(rgbA);
+  const l2 = relativeLuminance(rgbB);
+  const [hi, lo] = l1 >= l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test("全站 6 套主题均声明完整标签页语义令牌、满足 WCAG AA 对比度且主/次标签栏全部接入", () => {
   const tokens = readPage("tokens.css");
   const expectedPerTheme = [
     "--t-tab-track",
@@ -25,15 +65,24 @@ test("全站 6 套主题均声明完整玉露柔边标签页令牌且主/次标�
       .filter(([, sel]) => sel.includes(`data-theme="${theme}"`))
       .map(([, , content]) => content)
       .join("\n");
-    for (const token of expectedPerTheme) {
-      assert.ok(body.includes(`${token}:`), `${theme} 主题缺少 ${token}`);
+    const vars = new Map();
+    for (const [, k, v] of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+      vars.set(k.trim(), v.trim());
     }
+    for (const token of expectedPerTheme) {
+      assert.ok(vars.has(token), `${theme} 主题缺少 ${token}`);
+    }
+    const ratio = contrastRatio(
+      resolveColor(vars.get("--t-tab-active-fg"), vars),
+      resolveColor(vars.get("--t-tab-active-bg"), vars),
+    );
+    assert.ok(ratio >= 4.5, `${theme} 主题激活标签对比度过低：${ratio.toFixed(2)}:1`);
   }
   assert.match(tokens, /--t-tab-radius:\s*var\(--r-sm\)/);
   assert.match(tokens, /--t-tab-track-radius:\s*var\(--r-md\)/);
   assert.match(tokens, /--t-tab-ease:\s*cubic-bezier\(0\.22,1,0\.36,1\)/);
 
-  // 4 大主顶栏 + 4 处次级筛选胶囊统一采用玉露柔边激活态，不再使用深绿实心 --t-accent-solid
+  // 主顶栏与次级筛选胶囊统一采用柔边激活态令牌，不再使用厚重实心 --t-accent-solid
   const hubCss = readPage("learning-hub.css");
   assert.match(hubCss, /\.learning-hub-tab\{[^}]*border-radius:var\(--t-tab-radius\)/);
   assert.match(hubCss, /\.learning-hub-tab\.is-active,\.learning-hub-tab\.is-active:hover\{[^}]*background:var\(--t-tab-active-bg\)/);
@@ -54,14 +103,14 @@ test("全站 6 套主题均声明完整玉露柔边标签页令牌且主/次标�
   const pricingCss = readPage("pricing-workbench.css");
   assert.match(pricingCss, /\.pw-day-pill\.on\s*\{[^}]*background:\s*var\(--t-tab-active-bg\)/);
 
-  // 清理掉 learning-page.css 重复定义 & semantic-page.css 死代码
+  // 清理 learning-page.css 重复定义与 semantic-page.css 旧深色死代码
   const learningPageCss = readPage("learning-page.css");
   assert.doesNotMatch(learningPageCss, /\.learning-hub-nav\s*\{/);
   const semanticCss = readPage("semantic-page.css");
   assert.doesNotMatch(semanticCss, /\.perception-config-nav button\.active\s*\{/);
 });
 
-test("模型与连接顶栏锚定在首行且采用双区均衡布局，Laya 页面按分组对齐并支持滑块调优", async () => {
+test("模型与连接顶栏锚定在首行并均衡分组，Laya 页面分组对齐且实时输入同步解锁保存按钮", async () => {
   const requests = [];
   const store = new Map();
   const window = {
@@ -87,17 +136,28 @@ test("模型与连接顶栏锚定在首行且采用双区均衡布局，Laya 页
   vm.runInNewContext(readPage("models-page.js"), {window, crypto: window.crypto, AbortController, setTimeout, clearTimeout});
 
   const handlers = {};
+  const saveBtnStub = {disabled: true};
+  const numInputStub = {value: "45"};
+  const rangeInputStub = {value: "45"};
+  const recPillStub = {textContent: ""};
   const node = {
     isConnected: true,
     innerHTML: "",
     addEventListener(type, fn) { handlers[type] = fn; },
     removeEventListener(type) { delete handlers[type]; },
-    querySelector() { return null; },
+    querySelector(sel) {
+      if (sel === "[data-laya-save]") return saveBtnStub;
+      if (sel === '[data-laya-field="followup_confidence_threshold"]') return numInputStub;
+      if (sel === '[data-laya-range="followup_confidence_threshold"]') return rangeInputStub;
+      if (sel === '[data-laya-rec="followup_confidence_threshold"]') return recPillStub;
+      return null;
+    },
     querySelectorAll() { return []; },
     fire(type, selector, dataset) {
       handlers[type]({
         type,
         target: {
+          type: dataset?.inputType || "text",
           dataset: dataset || {},
           value: dataset?.value,
           checked: dataset?.checked,
@@ -117,7 +177,7 @@ test("模型与连接顶栏锚定在首行且采用双区均衡布局，Laya 页
   });
   await flush();
 
-  // #6: tabBar 始终排在 semanticBanner 之前，且拆为 is-primary / is-ops 无突兀竖线
+  // 模型顶栏锚定在提示条之前，分组采用双区均衡排布且不含突兀短竖线
   const tabsIdx = node.innerHTML.indexOf("data-model-tabs-wrap");
   const bannerIdx = node.innerHTML.indexOf("打开向量模型配置");
   assert.ok(tabsIdx >= 0 && bannerIdx > tabsIdx, "tabBar 必须位于功能模型提示条之前以固定顶部锚点");
@@ -125,7 +185,7 @@ test("模型与连接顶栏锚定在首行且采用双区均衡布局，Laya 页
   assert.match(node.innerHTML, /model-tabs-group is-ops/);
   assert.doesNotMatch(node.innerHTML, /model-tabs-sep/);
 
-  // #10: 切换 Laya，验证页头总开关、折叠引导、4 张高价值状态卡（含生效模型名与近期表现）与滑块联动
+  // 切换 Laya，验证页头总开关、折叠引导、4 张高价值状态卡（含生效模型名与近期表现）与滑块联动
   node.fire("click", "[data-model-tab]", {modelTab: "laya"});
   requests.find(r => r.route === "model/laya").resolve({
     enabled: true,
@@ -155,11 +215,23 @@ test("模型与连接顶栏锚定在首行且采用双区均衡布局，Laya 页
   assert.match(node.innerHTML, /100% · 140 ms/);
   assert.match(node.innerHTML, /class="model-laya-presets"[\s\S]*data-laya-preset="laya"/);
   assert.match(node.innerHTML, /data-laya-range="followup_confidence_threshold"/);
+  assert.doesNotMatch(node.innerHTML, /<label[^>]*>[\s\S]*?<label class="model-switch"/);
 
-  // 拖动滑块可正确更新草稿并标脏
-  node.fire("change", "[data-laya-range]", {layaRange: "followup_confidence_threshold", value: "52"});
+  // 实时 input（未触发 change）即刻解锁「保存 Laya 配置」并同步数字框与提示胶囊
+  saveBtnStub.disabled = true;
+  node.fire("input", "[data-laya-range]", {layaRange: "followup_confidence_threshold", value: "52"});
+  assert.equal(saveBtnStub.disabled, false, "实时拖动滑块时应立即解锁保存按钮");
+  assert.equal(numInputStub.value, "52");
+  assert.equal(recPillStub.textContent, "52% · 推荐 40–55%");
+
+  // 恢复原值时再次锁定保存按钮
+  node.fire("input", "[data-laya-range]", {layaRange: "followup_confidence_threshold", value: "45"});
+  assert.equal(saveBtnStub.disabled, true, "回到原始未改动值时应重新禁用保存按钮");
+
+  // 文本输入框实时 input 同样立即解锁保存按钮
+  node.fire("input", "[data-laya-field]", {layaField: "remote_model", value: "NeoHorse-Jev-4B-v2"});
+  assert.equal(saveBtnStub.disabled, false, "实时编辑文本字段时应立即解锁保存按钮");
   assert.equal(window.CompanionModelsPage.isDirty(), true);
-  assert.match(node.innerHTML, /52% · 推荐 40–55%/);
 
   window.CompanionModelsPage.unmount();
 });
