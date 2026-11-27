@@ -5,6 +5,10 @@ from zoneinfo import ZoneInfo
 
 from companion_v2.conversation.date_context import (
     FIXED_HOLIDAYS,
+    _LUNAR_DAYS,
+    _LUNAR_MONTHS,
+    _personal_date_label,
+    _personal_date_spec,
     lunar_date_parts,
     project_personal_dates,
 )
@@ -44,6 +48,25 @@ def _gregorian_days_until(day, month, day_of_month):
         if ahead >= 0:
             return ahead
     return None
+
+
+def _lunar_days_until(day, month, day_of_month, leap_month=False):
+    """Whole days from ``day`` to the next lunar occurrence within ~420 days, or None."""
+    if lunar_date_parts(day) is None:
+        return None
+    target = (month, day_of_month, bool(leap_month))
+    for offset in range(420):
+        candidate = day + timedelta(days=offset)
+        lunar = lunar_date_parts(candidate)
+        if lunar is not None and (lunar[1], lunar[2], lunar[3]) == target:
+            return offset
+    return None
+
+
+def _format_configured_date_text(calendar, month, day_of_month, leap_month=False):
+    if calendar == "lunar" and 1 <= month <= len(_LUNAR_MONTHS) and 1 <= day_of_month <= len(_LUNAR_DAYS):
+        return f"农历{'闰' if leap_month else ''}{_LUNAR_MONTHS[month - 1]}{_LUNAR_DAYS[day_of_month - 1]}"
+    return f"{month}月{day_of_month}日"
 
 
 class DateContactEvents:
@@ -257,6 +280,77 @@ class DateContactEvents:
             seen.add(key)
             unique.append(row)
         return tuple(unique)
+
+    def configured_summary(self, context, preferences, at, *, lookahead_days=None):
+        """Return all configured personal/custom/anniversary dates with year-round countdowns."""
+        zone = ZoneInfo(preferences.values["quiet_timezone"])
+        if lookahead_days is None:
+            lookahead_days = int(preferences.values.get("important_date_lookahead_days") or 0)
+        local_day = at.astimezone(zone).date()
+        items = []
+
+        def _append_item(label, calendar, month, day_num, leap, *, source, basis):
+            if calendar == "lunar":
+                days_until = _lunar_days_until(local_day, month, day_num, leap)
+            else:
+                days_until = _gregorian_days_until(local_day, month, day_num)
+            next_date = (local_day + timedelta(days=days_until)).isoformat() if days_until is not None else ""
+            items.append({
+                "label": label,
+                "date_text": _format_configured_date_text(calendar, month, day_num, leap),
+                "date": next_date,
+                "calendar": calendar,
+                "source": source,
+                "basis": basis,
+                "days_until": days_until,
+            })
+
+        role_birthday, user_birthday = self._profile_values(context, at)
+        for raw, default_label, source, basis in (
+            (role_birthday, "角色生日", "角色档案", "profile_role_birthday"),
+            (user_birthday, "对方生日", "私聊资料", "profile_relationship_date"),
+        ):
+            parsed = _personal_date_spec(raw)
+            if parsed is None:
+                continue
+            calendar, month, day_num, leap = parsed
+            _append_item(_personal_date_label(raw, default_label), calendar, month, day_num, leap,
+                         source=source, basis=basis)
+
+        try:
+            configured = important_dates(preferences.values.get("important_dates", "[]"))
+        except (TypeError, ValueError):
+            configured = ()
+        for item in configured:
+            basis = ("operator_configured_lunar_date" if item.calendar == "lunar"
+                     else "operator_configured_recurring_date")
+            _append_item(item.label, item.calendar, item.month, item.day, item.leap_month,
+                         source="自定义重要日期", basis=basis)
+
+        for row in relationship_anniversaries.list_active(self.runtime, context):
+            _append_item(row["label"], "gregorian", row["month"], row["day"], False,
+                         source="反思纪念日", basis="auto_relationship_anniversary")
+
+        deduped, seen = [], set()
+        for entry in sorted(items, key=lambda item: (
+            item["days_until"] is None,
+            item["days_until"] if item["days_until"] is not None else 99999,
+            item["label"],
+            item["source"],
+        )):
+            key = (entry["basis"], entry["label"], entry["date_text"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(entry)
+
+        next_upcoming = next((item for item in deduped if type(item.get("days_until")) is int), None)
+        return {
+            "configured_count": len(deduped),
+            "configured_items": deduped,
+            "next_upcoming": next_upcoming,
+            "lookahead_days": int(lookahead_days),
+        }
 
     def validate(self, context, marker, at):
         if type(marker) is not dict or set(marker) != {

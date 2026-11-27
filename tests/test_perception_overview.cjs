@@ -986,3 +986,151 @@ test("overview shows parallel web exploration alongside AI daily RSS without con
   assert.match(page.page.preview("ext-external"), /并行启用 · AstrBot 网页搜索 · 已记 2 条笔记/);
   page.page.unmount();
 });
+
+test("four-state model classifies camera, screen, recalls, and mihome accurately without false pending or off", async () => {
+  const page = harness({recallEnabled:true, recallEntries:[]});
+  // Override runtime to test: camera disabled, screen empty, recalls enabled+0.
+  page.runtime.camera = {state:"disabled", reason:"camera_disabled", enabled:false};
+  page.runtime.screen = {state:"empty"};
+  // Override extensions bridge to return 0 mapped MiHome devices while enabled.
+  const origBridge = page.product.bridgeNow;
+  page.product.bridgeNow = () => {
+    const b = origBridge();
+    return {
+      ...b,
+      apiGet: async (route, query) => {
+        if (route === "extensions") {
+          return {extensions:{reality:{settings:{enabled:true,mihome:{enabled:true}},management:{mihome:{
+            tool_settings:{enable_readonly_tool:true},snapshot_at:"2026-10-01 17:55",devices:[]}}}}};
+        }
+        return b.apiGet(route, query);
+      },
+    };
+  };
+  page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+
+  const html = page.root.innerHTML;
+  const card = id => html.match(new RegExp(`<button[^>]*id="perception-channel-${id}"[\\s\\S]*?<\\/button>`))?.[0] || "";
+  assert.match(card("device-camera"), /is-off/);
+  assert.match(card("device-camera"), /已关闭/);
+  assert.doesNotMatch(card("device-camera"), /is-pending/);
+
+  assert.match(card("device-screen"), /is-standby/);
+  assert.match(card("device-screen"), /已就绪·暂无解读/);
+
+  assert.match(card("device-recalls"), /is-standby/);
+  assert.match(card("device-recalls"), /已开启·暂无撤回/);
+  assert.doesNotMatch(card("device-recalls"), /is-off/);
+
+  assert.match(card("device-mihome"), /is-standby/);
+  assert.match(card("device-mihome"), /已开启·未映射设备/);
+  assert.doesNotMatch(card("device-mihome"), /is-pending/);
+
+  // Now switch camera to enabled + awaiting request -> standby (not pending).
+  page.runtime.camera = {state:"ready", reason:"no_recent_observation", enabled:true};
+  await page.page.refresh();
+  const cameraStandby = page.root.innerHTML.match(/<button[^>]*id="perception-channel-device-camera"[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(cameraStandby, /is-standby/);
+  assert.match(cameraStandby, /已开启·待命/);
+
+  // Camera missing consent -> pending.
+  page.runtime.camera = {state:"blocked", reason:"camera_consent_missing", enabled:true};
+  await page.page.refresh();
+  const cameraPending = page.root.innerHTML.match(/<button[^>]*id="perception-channel-device-camera"[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(cameraPending, /is-pending/);
+  assert.match(cameraPending, /需授权/);
+  assert.match(cameraPending, /等待此私聊授权/);
+  page.page.unmount();
+});
+
+test("top summary pills open a compact popover and jump directly to matching perception items", async () => {
+  const page = harness({recallEnabled:true, recallEntries:[]});
+  page.runtime.screen = {state:"empty"};
+  page.runtime.camera = {state:"disabled", reason:"camera_disabled", enabled:false};
+  page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.match(page.root.innerHTML, /data-summary-state="standby"/);
+  assert.match(page.root.innerHTML, /data-summary-state="pending"/);
+  assert.match(page.root.innerHTML, /data-summary-state="off"/);
+  assert.doesNotMatch(page.root.innerHTML, /id="perception-summary-popover"/);
+
+  const click = (selector, dataset) => page.root.handlers.click({target:{closest(value) {
+    return value === selector ? {dataset} : null;
+  }}});
+
+  // Click standby pill -> opens popover listing screen & recalls.
+  click("[data-summary-state]", {summaryState:"standby"});
+  assert.match(page.root.innerHTML, /id="perception-summary-popover"/);
+  assert.match(page.root.innerHTML, /已开待命/);
+  assert.match(page.root.innerHTML, /data-summary-jump="device-screen"/);
+  assert.match(page.root.innerHTML, /data-summary-jump="device-recalls"/);
+
+  // Clicking jump activates the target item and closes the popover.
+  click("[data-board-goto]", {
+    boardGoto:"config-device:perception-detail-screen",
+    boardSingle:"true",
+    perceptionItem:"device-screen",
+    itemTitle:"识屏",
+    summaryJump:"device-screen",
+  });
+  assert.doesNotMatch(page.root.innerHTML, /id="perception-summary-popover"/);
+  assert.equal(page.tabActivations.at(-1)[1].itemId, "device-screen");
+
+  // Open off pill and close with close button.
+  click("[data-summary-state]", {summaryState:"off"});
+  assert.match(page.root.innerHTML, /data-summary-jump="device-camera"/);
+  click("[data-summary-close]", {});
+  assert.doesNotMatch(page.root.innerHTML, /id="perception-summary-popover"/);
+  page.page.unmount();
+});
+
+test("important dates card distinguishes year-round configured dates from unconfigured empty state", async () => {
+  const page = harness({contactDates:[], contactLookaheadDays:7});
+  page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+
+  // Configured dates exist outside the 7-day lookahead window -> standby + countdown, never off.
+  page.emit({
+    ...page.snapshot,
+    contact: {
+      ...page.snapshot.contact,
+      dates: "[]",
+      lookaheadDays: 7,
+      lookahead_days: 7,
+      configured_count: 2,
+      configured_items: [
+        {label:"角色生日", date_text:"11月15日", source:"角色档案", days_until:45, calendar:"gregorian"},
+        {label:"相识纪念日", date_text:"12月20日", source:"自定义重要日期", days_until:80, calendar:"gregorian"},
+      ],
+      next_upcoming: {label:"角色生日", date_text:"11月15日", source:"角色档案", days_until:45, calendar:"gregorian"},
+    },
+  });
+  const datesCard = page.root.innerHTML.match(/<button[^>]*id="perception-channel-env-dates"[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(datesCard, /is-standby/);
+  assert.match(datesCard, /已配置 2 项/);
+  assert.match(datesCard, /近 7 天无节日 · 下一项：角色生日（45 天后）/);
+  const datesPreview = page.page.preview("env-dates");
+  assert.match(datesPreview, /角色生日/);
+  assert.match(datesPreview, /相识纪念日/);
+  assert.match(datesPreview, /角色档案 · 11月15日 · 45 天后/);
+
+  // Truly zero configured dates -> off + 未配置.
+  page.emit({
+    ...page.snapshot,
+    contact: {
+      ...page.snapshot.contact,
+      dates: "[]",
+      lookaheadDays: 7,
+      lookahead_days: 7,
+      configured_count: 0,
+      configured_items: [],
+      next_upcoming: null,
+    },
+  });
+  const emptyCard = page.root.innerHTML.match(/<button[^>]*id="perception-channel-env-dates"[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(emptyCard, /is-off/);
+  assert.match(emptyCard, /未配置/);
+  page.page.unmount();
+});

@@ -36,10 +36,59 @@ window.CompanionSemanticPage = (() => {
     semantic_vision_provider_unavailable:"当前没有可用的视觉模型，请先核对支持识图的模型配置。",
     semantic_provider_unavailable:"当前没有可用的语义模型，请先核对模型服务配置。",
     image_read_failed:"本地图片读取失败，请重新选择文件后重试。",
+    TimeoutError:"视觉或语义模型响应超时，可调大超时秒数或改用 Flash 等快速非思考视觉模型。",
+    ReadTimeout:"上游模型响应超时，请稍后重试或改用更快的视觉模型。",
+    ConnectTimeout:"连接模型服务超时，请检查网络与代理设置。",
+    APITimeoutError:"模型接口请求超时，可调大超时秒数或改用更快的非思考视觉模型。",
+    APIConnectionError:"无法连接上游模型接口，请检查网络、代理与接口地址。",
+    JSONDecodeError:"模型未返回有效的 JSON 格式，请核对视觉模型兼容性或切换模型。",
+    ValueError:"模型返回内容不符合预期格式，请核对视觉模型配置。",
+    RateLimitError:"上游模型触发限流（HTTP 429），请降低收录频率或切换备用模型。",
+    InternalServerError:"上游模型服务内部错误（HTTP 500），请稍后重试或切换模型。",
+    BadGateway:"上游模型网关错误（HTTP 502），请稍后重试或检查代理。",
+    ServiceUnavailable:"上游模型服务暂时不可用（HTTP 503），请稍后重试。",
+    AuthenticationError:"上游模型鉴权失败（HTTP 401），请核对 API Key 配置。",
+    PermissionDeniedError:"上游模型拒绝访问（HTTP 403），请核对账号权限与额度。",
+    http_401:"上游模型鉴权失败（HTTP 401），请核对 API Key 配置。",
+    http_403:"上游模型拒绝访问（HTTP 403），请核对账号权限与额度。",
+    http_429:"上游模型触发限流（HTTP 429），请降低收录频率或稍后重试。",
+    http_500:"上游模型服务内部错误（HTTP 500），请稍后重试。",
+    http_502:"上游模型网关错误（HTTP 502），请稍后重试或检查代理。",
+    http_503:"上游模型服务暂时不可用（HTTP 503），请稍后重试。",
+    http_504:"上游模型网关超时（HTTP 504），请稍后重试或改用更快的视觉模型。",
+    "401":"上游模型鉴权失败（HTTP 401），请核对 API Key 配置。",
+    "403":"上游模型拒绝访问（HTTP 403），请核对账号权限与额度。",
+    "429":"上游模型触发限流（HTTP 429），请降低收录频率或稍后重试。",
+    "500":"上游模型服务内部错误（HTTP 500），请稍后重试。",
+    "502":"上游模型网关错误（HTTP 502），请稍后重试或检查代理。",
+    "503":"上游模型服务暂时不可用（HTTP 503），请稍后重试。",
+    "504":"上游模型网关超时（HTTP 504），请稍后重试或改用更快的视觉模型。",
+    reaction_collection_circuit_open:"自动收录因连续失败已进入冷却熔断，稍后自动恢复，也可核对视觉模型后手动重置。",
   };
-  const localized = (failure, fallback) => errors[failure?.code]
-    || errors[failure?.message]
-    || fallback;
+  const localized = (failure, fallback) => {
+    const code = String(failure?.code || "").trim();
+    const message = String(failure?.message || "").trim();
+    if (code && errors[code]) return errors[code];
+    if (message && errors[message]) return errors[message];
+    const httpMatch = /\b(401|403|429|500|502|503|504)\b/.exec(code || message);
+    if (httpMatch && errors[httpMatch[1]]) return errors[httpMatch[1]];
+    if (/timeout/i.test(code || message)) return errors.TimeoutError;
+    if (/json/i.test(code || message)) return errors.JSONDecodeError;
+    return fallback;
+  };
+  const collectionReasonBadge = (code, detail) => {
+    const raw = String(code || "").trim();
+    if (!raw) return null;
+    const reason = detail || localized({code: raw}, `处理异常（${raw}）`);
+    if (/timeout|504/i.test(raw)) return {label: "超时", tone: "warn", title: reason};
+    if (/json|valueerror|review_invalid/i.test(raw)) return {label: "格式异常", tone: "warn", title: reason};
+    if (/429|ratelimit/i.test(raw)) return {label: "限流 429", tone: "warn", title: reason};
+    if (/circuit_open/i.test(raw)) return {label: "冷却熔断", tone: "danger", title: reason};
+    if (/provider_unavailable/i.test(raw)) return {label: "缺少视觉模型", tone: "danger", title: reason};
+    if (/500|502|503|401|403|internal|gateway|unavailable|auth|permission|connection/i.test(raw))
+      return {label: "上游错误", tone: "danger", title: reason};
+    return {label: "处理失败", tone: "warn", title: reason};
+  };
   const reactionFlags = new Set(["reactions_enabled","reactions_private_enabled","reactions_group_enabled",
     "reactions_proactive_enabled",
     "reactions_collection_private_enabled","reactions_collection_group_enabled","vision_review"]);
@@ -51,14 +100,26 @@ window.CompanionSemanticPage = (() => {
     ["reactions_collection_group_enabled","从群聊自动收录"],
     ["slang_enabled","群聊黑话目录"],["slang_learning","黑话自动学习"],
     ["slang_web_search_enabled","黑话联网参考"],["vision_review","识图复核"]];
-  const providerFields = [["embedding_provider","向量模型（嵌入）","embedding"],["rerank_provider","候选重排","rerank"],["analysis_provider","视觉与词义分析","analysis"]];
-  const semanticNumberFields = [["timeout_seconds","模型超时 / 秒",1,30],["batch_size","索引批次",1,64],
+  const providerFields = [
+    ["embedding_provider","向量模型（嵌入）","embedding","自动选择"],
+    ["rerank_provider","候选重排","rerank","自动选择"],
+    ["analysis_provider","视觉与词义分析","analysis","自动选择"],
+    ["vision_review_provider","视觉复核模型","analysis","沿用视觉与词义分析模型"],
+    ["vision_review_fallback_provider","视觉复核备用模型","analysis","不启用备用模型"],
+  ];
+  const semanticNumberFields = [["timeout_seconds","检索模型超时 / 秒",1,30],["batch_size","索引批次",1,64],
     ["learning_interval_seconds","群词义整理间隔 / 分钟",1,1440],
     ["slang_web_search_candidates","联网检索词数 / 个",1,12],["slang_web_search_results","每词参考条数",1,5]];
+  const visionNumberFields = [
+    ["analysis_timeout_seconds","视觉分析超时 / 秒",5,120,1],
+    ["vision_review_timeout_seconds","视觉复核超时 / 秒",3,60,1],
+  ];
   const reactionNumberFields = [["reactions_trigger_probability","表情包触发概率 / %",0,100,1],
     ["reactions_cooldown_seconds","发送间隔 / 秒",0,3600,1],
     ["reactions_collection_private_probability","私聊收录概率 / %",0,100,1],
-    ["reactions_collection_group_probability","群聊收录概率 / %",0,100,1]];
+    ["reactions_collection_group_probability","群聊收录概率 / %",0,100,1],
+    ...visionNumberFields];
+  const numberDefaults = {analysis_timeout_seconds:30, vision_review_timeout_seconds:15};
   const numberFields = [...semanticNumberFields,...reactionNumberFields];
   const percentageFields = new Set(["reactions_trigger_probability","reactions_collection_private_probability",
     "reactions_collection_group_probability"]);
@@ -69,7 +130,7 @@ window.CompanionSemanticPage = (() => {
   /* 这一页发送所有可编辑字段（不是只发改动），而 revision 冲突后必须重读
      才能拿到新版本号。重读会把 state 换成服务端的值，所以本地草稿要单独留一份，
      否则用户刚填的值会被服务端旧值覆盖。 */
-  let root,scope,abort,state,kind="reaction",view="all",after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,refreshing=false,refreshedAt="",editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
+  let root,scope,abort,state,kind="reaction",view="all",collectionFilter="all",selectedReactionIds=new Set(),after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,refreshing=false,refreshedAt="",editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
   let drawerEl=null,drawerCloseTimer=0,drawerOpenFrame=0;
   function reducedMotion(){
     if(typeof document==="undefined")return true;
@@ -87,13 +148,18 @@ window.CompanionSemanticPage = (() => {
   const visibleFlags = () => view === "expression"
     ? flags.filter(([id]) => reactionFlags.has(id))
     : view === "learning" ? flags.filter(([id]) => !reactionFlags.has(id) || id === "vision_review") : flags;
-  const visibleProviders = () => view === "expression" ? [] : providerFields;
+  const visibleProviders = () => view === "expression"
+    ? providerFields.filter(([id]) => ["analysis_provider","vision_review_provider","vision_review_fallback_provider"].includes(id))
+    : view === "learning"
+      ? providerFields.filter(([id]) => ["embedding_provider","rerank_provider","analysis_provider"].includes(id))
+      : providerFields;
   const visibleNumbers = () => view === "expression" ? reactionNumberFields
     : view === "learning" ? semanticNumberFields : numberFields;
   const visibleSelects = () => view === "learning" ? [] : selectFields;
   const visibleKinds = group => view === "expression" ? ["reaction"]
     : view === "learning" ? (group ? ["slang","reaction"] : ["reaction"])
       : (group ? ["reaction","slang"] : ["reaction"]);
+  const isAwaitingConfirmation = item => item?.payload?.collection_state === "awaiting_confirmation" && !item?.enabled;
   const selection = () => globalSettingsOnly?{global:true}:(()=>{const value=selectedSelection||product.selection();return {target_id:value.target_id,role_id:value.role_id,...(sessionId?{session_id:sessionId}:{})};})();
   const target = () => globalSettingsOnly ? null : selectedTarget || product.target();
   const current = () => root?.isConnected && scope===(selectedScopeKey||product.scopeKey());
@@ -111,17 +177,25 @@ window.CompanionSemanticPage = (() => {
     return product.unwrap(await (method==="GET"?bridge.apiGet("semantic",values):bridge.apiPost("semantic",values)));
   }
   const toggle=(id,label,value) => '<label class="semantic-toggle"><span>'+label+'</span><input type="checkbox" name="'+id+'" '+(value?"checked":"")+'></label>';
-  const options=(list,value) => '<option value="">自动选择</option>'+(list||[]).map(p=>'<option value="'+escape(p.id)+'" '+(p.id===value?"selected":"")+'>'+escape(p.name||p.id)+'</option>').join("");
+  const options=(list,value,emptyLabel="自动选择") => '<option value="">'+escape(emptyLabel)+'</option>'+(list||[]).map(p=>'<option value="'+escape(p.id)+'" '+(p.id===value?"selected":"")+'>'+escape(p.name||p.id)+'</option>').join("");
   const imageSource=value=>{
     const source=String(value||"").trim();
     return /^(?:data:image\/[a-z0-9.+-]+;|https:\/\/|http:\/\/|\/)/i.test(source)?source:"";
   };
   function editorInner(item) {
-    let html='<div class="semantic-editor-backdrop" data-semantic="close" aria-hidden="true"></div><form id="semanticEditor" class="semantic-editor"><div class="semantic-heading"><h3>'+escape(item.payload.name||item.payload.term||"素材详情")+'</h3><button type="button" class="icon-button" data-semantic="close" aria-label="关闭编辑" title="关闭"><i data-lucide="x"></i></button></div>';
+    const awaiting=kind==="reaction"&&isAwaitingConfirmation(item);
+    let html='<div class="semantic-editor-backdrop" data-semantic="close" aria-hidden="true"></div><form id="semanticEditor" class="semantic-editor"><div class="semantic-heading"><h3>'+escape(item.payload.name||item.payload.term||"素材详情")+(awaiting?' <span class="semantic-editor-pill is-awaiting">待人工确认</span>':'')+'</h3><button type="button" class="icon-button" data-semantic="close" aria-label="关闭编辑" title="关闭"><i data-lucide="x"></i></button></div>';
     const source=imageSource(item.image_url||item.payload?.image_url||item.payload?.url);
     if(source)html+='<img src="'+escape(source)+'" alt="'+escape(item.payload.name||"表情原图")+'" loading="lazy">';
     html+=fields[kind].map(([id,label])=>'<label>'+label+'<textarea name="'+id+'" rows="'+(id==="description"||id==="meaning"?3:2)+'" maxlength="'+(kind==="slang"?500:1500)+'">'+escape(item.payload[id]||"")+'</textarea></label>').join("");
     html+=toggle("item_enabled","允许检索使用",!!item.enabled);
+    if(awaiting){
+      html+='<div class="semantic-actions"><button class="button primary" type="button" data-semantic="editor-confirm" '+(busy?"disabled":"")+'>通过并启用</button>';
+      html+='<button class="button" type="submit" '+(busy?"disabled":"")+'>仅保存</button>';
+      html+='<button class="button" type="button" data-semantic="analyze" '+(busy?"disabled":"")+'>补全空白字段</button>';
+      html+='<button class="button danger" type="button" data-semantic="editor-reject" '+(busy?"disabled":"")+'>拒绝删除</button>';
+      return html+'<button class="button" type="button" data-semantic="close">取消</button></div></form>';
+    }
     html+='<div class="semantic-actions"><button class="button primary" type="submit" '+(busy?"disabled":"")+'>保存修改</button>';
     if(kind==="reaction")html+='<button class="button" type="button" data-semantic="analyze" '+(busy?"disabled":"")+'>补全空白字段</button>';
     if(kind==="reaction")html+='<button class="icon-button danger" type="button" data-semantic="delete" aria-label="删除表情素材" title="删除表情素材" '+(busy?"disabled":"")+'><i data-lucide="trash-2"></i></button>';
@@ -228,7 +302,8 @@ window.CompanionSemanticPage = (() => {
     const coreNumbers=semanticNumberFields.filter(([id])=>["timeout_seconds","batch_size"].includes(id));
     const memoryNumbers=semanticNumberFields.filter(([id])=>!coreNumbers.some(([field])=>field===id));
     const flagMarkup=items=>'<div class="semantic-flags">'+items.map(([id,label])=>toggle(id,label,current(id))).join('')+'</div>';
-    const providerMarkup='<div class="semantic-providers">'+providerFields.map(([id,label,type])=>'<label>'+label+'<select name="'+id+'">'+options(state.providers?.[type],current(id))+'</select></label>').join('')+'</div>'
+    const learningProviders=visibleProviders();
+    const providerMarkup='<div class="semantic-providers">'+learningProviders.map(([id,label,type,emptyLabel])=>'<label>'+label+'<select name="'+id+'">'+options(state.providers?.[type],current(id),emptyLabel)+'</select></label>').join('')+'</div>'
       +(!(state.providers?.embedding||[]).length?'<p class="semantic-meta">没有读到向量模型。请先在 AstrBot 的模型服务页添加 embedding 类型的 Provider，再回到这里选择。</p>':'');
     const numberMarkup=items=>'<div class="semantic-providers">'+items.map(([id,label,min,max,step])=>{
       const raw=current(id),value=id==="learning_interval_seconds"&&Number.isFinite(Number(raw))?Math.round(Number(raw)/60):raw;
@@ -274,27 +349,33 @@ window.CompanionSemanticPage = (() => {
     html+='<div class="semantic-flags">'+currentViewFlags.map(([id,label])=>toggle(id,label,shown[id])).join("")+'</div>';
     const currentViewSelects=visibleSelects();
     if(currentViewProviders.length||currentViewNumbers.length||currentViewSelects.length)html+='<div class="semantic-providers">';
-    currentViewProviders.forEach(([id,label,type])=>html+='<label>'+label+'<select name="'+id+'">'+options(state.providers?.[type],shown[id])+'</select></label>');
-    currentViewNumbers.forEach(([id,label,min,max,step])=>{const value=percentageFields.has(id)?Number(shown[id]||0)*100:
-      id==="learning_interval_seconds"?Math.round(Number(shown[id]||0)/60):shown[id];
+    currentViewProviders.forEach(([id,label,type,emptyLabel])=>html+='<label>'+label+'<select name="'+id+'">'+options(state.providers?.[type],shown[id]??"",emptyLabel)+'</select></label>');
+    currentViewNumbers.forEach(([id,label,min,max,step])=>{const rawValue=shown[id]??numberDefaults[id];
+      const value=percentageFields.has(id)?Number(rawValue||0)*100:
+      id==="learning_interval_seconds"?Math.round(Number(rawValue||0)/60):rawValue??"";
       html+='<label>'+label+'<input name="'+id+'" type="number" min="'+min+'" max="'+max+'" step="'+(step||1)+'" value="'+value+'"></label>';});
     currentViewSelects.forEach(([id,label,choices])=>html+='<label>'+label+'<select name="'+id+'">'+choices.map(([value,text])=>'<option value="'+escape(value)+'" '+(shown[id]===value?'selected':'')+'>'+escape(text)+'</option>').join('')+'</select></label>');
     if(currentViewProviders.length||currentViewNumbers.length||currentViewSelects.length)html+='</div>';
-    if(currentViewProviders.length&&!(state.providers?.embedding||[]).length)html+='<p class="semantic-meta">没有读到向量模型。请先在 AstrBot 的模型服务页添加 embedding 类型的 Provider，再回到这里选择。</p>';
+    if(view==="expression")html+='<p class="semantic-meta semantic-vision-hint">视觉分析与识图复核建议使用 Flash 等快速非思考视觉模型，避免高思考推理拖慢或超时。</p>';
+    if(currentViewProviders.some(([,,type])=>type==="embedding")&&!(state.providers?.embedding||[]).length)html+='<p class="semantic-meta">没有读到向量模型。请先在 AstrBot 的模型服务页添加 embedding 类型的 Provider，再回到这里选择。</p>';
     html+='<div class="semantic-actions"><button class="button primary" type="submit" '+(busy?"disabled":"")+'>'+(draft?'保存草稿':'保存配置')+'</button>';
     /* 冲突时更要能放弃：否则用户只剩「按新版本再存一次」一条路。 */
     if(draft)html+='<button class="button" type="button" data-semantic="discard">放弃草稿</button>';
     html+='<button class="button" type="button" data-semantic="reindex" '+(busy||!state.selection_ready?"disabled":"")+'>重建当前索引</button></div></form>';
     const recentErrors=Object.keys(state.errors||{}).length
-      ?'最近异常：'+escape([...new Set(Object.values(state.errors).map(code=>localized({code},"语义处理暂未完成，请核对模型配置。")))].join("、")) : "";
-    if(recentErrors)html+='<p class="semantic-meta">'+recentErrors+'</p>';
+      ?'最近异常：'+escape([...new Set(Object.values(state.errors).map(code=>localized({code},`处理异常（${code}），请核对模型服务与超时设置。`)))].join("、")) : "";
+    if(recentErrors)html+='<p class="semantic-meta semantic-error-note">'+recentErrors+'</p>';
     html+='</section>';
-    if(view==="expression")html+=collectionSummary(state.reaction_collection,state.catalog?.reaction);
+    if(view==="expression")html+=collectionSummary(state.reaction_collection,state.catalog?.reaction,state.reaction_collection_circuit);
     const reactionCatalog=state.catalog?.reaction||{};
     const reactionEnabled=Math.max(0,Number(reactionCatalog.enabled||0));
+    const reactionAwaiting=Math.max(0,Number(reactionCatalog.awaiting_confirmation||0));
+    const reactionDisabledTotal=Math.max(0,Number(reactionCatalog.disabled||0));
+    const reactionManuallyDisabled=typeof reactionCatalog.manually_disabled==="number"
+      ?Math.max(0,reactionCatalog.manually_disabled):Math.max(0,reactionDisabledTotal-reactionAwaiting);
     const reactionTotalValue=Number(reactionCatalog.total);
     const reactionTotal=Math.max(reactionEnabled,Number.isFinite(reactionTotalValue)&&reactionTotalValue>=0?reactionTotalValue:0);
-    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情库":"群词义素材")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("图库属于当前小屋角色；切换小屋角色即可查看其表情。", "查看表情库范围"):"")+'</h3><span>'+(view==="expression"?'可用 '+reactionEnabled+' / '+reactionTotal+' 项':'群词义 '+(state.catalog?.slang?.enabled||0)+' 项')+'</span></div>';
+    html+='<section id="semanticReactionCatalog" class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情库":"群词义素材")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("图库属于当前小屋角色；切换小屋角色即可查看其表情。", "查看表情库范围"):"")+'</h3><span>'+(view==="expression"?'可用 '+reactionEnabled+' / '+reactionTotal+' 项':'群词义 '+(state.catalog?.slang?.enabled||0)+' 项')+'</span></div>';
     if(group&&state.sessions?.length)html+='<label class="semantic-session">群会话<select id="semanticSession" aria-label="群会话">'+state.sessions.map((id,index)=>'<option value="'+escape(id)+'" '+(id===state.session_id?'selected':'')+'>'+escape(id===target()?.group_id?'主群会话':'群会话 '+(index+1))+'</option>').join('')+'</select></label>';
     if(kinds.length===1&&!catalogReady(kinds[0]))html+='<p class="memory-notice">当前群会话尚无可验证的成员输入；收到群消息后即可管理。</p>';
     else if(kinds.length) {
@@ -307,19 +388,55 @@ window.CompanionSemanticPage = (() => {
       html+=`<div id="semantic-panel" role="tabpanel"${kinds.length>1?` aria-labelledby="semantic-tab-${kind}"`:""}>`;
       if(!catalogReady())html+='<p class="memory-notice">当前群会话尚无可验证的成员输入；收到群消息后即可管理。</p>';
       else {
-      if(kind==="reaction")html+='<label class="semantic-import button"><span>导入素材</span><input id="semanticFile" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" '+(busy?"disabled":"")+'></label>'+batchAnalyzeButton();
+      if(kind==="reaction"){
+        const filterSpecs=[
+          ["all",`全部 (${reactionTotal})`,false],
+          ["awaiting_confirmation",`待人工确认 (${reactionAwaiting})`,reactionAwaiting>0],
+          ["enabled",`已启用 (${reactionEnabled})`,false],
+          ["disabled",`已停用 (${reactionManuallyDisabled})`,false],
+        ];
+        html+='<div class="semantic-filter-tabs" role="tablist" aria-label="表情库筛选">'+filterSpecs.map(([value,label,highlight])=>
+          '<button type="button" role="tab" class="semantic-filter-tab'+(collectionFilter===value?' is-active':'')+(highlight?' is-highlight':'')+'" aria-selected="'+(collectionFilter===value?'true':'false')+'" data-semantic-filter="'+value+'">'+escape(label)+'</button>'
+        ).join("")+'</div>';
+        html+='<div class="semantic-catalog-tools"><label class="semantic-import button"><span>导入素材</span><input id="semanticFile" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" '+(busy?"disabled":"")+'></label>'+batchAnalyzeButton()+'</div>';
+        if(collectionFilter==="awaiting_confirmation"&&(state.items||[]).length){
+          const pageIds=(state.items||[]).map(item=>String(item.id));
+          const selectedCount=pageIds.filter(id=>selectedReactionIds.has(id)).length;
+          const allSelected=pageIds.length>0&&selectedCount===pageIds.length;
+          html+='<div class="semantic-batch-bar" role="region" aria-label="批量审批操作">'
+            +'<label class="semantic-batch-select-all"><input type="checkbox" data-semantic-select-all '+(allSelected?'checked':'')+' '+(busy?'disabled':'')+'><span>全选当前页 ('+selectedCount+'/'+pageIds.length+')</span></label>'
+            +'<div class="semantic-batch-actions">'
+            +'<button class="button small primary" type="button" data-semantic="batch-confirm" '+(busy||!selectedCount?'disabled':'')+'>批量通过所选'+(selectedCount?' ('+selectedCount+')':'')+'</button>'
+            +'<button class="button small danger" type="button" data-semantic="batch-reject" '+(busy||!selectedCount?'disabled':'')+'>批量拒绝所选'+(selectedCount?' ('+selectedCount+')':'')+'</button>'
+            +(reactionAwaiting>pageIds.length?'<button class="button small" type="button" data-semantic="batch-confirm-all" '+(busy?'disabled':'')+'>全量通过 ('+reactionAwaiting+')</button>':'')
+            +'</div></div>';
+        }
+      }
       if(result)html+='<div class="semantic-results"><strong>检索结果 · '+(result.mode==="hybrid"?"语义与关键词":"关键词")+'</strong><span>'+(result.embedded||0)+'/'+(result.eligible||0)+' 已建索引'+(result.fallback_reason?" · 模型暂不可用":"")+'</span>'+(result.items||[]).map((item,index)=>'<button data-semantic-open="'+escape(item.id)+'">'+escape(item.payload.name||item.payload.term||'未命名素材 '+(index+1))+' · '+Number(item.score).toFixed(2)+'</button>').join("")+'</div>';
       html+='<div class="semantic-list">'+(state.items||[]).map(item=>{const payload=item.payload||{};const migrated=payload.collection_source==="legacy_migration"||Boolean(payload.legacy_source_id||payload.legacy_filename);const source={private_capture:"私聊自动收录",group_capture:"群聊自动收录",legacy_migration:"V1 表情迁移"}[payload.collection_source]||(migrated?"V1 表情迁移":"手动收录");
         const analysisCode=migrated&&(!payload.analysis||payload.analysis==="pending")
           ?(payload.manual_fields?.length?"legacy_imported":"legacy_pending"):payload.analysis;
         const analysis={auto_reviewed:"已通过视觉审核",analyzed:"已识别",legacy_imported:"V1 迁移保留标注",legacy_pending:"V1 迁移 · 待补全",pending:"待识别",manual:"手工标注"}[analysisCode]||"待标注";
-        const collectionState=payload.collection_state==="awaiting_confirmation"?"待人工确认":"";
+        const awaiting=kind==="reaction"&&isAwaitingConfirmation(item);
+        const collectionState=awaiting?"待人工确认":"";
         const sourceUrl=imageSource(item.thumbnail_url||item.image_url||payload.image_url||payload.url);
         const media=sourceUrl?'<img src="'+escape(sourceUrl)+'" alt="" loading="lazy">':'<span class="semantic-row-placeholder" aria-hidden="true"><i data-lucide="image"></i></span>';
         const title=payload.name||payload.term||"未命名";
         const detail=payload.description||payload.meaning||"待标注";
-        return '<article class="semantic-row" data-semantic-open="'+escape(item.id)+'"><div class="semantic-row-media">'+media+'<span class="semantic-row-state '+(item.enabled?"is-enabled":"is-disabled")+'">'+(item.enabled?"已启用":"已停用")+'</span></div><div class="semantic-row-body"><strong>'+escape(title)+'</strong><p>'+escape(detail)+'</p><small>'+escape(collectionState||source)+' · '+escape(analysis)+(item.source_valid===false?" · 来源已失效":"")+'</small></div><button class="button small" type="button" data-semantic-open="'+escape(item.id)+'">编辑</button></article>';}).join("")+'</div>';
-      if(!state.items?.length)html+='<p class="memory-notice">当前没有素材。</p>';
+        const stateClass=awaiting?"is-awaiting":item.enabled?"is-enabled":"is-disabled";
+        const stateText=awaiting?"待确认":item.enabled?"已启用":"已停用";
+        const checkBox=kind==="reaction"&&collectionFilter==="awaiting_confirmation"
+          ?'<label class="semantic-row-check"><input type="checkbox" data-semantic-select="'+escape(item.id)+'" '+(selectedReactionIds.has(String(item.id))?'checked':'')+' aria-label="选择 '+escape(title)+'"></label>'
+          :'';
+        const actions=awaiting
+          ?'<div class="semantic-row-actions">'
+            +'<button class="button small primary" type="button" data-semantic-confirm="'+escape(item.id)+'" data-semantic-revision="'+escape(item.revision)+'" '+(busy?'disabled':'')+'>通过启用</button>'
+            +'<button class="button small danger" type="button" data-semantic-reject="'+escape(item.id)+'" data-semantic-revision="'+escape(item.revision)+'" '+(busy?'disabled':'')+'>拒绝删除</button>'
+            +'<button class="button small" type="button" data-semantic-open="'+escape(item.id)+'">编辑</button>'
+            +'</div>'
+          :'<button class="button small" type="button" data-semantic-open="'+escape(item.id)+'">编辑</button>';
+        return '<article class="semantic-row'+(awaiting?' is-awaiting-card':'')+'" data-semantic-open="'+escape(item.id)+'"><div class="semantic-row-media">'+checkBox+media+'<span class="semantic-row-state '+stateClass+'">'+stateText+'</span></div><div class="semantic-row-body"><strong>'+escape(title)+'</strong><p>'+escape(detail)+'</p><small>'+escape(collectionState||source)+' · '+escape(analysis)+(item.source_valid===false?" · 来源已失效":"")+'</small></div>'+actions+'</article>';}).join("")+'</div>';
+      if(!state.items?.length)html+='<p class="memory-notice">'+(kind==="reaction"&&collectionFilter==="awaiting_confirmation"?"当前没有待人工确认的表情素材。":"当前没有素材。")+'</p>';
       if(state.next_after)html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
       }
       html+='</div>';
@@ -327,7 +444,7 @@ window.CompanionSemanticPage = (() => {
     if(kinds.length)html+='</section>';
     commitView(html);
   }
-  function collectionSummary(summary,catalog={}) {
+  function collectionSummary(summary,catalog={},circuit=null) {
     const totals=summary?.totals||{},recent=summary?.recent||[];
     const labels={added:"已自动启用",pending_confirmation:"待人工确认",duplicate:"重复跳过",
       rejected:"审核拒绝",failed:"处理失败",cancelled:"配置变更后取消",checking:"正在审核"};
@@ -344,8 +461,20 @@ window.CompanionSemanticPage = (() => {
       typeof catalog.recognized==="number"&&Number.isFinite(catalog.recognized)
         ?catalog.recognized:Math.max(0,total-pendingAnalysis)));
     const ratio=total?Math.min(100,Math.round(recognized/total*100)):0;
-    const cards=[["全部素材",total],["可用",enabled],["已识别",recognized],["待处理",pending]]
-      .map(([label,value])=>'<div class="semantic-catalog-stat"><strong>'+value+'</strong><span>'+label+'</span></div>').join('');
+    const failedTotal=scopes.reduce((sum,[scopeKey])=>sum+Math.max(0,Number(totals[scopeKey]?.failed||0)),0);
+    const hasFailures=failedTotal>0||Boolean(circuit?.open)||Number(circuit?.consecutive_failures||0)>0||recent.some(row=>row.status==="failed");
+    const pendingJumpTarget=awaitingConfirmation>0?"awaiting_confirmation":pendingAnalysis>0?"all":"awaiting_confirmation";
+    const cards=[["全部素材",total,false],["可用",enabled,false],["已识别",recognized,false],["待处理",pending,true]]
+      .map(([label,value,interactive])=>interactive
+        ?'<button type="button" class="semantic-catalog-stat is-interactive'+(value>0?' is-highlight':'')+'" data-semantic-filter-jump="'+pendingJumpTarget+'" title="点击跳转到表情库查看待处理条目"><strong>'+value+'</strong><span>'+label+'</span></button>'
+        :'<div class="semantic-catalog-stat"><strong>'+value+'</strong><span>'+label+'</span></div>').join('');
+    const circuitBanner=circuit?.open
+      ?'<div class="semantic-circuit-banner" role="alert"><div><strong>自动收录冷却熔断中</strong><span>连续失败 '+Number(circuit.consecutive_failures||0)+' 次，约 '+Math.max(1,Math.ceil(Number(circuit.cooldown_remaining_seconds||0)/60))+' 分钟后自动恢复'+(circuit.detail||circuit.reason?' · '+escape(circuit.detail||localized({code:circuit.reason},"视觉分析连续失败")):'')+'</span></div><button type="button" class="button small" data-semantic="reset-collection-failures" '+(busy?'disabled':'')+'>重置失败计数并恢复</button></div>'
+      :'';
+    const quickBar='<div class="semantic-summary-actions">'
+      +'<button type="button" class="semantic-awaiting-badge'+(awaitingConfirmation>0?' is-highlight':'')+'" data-semantic-filter-jump="awaiting_confirmation">待人工确认 '+awaitingConfirmation+'</button>'
+      +(hasFailures?'<button type="button" class="button small" data-semantic="reset-collection-failures" '+(busy?'disabled':'')+'>重置失败计数'+(failedTotal?' ('+failedTotal+')':'')+'</button>':'')
+      +'</div>';
     const stats=scopes.map(([scope,label])=>{
       const counts=totals[scope]||{};
       const value=["added","pending_confirmation","duplicate","rejected","failed","cancelled"]
@@ -353,8 +482,12 @@ window.CompanionSemanticPage = (() => {
         .map(status=>labels[status]+" "+counts[status]).join(" · ")||"暂无收录记录";
       return '<div class="semantic-collection-scope"><strong>'+label+'</strong><span>'+escape(value)+'</span></div>';
     }).join("");
-    const entries=recent.length?recent.slice(0,5).map(row=>'<li><span>'+escape(scopes.find(([scope])=>scope===row.scope)?.[1]||"会话")+' · '+escape(labels[row.status]||"状态待核对")+'</span><time>'+escape(formatMoment(row.updated_at))+'</time></li>').join(""):'<li class="semantic-collection-empty">当前范围还没有自动收录记录。</li>';
-    return '<section class="semantic-collection-summary" aria-label="表情库状态"><div class="semantic-catalog-stats">'+cards+'</div><div class="semantic-catalog-progress"><strong>自动识别 '+ratio+'%</strong><span><i style="width:'+ratio+'%"></i></span></div><div class="semantic-collection-scopes">'+stats+'</div><ul>'+entries+'</ul></section>';
+    const entries=recent.length?recent.slice(0,5).map(row=>{
+      const badge=row.status==="failed"||row.code?collectionReasonBadge(row.code||(row.status==="failed"?"failed":""),row.detail):null;
+      const badgeHtml=badge?'<span class="semantic-run-badge is-'+badge.tone+'" title="'+escape(badge.title)+'">'+escape(badge.label)+'</span>':'';
+      return '<li><span>'+escape(scopes.find(([scope])=>scope===row.scope)?.[1]||"会话")+' · '+escape(labels[row.status]||"状态待核对")+'</span><span class="semantic-run-meta">'+badgeHtml+'<time>'+escape(formatMoment(row.updated_at))+'</time></span></li>';
+    }).join(""):'<li class="semantic-collection-empty">当前范围还没有自动收录记录。</li>';
+    return '<section class="semantic-collection-summary" aria-label="表情库状态">'+circuitBanner+'<div class="semantic-catalog-stats">'+cards+'</div><div class="semantic-catalog-progress"><strong>自动识别 '+ratio+'%</strong><span><i style="width:'+ratio+'%"></i></span></div>'+quickBar+'<div class="semantic-collection-scopes">'+stats+'</div><ul>'+entries+'</ul></section>';
   }
   function formatMoment(value) {
     if(typeof value!=="number"||!Number.isFinite(value))return "时间未知";
@@ -409,7 +542,11 @@ window.CompanionSemanticPage = (() => {
     let next = "", meta = null, failed = false, failure = null;
     for (let round = 0; round < rounds; round += 1) {
       let page;
-      try { page = await api("GET", {...selection(), kind:type, ...(cursor ? {after:cursor} : {})}); }
+      try {
+        const filterParam = type === "reaction" && collectionFilter && collectionFilter !== "all"
+          ? {collection_filter: collectionFilter} : {};
+        page = await api("GET", {...selection(), kind:type, ...filterParam, ...(cursor ? {after:cursor} : {})});
+      }
       catch (error) { failed = true; failure = error; break; }
       if (!Array.isArray(page?.items)) { failed = true; break; }
       if (!meta) meta = page;
@@ -517,15 +654,42 @@ window.CompanionSemanticPage = (() => {
       const data=await api("POST",{...selection(),action,...payload});
       if(!active(ticket))return;
       if(action==="search"){result=data;message="";busy=false;render();return;}
-      message={configure:"配置已保存",reindex:"索引重建已安排",import:data.created?"表情已收录":"原图已存在，已跳过重复项",analyze:"空白字段已补全，人工标注已保留",edit:"素材已保存",delete:"表情素材已删除"}[action];
+      message={
+        configure:"配置已保存",
+        reindex:"索引重建已安排",
+        import:data.created?"表情已收录":"原图已存在，已跳过重复项",
+        analyze:"空白字段已补全，人工标注已保留",
+        edit:payload.enabled&&editing&&isAwaitingConfirmation(editing)?"已通过并启用该表情素材":"素材已保存",
+        delete:"表情素材已删除",
+        confirm_reaction:"已通过并启用该表情素材",
+        reject_reaction:"已拒绝并删除该表情素材",
+        batch_confirm_reactions:`已批量通过并启用 ${Number(data?.confirmed_count||0)} 张表情素材`+(data?.conflicts?.length?`（${data.conflicts.length} 张版本冲突已跳过）`:""),
+        batch_reject_reactions:`已批量拒绝并删除 ${Number(data?.rejected_count||0)} 张表情素材`+(data?.conflicts?.length?`（${data.conflicts.length} 张版本冲突已跳过）`:""),
+        reset_collection_failures:"已重置自动收录失败统计与熔断冷却",
+      }[action]||"操作已完成";
       editing=null;busy=false;
       /* 配置保存成功才清草稿；素材类操作不该动设置草稿。 */
       if(action==="configure")draft=null;
       if(action==="import"&&data?.item?.id)deletedIds.delete(String(data.item.id));
       /* 删除掉的素材要记住：先就地摘掉，后续刷新若把旧数据返回来也不能再显示。 */
-      if(action==="delete"&&payload.id){
+      if((action==="delete"||action==="reject_reaction")&&payload.id){
         deletedIds.add(String(payload.id));
+        selectedReactionIds.delete(String(payload.id));
         if(state)state={...state,items:(state.items||[]).filter(item=>String(item.id)!==String(payload.id))};
+      }
+      if(action==="confirm_reaction"&&payload.id){
+        selectedReactionIds.delete(String(payload.id));
+      }
+      if(action==="batch_reject_reactions"&&Array.isArray(data?.rejected_ids)){
+        for(const removedId of data.rejected_ids){
+          deletedIds.add(String(removedId));
+          selectedReactionIds.delete(String(removedId));
+        }
+        const removedSet=new Set(data.rejected_ids.map(String));
+        if(state)state={...state,items:(state.items||[]).filter(item=>!removedSet.has(String(item.id)))};
+      }
+      if(action==="batch_confirm_reactions"){
+        selectedReactionIds.clear();
       }
       await load(action === "import" ? {mode:"refresh", afterImport:true} : "refresh");
     }catch(error){
@@ -553,7 +717,7 @@ window.CompanionSemanticPage = (() => {
   function mount(node,options={}){
     unmount();root=node;selectedTarget=options.target||null;selectedSelection=options.selection||null;selectedScopeKey=typeof options.scopeKey==="string"?options.scopeKey:"";
     globalSettingsOnly=options.globalSettingsOnly===true;
-    scope=selectedScopeKey||product.scopeKey();state=null;result=null;after={};loaded={};deletedIds=new Set();sessionId="";editing=null;message="";busy=false;
+    scope=selectedScopeKey||product.scopeKey();state=null;result=null;collectionFilter="all";selectedReactionIds=new Set();after={};loaded={};deletedIds=new Set();sessionId="";editing=null;message="";busy=false;
     view=["learning","expression"].includes(options?.view)?options.view:"all";
     kind=view==="learning"&&target()?.scope_kind==="group"?"slang":"reaction";abort=new AbortController();
     for(const type of ["focusin","focusout","pointerover","pointerout"])
@@ -566,17 +730,102 @@ window.CompanionSemanticPage = (() => {
     }
     node.addEventListener("click",async event=>{
       if(window.CompanionWorkbench.scopeHintClick(event))return;
+      if(event.target.closest("[data-semantic-select],[data-semantic-select-all],.semantic-row-check"))return;
+      const filterJump=event.target.closest("[data-semantic-filter-jump]");
+      if(filterJump){
+        const nextFilter=filterJump.dataset.semanticFilterJump||"awaiting_confirmation";
+        kind="reaction";collectionFilter=nextFilter;selectedReactionIds.clear();result=null;editing=null;after={};loaded={};message="";
+        const loadPromise=load();
+        const catalogEl=root?.querySelector?.("#semanticReactionCatalog");
+        catalogEl?.scrollIntoView?.({behavior:reducedMotion()?"auto":"smooth",block:"start"});
+        await loadPromise;
+        return;
+      }
+      const filterTab=event.target.closest("[data-semantic-filter]");
+      if(filterTab){
+        const nextFilter=filterTab.dataset.semanticFilter||"all";
+        if(collectionFilter!==nextFilter){
+          collectionFilter=nextFilter;selectedReactionIds.clear();result=null;editing=null;after={};loaded={};message="";load();
+        }
+        return;
+      }
+      const confirmBtn=event.target.closest("[data-semantic-confirm]");
+      if(confirmBtn){
+        const id=confirmBtn.dataset.semanticConfirm;
+        const revision=Number(confirmBtn.dataset.semanticRevision);
+        if(id&&Number.isInteger(revision))run("confirm_reaction",{id,revision});
+        return;
+      }
+      const rejectBtn=event.target.closest("[data-semantic-reject]");
+      if(rejectBtn){
+        const id=rejectBtn.dataset.semanticReject;
+        const revision=Number(rejectBtn.dataset.semanticRevision);
+        if(!id||!Number.isInteger(revision))return;
+        const ticket=generation;
+        const accepted=typeof window.CompanionConfirm==="function"
+          ? await window.CompanionConfirm({title:"拒绝并删除表情素材",message:"拒绝收录并永久删除这条待确认表情？",confirmText:"拒绝删除",danger:true})
+          : true;
+        if(accepted&&ticket===generation)run("reject_reaction",{id,revision});
+        return;
+      }
       const item=event.target.closest("[data-semantic-open]");if(item){kind=item.dataset.semanticKind||kind;open(item.dataset.semanticOpen);return;}
-      const tab=event.target.closest("[data-semantic-kind]");if(tab){kind=tab.dataset.semanticKind;result=null;editing=null;after={};loaded={};message="";load();return;}
+      const tab=event.target.closest("[data-semantic-kind]");if(tab){kind=tab.dataset.semanticKind;collectionFilter="all";selectedReactionIds.clear();result=null;editing=null;after={};loaded={};message="";load();return;}
       const command=event.target.closest("[data-semantic]")?.dataset.semantic;
       if(command==="close"){editing=null;render();}
       if(command==="retry")load();
       if(command==="refresh")load({mode:"refresh", manual:true});
       if(command==="more")load("append");
       if(command==="reindex")run("reindex");
+      if(command==="reset-collection-failures")run("reset_collection_failures",{});
       if(command==="discard"){draft=null;conflict=false;message="已放弃草稿，显示当前已保存配置。";render();}
       if(command==="analyze"&&editing)run("analyze",{id:editing.id});
       if(command==="analyze-pending")analyzePending();
+      if(command==="editor-confirm"&&editing&&kind==="reaction"){
+        const form=root?.querySelector?.("#semanticEditor");
+        if(form&&typeof FormData==="function"){
+          const values=new FormData(form),changes={};
+          let hasFormFields=false;
+          fields.reaction.forEach(([id])=>{
+            const val=values.get(id);
+            if(val!==null){changes[id]=val;hasFormFields=true;}
+            else changes[id]=editing.payload?.[id]||"";
+          });
+          if(hasFormFields){
+            run("edit",{kind:"reaction",id:editing.id,revision:editing.revision,values:changes,enabled:true});
+            return;
+          }
+        }
+        run("confirm_reaction",{id:editing.id,revision:editing.revision});
+        return;
+      }
+      if(command==="editor-reject"&&editing&&kind==="reaction"){
+        const currentItem=editing;
+        const ticket=generation;
+        const accepted=typeof window.CompanionConfirm==="function"
+          ? await window.CompanionConfirm({title:"拒绝并删除表情素材",message:"拒绝收录并永久删除这条待确认表情？",confirmText:"拒绝删除",danger:true})
+          : true;
+        if(accepted&&ticket===generation&&editing===currentItem)run("reject_reaction",{id:currentItem.id,revision:currentItem.revision});
+        return;
+      }
+      if(command==="batch-confirm"){
+        const selected=(state?.items||[]).filter(row=>selectedReactionIds.has(String(row.id))).map(row=>({id:row.id,revision:row.revision}));
+        if(selected.length)run("batch_confirm_reactions",{items:selected});
+        return;
+      }
+      if(command==="batch-confirm-all"){
+        run("batch_confirm_reactions",{all_awaiting:true});
+        return;
+      }
+      if(command==="batch-reject"){
+        const selected=(state?.items||[]).filter(row=>selectedReactionIds.has(String(row.id))).map(row=>({id:row.id,revision:row.revision}));
+        if(!selected.length)return;
+        const ticket=generation;
+        const accepted=typeof window.CompanionConfirm==="function"
+          ? await window.CompanionConfirm({title:"批量拒绝并删除",message:`确认拒绝并永久删除已选中的 ${selected.length} 条待确认表情？`,confirmText:"批量拒绝删除",danger:true})
+          : true;
+        if(accepted&&ticket===generation)run("batch_reject_reactions",{items:selected});
+        return;
+      }
       if(command==="delete"&&editing&&kind==="reaction"){
         const item=editing, selectedKind=kind;
         const ticket=generation;
@@ -592,11 +841,22 @@ window.CompanionSemanticPage = (() => {
         const changes={},visibleFlagIds=new Set(visibleFlags().map(([id])=>id));
         flags.forEach(([id])=>changes[id]=visibleFlagIds.has(id)?values.has(id):shownValue(id));
         const visibleProviderIds=new Set(visibleProviders().map(([id])=>id));
-        providerFields.forEach(([id])=>changes[id]=visibleProviderIds.has(id)?values.get(id)||"":shownValue(id));
+        providerFields.forEach(([id])=>{
+          const raw=values.get(id);
+          if(visibleProviderIds.has(id)&&raw!==null)changes[id]=raw||"";
+          else if(shownValue(id)!==undefined)changes[id]=shownValue(id);
+        });
         const visibleNumberIds=new Set(visibleNumbers().map(([id])=>id));
-        numberFields.forEach(([id])=>{const value=Number(values.get(id));
-          changes[id]=visibleNumberIds.has(id)?percentageFields.has(id)?value/100:
-            id==="learning_interval_seconds"?value*60:value:shownValue(id);});
+        numberFields.forEach(([id])=>{
+          const raw=values.get(id);
+          if(visibleNumberIds.has(id)&&raw!==null&&raw!==""){
+            const value=Number(raw);
+            changes[id]=percentageFields.has(id)?value/100:
+              id==="learning_interval_seconds"?value*60:value;
+          }else if(shownValue(id)!==undefined){
+            changes[id]=shownValue(id);
+          }
+        });
         const visibleSelectIds=new Set(visibleSelects().map(([id])=>id));
         selectFields.forEach(([id])=>changes[id]=visibleSelectIds.has(id)?values.get(id):shownValue(id));
         /* 这份内容只在版本冲突时才当作草稿保留：普通失败（类型/范围不合法）
@@ -610,8 +870,22 @@ window.CompanionSemanticPage = (() => {
       }
     },{signal:abort.signal});
     node.addEventListener("change",event=>{
-      if(event.target.id==="semanticSession"){sessionId=event.target.value;result=null;editing=null;after={};loaded={};message="";load();return;}
-      if(event.target.name==="kind"){kind=event.target.value;result=null;editing=null;return;}
+      if(event.target?.dataset?.semanticSelect){
+        const id=String(event.target.dataset.semanticSelect);
+        if(event.target.checked)selectedReactionIds.add(id);
+        else selectedReactionIds.delete(id);
+        render();
+        return;
+      }
+      if(event.target?.dataset && "semanticSelectAll" in event.target.dataset){
+        const pageIds=(state?.items||[]).map(item=>String(item.id));
+        if(event.target.checked)pageIds.forEach(id=>selectedReactionIds.add(id));
+        else pageIds.forEach(id=>selectedReactionIds.delete(id));
+        render();
+        return;
+      }
+      if(event.target.id==="semanticSession"){sessionId=event.target.value;collectionFilter="all";selectedReactionIds.clear();result=null;editing=null;after={};loaded={};message="";load();return;}
+      if(event.target.name==="kind"){kind=event.target.value;collectionFilter="all";selectedReactionIds.clear();result=null;editing=null;return;}
       if(event.target.id!=="semanticFile"||!event.target.files?.length)return;
       const files=Array.from(event.target.files);
       try{event.target.value="";}catch(_){}
@@ -622,22 +896,28 @@ window.CompanionSemanticPage = (() => {
   async function analyzePending() {
     if(busy||!current())return;
     const ticket=++generation;
-    const candidates=new Map((state?.items||[]).filter(pendingAnalysis).map(item=>[item.id,item]));
+    const fullRescan=Boolean(collectionFilter&&collectionFilter!=="all");
+    const candidates=new Map(fullRescan?[]:(state?.items||[]).filter(pendingAnalysis).map(item=>[item.id,item]));
     const seen=new Set();
-    let cursor=after.reaction||"";
+    let cursor=fullRescan?"":(after.reaction||"");
+    let hasMore=fullRescan||Boolean(cursor);
     busy=true;conflict=false;message="正在扫描全部表情素材…";render();
     try{
       // The catalog is cursor-paginated. Reading only state.items misses all
-      // unloaded pages, including when page one has no pending entries.
-      while(cursor){
+      // unloaded pages, including when page one has no pending entries; when a
+      // non-"all" filter tab is active, scan the unfiltered catalog from page 1.
+      while(hasMore){
         if(!active(ticket))return;
-        if(seen.has(cursor))throw new Error("semantic_pagination_loop");
-        seen.add(cursor);
-        const page=await api("GET",{...selection(),kind:"reaction",after:cursor});
+        if(cursor){
+          if(seen.has(cursor))throw new Error("semantic_pagination_loop");
+          seen.add(cursor);
+        }
+        const page=await api("GET",{...selection(),kind:"reaction",...(cursor?{after:cursor}:{})});
         if(!active(ticket))return;
         if(!Array.isArray(page?.items))throw new Error("semantic_pagination_invalid");
         for(const item of page.items)if(pendingAnalysis(item))candidates.set(item.id,item);
         cursor=page.next_after||"";
+        hasMore=Boolean(cursor);
         message="正在扫描全部表情素材，已发现 "+candidates.size+" 张待补全…";render();
       }
     }catch(error){
@@ -710,7 +990,7 @@ window.CompanionSemanticPage = (() => {
     });
   }
   function shownValue(id){return (draft?{...state.settings,...draft}:state.settings)[id];}
-  function unmount(){clearDrawerTimers();drawerEl=null;if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
+  function unmount(){clearDrawerTimers();drawerEl=null;if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;collectionFilter="all";selectedReactionIds=new Set();editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
   /* 页面级未保存守卫（page-guards.js）：草稿存在就说明有未提交的改法。
      unmount 已经把 draft 之外的引用清掉，这里跟着 root 一起判断。 */
   function isDirty(){return !!draft&&!!root;}

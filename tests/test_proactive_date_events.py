@@ -323,6 +323,62 @@ class DateLookaheadTests(DateContactTests):
         self.assertIsNotNone(leap)
         self.assertGreater(leap, 0)
 
+    async def test_configured_summary_lists_year_round_sources_sorted_by_days_until(self):
+        app = await self.setup_date(dates="[]")
+        events = app.contact_schedule.date_events
+        # Empty state returns configured_count == 0 and no next_upcoming.
+        empty = events.configured_summary(
+            self.contact_context(), self.preferences(app), self.clock.now(), lookahead_days=7,
+        )
+        self.assertEqual(empty["configured_count"], 0)
+        self.assertEqual(empty["configured_items"], [])
+        self.assertIsNone(empty["next_upcoming"])
+        self.assertEqual(empty["lookahead_days"], 7)
+
+        # Configure all 4 sources with dates well outside the 7-day lookahead window.
+        self.settings(app, {
+            "important_date_lookahead_days": 7,
+            "important_dates": json.dumps([
+                {"calendar": "gregorian", "month": 12, "day": 25, "label": "年终聚会"},
+                {"calendar": "lunar", "month": 1, "day": 1, "label": "春节"},
+            ], ensure_ascii=False),
+        }).unwrap()
+        self.set_role_birthday(app, "10月20日")
+        self.set_user_birthday(app, "3月5日")
+        anniversaries.remember(app.runtime, self.contact_context(), {
+            "label": "第一次看海",
+            "reason": "用户原话明确纪念日。",
+            "confidence": 0.9,
+            "evidence_handle": "s-sea",
+            "occurred_at": "2026-09-21T00:30:00+00:00",
+            "month": 11,
+            "day": 10,
+            "timezone": "Asia/Shanghai",
+        }, source_run_id="daily-reflection", at=self.clock.now())
+
+        # Today is 2026-09-21 in ContactScheduleFixture.
+        with patch("companion_v2.proactive.date_events.lunar_date_parts",
+                   side_effect=lambda d: (2027, 1, 1, False) if d == date(2027, 2, 6) else (2026, 8, 11, False)):
+            summary = events.configured_summary(
+                self.contact_context(), self.preferences(app), self.clock.now(), lookahead_days=7,
+            )
+        self.assertEqual(summary["configured_count"], 5)
+        self.assertEqual(summary["lookahead_days"], 7)
+        labels = [item["label"] for item in summary["configured_items"]]
+        self.assertEqual(labels, ["角色生日", "第一次看海", "年终聚会", "春节", "对方生日"])
+        days_list = [item["days_until"] for item in summary["configured_items"]]
+        self.assertEqual(days_list, sorted(days_list))
+        self.assertEqual(summary["next_upcoming"]["label"], "角色生日")
+        self.assertEqual(summary["next_upcoming"]["source"], "角色档案")
+        sources = {item["label"]: item["source"] for item in summary["configured_items"]}
+        self.assertEqual(sources["对方生日"], "私聊资料")
+        self.assertEqual(sources["年终聚会"], "自定义重要日期")
+        self.assertEqual(sources["第一次看海"], "反思纪念日")
+        self.assertEqual(
+            next(item["date_text"] for item in summary["configured_items"] if item["label"] == "春节"),
+            "农历正月初一",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
