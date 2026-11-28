@@ -261,6 +261,18 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
             with self.subTest(spelling=spelling):
                 self.assertEqual(_file_endpoint(event), (bot.base_file_url, False))
 
+    async def test_only_a_file_path_carrying_the_token_is_trusted(self):
+        from astrbot_host.telegram_private_media import _file_endpoint
+
+        bot = self.platform.client
+        event = self.event(await self.convert(text="hello"))
+        bot.base_url = f"https://api.telegram.org/bot{bot.token}"
+        bot.base_file_url = f"http://127.0.0.1:8081/file/bot{bot.token}"
+        self.assertEqual(_file_endpoint(event), (bot.base_file_url, True))
+        # A gateway that takes the token in a query: nothing under its path is trusted.
+        bot.base_file_url = f"https://gateway.example/download?file_base=bot{bot.token}"
+        self.assertEqual(_file_endpoint(event), (None, True))
+
     async def test_local_read_refuses_a_fifo_without_blocking(self):
         from astrbot_host.media import fetch_attachment, trusted_endpoint
         from companion_v2.execution.models import TaskError
@@ -316,6 +328,23 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
             _, payload = await self.collect(event, server)
         self.assertIn("附件不可用", text(payload))
         self.assertIn("附件超过读取上限", text(payload))
+
+    async def test_slow_save_is_held_to_the_turn_deadline(self):
+        from astrbot_host import telegram_private_media
+
+        real = telegram_private_media._temporary_path
+
+        def stalled(*args):
+            time.sleep(0.4)
+            return real(*args)
+
+        clip = dict(file_id="v1", file_unique_id="v1", width=64, height=48, duration=1)
+        event = self.event(await self.convert(video=clip, caption="watch this"))
+        with patch("astrbot_host.telegram_private_media.MEDIA_PREPARE_TIMEOUT", 0.15), \
+                patch("astrbot_host.telegram_private_media._temporary_path", stalled):
+            _, payload = await self.collect(event, FileServer({"v1": b"movie"}))
+        self.assertIn("附件读取超时", text(payload))
+        self.assertIn("watch this", text(payload))
 
     async def test_document_follows_the_window_file_setting(self):
         document = dict(document=dict(file_id="d1", file_unique_id="d1", file_name="notes.txt"), caption="please read")

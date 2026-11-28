@@ -136,7 +136,12 @@ def _file_endpoint(event):
         return None, False
     api = getattr(client, "base_url", None)
     self_hosted = not _telegram_hosted(base) or isinstance(api, str) and not _telegram_hosted(api)
-    return base, self_hosted
+    try:
+        # The SDK appends the token to the file path; an unusual base (e.g. in a query) gets no trust.
+        token_in_path = private_token(event) in URL(base).path
+    except (TypeError, ValueError):
+        token_in_path = False
+    return (base if token_in_path else None), self_hosted
 
 
 def needs_preparation(event):
@@ -200,11 +205,6 @@ def _temporary_path(event, suffix, data):
     return stream.name
 
 
-def _temporary_file(event, name, data):
-    """Hand AstrBot a local copy so File.get_file does not download the original again."""
-    return File(name=name, file=_temporary_path(event, Path(name).suffix, data))
-
-
 def _video_name(part, name):
     """Keep a video suffix on the local copy: the request hook recognizes a video file by it.
 
@@ -256,6 +256,10 @@ class _TurnReader:
             self._charge(meter)
             raise
 
+    async def _save(self, suffix, data, meter, deadline=None):
+        """Write the local copy off the event loop, within the turn deadline."""
+        return await self._bounded(asyncio.to_thread(_temporary_path, self.event, suffix, data), meter, deadline)
+
     async def _photo(self, part, meter):
         locator = image_locator(len(self.photos), part.file, part.url)
         image = await self._bounded(load_native_image(
@@ -270,7 +274,7 @@ class _TurnReader:
             return part, size
         # Shaped like AstrBot's localized photos. Request collection adopts image files and keeps
         # them past event cleanup for later turns, as it does for its own.
-        path = _temporary_path(self.event, mimetypes.guess_extension(image.descriptor.mime_type) or "", image.content)
+        path = await self._save(mimetypes.guess_extension(image.descriptor.mime_type) or "", image.content, meter)
         return Image(file=path, url=path, path=path), size
 
     async def _video(self, part, meter):
@@ -285,15 +289,15 @@ class _TurnReader:
             NativeVideoLocator(0, value), maximum_bytes=min(self.remaining, MAX_VIDEO_BYTES)), meter)
         if isinstance(part, File):
             # Keep the name: the request hook recognizes a video file by its suffix.
-            return _temporary_file(self.event, name, data), len(data)
+            return File(name=name, file=await self._save(Path(name).suffix, data, meter)), len(data)
         suffix = Path(urlparse(value).path if "://" in value else value).suffix.lower()
-        return Video(file=_temporary_path(
-            self.event, suffix if file_is_video(File(name=value)) else ".mp4", data)), len(data)
+        path = await self._save(suffix if file_is_video(File(name=value)) else ".mp4", data, meter)
+        return Video(file=path), len(data)
 
     async def _recording(self, part, meter):
         data = await self._bounded(asyncio.to_thread(
             _read_temp_record, part.path or part.file, min(self.remaining, MAX_AUDIO_BYTES)), meter)
-        path = _temporary_path(self.event, ".wav", data)
+        path = await self._save(".wav", data, meter)
         record = Record(file=path, url=path)
         record.path = path
         return record, len(data)
@@ -332,7 +336,13 @@ class _TurnReader:
             return note("文件读取失败，未取得正文")
         self.remaining -= len(data)
         self.counts[File] += 1
-        return _temporary_file(self.event, name, data)
+        try:
+            path = await self._save(Path(name).suffix, data, None, self.file_deadline)
+        except asyncio.TimeoutError:
+            return note("文件读取超时，未取得正文")
+        except Exception:
+            return note("文件读取失败，未取得正文")
+        return File(name=name, file=path)
 
     async def replace(self, part, *, quoted=False):
         """Return the component that takes ``part``'s place in the message."""

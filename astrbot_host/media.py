@@ -116,7 +116,7 @@ def trusted_endpoint(prefix, *, local_files=False):
     path is read from disk, as a local-mode Bot API server hands files over on a
     shared disk. Byte limits and the meter apply throughout.
     """
-    value = (prefix, bool(local_files)) if isinstance(prefix, str) and prefix else None
+    value = (prefix if isinstance(prefix, str) and prefix else None, bool(local_files))
     token = _trusted_endpoint.set(value)
     try:
         yield
