@@ -196,7 +196,7 @@ def _read_temp_record(value, maximum_bytes):
     return content
 
 
-def _temporary_path(event, suffix, data, adopt=None):
+def _temporary_path(event, suffix, data, adopt):
     """A local copy owned by the event, so AstrBot removes it with the event's other files.
 
     ``adopt`` hands the finished file to the event. It refuses once the waiting turn
@@ -208,7 +208,7 @@ def _temporary_path(event, suffix, data, adopt=None):
     try:
         with stream:
             stream.write(data)
-        adopted = adopt(stream.name) if adopt is not None else event.track_temporary_local_file(stream.name) or True
+        adopted = adopt(stream.name)
     except BaseException:
         Path(stream.name).unlink(missing_ok=True)
         raise

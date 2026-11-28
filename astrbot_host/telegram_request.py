@@ -6,11 +6,8 @@ from pydantic import BaseModel, ValidationError
 from .telegram_private_media import UNAVAILABLE, private_token
 
 
-def protect_telegram_request(event, request):
-    """Last guard after every request hook, including history and other plugins' additions."""
-    token = private_token(event)
-    if token is None:
-        return
+def _cleaner(token):
+    """A function that removes ``token`` from any request value, typed or not."""
 
     def clean(value):
         if isinstance(value, str):
@@ -47,6 +44,16 @@ def protect_telegram_request(event, request):
             return data if token in rebuilt.model_dump_json() else rebuilt
         return value
 
+    return clean
+
+
+def protect_telegram_request(event, request):
+    """Last guard after every request hook, including history and other plugins' additions."""
+    token = private_token(event)
+    if token is None:
+        return
+    clean = _cleaner(token)
+
     for name in ("prompt", "system_prompt", "contexts", "extra_user_content_parts"):
         value = getattr(request, name, None)
         if value:
@@ -62,3 +69,16 @@ def protect_telegram_request(event, request):
         parts = list(request.extra_user_content_parts or ())
         if not any(isinstance(part, TextPart) and part.text == UNAVAILABLE for part in parts):
             request.extra_user_content_parts = [*parts, TextPart(text=UNAVAILABLE)]
+
+
+def protect_telegram_messages(event, run_context):
+    """The same pass over the messages the runner will actually send.
+
+    AstrBot rebuilds parts of the request after every request hook -- its image
+    notices, from paths it cached before them -- so the assembled messages are
+    cleaned once more just before the provider call.
+    """
+    token = private_token(event)
+    messages = getattr(run_context, "messages", None)
+    if token is not None and messages:
+        run_context.messages = _cleaner(token)(messages)

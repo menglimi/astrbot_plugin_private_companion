@@ -587,6 +587,22 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         self.assert_no_token(request.prompt, request.contexts, request.extra_user_content_parts,
                              (await request.assemble_context())["content"])
 
+    async def test_messages_assembled_after_the_request_hooks_are_cleaned(self):
+        from astrbot.core.agent.message import Message, TextPart
+        from tests.test_main_no_reply import ENTRY
+
+        event = self.event(await self.convert(text="hello"))
+        # A local-mode Bot API server keeps files under a directory named by the token; AstrBot
+        # rebuilds its image notice from that cached path after every request hook has run.
+        notice = f"[Image Attachment: original path /srv/telegram-bot-api/{self.token}/photos/f.jpg; not included]"
+        run_context = NS(messages=[Message(role="system", content="be kind"),
+                                   Message(role="user", content=[TextPart(text="hello"), TextPart(text=notice)])])
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        await plugin.protect_companion_telegram_messages(event, run_context)
+        self.assertTrue(all(isinstance(message, Message) for message in run_context.messages))
+        self.assertEqual(run_context.messages[0].content, "be kind")
+        self.assert_no_token(run_context.messages, [message.model_dump_json() for message in run_context.messages])
+
 
 if __name__ == "__main__":
     unittest.main()
