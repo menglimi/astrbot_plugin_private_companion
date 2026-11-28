@@ -1,6 +1,6 @@
 """Remove the Telegram Bot API token from a private provider request before it is sent."""
 
-from astrbot.core.agent.message import AudioURLPart, ImageURLPart, TextPart, ThinkPart
+from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart, ThinkPart
 
 from .telegram_private_media import UNAVAILABLE, private_token
 
@@ -33,6 +33,9 @@ def protect_telegram_request(event, request):
             value.text = clean(value.text)
         elif isinstance(value, ThinkPart):
             value.think = clean(value.think)
+        if isinstance(value, ContentPart) and token in value.model_dump_json():
+            # Any other field still naming the token (a signature, a new field) makes the part unusable.
+            return TextPart(text=UNAVAILABLE)
         return value
 
     for name in ("prompt", "system_prompt", "contexts", "extra_user_content_parts"):

@@ -376,21 +376,23 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
                 self.assert_no_token(json.dumps(payload, ensure_ascii=False))
 
     async def test_credentials_left_in_the_provider_request_are_removed(self):
-        from astrbot.core.agent.message import ImageURLPart, TextPart
+        from astrbot.core.agent.message import ImageURLPart, TextPart, ThinkPart
         from astrbot.core.provider.entities import ProviderRequest
         from tests.test_main_no_reply import ENTRY
 
         event = self.event(await self.convert(text="hello"))
         url = f"{self.platform.client.base_file_url}/media/v1"
         inline = ImageURLPart(image_url=ImageURLPart.ImageURL(url="data:image/png;base64,AAAA", id=url))
+        signed = ThinkPart(think="thinking", encrypted=url)
         request = ProviderRequest(prompt=url, contexts=[{"role": "user", "content": url}], image_urls=[url],
                                   extra_user_content_parts=[TextPart(text=url), ImageURLPart(
-                                      image_url=ImageURLPart.ImageURL(url=url)), inline])
+                                      image_url=ImageURLPart.ImageURL(url=url)), inline, signed])
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         for _ in range(2):
             await plugin.protect_companion_telegram_request(event, request)
         texts = [part.text for part in request.extra_user_content_parts if isinstance(part, TextPart)]
-        self.assertEqual(texts.count("[附件不可用]"), 1)
+        # The image fetched by URL and the signed thinking part are each replaced once.
+        self.assertEqual(texts.count("[附件不可用]"), 2)
         self.assertEqual(request.image_urls, [])
         self.assertIn(inline, request.extra_user_content_parts)
         self.assert_no_token(request.prompt, request.contexts, request.extra_user_content_parts,

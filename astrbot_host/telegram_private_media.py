@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import stat
 from tempfile import NamedTemporaryFile
+from urllib.parse import urlparse
 
 from astrbot.core.message.components import File, Image, Plain, Record, Reply, Video
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
@@ -183,7 +184,7 @@ def _video_name(part, name):
         return name
     for value in (part.url, getattr(part, "file_", None)):
         if isinstance(value, str) and file_is_video(File(name=value)):
-            return name + Path(value.split("?", 1)[0]).suffix.lower()
+            return name + Path(urlparse(value).path if "://" in value else value).suffix.lower()
     return name
 
 
@@ -242,7 +243,7 @@ class _TurnReader:
         if isinstance(part, File):
             # Keep the name: the request hook recognizes a video file by its suffix.
             return _temporary_file(self.event, name, data), len(data)
-        suffix = Path(value.split("?", 1)[0]).suffix.lower()
+        suffix = Path(urlparse(value).path if "://" in value else value).suffix.lower()
         return Video(file=_temporary_path(
             self.event, suffix if file_is_video(File(name=value)) else ".mp4", data)), len(data)
 

@@ -571,6 +571,21 @@ class TelegramFaceTests(TelegramFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[:4], b"OggS")
         self.assertIn(b"OpusHead", sent[:100])
 
+    async def test_reply_voice_falls_back_to_the_recording_without_opus(self):
+        audio = self.root / "reply.wav"
+        with wave.open(str(audio), "wb") as stream:
+            stream.setparams((1, 2, 8000, 0, "NONE", ""))
+            stream.writeframes(bytes(1600))
+        event = self.telegram_event()
+        self.platform.client.send_voice = AsyncMock()
+        with patch("astrbot.core.platform.astr_message_event.Metric.upload", new_callable=AsyncMock), \
+                patch("companion_v2.adapters.astrbot.telegram_wire.convert_audio_format",
+                      AsyncMock(side_effect=RuntimeError("ffmpeg unavailable"))):
+            for part in native_reply_messages(event, MessageChain(chain=[Record(file=str(audio))])):
+                await event.send(await native_wire_message(event, part))
+        sent = Path(self.platform.client.send_voice.await_args.kwargs["voice"]).read_bytes()
+        self.assertEqual(sent[:4], b"RIFF")
+
     async def test_reply_without_a_face_is_unchanged(self):
         message = MessageChain(chain=[Plain(text="晚安"), Image(file="base64://AAAA")])
         self.assertIs(await native_wire_message(self.telegram_event(), message), message)
