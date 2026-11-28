@@ -13,6 +13,7 @@ import time
 
 from companion_v2.conversation.foreground import ContextContribution, ContributionState
 from companion_v2.conversation.awareness_context import INSTRUCTION as CROSS_WINDOW_INSTRUCTION
+from companion_v2.conversation.device_context import DEVICE_CONTEXT_INSTRUCTION
 from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
 from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
 from companion_v2.conversation.life_context import LIFE_INSTRUCTION, PUBLIC_READING_INSTRUCTION
@@ -34,7 +35,12 @@ from companion_v2.system_prompts.catalog import (
 )
 from companion_v2.system_prompts.context import SystemPromptContext
 from .core_reply_health import health_perception_snapshot
-from .core_reply_mobile import location_scene_snapshot, phone_scene_snapshot, screen_scene_snapshot
+from .core_reply_mobile import (
+    device_scene_snapshot,
+    location_scene_snapshot,
+    phone_scene_snapshot,
+    screen_scene_snapshot,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -505,6 +511,10 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             if location:
                 perception_data["location_context"] = location
                 instructions.append(LOCATION_CONTEXT_INSTRUCTION)
+            device = device_scene_snapshot(application, context, at)
+            if device:
+                perception_data["device_context"] = device
+                instructions.append(DEVICE_CONTEXT_INSTRUCTION)
             if settings.get("screen_context_enabled") is True:
                 screen = screen_scene_snapshot(application, context, at)
                 if screen:

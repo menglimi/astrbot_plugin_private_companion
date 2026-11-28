@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from companion_v2.capabilities.privacy import is_core
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.conversation.health_context import project_health_context
 from companion_v2.execution.models import require
@@ -25,6 +26,8 @@ def _consent_active(runtime, context):
     subject = getattr(getattr(context, "actor", None), "subject", None)
     if subject is None or getattr(getattr(context, "scope", None), "kind", None) != ScopeKind.PRIVATE:
         return False
+    if is_core(runtime, subject):
+        return True
     row = runtime.read_one(
         """SELECT 1 FROM capability_authorizations
            WHERE extension_id = ? AND capability_id = ? AND subject_kind = ? AND subject_id = ?
