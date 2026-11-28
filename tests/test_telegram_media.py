@@ -245,9 +245,11 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
                 self.assertEqual(item.location, "path")
                 self.assertEqual(Path(item.value).read_bytes(), b"movie")
                 self.assertIn("watch this", text(payload))
+                event.cleanup_temporary_local_files()
+                self.assertFalse(Path(item.value).exists())
                 self.assert_no_token(json.dumps(payload, ensure_ascii=False))
 
-    async def test_voice_note_keeps_its_caption(self):
+    async def test_voice_note_keeps_its_caption_and_goes_to_astrbot_unchanged(self):
         from astrbot_host.telegram_private_media import restore_voice_caption
 
         async def download(url, path):
@@ -258,9 +260,13 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
                                          caption="listen to this")
         event = self.event(message)
         restore_voice_caption(event)
-        request, payload = await self.collect(event, FileServer({}))
+        (record,) = [part for part in event.message_obj.message if type(part).__name__ == "Record"]
+        original = record.path
+        # A voice note is not held to the audio limit: AstrBot's WAV would hit 5 MiB near 55 seconds.
+        with patch("astrbot_host.telegram_private_media.MAX_AUDIO_BYTES", 100):
+            request, payload = await self.collect(event, FileServer({}))
         self.assertIn("listen to this", text(payload))
-        self.assertEqual(len(request.audio_urls), 1)
+        self.assertEqual(request.audio_urls, [original])
 
     async def test_voice_caption_survives_astrbot_speech_to_text(self):
         from astrbot_host.telegram_private_media import restore_voice_caption
@@ -269,15 +275,17 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
             Path(path).write_bytes(audio_bytes())
 
         with patch("astrbot.core.platform.sources.telegram.tg_adapter.download_file", download):
-            message = await self.convert(voice=dict(file_id="a1", file_unique_id="a1", duration=1),
-                                         caption="listen to this")
-        # AstrBot's preprocessing replaces the recording with its transcript before the plugin runs.
-        message.message[:] = [Plain(text="voice transcript")]
+            message = await self.convert(
+                voice=dict(file_id="a1", file_unique_id="a1", duration=1), caption="listen to this",
+                caption_entities=[dict(type="text_link", offset=0, length=6, url="https://example.org/trail")])
+        # AstrBot's preprocessing replaces the recording with its transcript before the plugin runs;
+        # the transcript may happen to contain the caption's words.
+        message.message[:] = [Plain(text="please listen to this")]
         event = self.event(message)
         for _ in range(2):
             restore_voice_caption(event)
         texts = [part.text for part in event.message_obj.message if isinstance(part, Plain)]
-        self.assertEqual(texts, ["voice transcript", "listen to this"])
+        self.assertEqual(texts, ["please listen to this", "listen (https://example.org/trail) to this"])
 
     async def test_slow_recording_read_notes_the_timeout(self):
         async def download(url, path):
@@ -297,25 +305,25 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         self.assertIn("附件读取超时", text(payload))
         self.assertIn("my song", text(payload))
 
-    async def test_recording_over_the_audio_limit_keeps_its_caption(self):
-        from astrbot_host.telegram_private_media import restore_voice_caption
-
+    async def test_music_over_the_audio_limit_keeps_its_caption(self):
         async def download(url, path):
             Path(path).write_bytes(audio_bytes())
 
-        for field, limit, kept in (("audio", 100, 0), ("audio", 1024 ** 2, 1), ("voice", 100, 0),
-                                   ("voice", 1024 ** 2, 1)):
-            with self.subTest(field=field, limit=limit):
+        for limit, kept in ((100, 0), (1024 ** 2, 1)):
+            with self.subTest(limit=limit):
                 with patch("astrbot.core.platform.sources.telegram.tg_adapter.download_file", download):
-                    message = await self.convert(**{field: dict(file_id="a1", file_unique_id="a1", duration=1)},
+                    message = await self.convert(audio=dict(file_id="a1", file_unique_id="a1", duration=1),
                                                  caption="my song")
                 event = self.event(message)
-                restore_voice_caption(event)
                 with patch("astrbot_host.telegram_private_media.MAX_AUDIO_BYTES", limit):
                     request, payload = await self.collect(event, FileServer({}))
                 self.assertIn("my song", text(payload))
                 self.assertEqual(len(request.audio_urls), kept)
                 self.assertEqual("附件超过读取上限" in text(payload), not kept)
+                if kept:
+                    # The admitted copy belongs to the event and goes with its other files.
+                    event.cleanup_temporary_local_files()
+                    self.assertFalse(Path(request.audio_urls[0]).exists())
 
     async def test_sticker_is_recorded_as_a_sticker(self):
         sticker = dict(file_id="s1", file_unique_id="s1", type="regular", width=48, height=48,
@@ -374,16 +382,19 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
 
         event = self.event(await self.convert(text="hello"))
         url = f"{self.platform.client.base_file_url}/media/v1"
+        inline = ImageURLPart(image_url=ImageURLPart.ImageURL(url="data:image/png;base64,AAAA", id=url))
         request = ProviderRequest(prompt=url, contexts=[{"role": "user", "content": url}], image_urls=[url],
                                   extra_user_content_parts=[TextPart(text=url), ImageURLPart(
-                                      image_url=ImageURLPart.ImageURL(url=url))])
+                                      image_url=ImageURLPart.ImageURL(url=url)), inline])
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         for _ in range(2):
             await plugin.protect_companion_telegram_request(event, request)
         texts = [part.text for part in request.extra_user_content_parts if isinstance(part, TextPart)]
         self.assertEqual(texts.count("[附件不可用]"), 1)
         self.assertEqual(request.image_urls, [])
-        self.assert_no_token(request.prompt, request.contexts, request.extra_user_content_parts)
+        self.assertIn(inline, request.extra_user_content_parts)
+        self.assert_no_token(request.prompt, request.contexts, request.extra_user_content_parts,
+                             (await request.assemble_context())["content"])
 
 
 if __name__ == "__main__":

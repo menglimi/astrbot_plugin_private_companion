@@ -25,7 +25,10 @@ def protect_telegram_request(event, request):
                     return {"type": "text", "text": UNAVAILABLE}
             return {key: clean(item) for key, item in value.items()}
         if isinstance(value, (ImageURLPart, AudioURLPart)):
-            return TextPart(text=UNAVAILABLE) if token in getattr(value, value.type).url else value
+            target = getattr(value, value.type)
+            if token in target.url:
+                return TextPart(text=UNAVAILABLE)
+            target.id = clean(target.id)
         if isinstance(value, TextPart):
             value.text = clean(value.text)
         elif isinstance(value, ThinkPart):

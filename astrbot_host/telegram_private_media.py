@@ -7,7 +7,6 @@ collection, session history and later plugin hooks never see the URL.
 """
 
 import asyncio
-import base64
 from collections import Counter
 from contextlib import ExitStack
 import logging
@@ -80,9 +79,7 @@ def restore_voice_caption(event):
     """AstrBot keeps only the recording of a voice note; put its caption back as text."""
     raw = _update_message(event) if _private(event) else None
     caption = getattr(raw, "caption", None)
-    # AstrBot's speech-to-text replaces the recording with its own Plain transcript.
-    if (not getattr(raw, "voice", None) or not isinstance(caption, str) or not caption
-            or any(isinstance(part, Plain) and caption in part.text for part in event.message_obj.message)):
+    if not getattr(raw, "voice", None) or not isinstance(caption, str) or not caption:
         return
     message = event.message_obj
     caption = caption.encode("utf-16-le")
@@ -92,8 +89,22 @@ def restore_voice_caption(event):
             end = 2 * (entity.offset + entity.length)
             caption = caption[:end] + f" ({entity.url})".encode("utf-16-le") + caption[end:]
     caption = caption.decode("utf-16-le")
+    # AstrBot's speech-to-text may already have put its own Plain transcript here;
+    # only a caption restored earlier counts as present.
+    if any(isinstance(part, Plain) and part.text == caption for part in message.message):
+        return
     message.message.append(Plain(text=caption))
     message.message_str = event.message_str = (event.message_str + "\n" + caption).strip()
+
+
+def _unbounded_voice(raw, part):
+    """A direct voice note goes to AstrBot unchanged, as on QQ's reply path.
+
+    AstrBot has already converted it to a 48 kHz WAV of about 96 KB a second, so
+    the 5 MiB audio limit would stop a voice note near 55 seconds. Music and
+    quoted recordings are still read within the turn limits.
+    """
+    return type(part) is Record and getattr(raw, "voice", None) is not None
 
 
 def needs_preparation(event):
@@ -101,9 +112,8 @@ def needs_preparation(event):
     raw = _update_message(event) if _private(event) else None
     if raw is None or event.get_extra(_PREPARED):
         return False
-    # Voice notes and music are converted to WAV without a size limit; both count against the turn.
     return bool(getattr(raw, "media_group_id", None)) or any(
-        isinstance(part, _MEDIA)
+        type(part) in _LIMITS and not _unbounded_voice(raw, part)
         or isinstance(part, Reply) and any(isinstance(child, _MEDIA) for child in part.chain or ())
         for part in event.message_obj.message)
 
@@ -148,14 +158,19 @@ def _read_temp_record(value, maximum_bytes):
     return content
 
 
-def _temporary_file(event, name, data):
-    """Hand AstrBot a local copy so File.get_file does not download the original again."""
+def _temporary_path(event, suffix, data):
+    """A local copy owned by the event, so AstrBot removes it with the event's other files."""
     directory = Path(get_astrbot_temp_path())
     directory.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=directory, suffix=Path(name).suffix[:16], delete=False) as stream:
+    with NamedTemporaryFile(dir=directory, suffix=suffix[:16], delete=False) as stream:
         event.track_temporary_local_file(stream.name)
         stream.write(data)
-    return File(name=name, file=stream.name)
+    return stream.name
+
+
+def _temporary_file(event, name, data):
+    """Hand AstrBot a local copy so File.get_file does not download the original again."""
+    return File(name=name, file=_temporary_path(event, Path(name).suffix, data))
 
 
 def _video_name(part, name):
@@ -227,12 +242,17 @@ class _TurnReader:
         if isinstance(part, File):
             # Keep the name: the request hook recognizes a video file by its suffix.
             return _temporary_file(self.event, name, data), len(data)
-        return Video(file="base64://" + base64.b64encode(data).decode("ascii")), len(data)
+        suffix = Path(value.split("?", 1)[0]).suffix.lower()
+        return Video(file=_temporary_path(
+            self.event, suffix if file_is_video(File(name=value)) else ".mp4", data)), len(data)
 
     async def _recording(self, part, meter):
         data = await self._bounded(asyncio.to_thread(
             _read_temp_record, part.path or part.file, min(self.remaining, MAX_AUDIO_BYTES)), meter)
-        return Record(file="base64://" + base64.b64encode(data).decode("ascii")), len(data)
+        path = _temporary_path(self.event, ".wav", data)
+        record = Record(file=path, url=path)
+        record.path = path
+        return record, len(data)
 
     async def _document(self, part):
         locator = file_locator(0, part)
@@ -320,8 +340,9 @@ async def _prepare(event, scope, settings):
     message = event.message_obj
     parts = list(message.message)
     notes = []
+    raw = _update_message(event)
     for index, part in enumerate(parts):
-        if type(part) in _LIMITS:
+        if type(part) in _LIMITS and not _unbounded_voice(raw, part):
             parts[index] = await reader.replace(part)
             if isinstance(parts[index], Plain):
                 notes.append(parts[index].text)
