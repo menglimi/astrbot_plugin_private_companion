@@ -14,6 +14,7 @@ import mimetypes
 import os
 from pathlib import Path
 import stat
+import threading
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
 
@@ -195,13 +196,25 @@ def _read_temp_record(value, maximum_bytes):
     return content
 
 
-def _temporary_path(event, suffix, data):
-    """A local copy owned by the event, so AstrBot removes it with the event's other files."""
+def _temporary_path(event, suffix, data, adopt=None):
+    """A local copy owned by the event, so AstrBot removes it with the event's other files.
+
+    ``adopt`` hands the finished file to the event. It refuses once the waiting turn
+    has given up, since the event may already be cleaned up; the copy is then deleted here.
+    """
     directory = Path(get_astrbot_temp_path())
     directory.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=directory, suffix=suffix[:16], delete=False) as stream:
-        event.track_temporary_local_file(stream.name)
-        stream.write(data)
+    stream = NamedTemporaryFile(dir=directory, suffix=suffix[:16], delete=False)
+    try:
+        with stream:
+            stream.write(data)
+        adopted = adopt(stream.name) if adopt is not None else event.track_temporary_local_file(stream.name) or True
+    except BaseException:
+        Path(stream.name).unlink(missing_ok=True)
+        raise
+    if not adopted:
+        Path(stream.name).unlink(missing_ok=True)
+        raise TaskError("host_attachment_abandoned", "the turn stopped waiting for this copy")
     return stream.name
 
 
@@ -257,11 +270,32 @@ class _TurnReader:
             raise
 
     async def _save(self, suffix, data, meter, deadline=None):
-        """Write the local copy off the event loop, within the turn deadline."""
-        return await self._bounded(asyncio.to_thread(_temporary_path, self.event, suffix, data), meter, deadline)
+        """Write the local copy off the event loop, within the turn deadline.
+
+        The write can outlive a timeout; whichever comes first under the lock decides
+        whether the event adopts the file or the late write deletes it.
+        """
+        lock, state = threading.Lock(), {"abandoned": False}
+
+        def adopt(path):
+            with lock:
+                if state["abandoned"]:
+                    return False
+                self.event.track_temporary_local_file(path)
+                return True
+
+        try:
+            return await self._bounded(
+                asyncio.to_thread(_temporary_path, self.event, suffix, data, adopt), meter, deadline)
+        except BaseException:
+            with lock:
+                state["abandoned"] = True
+            raise
 
     async def _photo(self, part, meter):
-        locator = image_locator(len(self.photos), part.file, part.url)
+        # Resolving a saved photo's path touches the disk; keep it off the loop and under the deadline.
+        locator = await self._bounded(
+            asyncio.to_thread(image_locator, len(self.photos), part.file, part.url), meter)
         image = await self._bounded(load_native_image(
             locator, maximum_bytes=min(self.remaining, MAX_IMAGE_BYTES)), meter)
         size = image.descriptor.retained_bytes

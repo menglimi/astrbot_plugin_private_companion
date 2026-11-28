@@ -346,6 +346,47 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         self.assertIn("附件读取超时", text(payload))
         self.assertIn("watch this", text(payload))
 
+    async def test_save_that_finishes_after_the_timeout_leaves_no_file(self):
+        import threading
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+        from astrbot_host import telegram_private_media
+
+        gate, real = threading.Event(), telegram_private_media.NamedTemporaryFile
+
+        def held(*args, **kwargs):
+            gate.wait(5)
+            return real(*args, **kwargs)
+
+        clip = dict(file_id="v1", file_unique_id="v1", width=64, height=48, duration=1)
+        event = self.event(await self.convert(video=clip, caption="watch this"))
+        temp = Path(get_astrbot_temp_path())
+        with patch("astrbot_host.telegram_private_media.MEDIA_PREPARE_TIMEOUT", 0.15), \
+                patch("astrbot_host.telegram_private_media.NamedTemporaryFile", held):
+            _, payload = await self.collect(event, FileServer({"v1": b"movie"}))
+            self.assertIn("附件读取超时", text(payload))
+            before = set(temp.iterdir())
+            # AstrBot cleans the event up while the abandoned write is still pending.
+            event.cleanup_temporary_local_files()
+            gate.set()
+            await asyncio.sleep(0.5)
+        self.assertEqual(set(temp.iterdir()) - before, set())
+
+    async def test_photo_locator_runs_off_the_event_loop(self):
+        import threading
+        from astrbot_host import telegram_private_media
+
+        real, threads = telegram_private_media.image_locator, []
+
+        def watched(*args):
+            threads.append(threading.current_thread() is threading.main_thread())
+            return real(*args)
+
+        event = self.event(await self.convert(photo=photo("p1"), caption="look"))
+        with patch("astrbot_host.telegram_private_media.image_locator", watched):
+            _, payload = await self.collect(event, FileServer({"p1": image_bytes("red")}))
+        self.assertEqual(images(payload), [image_bytes("red")])
+        self.assertEqual(threads, [False])
+
     async def test_document_follows_the_window_file_setting(self):
         document = dict(document=dict(file_id="d1", file_unique_id="d1", file_name="notes.txt"), caption="please read")
         for name, values, body, expected in (
