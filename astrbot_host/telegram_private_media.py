@@ -80,8 +80,9 @@ def restore_voice_caption(event):
     """AstrBot keeps only the recording of a voice note; put its caption back as text."""
     raw = _update_message(event) if _private(event) else None
     caption = getattr(raw, "caption", None)
+    # AstrBot's speech-to-text replaces the recording with its own Plain transcript.
     if (not getattr(raw, "voice", None) or not isinstance(caption, str) or not caption
-            or any(isinstance(part, Plain) for part in event.message_obj.message)):
+            or any(isinstance(part, Plain) and caption in part.text for part in event.message_obj.message)):
         return
     message = event.message_obj
     caption = caption.encode("utf-16-le")
@@ -100,10 +101,9 @@ def needs_preparation(event):
     raw = _update_message(event) if _private(event) else None
     if raw is None or event.get_extra(_PREPARED):
         return False
-    # A lone voice note keeps QQ's behavior. Music is converted to an unbounded WAV.
-    music = getattr(raw, "audio", None)
+    # Voice notes and music are converted to WAV without a size limit; both count against the turn.
     return bool(getattr(raw, "media_group_id", None)) or any(
-        isinstance(part, (Image, File, Video)) or isinstance(part, Record) and music
+        isinstance(part, _MEDIA)
         or isinstance(part, Reply) and any(isinstance(child, _MEDIA) for child in part.chain or ())
         for part in event.message_obj.message)
 
@@ -158,6 +158,20 @@ def _temporary_file(event, name, data):
     return File(name=name, file=stream.name)
 
 
+def _video_name(part, name):
+    """Keep a video suffix on the local copy: the request hook recognizes a video file by it.
+
+    A document without a file name gets a random hex name from AstrBot; its
+    Telegram file path still ends in the video suffix.
+    """
+    if file_is_video(File(name=name)):
+        return name
+    for value in (part.url, getattr(part, "file_", None)):
+        if isinstance(value, str) and file_is_video(File(name=value)):
+            return name + Path(value.split("?", 1)[0]).suffix.lower()
+    return name
+
+
 class _TurnReader:
     """One turn's shared allowance: direct attachments first, then quoted ones."""
 
@@ -203,7 +217,7 @@ class _TurnReader:
     async def _video(self, part, meter):
         if isinstance(part, File):
             locator = file_locator(0, part)
-            name, value = locator.name, locator.locator
+            name, value = _video_name(part, locator.name), locator.locator
         else:
             value = part.file
         if not isinstance(value, str) or not value:
@@ -215,9 +229,9 @@ class _TurnReader:
             return _temporary_file(self.event, name, data), len(data)
         return Video(file="base64://" + base64.b64encode(data).decode("ascii")), len(data)
 
-    async def _recording(self, part):
-        data = await asyncio.to_thread(
-            _read_temp_record, part.path or part.file, min(self.remaining, MAX_AUDIO_BYTES))
+    async def _recording(self, part, meter):
+        data = await self._bounded(asyncio.to_thread(
+            _read_temp_record, part.path or part.file, min(self.remaining, MAX_AUDIO_BYTES)), meter)
         return Record(file="base64://" + base64.b64encode(data).decode("ascii")), len(data)
 
     async def _document(self, part):
@@ -277,7 +291,7 @@ class _TurnReader:
                 elif kind is Video:
                     replacement, size = await self._video(part, meter)
                 else:
-                    replacement, size = await self._recording(part)
+                    replacement, size = await self._recording(part, meter)
         except asyncio.TimeoutError:
             return Plain(TIMED_OUT)
         except TaskError as error:

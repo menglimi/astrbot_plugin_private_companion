@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+import time
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from tests import astrbot_data_root  # noqa: F401 - isolate the SDK before import
 from telegram import Update
 from astrbot.core.astr_main_agent import collect_initial_request
-from astrbot.core.message.components import File, Reply
+from astrbot.core.message.components import File, Plain, Reply
 from tests.audio_support import audio_bytes
 from tests.test_conversation_images import image_bytes
 from tests.test_telegram_platform import USER_ID, TelegramFixture
@@ -231,12 +232,15 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         from astrbot_host.core_reply_perception import video_placeholders
 
         clip = dict(file_id="v1", file_unique_id="v1", width=64, height=48, duration=1)
-        for fields in (dict(video=clip, caption="watch this"),
-                       dict(document=dict(file_id="v1", file_unique_id="v1", file_name="trip.mp4"),
-                            caption="watch this")):
-            with self.subTest(kind=next(iter(fields))):
+        for kind, fields in (("video", dict(video=clip, caption="watch this")),
+                             ("document", dict(document=dict(file_id="v1", file_unique_id="v1",
+                                                             file_name="trip.mp4"), caption="watch this")),
+                             # AstrBot names an unnamed document with random hex; the file path keeps .mp4.
+                             ("unnamed document", dict(document=dict(file_id="v1.mp4", file_unique_id="v1"),
+                                                       caption="watch this"))):
+            with self.subTest(kind=kind):
                 event = self.event(await self.convert(**fields))
-                request, payload = await self.collect(event, FileServer({"v1": b"movie"}))
+                request, payload = await self.collect(event, FileServer({"v1": b"movie", "v1.mp4": b"movie"}))
                 (item,) = video_placeholders(request, include_quoted=False)
                 self.assertEqual(item.location, "path")
                 self.assertEqual(Path(item.value).read_bytes(), b"movie")
@@ -258,16 +262,55 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         self.assertIn("listen to this", text(payload))
         self.assertEqual(len(request.audio_urls), 1)
 
-    async def test_music_over_the_voice_limit_keeps_its_caption(self):
+    async def test_voice_caption_survives_astrbot_speech_to_text(self):
+        from astrbot_host.telegram_private_media import restore_voice_caption
+
         async def download(url, path):
             Path(path).write_bytes(audio_bytes())
 
-        for limit, kept in ((100, 0), (1024 ** 2, 1)):
-            with self.subTest(limit=limit):
+        with patch("astrbot.core.platform.sources.telegram.tg_adapter.download_file", download):
+            message = await self.convert(voice=dict(file_id="a1", file_unique_id="a1", duration=1),
+                                         caption="listen to this")
+        # AstrBot's preprocessing replaces the recording with its transcript before the plugin runs.
+        message.message[:] = [Plain(text="voice transcript")]
+        event = self.event(message)
+        for _ in range(2):
+            restore_voice_caption(event)
+        texts = [part.text for part in event.message_obj.message if isinstance(part, Plain)]
+        self.assertEqual(texts, ["voice transcript", "listen to this"])
+
+    async def test_slow_recording_read_notes_the_timeout(self):
+        async def download(url, path):
+            Path(path).write_bytes(audio_bytes())
+
+        def slow(*args):
+            time.sleep(0.3)
+            return audio_bytes()
+
+        with patch("astrbot.core.platform.sources.telegram.tg_adapter.download_file", download):
+            message = await self.convert(audio=dict(file_id="a1", file_unique_id="a1", duration=1), caption="my song")
+        event = self.event(message)
+        with patch("astrbot_host.telegram_private_media.MEDIA_PREPARE_TIMEOUT", 0.05), \
+                patch("astrbot_host.telegram_private_media._read_temp_record", slow):
+            request, payload = await self.collect(event, FileServer({}))
+        self.assertEqual(request.audio_urls, [])
+        self.assertIn("附件读取超时", text(payload))
+        self.assertIn("my song", text(payload))
+
+    async def test_recording_over_the_audio_limit_keeps_its_caption(self):
+        from astrbot_host.telegram_private_media import restore_voice_caption
+
+        async def download(url, path):
+            Path(path).write_bytes(audio_bytes())
+
+        for field, limit, kept in (("audio", 100, 0), ("audio", 1024 ** 2, 1), ("voice", 100, 0),
+                                   ("voice", 1024 ** 2, 1)):
+            with self.subTest(field=field, limit=limit):
                 with patch("astrbot.core.platform.sources.telegram.tg_adapter.download_file", download):
-                    message = await self.convert(audio=dict(file_id="a1", file_unique_id="a1", duration=1),
+                    message = await self.convert(**{field: dict(file_id="a1", file_unique_id="a1", duration=1)},
                                                  caption="my song")
                 event = self.event(message)
+                restore_voice_caption(event)
                 with patch("astrbot_host.telegram_private_media.MAX_AUDIO_BYTES", limit):
                     request, payload = await self.collect(event, FileServer({}))
                 self.assertIn("my song", text(payload))
