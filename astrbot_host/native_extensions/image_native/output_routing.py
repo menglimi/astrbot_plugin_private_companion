@@ -16,9 +16,11 @@ import aiohttp
 
 from .backends import NativeTransportBackend
 from .nai_backend import NAIImageBackend
-from .output_configuration import XAI_PLATFORM, accepted_request_fields, is_xai_image_host
+from .output_configuration import (XAI_PLATFORM, accepted_request_fields, image_model_family,
+                                   is_xai_image_host)
 from .owner import checked
-from .types import MAX_REFERENCE_IMAGES, BackendResult, NativeImageError, fingerprint
+from .types import (MAX_REFERENCE_IMAGES, BackendResult, NativeImageError,
+                    aspect_ratio_dimensions, fingerprint)
 
 OPENAI_COMPATIBLE_PLATFORMS = frozenset({"openai", "openrouter", "agnes", "sensenova", "doubao"})
 OPENAI_IMAGE_SUFFIXES = ("/images/generations", "/images/edits")
@@ -313,23 +315,57 @@ def operation_url(base: str, operation: str, platform: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path + suffix, parsed.query, ""))
 
 
-def bailian_image_body(config, prompt: str, negative_prompt: str = "") -> dict:
+def bailian_image_body(
+    config,
+    prompt: str,
+    negative_prompt: str = "",
+    *,
+    width: int | None = None,
+    height: int | None = None,
+) -> dict:
     """The DashScope multimodal image-generation request.
 
     Wan/Qwen image models use ``input.messages``/``parameters.size`` rather than
     the OpenAI Images shape.  ``size`` is the provider's ``WIDTH*HEIGHT`` string;
     the same body is accepted by the native multimodal endpoint.
     """
-    width = int(config.get("width", 1024))
-    height = int(config.get("height", 1024))
+    resolved_width = int(width if width is not None else config.get("width", 1024))
+    resolved_height = int(height if height is not None else config.get("height", 1024))
     payload = {
         "model": config.get("model", ""),
         "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
-        "parameters": {"size": f"{width}*{height}", "n": 1, "watermark": False},
+        "parameters": {"size": f"{resolved_width}*{resolved_height}", "n": 1, "watermark": False},
     }
     if isinstance(negative_prompt, str) and negative_prompt.strip():
         payload["input"]["negative_prompt"] = negative_prompt.strip()
     return payload
+
+
+_LANDSCAPE_RATIOS = frozenset({"3:2", "4:3", "16:9"})
+_PORTRAIT_RATIOS = frozenset({"2:3", "3:4", "9:16"})
+
+
+def openai_aspect_size(config: dict, aspect_ratio: str) -> str:
+    """Resolve one requested aspect ratio to a provider-compatible ``WxH`` size."""
+    family = image_model_family(config.get("model", ""))
+    if family == "gpt-image":
+        if aspect_ratio in _LANDSCAPE_RATIOS:
+            return "1536x1024"
+        if aspect_ratio in _PORTRAIT_RATIOS:
+            return "1024x1536"
+        return "1024x1024"
+    if family == "dall-e":
+        if aspect_ratio in _LANDSCAPE_RATIOS:
+            return "1792x1024"
+        if aspect_ratio in _PORTRAIT_RATIOS:
+            return "1024x1792"
+        return "1024x1024"
+    width, height = aspect_ratio_dimensions(
+        aspect_ratio,
+        base_width=int(config.get("width", 1024) or 1024),
+        base_height=int(config.get("height", 1024) or 1024),
+    )
+    return f"{width}x{height}"
 
 
 def bailian_image_entries(payload: dict) -> list:
@@ -535,13 +571,31 @@ class OnlineImageBackend:
         if platform not in OPENAI_COMPATIBLE_PLATFORMS and platform not in {"minimax", XAI_PLATFORM, "bailian"}:
             raise NativeImageError("unsupported_image_platform", unconfirmed=False)
         url = operation_url(base, invocation.operation, platform)
+        requested_ratio = invocation.parameters.get("aspect_ratio")
         if platform == "bailian":
-            body = bailian_image_body(config, invocation.prompt, invocation.negative_prompt)
+            if requested_ratio:
+                bailian_w, bailian_h = aspect_ratio_dimensions(
+                    requested_ratio,
+                    base_width=int(config.get("width", 1024) or 1024),
+                    base_height=int(config.get("height", 1024) or 1024),
+                )
+            else:
+                bailian_w = bailian_h = None
+            body = bailian_image_body(
+                config,
+                invocation.prompt,
+                invocation.negative_prompt,
+                width=bailian_w,
+                height=bailian_h,
+            )
             kwargs = {"json": body}
         else:
-            size = f"{config['width']}x{config['height']}"
             if platform == "agnes" and config.get("size_label") in {"1K", "2K", "3K", "4K"}:
                 size = config["size_label"]
+            elif requested_ratio:
+                size = openai_aspect_size(config, requested_ratio)
+            else:
+                size = f"{config['width']}x{config['height']}"
             # The optional request fields follow the model's protocol.  The official
             # GPT Image family accepts no ``response_format`` and only
             # auto/low/medium/high quality; 7.0.7's stored ``standard`` is a legacy
@@ -555,23 +609,26 @@ class OnlineImageBackend:
             if platform == XAI_PLATFORM:
                 # Grok Imagine rejects OpenAI's ``size`` field.  Generation takes a
                 # native ``aspect_ratio``/``resolution`` pair; an edit keeps the
-                # source image's framing instead of being cropped to the saved
-                # canvas.  An inexpressible canvas is left to the provider instead
-                # of guessing a neighbouring ratio.
+                # source image's framing unless an explicit aspect_ratio was requested.
                 if invocation.operation == "generate":
-                    aspect_ratio = xai_ratio(config)
+                    aspect_ratio = requested_ratio or xai_ratio(config)
                     if aspect_ratio:
                         body["aspect_ratio"] = aspect_ratio
                     resolution = xai_resolution(config.get("size_label"))
                     if resolution:
                         body["resolution"] = resolution
+                elif requested_ratio:
+                    body["aspect_ratio"] = requested_ratio
             else:
                 body["size"] = size
             if accepted["response_format"]:
                 body["response_format"] = accepted["response_format"]
             if platform == "minimax":
-                divisor = math.gcd(config["width"], config["height"])
-                ratio = config.get("ratio") or f"{config['width'] // divisor}:{config['height'] // divisor}"
+                if requested_ratio:
+                    ratio = requested_ratio
+                else:
+                    divisor = math.gcd(config["width"], config["height"])
+                    ratio = config.get("ratio") or f"{config['width'] // divisor}:{config['height'] // divisor}"
                 body = {"model": config["model"], "prompt": invocation.prompt,
                         "n": 1, "aspect_ratio": ratio,
                         "response_format": "base64"}

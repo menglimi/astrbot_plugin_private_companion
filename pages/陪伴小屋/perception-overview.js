@@ -11,7 +11,7 @@ window.CompanionPerceptionOverviewPage = (() => {
   let recallStatus = null, recallState = "loading", recallError = "", mihomeStatus = null, mihomeState = "loading";
   let huaweiHealth = null, huaweiHealthState = "loading", huaweiHealthError = "";
   let materialPool = null, materialPoolState = "loading", materialPoolError = "";
-  let itemPreviewMarkup = new Map(), activePreviewItemId = "";
+  let itemPreviewMarkup = new Map(), activePreviewItemId = "", activeSummaryState = "";
   let balanceConfig = null, balanceDraft = null, balanceExpanded = false, balanceConfigLoading = false;
   let balanceWorkspace = null, balanceMarkup = "", selectedDestination = "", selectedModelTab = "", selectedItemId = "";
   let balanceStatus = null, balanceStatusLoading = false, balanceStatusRefreshQueued = false, balanceStatusError = "";
@@ -310,6 +310,7 @@ window.CompanionPerceptionOverviewPage = (() => {
   function reasonLabel(code) {
     return ({capability_consent_missing:"等待此私聊授权", capability_consent_revoked:"此私聊已撤回授权",
       camera_consent_missing:"等待此私聊授权", camera_tool_unavailable:"摄像头工具暂不可用",
+      camera_disabled:"摄像头开关已关闭",
       capability_role_disabled:"此角色未启用手机读取", reality_provider_unavailable:"Reality 扩展未就绪",
       reality_tool_unavailable:"手机读取工具暂不可用", no_recent_snapshot:"授权已就绪，尚无最近快照",
       no_recent_observation:"摄像头授权已就绪，尚无最近单帧结果",
@@ -833,14 +834,17 @@ window.CompanionPerceptionOverviewPage = (() => {
         : runtimeState === "error" ? "手机状态读取失败"
           : realityResult.reason ? reasonLabel(realityResult.reason) : "暂无已授权的手机状态快照";
     const cameraObservation = cameraResult.observation || {};
-    const cameraValue = windowRequired ? "请选择私聊窗口" : cameraResult.state === "available"
-      ? cameraResult.answer_available
-        ? cameraObservation.summary || cameraObservation.scene_description || cameraObservation.purpose_answer || "最近单帧已识别"
-        : cameraObservation.uncertainty || cameraResult.message || "最近单帧结果不确定"
+    const cameraExplicitlyOff = cameraResult.enabled === false || cameraResult.state === "disabled";
+    const cameraValue = windowRequired ? "请选择私聊窗口"
       : runtimeState === "loading" ? "正在读取摄像头状态"
         : runtimeState === "error" ? "摄像头状态读取失败"
-          : cameraResult.reason ? reasonLabel(cameraResult.reason)
-        : cameraResult.state === "ready" ? "授权已就绪，暂无识别结果" : "暂无可用的摄像头结果";
+          : cameraExplicitlyOff ? "摄像头感知未开启"
+            : cameraResult.state === "available"
+              ? cameraResult.answer_available
+                ? cameraObservation.summary || cameraObservation.scene_description || cameraObservation.purpose_answer || "最近单帧已识别"
+                : cameraObservation.uncertainty || cameraResult.message || "最近单帧结果不确定"
+              : cameraResult.reason ? reasonLabel(cameraResult.reason)
+                : cameraResult.state === "ready" ? "授权已就绪，暂无识别结果" : "暂无可用的摄像头结果";
     const recalls = Array.isArray(recallStatus?.entries) ? recallStatus.entries : [];
     const recallValue = recallState === "loading" ? "正在读取撤回记录"
       : recallState === "error" ? "撤回记录暂不可读"
@@ -955,6 +959,48 @@ window.CompanionPerceptionOverviewPage = (() => {
       value:alertList[0].title || alertList[0].event_name || "有官方预警",
       detail:`${({minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重"}[alertList[0].severity] || alertList[0].severity || "级别待核对")}${alertList[0].ends_at ? ` · 至 ${new Date(alertList[0].ends_at).toLocaleString("zh-CN")}` : ""}${alertList.length > 1 ? ` · 另有 ${alertList.length - 1} 条` : ""}`,
       state:"ready", tag:`${alertList.length} 条预警`});
+    const daysText = days => days === 0 ? "今天" : days === 1 ? "明天" : `${days} 天后`;
+    const datesLookahead = Number.isInteger(snapshot?.contact?.lookahead_days)
+      ? snapshot.contact.lookahead_days
+      : Number.isInteger(snapshot?.contact?.lookaheadDays) ? snapshot.contact.lookaheadDays : 7;
+    const configuredDateItems = !windowRequired && Array.isArray(snapshot?.contact?.configured_items)
+      ? snapshot.contact.configured_items.filter(item => item && typeof item.label === "string")
+      : [];
+    const configuredDateCount = !windowRequired
+      ? (Number.isInteger(snapshot?.contact?.configured_count) ? snapshot.contact.configured_count : configuredDateItems.length)
+      : 0;
+    const nextUpcomingDate = !windowRequired
+      ? (snapshot?.contact?.next_upcoming && typeof snapshot.contact.next_upcoming === "object"
+          ? snapshot.contact.next_upcoming
+          : configuredDateItems.find(item => Number.isInteger(item?.days_until)) || null)
+      : null;
+    const datesState = windowRequired ? "pending"
+      : events.length ? "ready"
+        : configuredDateCount > 0 ? "standby" : "off";
+    const datesTag = windowRequired ? "未选择窗口"
+      : events.length ? `${events.length} 项`
+        : configuredDateCount > 0 ? `已配置 ${configuredDateCount} 项` : "未配置";
+    const datesValue = windowRequired
+      ? "请选择私聊窗口"
+      : events.length
+        ? events.map(event => `${event.label} · ${daysText(event.days)}`).join("；")
+        : configuredDateCount > 0
+          ? nextUpcomingDate && Number.isInteger(nextUpcomingDate.days_until)
+            ? `近 ${datesLookahead} 天无节日 · 下一项：${nextUpcomingDate.label}（${daysText(nextUpcomingDate.days_until)}）`
+            : `近 ${datesLookahead} 天无节日 · 已配置 ${configuredDateCount} 项`
+          : "暂无近期生日与纪念日";
+    const datesDetail = windowRequired
+      ? "选择私聊窗口后查看当前对象的生日与纪念日"
+      : events.length
+        ? (configuredDateCount > 0 ? `已配置 ${configuredDateCount} 项 · 提前 ${datesLookahead} 天留意` : "角色档案与私聊资料")
+        : configuredDateCount > 0
+          ? (nextUpcomingDate?.date_text
+              ? `${nextUpcomingDate.source || "重要日期"} · ${nextUpcomingDate.date_text} · 点击查看全部已配置日期`
+              : "点击查看全部已配置日期与倒计时")
+          : "可在角色档案、私聊资料或下方重要日期设置中添加";
+    channel("env-dates", "environment", {tab:"config-environment:perception-detail-important-days",
+      icon:"calendar-heart", title:"重要日期", value:datesValue, detail:datesDetail,
+      state:datesState, tag:datesTag});
     channel("ext-external", "external", {tab:"config-news:perception-detail-external", icon:"globe-2", title:"外部资讯",
       value:externalValue, detail:externalDetail + (news.failureCode ? ` · ${news.failureCode}` : ""),
       state:externalState,
@@ -975,9 +1021,16 @@ window.CompanionPerceptionOverviewPage = (() => {
     channel("device-screen", "devices", {tab:tabDevice, icon:"scan-eye", title:"识屏",
       value:screenValue,
       detail:screenResult.state === "available" ? `${screenResult.surface || "屏幕画面"} · 采集 ${ageLabel(screenResult.captured_at)} · 解读 ${ageLabel(screenResult.created_at)}`
-        : "只显示最近完成的授权解读；刷新不会触发采集。",
-      state:screenResult.state === "available" ? "ready" : "pending",
-      tag:screenResult.state === "available" ? "有结果" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : screenResult.state === "blocked" ? "需授权" : "暂无结果"});
+        : screenResult.state === "empty" ? "授权与解读服务正常，暂无最近保存的屏幕解读；刷新不会触发采集。"
+          : "只显示最近完成的授权解读；刷新不会触发采集。",
+      state:screenResult.state === "available" ? "ready"
+        : runtimeState === "error" || runtimeState === "loading" ? "pending"
+          : screenResult.state === "empty" ? "standby" : "pending",
+      tag:screenResult.state === "available" ? "有结果"
+        : runtimeState === "error" ? "读取失败"
+          : runtimeState === "loading" ? "读取中"
+            : screenResult.state === "empty" ? "已就绪·暂无解读"
+              : screenResult.state === "blocked" ? "需授权" : "未就绪"});
     channel("device-phone", "devices", {tab:"config-screen:perception-detail-reality-access", icon:"smartphone", title:"手机状态",
       value:phoneValue,
       /* 不再复述卡面里已经有的电量/状态字段，只回答「多久以前、刷新会不会重新采集」。 */
@@ -1018,19 +1071,40 @@ window.CompanionPerceptionOverviewPage = (() => {
       value:healthTitleValue, detail:healthTitleDetail, state:healthState, tag:healthTag});
     channel("device-camera", "devices", {tab:"config-screen:perception-detail-reality-access", icon:"camera", title:"摄像头",
       value:cameraValue,
-      detail:cameraResult.state === "available" ? `最近读取 ${ageLabel(cameraResult.captured_at)} · ${cameraResult.purpose || "按本轮明确请求"}`
-        : realityNeedsConsent ? "摄像头单独授权，只在明确请求时读取单帧。" : "只显示已经完成的单帧识别；不会因刷新而拍摄。",
-      state:cameraResult.state === "available" && cameraResult.answer_available === true ? "ready" : "pending",
-      tag:cameraResult.state === "available" ? "已识别" : realityNeedsConsent ? "需摄像头授权" : cameraResult.state === "blocked" ? "需授权" : cameraResult.state === "ready" ? "待请求" : "未就绪"});
+      detail:cameraExplicitlyOff ? "开启现实触及里的摄像头开关后，才会在明确请求时读取单帧。"
+        : cameraResult.state === "available" ? `最近读取 ${ageLabel(cameraResult.captured_at)} · ${cameraResult.purpose || "按本轮明确请求"}`
+          : cameraResult.state === "ready" ? "摄像头已启用并就绪，等待本轮明确请求时读取单帧；不会因刷新而拍摄。"
+            : realityNeedsConsent ? "摄像头单独授权，只在明确请求时读取单帧。" : "只显示已经完成的单帧识别；不会因刷新而拍摄。",
+      state:runtimeState === "error" || runtimeState === "loading" ? "pending"
+        : cameraExplicitlyOff ? "off"
+          : cameraResult.state === "available" && cameraResult.answer_available === true ? "ready"
+            : cameraResult.state === "ready" || cameraResult.state === "available" ? "standby" : "pending",
+      tag:runtimeState === "error" ? "读取失败"
+        : runtimeState === "loading" ? "读取中"
+          : cameraExplicitlyOff ? "已关闭"
+            : cameraResult.state === "available" && cameraResult.answer_available === true ? "已识别"
+              : cameraResult.state === "available" ? "待确认"
+                : cameraResult.state === "ready" ? "已开启·待命"
+                  : realityNeedsConsent ? "需摄像头授权"
+                    : cameraResult.state === "blocked" ? "需授权" : "未就绪"});
     channel("device-recalls", "external", {tab:"config-recall:perception-detail-recalls", icon:"message-square-quote", title:"撤回记录",
       value:recallValue, detail:recallDetail,
-      state:recallState === "error" || recallState === "loading" ? "pending" : recalls.length ? "ready" : "off",
-      tag:recallState === "error" ? "读取失败" : recallState === "loading" ? "读取中" : recallStatus?.enabled === false ? "未启用" : recalls.length ? "只读记录" : "无记录"});
+      state:recallState === "error" || recallState === "loading" ? "pending"
+        : recallStatus?.enabled === false ? "off"
+          : recalls.length ? "ready" : "standby",
+      tag:recallState === "error" ? "读取失败"
+        : recallState === "loading" ? "读取中"
+          : recallStatus?.enabled === false ? "未启用"
+            : recalls.length ? "只读记录" : "已开启·暂无撤回"});
     if (mihomeEnabled) channel("device-mihome", "devices", {tab:"config-screen:perception-detail-mihome", icon:"plug-zap", title:"米家设备",
       value:mihomeSummary,
-      detail:configuredDevices.slice(0, 3).map(item => `${item.name || item.aliases?.[0] || "设备"} ${item.online === true ? "在线" : item.online === false ? "离线" : "状态未知"}`).join(" · ")
-        + (mihomeStatus?.snapshot_at ? ` · 同步 ${mihomeStatus.snapshot_at}` : ""),
-      state:offlineCount ? "pending" : "ready", tag:offlineCount ? `${offlineCount} 台离线` : "设备正常"});
+      detail:configuredDevices.length
+        ? configuredDevices.slice(0, 3).map(item => `${item.name || item.aliases?.[0] || "设备"} ${item.online === true ? "在线" : item.online === false ? "离线" : "状态未知"}`).join(" · ")
+          + (mihomeStatus?.snapshot_at ? ` · 同步 ${mihomeStatus.snapshot_at}` : "")
+        : "只读设备状态已开启，前往米家设备设置映射别名后即可查看实况"
+          + (mihomeStatus?.snapshot_at ? ` · 同步 ${mihomeStatus.snapshot_at}` : ""),
+      state:configuredDevices.length === 0 ? "standby" : offlineCount ? "pending" : "ready",
+      tag:configuredDevices.length === 0 ? "已开启·未映射设备" : offlineCount ? `${offlineCount} 台离线` : "设备正常"});
     if (injectionLabels.length) channel("ext-injection", "external", {tab:"config-injection:perception-detail-injection", icon:"layers-3", title:"其他注入",
       value:`${injectionLabels.length} 项进入本轮上下文`, detail:injectionLabels.join(" · "), state:"ready", tag:"本轮材料"});
 
@@ -1179,17 +1253,8 @@ window.CompanionPerceptionOverviewPage = (() => {
         tag: alertFailed ? "读取失败" : environment.alertsReady ? "无预警" : "未配置",
         attrs:customAttrs(tabPlace, "天气预警", "env-alert"),
       });
-      const eventSummary = windowRequired
-        ? "请选择私聊窗口"
-        : events.length
-          ? events.map(event => `${event.label} · ${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}`).join("；")
-          : "暂无近期生日与纪念日";
-      const datesMini = miniMarkup({
-        state: windowRequired ? "pending" : events.length ? "ready" : "off", iconName:"calendar-heart", title:"重要日期",
-        value:eventSummary, detail:windowRequired ? "选择私聊窗口后查看当前对象的生日与纪念日" : "角色档案与私聊资料",
-        tag:windowRequired ? "未选择窗口" : events.length ? `${events.length} 项` : "暂无",
-        attrs:customAttrs("config-environment:perception-detail-important-days", "重要日期", "env-dates"),
-      });
+      const datesItem = channelById("env-dates");
+      const datesMini = datesItem ? itemMini(datesItem) : "";
       const available = weather.state === "available";
       const temp = available && weather.temperature_c != null ? `${weather.temperature_c}°C` : "—";
       const weatherBits = [weather.condition || "天气待读取",
@@ -1319,12 +1384,34 @@ window.CompanionPerceptionOverviewPage = (() => {
       itemPreviewMarkup.set("env-alert", previewCard({title:"天气预警", state:alertList.length ? "pending" : "ready",
         tag:alertList.length ? `${alertList.length} 条` : "无预警",
         body:alertList.length ? `<ul class="perception-preview-material-list">${alertList.map(alert => `<li><strong>${esc(alert.title || alert.event_name || "天气预警")}</strong><span>${esc(alert.severity || "级别待核对")}${alert.ends_at ? ` · 至 ${esc(new Date(alert.ends_at).toLocaleString("zh-CN"))}` : ""}</span></li>`).join("")}</ul>` : `<p class="perception-preview-empty">当前无预警。</p>`}));
+      const datesItem = channelById("env-dates");
+      const datesPreviewList = configuredDateItems.length
+        ? `<ul class="perception-preview-material-list is-scroll">${configuredDateItems.map(item => {
+            const countdown = Number.isInteger(item.days_until) ? daysText(item.days_until) : "待换算";
+            const meta = [item.source || "重要日期", item.date_text || item.date || "", countdown].filter(Boolean).join(" · ");
+            return `<li><strong>${esc(item.label)}</strong><span>${esc(meta)}</span></li>`;
+          }).join("")}</ul>`
+        : events.length
+          ? `<ul class="perception-preview-material-list">${events.map(event => `<li><strong>${esc(event.label)}</strong><span>${daysText(event.days)}</span></li>`).join("")}</ul>`
+          : `<p class="perception-preview-empty">尚未配置生日或纪念日；可在角色档案、私聊资料或下方重要日期设置中添加。</p>`;
+      const extraInWindow = configuredDateItems.length && events.length
+        ? events.filter(event => !configuredDateItems.some(item => item.label === event.label && item.days_until === event.days))
+        : [];
+      const extraInWindowMarkup = extraInWindow.length
+        ? `<p class="perception-preview-note">近 ${datesLookahead} 天固定节日：${esc(extraInWindow.map(event => `${event.label}（${daysText(event.days)}）`).join("、"))}</p>`
+        : "";
       itemPreviewMarkup.set("env-dates", previewCard({title:"重要日期",
-        state:windowRequired ? "pending" : events.length ? "ready" : "off",
-        tag:windowRequired ? "未选择窗口" : events.length ? `${events.length} 项` : "暂无",
+        state:datesItem?.state || datesState,
+        tag:datesItem?.tag || datesTag,
         body:windowRequired
           ? `<p class="perception-preview-empty">请先选择当前角色的私聊窗口，再查看该对象的近期生日与纪念日。</p>`
-          : events.length ? `<ul class="perception-preview-material-list">${events.map(event => `<li><strong>${esc(event.label)}</strong><span>${event.days === 0 ? "今天" : event.days === 1 ? "明天" : `${event.days} 天后`}</span></li>`).join("")}</ul>` : `<p class="perception-preview-empty">近期没有生日或纪念日。</p>`}));
+          : previewFields([
+              ["已配置总数", `${configuredDateCount} 项`],
+              ["提前留意窗口", `近 ${datesLookahead} 天`],
+              ["全年下一项", nextUpcomingDate && Number.isInteger(nextUpcomingDate.days_until)
+                ? `${nextUpcomingDate.label}（${daysText(nextUpcomingDate.days_until)}）`
+                : events.length ? `${events[0].label}（${daysText(events[0].days)}）` : "—"],
+            ]) + datesPreviewList + extraInWindowMarkup}));
       if (calendarView) itemPreviewMarkup.set("env-calendar", previewCard({title:"日期与历法", state:"ready", tag:"服务端日历",
         body:previewFields([["今天", calendarView.labels], ["农历/节气/黄历", calendarView.detail],
           ["时区", clockZone()]])}));
@@ -1353,7 +1440,9 @@ window.CompanionPerceptionOverviewPage = (() => {
         note:"健康摘要只作为交流背景，不做医疗判断，也不逐项播报指标。"}));
       const camera = channelById("device-camera");
       if (camera) itemPreviewMarkup.set("device-camera", previewCard({title:"摄像头", state:camera.state, tag:camera.tag,
-        body:previewFields([["最近观察", cameraValue], ["用途", cameraResult.state === "available" ? cameraResult.purpose || "按本轮明确请求" : "只在明确请求时读取单帧"],
+        body:previewFields([["当前状态", cameraValue],
+          ["开关状态", cameraExplicitlyOff ? "已关闭" : "已开启"],
+          ["用途", cameraResult.state === "available" ? cameraResult.purpose || "按本轮明确请求" : "只在明确请求时读取单帧"],
           ["时间", cameraResult.state === "available" ? ageLabel(cameraResult.captured_at) : "暂无已保存结果"]])}));
       const mihome = channelById("device-mihome");
       if (mihome) itemPreviewMarkup.set("device-mihome", previewCard({title:"米家设备", state:mihome.state, tag:mihome.tag,
@@ -1398,8 +1487,36 @@ window.CompanionPerceptionOverviewPage = (() => {
     const syncState = readStates.includes("error") || configurationFailed ? {label:"读取未完成", tone:"warn", icon:"triangle-alert"}
       : readStates.includes("loading") || !ready ? {label:"正在读取实况", tone:"pending", icon:"loader-circle"}
         : ready ? {label:"真实状态已同步", tone:"ready", icon:"check"} : {label:"角色上下文待读取", tone:"pending", icon:"clock"};
+    const standbyCount = percepts.filter(item => item.state === "standby").length;
     const pendingCount = percepts.filter(item => item.state === "pending").length;
-    const offCount = percepts.filter(item => item.state !== "ready" && item.state !== "pending").length;
+    const offCount = percepts.filter(item => item.state === "off").length;
+    const summaryMeta = {
+      standby: {title:"已开待命", empty:"当前没有处于待命状态的感知通道。"},
+      pending: {title:"待处理", empty:"当前没有需要处理的异常或待授权通道。"},
+      off: {title:"未启用", empty:"当前没有已关闭或未绑定的感知通道。"},
+    };
+    const summaryPill = (stateKey, count, label) => `<button type="button" class="perception-summary-pill is-${stateKey}${activeSummaryState === stateKey ? " is-active" : ""}" data-summary-state="${stateKey}" aria-expanded="${activeSummaryState === stateKey ? "true" : "false"}" aria-controls="perception-summary-popover"><i class="perception-dot" aria-hidden="true"></i>${count} ${label}</button>`;
+    const summaryPopoverMarkup = (() => {
+      if (!activeSummaryState || !summaryMeta[activeSummaryState]) return "";
+      const meta = summaryMeta[activeSummaryState];
+      const matched = percepts.filter(item => item.state === activeSummaryState);
+      const listHtml = matched.length
+        ? `<div class="perception-summary-jump-list">${matched.map(item =>
+            `<button type="button" class="perception-summary-jump is-${esc(item.state)}" ${singleAttrs(item.tab, item.title, item.id, item.modelTab)} data-summary-jump="${esc(item.id)}">`
+            + `<span class="perception-summary-jump-icon">${icon(item.icon)}</span>`
+            + `<span class="perception-summary-jump-copy"><strong>${esc(item.title)}</strong><small>${esc(item.value)}</small></span>`
+            + `${boardBadgeMarkup(item.state, item.tag)}`
+            + `</button>`
+          ).join("")}</div>`
+        : `<p class="perception-preview-empty">${esc(meta.empty)}</p>`;
+      return `<section id="perception-summary-popover" class="perception-summary-popover is-${esc(activeSummaryState)}" role="region" aria-label="${esc(meta.title)}通道列表">
+        <header class="perception-summary-popover-head">
+          <strong>${esc(meta.title)}（${matched.length} 项）</strong>
+          <button type="button" class="perception-summary-close" data-summary-close aria-label="收起状态列表">${icon("x")}<span>收起</span></button>
+        </header>
+        ${listHtml}
+      </section>`;
+    })();
     const barMarkup = `<header class="perception-board-bar">
       <div>
         <span class="perception-kicker">PERCEPTION · 感知态势总览</span>
@@ -1409,14 +1526,15 @@ window.CompanionPerceptionOverviewPage = (() => {
       <div class="perception-board-count">
         <span class="perception-board-sync is-${syncState.tone}">${icon(syncState.icon)}${esc(syncState.label)}</span>
         <b>${percepts.length} 个感知通道 · ${activeCount} 项实况在线</b>
-        <span class="perception-board-summary-pills"><small>${pendingCount} 待处理</small><small>${offCount} 未启用</small></span>
+        <span class="perception-board-summary-pills" role="group" aria-label="按感知状态查看">${summaryPill("standby", standbyCount, "待命")}${summaryPill("pending", pendingCount, "待处理")}${summaryPill("off", offCount, "未启用")}</span>
         <span class="perception-v9-sr">${esc(runtimeState === "error" ? (snapshot?.error || "读取超时") : "")}</span>
         <button type="button" id="perception-status-refresh" class="button small perception-refresh-btn" data-context-refresh>${icon("refresh-cw")}<span>重新读取</span></button>
       </div>
-    </header>`;
+    </header>${summaryPopoverMarkup}`;
     const boardMarkup = `<section class="perception-board" aria-label="感知态势板">${boardSpecs.map((spec, index) => {
       const rows = boardRows(spec.id);
       const live = rows.filter(item => item.state === "ready").length;
+      const standby = rows.filter(item => item.state === "standby").length;
       const count = spec.id === "environment" ? Math.max(rows.length, 4) : Math.max(rows.length, 1);
       return `<article class="perception-board-card is-${spec.tone}" data-perception-board="${esc(spec.id)}">
         <header id="perception-board-toggle-${spec.id}" class="perception-board-head"
@@ -1424,7 +1542,7 @@ window.CompanionPerceptionOverviewPage = (() => {
           <span class="perception-board-icon">${icon(spec.icon)}</span>
           <span class="perception-board-title">
             <strong><span class="perception-board-index">0${index + 1}</span>${esc(spec.title)}</strong>
-            <small>${live} 项实况在线 · 共 ${count} 项可配置</small>
+            <small>${live} 项实况在线${standby ? ` · ${standby} 项待命` : ""} · 共 ${count} 项可配置</small>
           </span>
           <button type="button" class="perception-board-open" ${destinationAttrs(spec.tab, spec.modelTab)} aria-label="打开${esc(spec.title)}分区配置">
             <span>分区设置</span>${icon("chevron-right")}
@@ -1889,10 +2007,27 @@ window.CompanionPerceptionOverviewPage = (() => {
       return;
     }
 
+    const summaryButton = event.target.closest("[data-summary-state]");
+    if (summaryButton) {
+      const nextState = summaryButton.dataset?.summaryState || "";
+      activeSummaryState = activeSummaryState === nextState ? "" : nextState;
+      render({balanceSource:false});
+      return;
+    }
+    if (event.target.closest("[data-summary-close]")) {
+      activeSummaryState = "";
+      render({balanceSource:false});
+      return;
+    }
+
     const gotoButton = event.target.closest("[data-board-goto]");
     if (gotoButton) {
       /* 配置本体由页面下方的分区面板维护。功能板条目只把对应的
          单项面板送到下方，不展开整个分类。 */
+      if (gotoButton.dataset?.summaryJump && activeSummaryState) {
+        activeSummaryState = "";
+        render({balanceSource:false});
+      }
       window.CompanionPerceptionTabs?.activate?.(gotoButton.dataset.boardGoto, {
         focus:true, scroll:true, modelTab:gotoButton.dataset.boardModelTab || "",
         single:gotoButton.dataset.boardSingle === "true",
@@ -1973,7 +2108,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     modelStatus = null; modelState = "loading"; voiceStatus = null; voiceState = "loading";
     imageStatus = null; imageState = "loading"; semanticStatus = null; semanticState = "loading";
     recallStatus = null; recallState = "loading"; mihomeStatus = null; mihomeState = "loading";
-    lastDay = ""; selectedDestination = ""; selectedModelTab = "";
+    lastDay = ""; selectedDestination = ""; selectedModelTab = ""; activeSummaryState = "";
     balanceWorkspace = null; balanceMarkup = "";
     balanceConfig = null; balanceDraft = null; balanceExpanded = false; balanceConfigLoading = false;
     balanceStatus = null; balanceStatusLoading = false; balanceStatusRefreshQueued = false; balanceStatusError = "";

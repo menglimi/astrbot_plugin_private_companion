@@ -20,7 +20,7 @@ from .contact_models import ContactIntent
 from .models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
 from .morning_rhythm import (
     MORNING_INSTRUCTION, NUDGE_INSTRUCTION, MorningContact, RoutineSample,
-    estimate, morning_plan, predict_wake_window, rhythm_adjustment, role_wake_at,
+    estimate, manual_wake_window, morning_plan, predict_wake_window, rhythm_adjustment, role_wake_at,
 )
 from .wake_detection import (
     AWAKE_STATES, NEGATIVE, SIGNALS, evidence_from_mobile_snapshot,
@@ -62,22 +62,45 @@ class WakeContactEvents:
             state = self.role_state.read(context, at=at)
         except (TaskError, ValueError, TypeError, KeyError, AttributeError):
             return {}
-        body = state.get("body_sleep") if isinstance(state, Mapping) else None
+        if not isinstance(state, Mapping):
+            return {}
+        sleep = state.get("sleep_execution")
+        if isinstance(sleep, Mapping):
+            return sleep
+        body = state.get("body_sleep")
         return body if isinstance(body, Mapping) else {}
 
-    def _role_woke_at(self, context, at, profile, zone, confidence_floor=0.2):
-        """The role's own wake receipt, or the learned window opening as fallback.
+    def _wake_window(self, preferences, profile, at, zone):
+        if not preferences.values["routine_learning_enabled"]:
+            return manual_wake_window(
+                at=at,
+                zone=zone.key,
+                morning_start_minutes=_minutes(preferences.values["wake_morning_start"], 300),
+                morning_end_minutes=_minutes(preferences.values["wake_morning_end"], 690),
+            )
+        return predict_wake_window(
+            profile,
+            at=at,
+            zone=zone.key,
+            confidence_floor=preferences.values["morning_wake_confidence_floor"],
+        )
 
-        Role state is optional.  An installation without an enabled body clock
-        still gets the old daily morning rhythm: the learned wake window opens,
-        the role may greet first.  This never uses user silence as evidence.
+    def _role_woke_at(self, context, at, profile, zone, confidence_floor=0.2, *, window=None):
+        """The role's own wake receipt, or the active window opening as fallback.
+
+        Role state is optional. An installation without an enabled body clock
+        still gets the configured daily morning rhythm: once the wake window
+        opens, the role may greet first. This never uses user silence as
+        evidence.
         """
         woke = role_wake_at(self._body_sleep(context, at))
         if woke is not None:
             return woke
-        window = predict_wake_window(profile, at=at, zone=zone.key,
-                                     confidence_floor=confidence_floor)
-        return window.start_at - timedelta(minutes=15)
+        active_window = window or predict_wake_window(profile, at=at, zone=zone.key,
+                                                      confidence_floor=confidence_floor)
+        if active_window.source == "manual":
+            return active_window.start_at
+        return active_window.start_at - timedelta(minutes=15)
 
     def _port_snapshot(self, context):
         if not callable(self.port):
@@ -265,10 +288,12 @@ class WakeContactEvents:
             return None
         zone = ZoneInfo(preferences.values["quiet_timezone"])
         profile = self._profile(context, preferences, at)
+        window = self._wake_window(preferences, profile, at, zone)
         evidence = self._evidence(context, at)
         observation = observe(evidence, at=at, zone=zone.key)
         role_woke = self._role_woke_at(context, at, profile, zone,
-                                       preferences.values["morning_wake_confidence_floor"])
+                                       preferences.values["morning_wake_confidence_floor"],
+                                       window=window)
         if interaction is None and self.contacts.history is not None:
             interaction = self.contacts.history.interaction(context, at, action=GROUP)
         contact = self._morning_contact(context, observation, at, interaction, zone)
@@ -291,7 +316,8 @@ class WakeContactEvents:
                             max_nudges=preferences.values["morning_nudge_max_attempts"],
                             morning_start_minutes=_minutes(preferences.values["wake_morning_start"], 300),
                             morning_end_minutes=_minutes(preferences.values["wake_morning_end"], 690),
-                            wake_confidence_floor=preferences.values["morning_wake_confidence_floor"])
+                            wake_confidence_floor=preferences.values["morning_wake_confidence_floor"],
+                            window=window)
         self.last_diagnostic = {"reason": step.reason, "next_at": step.due_at,
                                 "state": observation.state, "confidence": observation.confidence}
         if step.action == "role_morning" and not preferences.values["morning_role_greeting_enabled"]:
@@ -354,20 +380,21 @@ class WakeContactEvents:
         if marker.get("local_date") != local_date:
             raise TaskError("contact_morning_changed", "the morning candidate belongs to another local day")
         profile = self._profile(context, preferences, at)
-        window = predict_wake_window(profile, at=at, zone=zone.key,
-                                     confidence_floor=preferences.values["morning_wake_confidence_floor"])
+        window = self._wake_window(preferences, profile, at, zone)
         if stamp(window.start_at) != marker.get("window_start") or stamp(window.end_at) != marker.get("window_end"):
-            raise TaskError("contact_morning_changed", "the learned wake window changed after selection")
+            raise TaskError("contact_morning_changed", "the wake window changed after selection")
         action = marker.get("action")
         if action == "role_morning":
             if not preferences.values["morning_role_greeting_enabled"]:
                 raise TaskError("contact_morning_disabled", "role morning greeting was disabled")
             role_woke = self._role_woke_at(context, at, profile, zone,
-                                       preferences.values["morning_wake_confidence_floor"])
+                                       preferences.values["morning_wake_confidence_floor"],
+                                       window=window)
             if at - role_woke > timedelta(minutes=180):
                 raise TaskError("contact_morning_expired", "the role woke too long ago for this morning greeting")
-            if at > window.end_at + timedelta(minutes=60):
-                raise TaskError("contact_morning_expired", "the learned wake window has closed")
+            latest = window.end_at if window.source == "manual" else window.end_at + timedelta(minutes=60)
+            if at > latest:
+                raise TaskError("contact_morning_expired", "the wake window has closed")
             return True
         if action == "wake_nudge":
             if not preferences.values["morning_nudge_enabled"]:

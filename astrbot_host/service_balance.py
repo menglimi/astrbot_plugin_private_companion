@@ -303,6 +303,7 @@ class MultiStationBalancePort:
         from companion_v2.model_gateway.quota import (
             convert_currency_amount,
             evaluate_station_health,
+            resolve_station_quota_model,
         )
 
         service, participating, awareness = self._participating()
@@ -325,9 +326,10 @@ class MultiStationBalancePort:
             observed = datetime.fromisoformat(snap.checked_at) if snap.checked_at else now_dt
             if observed.tzinfo is None:
                 observed = observed.replace(tzinfo=timezone.utc)
+            qmodel = resolve_station_quota_model(spec, snap)
             return BalanceObservation(
                 self._dec(snap.remaining),
-                self._dec(snap.total),
+                self._dec(snap.total) if qmodel == "capped" else None,
                 observed,
                 unit=snap.display_type or "额度",
                 used=self._dec(snap.used),
@@ -353,7 +355,8 @@ class MultiStationBalancePort:
                 if conv_rem is None:
                     continue
                 rem_sum += self._dec(conv_rem)
-                if snap.total is not None:
+                qmodel = resolve_station_quota_model(spec, snap)
+                if qmodel == "capped" and snap.total is not None:
                     conv_tot = convert_currency_amount(snap.total, snap.display_type, target_currency, usd_cny_rate)
                     if conv_tot is not None:
                         total_sum += self._dec(conv_tot)
@@ -387,31 +390,32 @@ class MultiStationBalancePort:
                 extra=extra_text,
             )
 
-        # mode == "any_low": choose the most urgent healthy station (critical > low > lowest pct / converted remaining)
+        # mode == "any_low": choose the most urgent healthy station (critical > low > lowest capped pct / converted remaining)
         severity_rank = {"critical": 0, "low": 1, "normal": 2}
         candidates = []
         for spec in participating:
             snap = snapshots.get(spec.id)
             if snap is None or not snap.ok or snap.remaining is None:
                 continue
-            health = evaluate_station_health(spec, snap)
+            qmodel = resolve_station_quota_model(spec, snap)
+            health = evaluate_station_health(spec, snap, usd_cny_rate=usd_cny_rate)
             rank = severity_rank.get(health, 2)
             conv_rem = convert_currency_amount(snap.remaining, snap.display_type, target_currency, usd_cny_rate)
-            pct = snap.remaining_percent if snap.remaining_percent is not None else 101.0
+            pct = snap.remaining_percent if (qmodel == "capped" and snap.remaining_percent is not None) else 101.0
             sort_key = (rank, pct, conv_rem if conv_rem is not None else snap.remaining)
-            candidates.append((sort_key, spec, snap))
+            candidates.append((sort_key, spec, snap, qmodel))
 
         if not candidates:
             raise ValueError("参与余额感知的站点暂均不可用")
         candidates.sort(key=lambda item: item[0])
-        _, chosen_spec, chosen_snap = candidates[0]
+        _, chosen_spec, chosen_snap, chosen_model = candidates[0]
         self._last_selected = (chosen_spec.id, chosen_spec.name, chosen_snap.symbol or "")
         observed = datetime.fromisoformat(chosen_snap.checked_at) if chosen_snap.checked_at else now_dt
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=timezone.utc)
         return BalanceObservation(
             self._dec(chosen_snap.remaining),
-            self._dec(chosen_snap.total),
+            self._dec(chosen_snap.total) if chosen_model == "capped" else None,
             observed,
             unit=chosen_snap.display_type or "额度",
             used=self._dec(chosen_snap.used),
@@ -420,13 +424,17 @@ class MultiStationBalancePort:
         )
 
     def balance_metadata(self, observation=None):
-        """Return explicit station & awareness-mode metadata for both success and error states."""
-        from companion_v2.model_gateway.quota import normalize_currency_symbol
+        """Return explicit station, awareness-mode, and multi-currency metadata for both success and error states."""
+        from companion_v2.model_gateway.quota import (
+            normalize_currency_symbol,
+            resolve_currency_views,
+        )
 
         service, participating, awareness = self._participating()
         stations, _, _, _ = service._effective_stations()
         enabled = [st for st in stations if st.enabled]
         snaps, _ = service.snapshot_cache.all()
+        display_currency, usd_cny_rate = service._pricing_fx()
 
         participating_enabled = [st for st in enabled if st.participate_in_awareness]
         is_primary_explicit = bool(
@@ -439,9 +447,11 @@ class MultiStationBalancePort:
             participating_count = len(participating)
 
         obs_unit = str(getattr(observation, "unit", "") or "").strip().upper()
+        obs_balance = float(observation.balance) if (observation is not None and getattr(observation, "balance", None) is not None) else None
         station_id = ""
         station_name = ""
         currency_symbol = ""
+        currency_context = None
 
         if awareness.mode == "primary":
             if participating:
@@ -453,23 +463,72 @@ class MultiStationBalancePort:
                     (snap.symbol if snap and snap.symbol else "")
                     or normalize_currency_symbol(obs_unit or (snap.display_type if snap else "") or spec.display_type)
                 )
+                if snap is not None and snap.ok and snap.remaining is not None:
+                    fiat_cur = spec.fiat_currency or snap.inferred_fiat_currency
+                    fiat_pbu = spec.fiat_per_base_unit if spec.fiat_per_base_unit is not None else snap.site_recharge_price
+                    currency_context = resolve_currency_views(
+                        remaining=snap.remaining,
+                        display_type=snap.display_type or obs_unit or spec.display_type or "CREDIT",
+                        symbol=snap.symbol or currency_symbol,
+                        fiat_remaining=snap.fiat_remaining,
+                        inferred_fiat_currency=fiat_cur,
+                        usd_cny_rate=usd_cny_rate,
+                        preferred_unit=spec.display_unit_mode,
+                        custom_exchange_rate=snap.custom_exchange_rate,
+                        fiat_per_base_unit=fiat_pbu,
+                        scope_key=f"station:{spec.id}",
+                        station_id=spec.id,
+                    )
         elif awareness.mode == "aggregate_sum":
             station_name = "多站点汇总"
-            target_cur = obs_unit or awareness.target_currency or service._pricing_fx()[0] or "CNY"
+            target_cur = obs_unit or awareness.target_currency or display_currency or "CNY"
+            if target_cur not in ("CNY", "USD"):
+                target_cur = "CNY"
             currency_symbol = normalize_currency_symbol(target_cur)
+            if obs_balance is not None:
+                currency_context = resolve_currency_views(
+                    remaining=obs_balance,
+                    display_type=target_cur,
+                    symbol=currency_symbol,
+                    inferred_fiat_currency=target_cur,
+                    usd_cny_rate=usd_cny_rate,
+                    preferred_unit=target_cur.lower(),
+                    scope_key="quota:aggregate_sum",
+                    station_id="",
+                )
         else:
+            chosen_spec = None
             if self._last_selected is not None and self._last_selected[1]:
                 station_id, station_name, currency_symbol = self._last_selected
+                chosen_spec = next((st for st in participating if st.id == station_id), None)
             elif participating:
-                spec = participating[0]
-                snap = snaps.get(spec.id)
-                station_id = spec.id
-                station_name = spec.name
+                chosen_spec = participating[0]
+                snap = snaps.get(chosen_spec.id)
+                station_id = chosen_spec.id
+                station_name = chosen_spec.name
                 currency_symbol = snap.symbol if snap else ""
             if not currency_symbol:
                 currency_symbol = normalize_currency_symbol(obs_unit)
+            if chosen_spec is not None:
+                snap = snaps.get(chosen_spec.id)
+                if snap is not None and snap.ok and snap.remaining is not None:
+                    fiat_cur = chosen_spec.fiat_currency or snap.inferred_fiat_currency
+                    fiat_pbu = chosen_spec.fiat_per_base_unit if chosen_spec.fiat_per_base_unit is not None else snap.site_recharge_price
+                    currency_context = resolve_currency_views(
+                        remaining=snap.remaining,
+                        display_type=snap.display_type or obs_unit or chosen_spec.display_type or "CREDIT",
+                        symbol=snap.symbol or currency_symbol,
+                        fiat_remaining=snap.fiat_remaining,
+                        inferred_fiat_currency=fiat_cur,
+                        usd_cny_rate=usd_cny_rate,
+                        preferred_unit=chosen_spec.display_unit_mode,
+                        custom_exchange_rate=snap.custom_exchange_rate,
+                        fiat_per_base_unit=fiat_pbu,
+                        scope_key=f"station:{chosen_spec.id}",
+                        station_id=chosen_spec.id,
+                    )
 
-        return {
+        meta = {
             "source_kind": "quota_dashboard",
             "awareness_mode": awareness.mode,
             "station_id": station_id,
@@ -478,6 +537,9 @@ class MultiStationBalancePort:
             "participating_count": participating_count,
             "currency_symbol": currency_symbol,
         }
+        if currency_context is not None:
+            meta["currency_context"] = currency_context
+        return meta
 
 
 def configured_balance_port(config=None, *, context=None, runtime_root=None, controller=None):
@@ -616,6 +678,44 @@ def balance_keyword_material(application):
     return KeywordMaterialSpec(owner="service.balance", title="服务余额",
         instruction=BALANCE_MATERIAL_INSTRUCTION, keywords=BALANCE_KEYWORDS,
         prepare=prepare, available=available, ttl_seconds=300)
+
+
+def legacy_balance_currency_context(port, observation, *, runtime_root=None):
+    """Build optional CNY/USD currency_context for legacy single-station balance ports."""
+    if observation is None or getattr(observation, "balance", None) is None:
+        return None
+    raw_unit = str(getattr(observation, "unit", "") or getattr(port, "currency_label", "") or "").strip()
+    upper = raw_unit.upper()
+    if upper in ("CNY", "RMB") or raw_unit in ("¥", "￥", "元", "人民币"):
+        dtype = "CNY"
+    elif upper in ("USD", "US$") or raw_unit in ("$", "美元"):
+        dtype = "USD"
+    else:
+        return None
+    from pathlib import Path
+    from companion_v2.model_gateway.pricing import (
+        DEFAULT_FALLBACK_USD_CNY,
+        PricingSettingsStore,
+        effective_usd_cny_rate,
+    )
+    from companion_v2.model_gateway.quota import resolve_currency_views
+
+    rate = DEFAULT_FALLBACK_USD_CNY
+    if runtime_root is not None:
+        try:
+            settings = PricingSettingsStore(Path(runtime_root)).read_safe()
+            rate = effective_usd_cny_rate(settings)
+        except Exception:
+            rate = DEFAULT_FALLBACK_USD_CNY
+    return resolve_currency_views(
+        remaining=float(observation.balance),
+        display_type=dtype,
+        inferred_fiat_currency=dtype,
+        usd_cny_rate=rate,
+        preferred_unit=dtype.lower(),
+        scope_key=f"legacy:{getattr(port, 'provider', 'balance')}",
+        station_id="",
+    )
 
 
 def balance_observation_data(port, observation):

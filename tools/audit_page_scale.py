@@ -77,7 +77,9 @@ MIGRATED = ("text-page.css", "voice-page.css", "memory-page.css", "learning-page
             # 2026-11-24：性能调优子页全部使用尺度与主题语义令牌。
             "tuning-page.css",
             # 2026-11-24：多站点额度看板全部使用尺度与主题语义令牌。
-            "quota-workbench.css")
+            "quota-workbench.css",
+            # 2026-11-27：统一自动滚动加载状态条全部使用尺度与主题语义令牌。
+            "auto-scroll-loader.css")
 # 仍在使用自有尺度的页面：只统计，不判定（逐步迁移）。
 # 2026-10-02：`shell.css` 迁入后这里是空的——`pages/陪伴小屋/*.css` 全部走尺度令牌。
 #

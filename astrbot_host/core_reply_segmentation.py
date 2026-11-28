@@ -191,23 +191,26 @@ def _will_voice_deliver(core, prepared):
     return isinstance(policy, VoiceReplyPolicy) and not policy.uses_model_tags
 
 
-def prepare_core_result_decoration(event):
+def prepare_core_result_decoration(event, *, astrbot_config=None):
     """Sanitize control tokens and keep segmented/voiced replies intact across ResultDecorateStage."""
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     if not isinstance(core, dict):
         return
     if not core.get("delivery_guard_active") or not _is_core_reply_result(event):
         core.pop("_prepared_decoration", None)
+        core.pop("_deferred_t2i", None)
         return
     getter = getattr(event, "get_result", None)
     result = getter() if callable(getter) else None
     chain = getattr(result, "chain", None)
     if result is None or not isinstance(chain, list) or not chain:
         core.pop("_prepared_decoration", None)
+        core.pop("_deferred_t2i", None)
         return
     content_type = getattr(getattr(result, "result_content_type", None), "name", None)
     if content_type in {"STREAMING_RESULT", "STREAMING_FINISH"}:
         core.pop("_prepared_decoration", None)
+        core.pop("_deferred_t2i", None)
         return
 
     plain_snapshot = tuple(part.text for part in chain if isinstance(part, Plain))
@@ -279,6 +282,7 @@ def prepare_core_result_decoration(event):
     owns_delivery = bool((seg_policy is not None and seg_policy.enabled and has_multi_segments) or will_voice)
 
     if not owns_delivery:
+        core.pop("_deferred_t2i", None)
         tool_names = core.get("_native_tool_names", ())
         sanitized_chain = []
         for part in new_chain:
@@ -292,7 +296,9 @@ def prepare_core_result_decoration(event):
         return
 
     chain[:] = new_chain
-    if getattr(result, "use_t2i_", None) is None:
+    from .core_reply_t2i import capture_deferred_core_t2i
+    capture_deferred_core_t2i(event, result, astrbot_config=astrbot_config)
+    if getattr(result, "use_t2i_", None) is not False:
         result.use_t2i_ = False
     core["_prepared_decoration"] = {
         "result": result,
@@ -457,6 +463,9 @@ def prepare_core_reply_segmentation(event):
                 for raw, part in zip(raw_parts, parts):
                     if hasattr(part, "chain"):
                         object.__setattr__(part, "_companion_v2_voice_source", sent_core_text(raw))
+        from .core_reply_t2i import collapse_segments_for_t2i, should_collapse_segments_for_t2i
+        if should_collapse_segments_for_t2i(event, parts):
+            parts = (collapse_segments_for_t2i(message, parts),)
         first_text_segment = next((index for index, part in enumerate(parts)
                                    if sent_core_text(part).strip()), 0)
         init_core_voice_segment_prefetch(core, prepared, parts)

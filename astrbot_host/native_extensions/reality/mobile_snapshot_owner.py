@@ -315,6 +315,21 @@ class MobileSnapshotOwner:
             for user_id in self._users:
                 self.invalidate(user_id)
 
+    def restore_sessions(self, user_id: str) -> None:
+        """Bind persisted sessions to the current owner generation without dropping restored uploads."""
+        with self.gateway._mobile_state_lock:
+            state = self._user(user_id)
+            state.binding_revision += 1
+            now = time.time()
+            for item in self.gateway._mobile_sessions.values():
+                if item.get("user_id") != user_id or item.get("expires_at", 0) <= now:
+                    continue
+                subject = item.get("snapshot_subject_ref") or ""
+                if subject and not state.subject_ref:
+                    state.subject_ref = subject
+                item["snapshot_binding_revision"] = state.binding_revision
+                item["snapshot_provider_generation"] = self.generation
+
     def session_changed(self, user_id: str, session: dict | None = None) -> None:
         with self.gateway._mobile_state_lock:
             state = self._user(user_id)

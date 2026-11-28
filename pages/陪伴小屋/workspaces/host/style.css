@@ -179,7 +179,7 @@
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: var(--page); }
+body { margin: 0; min-width: 0; background: var(--page); }
 button { font: inherit; }
 .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 56px; container-type: inline-size; container-name: host-shell; }
 .topbar, .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
@@ -592,4 +592,6 @@ dialog::backdrop { animation: fade .3s both; }
   :root[data-density] { --pad: 15px; }
   .topology-panel { padding: 18px 15px 15px; }
   .topology-column { padding: 10px; }
+  .topology-session-filter,
+  .session-window-link-actions button { min-height: 44px; }
 }

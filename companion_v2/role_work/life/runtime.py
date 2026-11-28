@@ -19,7 +19,12 @@ from companion_v2.role_work.journal.models import JournalKind
 
 from .calendar_work import require_window, reserve_routine_slot, routine_for
 from .configuration import GROUP, target_for, values
-from .scheduling import next_bedtime, sleep_due_window_expired
+from .scheduling import (
+    next_bedtime,
+    next_bedtime_occurrence,
+    project_sleep_occurrence,
+    sleep_due_window_expired,
+)
 
 
 class RoleLifeRuntime:
@@ -31,6 +36,7 @@ class RoleLifeRuntime:
         self._workers, self.results = {}, {}
         self._dreams = set()
         self._next_sleep = None
+        self._next_sleep_day = None
         self._next_wake = None
         self._next_calendar_work = None
         self._next_writing_plan_check = None
@@ -77,7 +83,7 @@ class RoleLifeRuntime:
     def retire(self):
         self._retired = True
         self.failure_code = "life_binding_changed"
-        self._next_sleep = self._next_wake = None
+        self._next_sleep = self._next_sleep_day = self._next_wake = None
         if self.schedule_id in self.app.journal_schedule._schedules:
             self.app.journal_schedule.remove(self.schedule_id)
         self.cancel_running()
@@ -133,16 +139,17 @@ class RoleLifeRuntime:
             raise TaskError("life_context_changed", "activity belongs to another authority")
         return a
 
+    def _projected_sleep_occurrence(self, settings, now):
+        return project_sleep_occurrence(
+            self.app.role_state.body_clock,
+            self.context,
+            self.owner,
+            settings,
+            now,
+        )
+
     def _projected_sleep_at(self, settings, now):
-        zone = settings["sleep_timezone"]
-        bedtime_args = (self.owner, zone, time.fromisoformat(settings["sleep_time"]),
-                        settings["sleep_variation_minutes"])
-        window = timedelta(minutes=settings["sleep_window_minutes"])
-        due = next_bedtime(now - window, *bedtime_args)
-        if due <= now:
-            due_day = due.astimezone(ZoneInfo(zone)).date()
-            if self.app.role_state.body_clock.scheduled_sleep(self.context, "daily-sleep-" + due_day.isoformat()):
-                return next_bedtime(now + timedelta(microseconds=1), *bedtime_args)
+        _, due = self._projected_sleep_occurrence(settings, now)
         return due
 
     def sleep_projection(self, *, now=None):
@@ -157,7 +164,31 @@ class RoleLifeRuntime:
             return None
         self.authorize()
         if snapshot.resolution_token == self._revision and self._next_sleep is not None:
-            next_at = self._next_sleep
+            due = self._next_sleep
+            schedule_day = self._next_sleep_day
+            if schedule_day is None:
+                schedule_day, _ = next_bedtime_occurrence(
+                    due,
+                    self.owner,
+                    settings["sleep_timezone"],
+                    time.fromisoformat(settings["sleep_time"]),
+                    settings["sleep_variation_minutes"],
+                )
+            request_id = "daily-sleep-" + schedule_day.isoformat()
+            expired = due <= now and sleep_due_window_expired(
+                now,
+                due,
+                window_minutes=settings["sleep_window_minutes"],
+                sleep_minutes=settings["sleep_minutes"],
+            )
+            covered = self.app.role_state.body_clock.night_sleep_covered(
+                self.context,
+                request_id,
+                due_at=due,
+                window_minutes=settings["sleep_window_minutes"],
+                sleep_minutes=settings["sleep_minutes"],
+            )
+            next_at = self._projected_sleep_at(settings, now) if (expired or covered) else due
         else:
             next_at = self._projected_sleep_at(settings, now)
         return settings, next_at
@@ -174,7 +205,7 @@ class RoleLifeRuntime:
         if self.schedule_id in self.app.journal_schedule._schedules:
             self.app.journal_schedule.remove(self.schedule_id)
         self.settings = settings
-        self._next_sleep = self._next_wake = self._next_calendar_work = self.next_reading_at = None
+        self._next_sleep = self._next_sleep_day = self._next_wake = self._next_calendar_work = self.next_reading_at = None
         self.failure_code = None
         if not settings["enabled"]:
             self.cancel_running()
@@ -185,7 +216,7 @@ class RoleLifeRuntime:
                 require(self.app.journal_schedule.register_daily(self.schedule_id, self.context, event,
                     role_instruction=self.instruction, timezone=settings["timezone"], local_time=settings["diary_time"]))
             if settings["sleep_enabled"]:
-                self._next_sleep = self._projected_sleep_at(settings, self.app.now())
+                self._next_sleep_day, self._next_sleep = self._projected_sleep_occurrence(settings, self.app.now())
                 self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
         require(self.app.configuration.report_application(self.context.actor, snapshot=snapshot,
             generation=generation, succeeded=True, observed_at=self.app.now()))
@@ -236,21 +267,38 @@ class RoleLifeRuntime:
             return False
         settings = self.settings
         timezone_id = settings["sleep_timezone"]
-        zone = ZoneInfo(timezone_id)
         bedtime = time.fromisoformat(settings["sleep_time"])
-        due_local = due.astimezone(zone)
-        closes_at = due + timedelta(minutes=settings["sleep_window_minutes"])
-        if sleep_due_window_expired(now, due, window_minutes=settings["sleep_window_minutes"],
+        variation = settings["sleep_variation_minutes"]
+        window_minutes = settings["sleep_window_minutes"]
+        schedule_day = self._next_sleep_day
+        if schedule_day is None:
+            schedule_day, _ = next_bedtime_occurrence(due, self.owner, timezone_id, bedtime, variation)
+        request_id = "daily-sleep-" + schedule_day.isoformat()
+        closes_at = due + timedelta(minutes=window_minutes)
+        if sleep_due_window_expired(now, due, window_minutes=window_minutes,
                                     sleep_minutes=settings["sleep_minutes"]):
-            self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, timezone_id, bedtime,
-                                            settings["sleep_variation_minutes"])
+            self._next_sleep_day, self._next_sleep = next_bedtime_occurrence(
+                max(now, due) + timedelta(microseconds=1),
+                self.owner, timezone_id, bedtime, variation, after_day=schedule_day,
+            )
+            self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
+            return False
+        if self.app.role_state.body_clock.night_sleep_covered(
+                self.context, request_id, due_at=due, window_minutes=window_minutes,
+                sleep_minutes=settings["sleep_minutes"]):
+            self._next_sleep_day, self._next_sleep = next_bedtime_occurrence(
+                max(now, due) + timedelta(microseconds=1),
+                self.owner, timezone_id, bedtime, variation, after_day=schedule_day,
+            )
             self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
             return False
         if now < closes_at and not night_sleep_ready(self.app.role_state.body_clock.profile(self.context, now=now)):
             return False
-        self.start_sleep("daily-sleep-" + due_local.date().isoformat(), settings["sleep_minutes"], sleep_kind="night")
-        self._next_sleep = next_bedtime(now + timedelta(microseconds=1), self.owner, timezone_id, bedtime,
-                                        settings["sleep_variation_minutes"])
+        self.start_sleep(request_id, settings["sleep_minutes"], sleep_kind="night")
+        self._next_sleep_day, self._next_sleep = next_bedtime_occurrence(
+            max(now, due) + timedelta(microseconds=1),
+            self.owner, timezone_id, bedtime, variation, after_day=schedule_day,
+        )
         self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
         return True
 

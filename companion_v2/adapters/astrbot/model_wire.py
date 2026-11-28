@@ -9,11 +9,19 @@ from types import MappingProxyType
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
 from companion_v2.device.prompt_image import PhonePromptImage
 from companion_v2.execution.models import digest, encode, encode_prompt
+from companion_v2.model_gateway.media_budget import (
+    ImageHistoryBudgetPolicy,
+    estimate_inline_image_weight,
+    rendered_image_bytes,
+    select_inline_image_indices,
+)
 from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.prompt_composer import compose_prompt
 from companion_v2.conversation.media.animation import PromptAnimation
+from companion_v2.conversation.media.generated import OWNER as GENERATED_IMAGE_OWNER, _GeneratedPromptImage
 from companion_v2.conversation.media.reply import ImageReplyDraft, INSTRUCTION as REPLY_IMAGE_INSTRUCTION
+from companion_v2.conversation.media.screen import ScreenPromptImage
 
 
 REPLY_CONTRACT_EXAMPLE = (
@@ -100,6 +108,9 @@ class ModelWire:
     reply_images: object = field(default_factory=dict)
     audio_duration_ms: int = 0
     reply_actions: tuple[str, ...] = ("text",)
+    image_bytes: int = 0
+    omitted_image_count: int = 0
+    image_budget_policy: ImageHistoryBudgetPolicy | None = field(default=None, compare=False, repr=False)
 
     def input_estimate(self):
         # Conservative byte estimate plus protocol overhead, NOT reported model usage.
@@ -110,10 +121,11 @@ class ModelWire:
                 content = [item for item in content if item.get("type") not in ("image_url", "input_audio", "video_data")]
                 message = {**message, "content": content}
             messages.append(message)
-        # Media reservations use declared per-image/per-second estimates,
-        # separate from base64 transport bytes and actual provider usage.
+        # Media reservations combine per-image/per-second baselines with actual
+        # inline image byte weight so oversized PNGs fail fast before I/O.
         return (len(encode_prompt([messages, self.tools]).encode("utf-8")) + 1024 + 64 * len(messages)
-                + 16384 * self.image_count + 256 * ((self.audio_duration_ms + 999) // 1000))
+                + estimate_inline_image_weight(self.image_count, self.image_bytes, self.image_budget_policy)
+                + 256 * ((self.audio_duration_ms + 999) // 1000))
 
 
 def build_wire(envelope, *, model_name=""):
@@ -191,36 +203,101 @@ def build_wire(envelope, *, model_name=""):
         user_document["round_guidance"] = request.user_instruction
     messages = [*composition.system_messages,
                 {"role": "user", "content": encode_prompt(user_document)}]
+    raw_policy = getattr(envelope, "image_history_budget", None)
+    image_budget_policy = raw_policy if isinstance(raw_policy, ImageHistoryBudgetPolicy) else ImageHistoryBudgetPolicy()
+    inline_image_count = 0
+    inline_image_bytes = 0
+    omitted_image_count = 0
     if request.images:
         content = [{"type": "text", "text": messages[-1]["content"]}]
-        for original in request.images:
+        current_turn_parent_ids = set()
+        current_event_source = getattr(getattr(request, "event", None), "source", None)
+        current_parent_source_id = getattr(current_event_source, "source_id", None)
+        if isinstance(current_parent_source_id, str) and current_parent_source_id:
+            current_turn_parent_ids.add(current_parent_source_id)
+        for material in request.context.materials:
+            if material.source is not None and (
+                material.purpose == "current_source" or material.purpose.startswith("merged_input:")
+            ):
+                current_turn_parent_ids.add(material.source.source_id)
+
+        user_input_sources = frozenset(request.user_input_image_sources)
+        rendered_items = []
+        for group_id, original in enumerate(request.images):
+            material_only = request.output_format == "phone_action" and isinstance(original, PhonePromptImage)
+            is_current_turn_item = (
+                material_only
+                or original.parent.source_id in current_turn_parent_ids
+                or original.source in user_input_sources
+                or isinstance(original, (_GeneratedPromptImage, ScreenPromptImage))
+                or original.parent.owner in (GENERATED_IMAGE_OWNER, "screen")
+            )
             for ordinal, image in enumerate(original.rendered_images):
                 handle = "e_" + digest(image.source)
-                material_only = request.output_format == "phone_action" and isinstance(original, PhonePromptImage)
                 if evidence.get(handle) != image.source and not material_only:
                     raise ValueError("image is missing its original evidence material")
-                metadata = ({"image_material": "device_screenshot"}
-                            if material_only else {"image_evidence": handle})
-                metadata.update({
-                    "parent_source_id": image.parent.source_id,
-                    "component_position": image.descriptor.position,
-                    "coverage": "one_static_image",
-                })
-                if original.source in request.user_input_image_sources:
-                    metadata["image_origin"] = "user_input"
-                if reply_images:
-                    metadata["sendable_image"] = "e_" + digest(original.source)
-                if isinstance(original, PromptAnimation):
-                    frame = original.descriptor.frames[ordinal]
-                    metadata.update(coverage="animation_frame", animation_evidence="e_" + digest(original.source),
-                        component_position=original.descriptor.position, frame_index=frame.index, start_ms=frame.start_ms,
-                        duration_ms=frame.duration_ms, frame_count=original.descriptor.frame_count,
-                        animation_coverage=original.descriptor.coverage)
+                raw_bytes = rendered_image_bytes(image)
+                rendered_items.append((
+                    len(rendered_items),
+                    group_id,
+                    original,
+                    ordinal,
+                    image,
+                    handle,
+                    material_only,
+                    is_current_turn_item,
+                    raw_bytes,
+                ))
+        kept_indices = select_inline_image_indices(
+            tuple(
+                (index, original.parent.source_id, raw_bytes, is_current_turn_item, group_id)
+                for index, group_id, original, _ordinal, _image, _handle, _material_only, is_current_turn_item, raw_bytes in rendered_items
+            ),
+            image_budget_policy,
+            current_parent_source_ids=current_turn_parent_ids or None,
+        )
+        for index, _group_id, original, ordinal, image, handle, material_only, _is_current, raw_bytes in rendered_items:
+            metadata = ({"image_material": "device_screenshot"}
+                        if material_only else {"image_evidence": handle})
+            metadata.update({
+                "parent_source_id": image.parent.source_id,
+                "component_position": image.descriptor.position,
+                "coverage": "one_static_image",
+            })
+            if original.source in user_input_sources:
+                metadata["image_origin"] = "user_input"
+            if reply_images:
+                metadata["sendable_image"] = "e_" + digest(original.source)
+            if isinstance(original, PromptAnimation):
+                frame = original.descriptor.frames[ordinal]
+                metadata.update(coverage="animation_frame", animation_evidence="e_" + digest(original.source),
+                    component_position=original.descriptor.position, frame_index=frame.index, start_ms=frame.start_ms,
+                    duration_ms=frame.duration_ms, frame_count=original.descriptor.frame_count,
+                    animation_coverage=original.descriptor.coverage)
+            if index in kept_indices:
+                inline_image_count += 1
+                inline_image_bytes += raw_bytes
                 content.extend((
                     {"type": "text", "text": encode_prompt(metadata)},
                     {"type": "image_url", "image_url": {"url": "data:" + image.descriptor.mime_type + ";base64," + image.data_base64,
                                                           "detail": "auto"}},
                 ))
+            else:
+                omitted_image_count += 1
+                omitted_metadata = dict(metadata)
+                omitted_metadata.update({
+                    "omitted_from_inline_media": True,
+                    "omit_reason": "image_history_budget_exceeded",
+                    "original_mime_type": image.descriptor.mime_type,
+                    "original_width": image.descriptor.width,
+                    "original_height": image.descriptor.height,
+                    "original_bytes": raw_bytes,
+                })
+                if not material_only and "image_evidence" in metadata:
+                    omitted_metadata["inspect_hint"] = (
+                        "该历史图片已按多模态预算降级为轻量元数据占位；如需核查原图细节，请调用 media_inspect 工具。"
+                    )
+                content.append({"type": "text", "text": encode_prompt(omitted_metadata)})
         messages[-1]["content"] = content
     if request.audios:
         content = messages[-1]["content"]
@@ -257,6 +334,8 @@ def build_wire(envelope, *, model_name=""):
                     handle = "e_" + digest(image.source)
                     if evidence.get(handle) != image.source:
                         raise ValueError("video frame is missing its original evidence material")
+                    inline_image_count += 1
+                    inline_image_bytes += rendered_image_bytes(image)
                     content.extend(({"type": "text", "text": encode_prompt({**metadata,
                         "image_evidence": handle, "frame_index": frame.index,
                         "start_ms": frame.start_ms, "timing": video.descriptor.timing,
@@ -270,12 +349,14 @@ def build_wire(envelope, *, model_name=""):
                                                "arguments": exchange.call.arguments_json}}]},
             {"role": "tool", "tool_call_id": exchange.call.call_id, "content": exchange.result_json}))
     wire = ModelWire(messages, tuple(tools), MappingProxyType(aliases), MappingProxyType(evidence), request.output_format,
-                     sum(len(image.rendered_images) for image in request.images)
-                         + (0 if request.native_video_input else sum(len(v.frames) for v in request.videos)),
+                     inline_image_count,
                      MappingProxyType(reply_images),
                      sum(a.descriptor.duration_ms for a in request.audios)
                          + (sum(v.descriptor.duration_ms for v in request.videos) if request.native_video_input else 0),
-                     reply_actions)
+                     reply_actions,
+                     inline_image_bytes,
+                     omitted_image_count,
+                     image_budget_policy)
     if envelope.record_prompt_snapshot is not None:
         envelope.record_prompt_snapshot(wire.messages)
     return wire

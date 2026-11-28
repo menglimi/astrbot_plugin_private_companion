@@ -1,9 +1,9 @@
-"""Global contact defaults and read-only recovery of legacy personal settings."""
+"""Global contact defaults and compatibility for legacy rhythm settings."""
 
 from dataclasses import replace
 import json
 
-from companion_v2.configuration.models import ConfigLayer, ConfigTarget, EffectiveValue
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget, EffectiveValue, encode
 from companion_v2.configuration.owners import SparseConfigurationOwner
 from companion_v2.execution.models import digest
 from companion_v2.foundation.refs import SubjectKind, SubjectRef
@@ -23,6 +23,34 @@ SHARED_RHYTHM_NAMES = frozenset({
     "greeting_idle_minutes", "allow_insomnia_night_message", "insomnia_night_start", "insomnia_night_end",
     "insomnia_require_sleep_state", "insomnia_night_daily_limit",
 })
+
+# The first 7.3.3 build made this preset a veto on automatic contact.
+INTENSITY_OFF_SWITCH_SINCE = "2026-11-25T09:57:46+00:00"
+
+
+def migrate_legacy_intensity(runtime):
+    """Keep the meaning of the neutral preset saved before the 7.3.3 switch."""
+    with runtime.configuration_store.transaction() as connection:
+        applied = connection.execute(
+            "INSERT OR IGNORE INTO runtime_metadata(key, value) VALUES (?, ?)",
+            ("proactive.contact.legacy-intensity.v1", "1"),
+        )
+        if not applied.rowcount:
+            return 0
+        # The field receipt is more precise than the target timestamp when
+        # other preferences were saved later. Retain its revision for the
+        # legacy window and relationship readers that match these receipts.
+        return connection.execute("""UPDATE configuration_values AS v SET value_json = ?
+            WHERE v.field_id = ? AND v.value_json = ? AND EXISTS (
+                SELECT 1 FROM configuration_targets t WHERE t.target_key = v.target_key
+                AND julianday(COALESCE((
+                    SELECT MAX(c.created_at) FROM configuration_changes c
+                    WHERE c.target_key = v.target_key AND c.group_id = ? AND c.changed = 1
+                        AND json_extract(CASE WHEN json_valid(c.result_json) THEN c.result_json END,
+                                         '$.revision') = v.revision
+                ), t.updated_at)) < julianday(?)
+            )""", (encode("custom"), "proactive.contact.proactive_intensity_preset", encode("off"),
+                    "proactive.contact", INTENSITY_OFF_SWITCH_SINCE)).rowcount
 
 
 def relationship_target_for(context):

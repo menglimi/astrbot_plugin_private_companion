@@ -1,11 +1,11 @@
 .perception-config-workspace{display:grid;gap:var(--sp-3);min-width:0;container-type:inline-size;container-name:perception-workspace}
 .perception-config-workspace[hidden],#perceptionConfigWorkspace[hidden],.perception-config-panels[hidden]{display:none!important}
 .perception-config-page[hidden]{display:none!important}
-.perception-config-nav{position:sticky;top:var(--sp-2);z-index:5;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2px;padding:3px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);box-shadow:var(--t-shadow)}
-.perception-config-nav button{display:flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:42px;padding:var(--sp-2);border:0;border-radius:var(--r-xs);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:background .16s ease,color .16s ease}
+.perception-config-nav{position:sticky;top:var(--sp-2);z-index:5;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--sp-1);padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--t-tab-track-radius);background:var(--t-tab-track);box-shadow:var(--t-shadow)}
+.perception-config-nav button{display:flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:40px;padding:var(--sp-1) var(--sp-2);border:1px solid transparent;border-radius:var(--t-tab-radius);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:background .2s var(--t-tab-ease),color .2s var(--t-tab-ease),border-color .2s var(--t-tab-ease),box-shadow .2s var(--t-tab-ease)}
 .perception-config-nav button svg{width:16px;height:16px;flex:none}
-.perception-config-nav button:hover{background:var(--t-surface-soft);color:var(--t-text-strong)}
-.perception-config-nav button.active{background:var(--t-accent-quiet);color:var(--t-accent);font-weight:650}
+.perception-config-nav button:hover:not(.active){background:var(--t-tab-hover-bg);color:var(--t-text-strong)}
+.perception-config-nav button.active{border-color:var(--t-tab-active-border);background:var(--t-tab-active-bg);color:var(--t-tab-active-fg);font-weight:650;box-shadow:var(--t-tab-active-shadow)}
 .perception-config-nav button.active::after{display:none}
 .perception-config-nav button:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px}
 .perception-config-page{min-width:0;scroll-margin-top:72px}
@@ -92,8 +92,10 @@
   .perception-config-grid #perception-detail-health{grid-column:1;grid-row:auto}
 }
 @media(max-width:560px){
-  .perception-config-nav{grid-template-columns:repeat(2,minmax(0,1fr));position:static}
-  .perception-config-nav button{justify-content:flex-start;padding-inline:var(--sp-2);font-size:var(--fs-tiny)}
+  .perception-config-nav{display:flex;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;position:static}
+  .perception-config-nav::-webkit-scrollbar{display:none}
+  .perception-config-nav button{flex:0 0 auto;justify-content:center;min-height:44px;padding-inline:var(--sp-3);font-size:var(--fs-tiny);white-space:nowrap;scroll-snap-align:start}
+  .perception-config-grid .button.small{min-height:44px}
   .perception-config-page-heading{margin-bottom:var(--sp-2);padding-bottom:var(--sp-2)}
   .perception-config-page-heading h2{font-size:var(--fs-lead)}
   .perception-subpanel>summary{padding-inline:var(--sp-3)}

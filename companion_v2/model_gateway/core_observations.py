@@ -3,9 +3,12 @@
 from datetime import datetime, timedelta, timezone
 import json
 import re
+import sqlite3
 
 from companion_v2.execution.models import digest, encode
 from companion_v2.storage.core_reply_telemetry_schema import (
+    OBSERVED_MODEL_CATALOG_TABLE,
+    OBSERVED_TURN_USAGE_TABLE,
     TABLE,
     ensure_core_reply_telemetry_schema,
 )
@@ -15,6 +18,8 @@ from .usage import CORE_CHAIN_KIND, USAGE_FIELDS
 
 
 _SCHEMA_KEY = "astrbot_core_reply_observations.v1"
+_OBSERVED_CATALOG_WATERMARK_KEY = "observed_model_catalog.watermark.v1"
+_CATALOG_BACKFILL_BATCH_SIZE = 500
 
 
 def role_key(context):
@@ -88,6 +93,575 @@ def _ensure_schema(runtime):
     ensure_core_reply_telemetry_schema(runtime)
 
 
+def _extract_turn_provider_usage(record):
+    """Aggregate per-provider call and token counters for one observation turn."""
+    totals = {}
+    if not isinstance(record, dict):
+        return totals
+    for req in record.get("requests") or ():
+        if not isinstance(req, dict):
+            continue
+        pid = str(req.get("provider") or "").strip()
+        if not pid:
+            continue
+        usage = req.get("usage") if isinstance(req.get("usage"), dict) else {}
+        entry = totals.setdefault(
+            pid,
+            {
+                "calls": 0,
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_creation_tokens": 0,
+                "output_tokens": 0,
+            },
+        )
+        entry["calls"] += 1
+        entry["total_tokens"] += int(usage.get("tokens") or 0)
+        entry["input_tokens"] += int(usage.get("input_tokens") or 0)
+        entry["cached_input_tokens"] += int(usage.get("cached_input_tokens") or 0)
+        entry["cache_creation_tokens"] += int(usage.get("cache_creation_tokens") or 0)
+        entry["output_tokens"] += int(usage.get("output_tokens") or 0)
+    return totals
+
+
+def _apply_catalog_delta(
+    connection,
+    role_key_value,
+    provider_id,
+    *,
+    calls_delta,
+    requests_delta,
+    total_tokens_delta,
+    input_tokens_delta,
+    cached_input_tokens_delta,
+    cache_creation_tokens_delta,
+    output_tokens_delta,
+    observed_at="",
+):
+    if (
+        calls_delta == 0
+        and requests_delta == 0
+        and total_tokens_delta == 0
+        and input_tokens_delta == 0
+        and cached_input_tokens_delta == 0
+        and cache_creation_tokens_delta == 0
+        and output_tokens_delta == 0
+    ):
+        return
+    existing = connection.execute(
+        f"""SELECT calls, requests, total_tokens, input_tokens,
+                   cached_input_tokens, cache_creation_tokens, output_tokens,
+                   last_observed_at
+            FROM {OBSERVED_MODEL_CATALOG_TABLE}
+            WHERE role_key = ? AND provider_id = ?""",
+        (role_key_value, provider_id),
+    ).fetchone()
+    if existing is None:
+        if calls_delta <= 0 and requests_delta <= 0:
+            return
+        connection.execute(
+            f"""INSERT INTO {OBSERVED_MODEL_CATALOG_TABLE}
+                (role_key, provider_id, calls, requests, total_tokens, input_tokens,
+                 cached_input_tokens, cache_creation_tokens, output_tokens, last_observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                role_key_value,
+                provider_id,
+                max(0, calls_delta),
+                max(0, requests_delta),
+                max(0, total_tokens_delta),
+                max(0, input_tokens_delta),
+                max(0, cached_input_tokens_delta),
+                max(0, cache_creation_tokens_delta),
+                max(0, output_tokens_delta),
+                str(observed_at or ""),
+            ),
+        )
+        return
+    next_calls = max(0, int(existing["calls"] or 0) + calls_delta)
+    next_requests = max(0, int(existing["requests"] or 0) + requests_delta)
+    if next_calls == 0 and next_requests == 0:
+        connection.execute(
+            f"DELETE FROM {OBSERVED_MODEL_CATALOG_TABLE} WHERE role_key = ? AND provider_id = ?",
+            (role_key_value, provider_id),
+        )
+        return
+    prev_obs = str(existing["last_observed_at"] or "")
+    next_obs = str(observed_at or "")
+    if prev_obs and (not next_obs or prev_obs > next_obs):
+        next_obs = prev_obs
+    connection.execute(
+        f"""UPDATE {OBSERVED_MODEL_CATALOG_TABLE}
+            SET calls = ?, requests = ?, total_tokens = ?, input_tokens = ?,
+                cached_input_tokens = ?, cache_creation_tokens = ?, output_tokens = ?,
+                last_observed_at = ?
+            WHERE role_key = ? AND provider_id = ?""",
+        (
+            next_calls,
+            next_requests,
+            max(0, int(existing["total_tokens"] or 0) + total_tokens_delta),
+            max(0, int(existing["input_tokens"] or 0) + input_tokens_delta),
+            max(0, int(existing["cached_input_tokens"] or 0) + cached_input_tokens_delta),
+            max(0, int(existing["cache_creation_tokens"] or 0) + cache_creation_tokens_delta),
+            max(0, int(existing["output_tokens"] or 0) + output_tokens_delta),
+            next_obs,
+            role_key_value,
+            provider_id,
+        ),
+    )
+
+
+def _sync_turn_observed_catalog(connection, *, turn_id, role_key_value, revision, observed_at, record):
+    """Idempotently replace one turn's usage rows and update ``observed_model_catalog``."""
+    prior_rows = connection.execute(
+        f"""SELECT role_key, provider_id, calls, total_tokens, input_tokens,
+                   cached_input_tokens, cache_creation_tokens, output_tokens
+            FROM {OBSERVED_TURN_USAGE_TABLE}
+            WHERE turn_id = ?""",
+        (turn_id,),
+    ).fetchall()
+    prior_by_key = {
+        (row["role_key"], row["provider_id"]): {
+            "calls": int(row["calls"] or 0),
+            "requests": 1,
+            "total_tokens": int(row["total_tokens"] or 0),
+            "input_tokens": int(row["input_tokens"] or 0),
+            "cached_input_tokens": int(row["cached_input_tokens"] or 0),
+            "cache_creation_tokens": int(row["cache_creation_tokens"] or 0),
+            "output_tokens": int(row["output_tokens"] or 0),
+        }
+        for row in prior_rows
+    }
+    new_usage = _extract_turn_provider_usage(record)
+    new_by_key = {
+        (role_key_value, pid): {**vals, "requests": 1}
+        for pid, vals in new_usage.items()
+    }
+    if prior_by_key == new_by_key:
+        if new_by_key:
+            connection.execute(
+                f"UPDATE {OBSERVED_TURN_USAGE_TABLE} SET revision = ?, observed_at = ? WHERE turn_id = ?",
+                (int(revision or 0), str(observed_at or ""), turn_id),
+            )
+        return
+    if prior_rows:
+        connection.execute(
+            f"DELETE FROM {OBSERVED_TURN_USAGE_TABLE} WHERE turn_id = ?",
+            (turn_id,),
+        )
+    for pid, vals in new_usage.items():
+        connection.execute(
+            f"""INSERT INTO {OBSERVED_TURN_USAGE_TABLE}
+                (turn_id, role_key, revision, provider_id, calls, total_tokens,
+                 input_tokens, cached_input_tokens, cache_creation_tokens, output_tokens, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                turn_id,
+                role_key_value,
+                int(revision or 0),
+                pid,
+                vals["calls"],
+                vals["total_tokens"],
+                vals["input_tokens"],
+                vals["cached_input_tokens"],
+                vals["cache_creation_tokens"],
+                vals["output_tokens"],
+                str(observed_at or ""),
+            ),
+        )
+    for key in set(prior_by_key) | set(new_by_key):
+        old = prior_by_key.get(key)
+        cur = new_by_key.get(key)
+        rk, pid = key
+        _apply_catalog_delta(
+            connection,
+            rk,
+            pid,
+            calls_delta=(cur["calls"] if cur else 0) - (old["calls"] if old else 0),
+            requests_delta=(cur["requests"] if cur else 0) - (old["requests"] if old else 0),
+            total_tokens_delta=(cur["total_tokens"] if cur else 0) - (old["total_tokens"] if old else 0),
+            input_tokens_delta=(cur["input_tokens"] if cur else 0) - (old["input_tokens"] if old else 0),
+            cached_input_tokens_delta=(cur["cached_input_tokens"] if cur else 0)
+            - (old["cached_input_tokens"] if old else 0),
+            cache_creation_tokens_delta=(cur["cache_creation_tokens"] if cur else 0)
+            - (old["cache_creation_tokens"] if old else 0),
+            output_tokens_delta=(cur["output_tokens"] if cur else 0) - (old["output_tokens"] if old else 0),
+            observed_at=observed_at if cur else "",
+        )
+
+
+def _read_catalog_watermark_in_tx(connection):
+    try:
+        row = connection.execute(
+            "SELECT value FROM runtime_metadata WHERE key = ?",
+            (_OBSERVED_CATALOG_WATERMARK_KEY,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    try:
+        parsed = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return None
+    return parsed if type(parsed) is dict else None
+
+
+def _write_catalog_watermark_in_tx(connection, watermark):
+    connection.execute(
+        """INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+        (_OBSERVED_CATALOG_WATERMARK_KEY, encode(watermark)),
+    )
+
+
+def _read_live_obs_watermark(connection):
+    row = connection.execute(
+        f"SELECT COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(SUM(revision), 0) FROM {TABLE}"
+    ).fetchone()
+    if row is None:
+        return (0, 0, 0)
+    return (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0))
+
+
+def remove_turns_from_observed_catalog(connection, turn_ids, *, deleted_revision_sum=None):
+    """Subtract archived/deleted observations from ``observed_model_catalog`` inside the delete transaction."""
+    ids = [str(tid) for tid in turn_ids if tid]
+    if not ids:
+        return
+    has_tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
+            (OBSERVED_MODEL_CATALOG_TABLE, OBSERVED_TURN_USAGE_TABLE),
+        ).fetchall()
+    }
+    if OBSERVED_MODEL_CATALOG_TABLE not in has_tables or OBSERVED_TURN_USAGE_TABLE not in has_tables:
+        return
+    marks = ",".join("?" for _ in ids)
+    rows = connection.execute(
+        f"""SELECT role_key, provider_id,
+                   COUNT(*) AS requests,
+                   SUM(calls) AS calls,
+                   SUM(total_tokens) AS total_tokens,
+                   SUM(input_tokens) AS input_tokens,
+                   SUM(cached_input_tokens) AS cached_input_tokens,
+                   SUM(cache_creation_tokens) AS cache_creation_tokens,
+                   SUM(output_tokens) AS output_tokens
+            FROM {OBSERVED_TURN_USAGE_TABLE}
+            WHERE turn_id IN ({marks})
+            GROUP BY role_key, provider_id""",
+        tuple(ids),
+    ).fetchall()
+    for row in rows:
+        _apply_catalog_delta(
+            connection,
+            row["role_key"],
+            row["provider_id"],
+            calls_delta=-int(row["calls"] or 0),
+            requests_delta=-int(row["requests"] or 0),
+            total_tokens_delta=-int(row["total_tokens"] or 0),
+            input_tokens_delta=-int(row["input_tokens"] or 0),
+            cached_input_tokens_delta=-int(row["cached_input_tokens"] or 0),
+            cache_creation_tokens_delta=-int(row["cache_creation_tokens"] or 0),
+            output_tokens_delta=-int(row["output_tokens"] or 0),
+        )
+    connection.execute(
+        f"DELETE FROM {OBSERVED_TURN_USAGE_TABLE} WHERE turn_id IN ({marks})",
+        tuple(ids),
+    )
+    wm = _read_catalog_watermark_in_tx(connection)
+    if wm and wm.get("backfilled") is True:
+        max_row = connection.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {TABLE}").fetchone()
+        next_max_rowid = int(max_row[0] or 0) if max_row is not None else 0
+        if deleted_revision_sum is not None:
+            next_count = max(0, int(wm.get("row_count") or 0) - len(ids))
+            next_rev_sum = max(0, int(wm.get("revision_sum") or 0) - int(deleted_revision_sum))
+        else:
+            next_count, next_max_rowid, next_rev_sum = _read_live_obs_watermark(connection)
+        _write_catalog_watermark_in_tx(
+            connection,
+            {
+                "version": 1,
+                "backfilled": True,
+                "row_count": next_count,
+                "max_rowid": next_max_rowid,
+                "revision_sum": next_rev_sum,
+            },
+        )
+
+
+def sync_observed_model_catalog(runtime, *, batch_size=_CATALOG_BACKFILL_BATCH_SIZE):
+    """Ensure ``observed_model_catalog`` matches live ``astrbot_core_reply_observations``.
+
+    On the steady-state path this performs a single covering-index watermark check
+    (< 1 ms) and returns immediately without touching ``record_json`` blobs.
+    On first upgrade over a large legacy table it performs bounded, resumable
+    chunked backfill so write locks stay short.
+    """
+    if not available(runtime):
+        return False
+    _ensure_schema(runtime)
+    live_row = runtime.read_one(
+        f"SELECT COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(SUM(revision), 0) FROM {TABLE}",
+        (),
+    )
+    live_count = int(live_row[0] or 0) if live_row is not None else 0
+    live_max_rowid = int(live_row[1] or 0) if live_row is not None else 0
+    live_rev_sum = int(live_row[2] or 0) if live_row is not None else 0
+
+    wm_row = runtime.read_one(
+        "SELECT value FROM runtime_metadata WHERE key = ?",
+        (_OBSERVED_CATALOG_WATERMARK_KEY,),
+    )
+    wm = None
+    if wm_row is not None:
+        try:
+            parsed = json.loads(wm_row["value"])
+            if type(parsed) is dict:
+                wm = parsed
+        except (TypeError, ValueError):
+            wm = None
+
+    if (
+        wm is not None
+        and wm.get("backfilled") is True
+        and int(wm.get("row_count") or 0) == live_count
+        and int(wm.get("max_rowid") or 0) == live_max_rowid
+        and int(wm.get("revision_sum") or 0) == live_rev_sum
+    ):
+        return True
+
+    chunk = max(16, min(2000, int(batch_size)))
+
+    # Detect out-of-band raw SQL updates/deletes vs purely append-only raw inserts / first backfill.
+    need_reset = False
+    incremental_catchup = False
+    prev_count = 0
+    prev_rev = 0
+    cursor_rowid = 0
+    if wm is not None and wm.get("backfilled") is True:
+        prev_count = int(wm.get("row_count") or 0)
+        prev_max = int(wm.get("max_rowid") or 0)
+        prev_rev = int(wm.get("revision_sum") or 0)
+        if live_max_rowid > prev_max and live_count >= prev_count and live_rev_sum >= prev_rev:
+            # Try incremental catch-up for newly appended rows first.
+            cursor_rowid = prev_max
+            incremental_catchup = True
+        else:
+            need_reset = True
+    elif wm is not None:
+        cursor_rowid = max(0, int(wm.get("cursor_rowid") or 0))
+
+    if need_reset:
+        with runtime.transaction() as connection:
+            connection.execute(f"DELETE FROM {OBSERVED_MODEL_CATALOG_TABLE}")
+            connection.execute(f"DELETE FROM {OBSERVED_TURN_USAGE_TABLE}")
+            _write_catalog_watermark_in_tx(
+                connection,
+                {"version": 1, "backfilled": False, "cursor_rowid": 0},
+            )
+        cursor_rowid = 0
+
+    def _run_chunked_scan(start_rowid):
+        cur = start_rowid
+        scanned_rows = 0
+        scanned_rev_sum = 0
+        while True:
+            rows = runtime.read_all(
+                f"""SELECT rowid, turn_id, revision, role_key, observed_at, record_json
+                    FROM {TABLE}
+                    WHERE rowid > ?
+                    ORDER BY rowid ASC
+                    LIMIT ?""",
+                (cur, chunk),
+            )
+            if not rows:
+                break
+            last_rid = cur
+            with runtime.transaction() as connection:
+                for row in rows:
+                    last_rid = int(row["rowid"])
+                    scanned_rows += 1
+                    scanned_rev_sum += int(row["revision"] or 0)
+                    try:
+                        record = json.loads(row["record_json"])
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    _sync_turn_observed_catalog(
+                        connection,
+                        turn_id=row["turn_id"],
+                        role_key_value=row["role_key"],
+                        revision=row["revision"],
+                        observed_at=row["observed_at"],
+                        record=record,
+                    )
+                _write_catalog_watermark_in_tx(
+                    connection,
+                    {"version": 1, "backfilled": False, "cursor_rowid": last_rid},
+                )
+            cur = last_rid
+        return scanned_rows, scanned_rev_sum
+
+    scanned_rows, scanned_rev_sum = _run_chunked_scan(cursor_rowid)
+
+    # Verify incremental catch-up wasn't skewed by out-of-band DELETE+INSERT or
+    # in-place UPDATE; any row-count/revision conservation mismatch, orphan turn
+    # usage row, or pre-cursor revision drift triggers a clean full rebuild once.
+    with runtime.transaction() as connection:
+        final_count, final_max_rowid, final_rev_sum = _read_live_obs_watermark(connection)
+        if not need_reset and incremental_catchup:
+            stale_detected = (
+                prev_count + scanned_rows != final_count
+                or prev_rev + scanned_rev_sum != final_rev_sum
+            )
+            if not stale_detected:
+                orphan_row = connection.execute(
+                    f"""SELECT 1 FROM {OBSERVED_TURN_USAGE_TABLE} u
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM {TABLE} o WHERE o.turn_id = u.turn_id
+                        ) LIMIT 1"""
+                ).fetchone()
+                stale_detected = orphan_row is not None
+            if not stale_detected:
+                recheck_rev = connection.execute(
+                    f"""SELECT 1 FROM {TABLE} o
+                        JOIN {OBSERVED_TURN_USAGE_TABLE} u ON u.turn_id = o.turn_id
+                        WHERE o.rowid <= ? AND o.revision != u.revision
+                        LIMIT 1""",
+                    (cursor_rowid,),
+                ).fetchone()
+                stale_detected = recheck_rev is not None
+            if stale_detected:
+                connection.execute(f"DELETE FROM {OBSERVED_MODEL_CATALOG_TABLE}")
+                connection.execute(f"DELETE FROM {OBSERVED_TURN_USAGE_TABLE}")
+                _write_catalog_watermark_in_tx(
+                    connection,
+                    {"version": 1, "backfilled": False, "cursor_rowid": 0},
+                )
+                need_reset = True
+        if not need_reset:
+            _write_catalog_watermark_in_tx(
+                connection,
+                {
+                    "version": 1,
+                    "backfilled": True,
+                    "row_count": final_count,
+                    "max_rowid": final_max_rowid,
+                    "revision_sum": final_rev_sum,
+                },
+            )
+            return True
+
+    # Full rebuild fallback after in-place out-of-band UPDATE detection.
+    _run_chunked_scan(0)
+    with runtime.transaction() as connection:
+        final_count, final_max_rowid, final_rev_sum = _read_live_obs_watermark(connection)
+        _write_catalog_watermark_in_tx(
+            connection,
+            {
+                "version": 1,
+                "backfilled": True,
+                "row_count": final_count,
+                "max_rowid": final_max_rowid,
+                "revision_sum": final_rev_sum,
+            },
+        )
+    return True
+
+
+def _query_observed_catalog_fallback(runtime, *, role_key_value=None):
+    """Read-only fallback when the database cannot be migrated/written."""
+    obs_sql = (
+        f"SELECT turn_id, record_json FROM {TABLE} "
+        + ("WHERE role_key = ?" if role_key_value is not None else "")
+    )
+    params = (role_key_value,) if role_key_value is not None else ()
+    agg = {}
+    turns_seen = {}
+    for obs_row in runtime.read_all(obs_sql, params):
+        try:
+            record = json.loads(obs_row["record_json"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        tid = str(obs_row["turn_id"] or "")
+        for pid, vals in _extract_turn_provider_usage(record).items():
+            entry = agg.setdefault(
+                pid,
+                {
+                    "provider_id": pid,
+                    "calls": 0,
+                    "requests": 0,
+                    "total_tokens": 0,
+                    "input_tokens": 0,
+                    "cached_input_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "output_tokens": 0,
+                },
+            )
+            is_new_turn = tid not in turns_seen.setdefault(pid, set())
+            if tid:
+                turns_seen[pid].add(tid)
+            entry["calls"] += vals["calls"]
+            entry["requests"] += 1 if is_new_turn else 0
+            entry["total_tokens"] += vals["total_tokens"]
+            entry["input_tokens"] += vals["input_tokens"]
+            entry["cached_input_tokens"] += vals["cached_input_tokens"]
+            entry["cache_creation_tokens"] += vals["cache_creation_tokens"]
+            entry["output_tokens"] += vals["output_tokens"]
+    return list(agg.values())
+
+
+def query_observed_model_catalog(runtime, *, role_key_value=None):
+    """Return per-provider live usage totals in O(distinct providers) without ``json_each``."""
+    if not available(runtime):
+        return []
+    try:
+        sync_observed_model_catalog(runtime)
+        if role_key_value is not None:
+            rows = runtime.read_all(
+                f"""SELECT provider_id, calls, requests, total_tokens, input_tokens,
+                           cached_input_tokens, cache_creation_tokens, output_tokens
+                    FROM {OBSERVED_MODEL_CATALOG_TABLE}
+                    WHERE role_key = ?""",
+                (role_key_value,),
+            )
+        else:
+            rows = runtime.read_all(
+                f"""SELECT provider_id,
+                           SUM(calls) AS calls,
+                           SUM(requests) AS requests,
+                           SUM(total_tokens) AS total_tokens,
+                           SUM(input_tokens) AS input_tokens,
+                           SUM(cached_input_tokens) AS cached_input_tokens,
+                           SUM(cache_creation_tokens) AS cache_creation_tokens,
+                           SUM(output_tokens) AS output_tokens
+                    FROM {OBSERVED_MODEL_CATALOG_TABLE}
+                    GROUP BY provider_id""",
+                (),
+            )
+    except sqlite3.OperationalError:
+        return _query_observed_catalog_fallback(runtime, role_key_value=role_key_value)
+    return [
+        {
+            "provider_id": row["provider_id"],
+            "calls": int(row["calls"] or 0),
+            "requests": int(row["requests"] or 0),
+            "total_tokens": int(row["total_tokens"] or 0),
+            "input_tokens": int(row["input_tokens"] or 0),
+            "cached_input_tokens": int(row["cached_input_tokens"] or 0),
+            "cache_creation_tokens": int(row["cache_creation_tokens"] or 0),
+            "output_tokens": int(row["output_tokens"] or 0),
+        }
+        for row in rows
+    ]
+
+
 def record_observation(runtime, context, record):
     """Revision fences let asynchronous snapshots finish in any order."""
     _validate_record(record)
@@ -95,7 +669,16 @@ def record_observation(runtime, context, record):
     raw_ctx = encode(context)
     scope_kind = context.scope.kind.value
     role_binding_key = encode(context.role_binding)
+    rk = role_key(context)
+    turn_id = record["turn_id"]
+    new_rev = int(record["revision"])
     with runtime.transaction() as connection:
+        existing = connection.execute(
+            f"SELECT rowid, revision FROM {TABLE} WHERE turn_id = ?",
+            (turn_id,),
+        ).fetchone()
+        if existing is not None and int(existing["revision"]) >= new_rev:
+            return
         stored_ctx, ctx_hash = store_context_json(
             connection,
             raw_ctx,
@@ -104,14 +687,65 @@ def record_observation(runtime, context, record):
             role_binding_key=role_binding_key,
             created_at=record["received_at"],
         )
-        connection.execute("""INSERT INTO astrbot_core_reply_observations
+        cur = connection.execute(
+            f"""INSERT INTO {TABLE}
             (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json, context_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(turn_id) DO UPDATE SET revision = excluded.revision,
                 observed_at = excluded.observed_at, record_json = excluded.record_json
-            WHERE excluded.revision > astrbot_core_reply_observations.revision""",
-            (record["turn_id"], record["revision"], role_key(context), context.key, scope_kind,
-             stored_ctx, record["received_at"], record["observed_at"], encode(record), ctx_hash))
+            WHERE excluded.revision > {TABLE}.revision""",
+            (
+                turn_id,
+                new_rev,
+                rk,
+                context.key,
+                scope_kind,
+                stored_ctx,
+                record["received_at"],
+                record["observed_at"],
+                encode(record),
+                ctx_hash,
+            ),
+        )
+        _sync_turn_observed_catalog(
+            connection,
+            turn_id=turn_id,
+            role_key_value=rk,
+            revision=new_rev,
+            observed_at=record["observed_at"],
+            record=record,
+        )
+        wm = _read_catalog_watermark_in_tx(connection)
+        if wm is not None and wm.get("backfilled") is True:
+            new_rowid = int(existing["rowid"]) if existing is not None else int(cur.lastrowid or 0)
+            old_rev = int(existing["revision"]) if existing is not None else 0
+            _write_catalog_watermark_in_tx(
+                connection,
+                {
+                    "version": 1,
+                    "backfilled": True,
+                    "row_count": int(wm.get("row_count") or 0) + (0 if existing is not None else 1),
+                    "max_rowid": max(int(wm.get("max_rowid") or 0), new_rowid),
+                    "revision_sum": int(wm.get("revision_sum") or 0) + (new_rev - old_rev),
+                },
+            )
+        elif wm is None and existing is None:
+            # Fresh empty store: if this is the sole observation row, mark catalog synced immediately.
+            other = connection.execute(
+                f"SELECT 1 FROM {TABLE} WHERE turn_id != ? LIMIT 1",
+                (turn_id,),
+            ).fetchone()
+            if other is None:
+                _write_catalog_watermark_in_tx(
+                    connection,
+                    {
+                        "version": 1,
+                        "backfilled": True,
+                        "row_count": 1,
+                        "max_rowid": int(cur.lastrowid or 0),
+                        "revision_sum": new_rev,
+                    },
+                )
 
 
 def _parse_utc_timestamp(value):

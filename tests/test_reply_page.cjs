@@ -22,7 +22,7 @@ const DEFAULTS = {
   rule_regex: '.*?[。？！~…\\n]+|.+$',
   threshold: 500, min_segment_chars: 5, max_segments: 5, prompt: '', streaming: false, streaming_mode: 'buffered',
   part_gap_mode: 'fixed', part_gap_ms: 0, part_gap_min_ms: 1500, part_gap_max_ms: 3500,
-  part_gap_log_base: 1.8, image_position: 'after_text', voice_enabled: false,
+  part_gap_log_base: 1.8, t2i_segmentation_mode: 'per_segment', image_position: 'after_text', voice_enabled: false,
   group_wakeup_enabled: true, group_wakeup_direct_words: '[]',
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',
@@ -45,7 +45,8 @@ const DEFAULTS = {
   group_air_guard_polite_loop_limit: 2,
   private_closing_guard_enabled: true, private_closing_guard_window_seconds: 1800,
   private_closing_guard_prompt_enabled: true,
-  private_debounce_enabled: true, private_debounce_min_ms: 1500,
+  private_debounce_enabled: true, private_debounce_semantic_enabled: false,
+  private_debounce_semantic_mode: 'off', private_debounce_min_ms: 1500,
   private_debounce_max_ms: 4000, private_debounce_total_ms: 8000,
   group_conversation_followup_enabled: true, group_conversation_followup_seconds: 120,
   group_conversation_followup_max_turns: 3,
@@ -93,7 +94,7 @@ const LIMITS = {
   threshold: [1, 65536], min_segment_chars: [1, 65536], max_segments: [1, 64],
   part_gap_ms: [0, 60000], part_gap_min_ms: [100, 60000], part_gap_max_ms: [100, 60000],
   part_gap_log_base: [1.1, 5], voice_cooldown_seconds: [0, 86400], voice_max_speech_chars: [1, 10000],
-  voice_timeout_seconds: [1, 120], group_wakeup_question_threshold: [0, 100],
+  voice_timeout_seconds: [1, 300], group_wakeup_question_threshold: [0, 100],
   group_wakeup_cold_group_threshold: [0, 100], group_wakeup_cold_group_idle_minutes: [3, 720],
   group_wakeup_cooldown_seconds: [0, 3600], group_wakeup_fatigue_limit: [1, 20],
   group_wakeup_fatigue_decay_minutes: [5, 720], group_wakeup_generated_keyword_limit: [4, 80],
@@ -128,7 +129,8 @@ const FIELDS = Object.fromEntries(Object.entries(DEFAULTS).map(([name, value]) =
     'prompt_style_mode',
     'private_closing_guard_enabled', 'private_closing_guard_window_seconds',
     'private_closing_guard_prompt_enabled', 'recall_silence_enabled',
-    'private_debounce_enabled', 'private_debounce_min_ms', 'private_debounce_max_ms',
+    'private_debounce_enabled', 'private_debounce_semantic_enabled',
+    'private_debounce_semantic_mode', 'private_debounce_min_ms', 'private_debounce_max_ms',
     'private_debounce_total_ms',
     ...Object.keys(DEFAULTS).filter(name => name.startsWith('group_wakeup_') && !GROUP_SCOPE_FIELDS.has(name)),
   ]);
@@ -154,6 +156,10 @@ function status(changes = {}, token = TOKEN) {
       [name, {layer: 'window', explicit: true, revision: 1}])),
     fields: FIELDS, recent: [], participation_recent: [], participation_limit: 80,
     tts: {state: 'ready', providers: [{id: 'tts-a', model: 's2.1-pro-free', voice: '示例音色甲'}, {id: 'tts-b'}]},
+    private_debounce_semantic_status: {
+      onnx: {ready: false, reason: 'model_dir_missing'},
+      laya: {ready: true, mode: 'remote', model: 'laya-test-model', reason: 'ready'},
+    },
   };
 }
 
@@ -608,6 +614,46 @@ test('voice hero follows the draft and warns when voice is off', async () => {
   h.page.unmount();
 });
 
+test('voice hero surfaces conflict guidance and applies one-click presets', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-voice');
+  const instance = live(h);
+  instance.state.draft.voice_enabled = true;
+  instance.state.draft.voice_provider_id = 'tts-a';
+  instance.state.draft.voice_probability = 1;
+
+  // 1) plain + partial conflict
+  instance.state.draft.voice_generation_mode = 'plain';
+  instance.state.draft.voice_conversion_scope = 'partial';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_conversion_scope'}}});
+  assert.match(h.slots.scope.innerHTML, /朗读正文 \+ 部分转语音/);
+  assert.match(h.slots.scope.innerHTML, /data-voice-preset="partial_recommended"/);
+  h.listeners['root:click']({target: {closest: sel => sel === '[data-voice-preset]' ? {dataset: {voicePreset: 'partial_recommended'}} : null}});
+  assert.equal(instance.state.draft.voice_generation_mode, 'model_tag');
+
+  // 2) voice_only + partial conflict
+  instance.state.draft.voice_delivery_mode = 'voice_only';
+  instance.state.draft.voice_conversion_scope = 'partial';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_delivery_mode'}}});
+  assert.match(h.slots.scope.innerHTML, /仅语音 \+ 部分转语音/);
+  assert.match(h.slots.scope.innerHTML, /data-voice-preset="voice_only_full"/);
+  h.listeners['root:click']({target: {closest: sel => sel === '[data-voice-preset]' ? {dataset: {voicePreset: 'voice_only_full'}} : null}});
+  assert.equal(instance.state.draft.voice_conversion_scope, 'full');
+
+  // 3) voice_only + whole + segmented conflict
+  instance.state.draft.enabled = true;
+  instance.state.draft.voice_segment_mode = 'whole';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_segment_mode'}}});
+  assert.match(h.slots.scope.innerHTML, /整段回复/);
+  assert.match(h.slots.scope.innerHTML, /data-voice-preset="voice_only_segmented"/);
+  h.listeners['root:click']({target: {closest: sel => sel === '[data-voice-preset]' ? {dataset: {voicePreset: 'voice_only_segmented'}} : null}});
+  assert.equal(instance.state.draft.voice_segment_mode, 'each');
+
+  // 4) voice_max_speech_chars > 600 gentle tip (default is 1800)
+  assert.match(h.slots.scope.innerHTML, /1800 字/);
+  h.page.unmount();
+});
+
 test('voice channel overrides are reachable and save from the voice module', async () => {
   const h = await loaded(harness());
   h.page.setExpressionModule('expression-voice');
@@ -797,7 +843,8 @@ test('reply expression, perception, and decision settings partition every field 
   const exposed = [...expression, ...perception, ...decision];
   assert.equal(exposed.length, new Set(exposed).size, 'a setting must not be duplicated across modules');
   assert.deepEqual([...exposed].sort(), Object.keys(DEFAULTS)
-    .filter(name => name !== 'rules_enabled' && name !== 'file_understanding_formats').sort());
+    .filter(name => name !== 'rules_enabled' && name !== 'file_understanding_formats'
+      && name !== 'private_debounce_semantic_enabled').sort());
   assert.deepEqual(plain(perceptionState.groups.map(group => group.id)),
     ['media_permissions', 'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards']);
   assert.deepEqual(perception, ['image_understanding_private_enabled', 'image_understanding_group_enabled',
@@ -1016,7 +1063,8 @@ test('expression voice tab hosts the shared reply editor with only TTS settings 
   assert.ok(expressionCss.includes('expression-platform-focus .wb-section-sidebar{display:block}'));
   assert.ok(expressionCss.includes('#replyWorkspace.expression-voice-focus>[data-reply-part="preview"]{display:none}'));
   assert.match(expressionCss, /container-name:expression-modules;container-type:inline-size/);
-  assert.match(narrowExpressionLayouts, /\.expression-module-nav\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(narrowExpressionLayouts, /\.expression-module-nav\{display:flex;flex-wrap:nowrap;overflow-x:auto;/);
+  assert.match(narrowExpressionLayouts, /\.expression-module-nav button\{[^}]*min-height:44px/);
   assert.match(narrowExpressionLayouts, /\.expression-platform-workspace\{grid-template-columns:minmax\(0,1fr\)\}/);
   assert.match(narrowExpressionLayouts, /\.semantic-providers\{grid-template-columns:minmax\(0,1fr\)\}/);
   for (const field of ['voice_trigger_mode', 'voice_provider_id', 'voice_delivery_mode',
@@ -1459,3 +1507,88 @@ test('switching between text, voice and platform dynamically toggles navigationL
   direct.page.unmount();
 });
 
+test('private debounce semantic mode renders 3 choices, clear copy, live readiness badges, and legacy fallback', async () => {
+  const h = harness();
+  h.page.mount(h.root, {view: 'decision'});
+  await drains();
+  h.requests[0].resolve(status());
+  await drains();
+  assert.equal(h.page.selectSection('private_debounce'), true);
+
+  const html = h.slots.settings.innerHTML;
+  assert.match(html, /语义补话判断/);
+  assert.match(html, /关闭（仅按静默时间）/);
+  assert.match(html, /复用 Laya 决策模型/);
+  assert.match(html, /本地 ONNX 小模型/);
+  assert.match(html, /单轮总上限/);
+  assert.match(html, /data-wb-field-note="private_debounce_semantic_mode"/);
+  assert.match(html, /仅按上方最短 \/ 最长静默时间等待/);
+
+  /* Readiness meta helper reflects every backend state accurately. */
+  const readyPayload = status();
+  assert.equal(h.page.debounceSemanticStatusMeta('laya', readyPayload).tone, 'ok');
+  assert.match(h.page.debounceSemanticStatusMeta('laya', readyPayload).text, /Laya 已就绪（remote · laya-test-model）/);
+  assert.equal(h.page.debounceSemanticStatusMeta('onnx', readyPayload).tone, 'warn');
+  assert.match(h.page.debounceSemanticStatusMeta('onnx', readyPayload).text, /未配置本地 ONNX 目录/);
+
+  const unreadyPayload = {
+    ...readyPayload,
+    private_debounce_semantic_status: {
+      onnx: {ready: true, reason: 'ready'},
+      laya: {ready: false, mode: 'remote', model: 'laya-test-model', reason: 'disabled'},
+    },
+  };
+  assert.equal(h.page.debounceSemanticStatusMeta('laya', unreadyPayload).tone, 'warn');
+  assert.match(h.page.debounceSemanticStatusMeta('laya', unreadyPayload).text, /Laya 尚未启用/);
+  assert.equal(h.page.debounceSemanticStatusMeta('onnx', unreadyPayload).tone, 'ok');
+  assert.match(h.page.debounceSemanticStatusMeta('onnx', unreadyPayload).text, /本地 ONNX 模型已就绪/);
+
+  /* Switching the dropdown updates draft and note slot live without repainting. */
+  const noteSlot = {innerHTML: '', querySelectorAll: () => []};
+  const fakeRow = {
+    classList: {toggle() {}, contains: () => false},
+    querySelector: selector => selector === '[data-wb-field-note]' ? noteSlot : null,
+  };
+  const fakeSelect = {
+    tagName: 'SELECT',
+    value: 'laya',
+    dataset: {wbField: 'private_debounce_semantic_mode'},
+    closest: selector => selector === '.wb-field' ? fakeRow : null,
+  };
+  h.listeners['settings:change']({target: fakeSelect});
+  assert.equal(live(h).state.draft.private_debounce_semantic_mode, 'laya');
+  assert.match(noteSlot.innerHTML, /Laya 已就绪（remote · laya-test-model）/);
+  assert.match(noteSlot.innerHTML, /data-tone="ok"/);
+
+  fakeSelect.value = 'onnx';
+  h.listeners['settings:change']({target: fakeSelect});
+  assert.equal(live(h).state.draft.private_debounce_semantic_mode, 'onnx');
+  assert.match(noteSlot.innerHTML, /未配置本地 ONNX 目录/);
+  assert.match(noteSlot.innerHTML, /data-tone="warn"/);
+
+  /* Saving sends the new semantic mode cleanly. */
+  live(h).state.draft.private_debounce_semantic_mode = 'laya';
+  const saving = live(h).save(false);
+  await drains();
+  assert.deepEqual(plain(h.requests[1].body.changes), {private_debounce_semantic_mode: 'laya'});
+  h.requests[1].resolve({
+    result: {operation_id: 'debounce-laya-save', replayed: false},
+    status: status({private_debounce_semantic_mode: 'laya'}, 'f'.repeat(64)),
+  });
+  await saving;
+  await drains();
+  assert.match(h.slots.settings.innerHTML, /Laya 已就绪（remote · laya-test-model）/);
+  h.page.unmount();
+
+  /* Legacy payload carrying only private_debounce_semantic_enabled derives mode cleanly. */
+  const legacy = harness();
+  legacy.page.mount(legacy.root, {view: 'decision'});
+  await drains();
+  const oldStatus = status();
+  delete oldStatus.settings.private_debounce_semantic_mode;
+  oldStatus.settings.private_debounce_semantic_enabled = true;
+  legacy.requests[0].resolve(oldStatus);
+  await drains();
+  assert.equal(live(legacy).state.draft.private_debounce_semantic_mode, 'onnx');
+  legacy.page.unmount();
+});

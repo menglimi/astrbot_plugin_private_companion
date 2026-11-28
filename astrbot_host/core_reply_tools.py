@@ -48,7 +48,7 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-11-24.1"
+TOOL_MANIFEST_VERSION = "2026-11-27.1"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
@@ -782,8 +782,11 @@ class CoreReplyToolSession:
                         await prepare_native_input_images(self, wrapper)
                 if action in ("reality.camera.observe", "content.work.create", "content.work.save_candidate"):
                     await self.wait_source()
-                result = await executor_for(self.application).execute(
-                    self, native_call_id(wrapper, action, arguments), action, arguments)
+                call_id = native_call_id(wrapper, action, arguments)
+                if action == "qzone.post.publish":
+                    from .core_reply_image_delivery import observe_generated_image_publication
+                    observe_generated_image_publication(self, arguments)
+                result = await executor_for(self.application).execute(self, call_id, action, arguments)
             elif offered.owner == "authoring":
                 from .core_reply_authoring import execute_core_authoring
                 result = await execute_core_authoring(self, wrapper, native_call_id(wrapper, action, arguments),
@@ -842,6 +845,9 @@ class CoreReplyToolSession:
             await self.authorize(wrapper)
             images = result.pop("_images", ())
             if images:
+                if offered.owner == "external" and action in IMAGE_ACTIONS and result.get("state") == "succeeded":
+                    from .core_reply_image_delivery import offer_generated_images
+                    offer_generated_images(self, native_tool_name(action), call_id, result.get("artifact_ids", ()))
                 return CallToolResult(content=[TextContent(type="text", text=encode(result)),
                     *(ImageContent(type="image", data=native_image_data(image), mimeType=image.descriptor.mime_type)
                       for image in images)])
@@ -858,6 +864,11 @@ class CoreReplyToolSession:
             denial_reason = _GROUP_ADMIN_DENIAL_REASONS.get(error.code)
             if denial_reason:
                 payload["reason"] = denial_reason
+            else:
+                from companion_v2.conversation.tool_failures import failure_guidance
+                guidance = failure_guidance(error.code, "failed", action=action)
+                if guidance:
+                    payload.update(guidance)
             return encode(payload)
         except (ValueError, ValidationError):
             return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",

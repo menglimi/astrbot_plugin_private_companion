@@ -37,6 +37,22 @@ MAINTENANCE = (
 )
 
 
+def maintenance_instruction(timeline, *, enabled):
+    """Select only the phase guidance relevant to the current maintenance round."""
+    if not enabled:
+        return "cycle 使用 null，conditions 不添加 cycle 项。"
+    if isinstance(timeline, dict):
+        applicability = timeline.get("applicability")
+        if applicability == "not_applicable":
+            return INSTRUCTION + MAINTENANCE
+        if applicability == "applicable":
+            phase = timeline.get("phase")
+            if phase in PHASE_HINTS:
+                return INSTRUCTION + MAINTENANCE + PHASE_HINTS[phase]
+            return INSTRUCTION + MAINTENANCE + "当前阶段未知，不自行补日期。"
+    return INSTRUCTION + MAINTENANCE + "当前阶段未知，不自行补日期。"
+
+
 def reply_instruction(simulation):
     timeline = simulation.get("cycle_timeline")
     if timeline:

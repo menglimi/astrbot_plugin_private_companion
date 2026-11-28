@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 
 from companion_v2.execution.models import TaskError, TaskSpec, encode, digest, require
+from .external_tools import core_tool_kind
 from .foreground import PromptMaterial
 from .messages import source_from_document
 from .tool_failures import failure_guidance, retry_disposition_for
@@ -11,6 +12,26 @@ from .tool_failures import failure_guidance, retry_disposition_for
 
 PREFIX = "astrbot.core-tool."
 PREFIX_END = PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1)
+
+
+def match_core_tool_definition(descriptor, recorded_definition):
+    """Match a recorded core-tool TaskDefinition against stable and legacy kinds.
+
+    Stable records use ``core_tool_kind(action)`` (``astrbot.core-tool.<action>``)
+    while pre-migration historical records used ``PREFIX + digest(descriptor)``.
+    Keeping both in one shared helper prevents drift between live tool snapshots
+    and generated-album receipt verification.
+    """
+    if recorded_definition is None:
+        return None
+    expected_definitions = (
+        replace(descriptor.definition(), kind=core_tool_kind(descriptor.tool.action), owner="astrbot.core-tool"),
+        replace(descriptor.definition(), kind=PREFIX + digest(descriptor), owner="astrbot.core-tool"),
+    )
+    return next(
+        (item for item in expected_definitions if recorded_definition == json.loads(encode(item))),
+        None,
+    )
 
 
 def operation_row(runtime, invocation_id):
@@ -75,11 +96,11 @@ def snapshot(external, row, context, at):
     task = external.runtime.read_one("SELECT * FROM execution_tasks WHERE task_id = ? AND origin_key = ?",
                                      (current["task_id"], context.key))
     data = json.loads(task["record_json"]) if task else {}
-    definition = replace(descriptor.definition(), kind=PREFIX + digest(descriptor), owner="astrbot.core-tool")
-    if not task or data.get("definition") != json.loads(encode(definition)):
+    matched = match_core_tool_definition(descriptor, data.get("definition"))
+    if not task or matched is None:
         raise TaskError("external_task_mismatch", "the native task implementation or provider binding changed")
     spec = TaskSpec.restore(data["spec"])
-    if (spec.kind, spec.request_ref, spec.context.key) != (definition.kind, current["invocation_id"], context.key):
+    if (spec.kind, spec.request_ref, spec.context.key) != (matched.kind, current["invocation_id"], context.key):
         raise TaskError("external_task_mismatch", "the native task belongs to another operation")
     state = current["state"] if current["state"] in ("succeeded", "failed") else "unknown"
     result = {key: current[key] for key in ("invocation_id", "effect", "operation_id", "receipt_ref")}

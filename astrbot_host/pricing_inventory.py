@@ -15,7 +15,6 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import os
-import sqlite3
 from typing import Any
 
 from companion_v2.model_gateway.core_observations import available as core_obs_available, role_key
@@ -466,97 +465,25 @@ def collect_usage_consumption(
                     },
                 )
 
-            # 2. ALL astrbot_core_reply_observations for the current role (NO LIMIT 200!)
+            # 2. ALL astrbot_core_reply_observations for the current role via the
+            #    incrementally maintained observed_model_catalog (eliminates the
+            #    unbounded json_each full-table scan over record_json blobs).
             if core_obs_available(runtime):
-                where_clause = ""
-                params: tuple[Any, ...] = ()
+                rk: str | None = None
                 if target_context is not None:
                     try:
                         rk = role_key(target_context)
-                        where_clause = "WHERE o.role_key = ?"
-                        params = (rk,)
                     except Exception:
-                        where_clause = ""
-                        params = ()
-
-                try:
-                    core_agg = runtime.read_all(
-                        f"""SELECT
-                            COALESCE(json_extract(req.value, '$.provider'), '') AS provider_id,
-                            COUNT(*) AS calls,
-                            COUNT(DISTINCT o.turn_id) AS requests,
-                            SUM(COALESCE(json_extract(req.value, '$.usage.tokens'), 0)) AS total_tokens,
-                            SUM(COALESCE(json_extract(req.value, '$.usage.input_tokens'), 0)) AS input_tokens,
-                            SUM(COALESCE(json_extract(req.value, '$.usage.cached_input_tokens'), 0)) AS cached_input_tokens,
-                            SUM(COALESCE(json_extract(req.value, '$.usage.cache_creation_tokens'), 0)) AS cache_creation_tokens,
-                            SUM(COALESCE(json_extract(req.value, '$.usage.output_tokens'), 0)) AS output_tokens
-                        FROM astrbot_core_reply_observations o,
-                             json_each(o.record_json, '$.requests') req
-                        {where_clause}
-                        {"AND" if where_clause else "WHERE"} json_valid(o.record_json)
-                          AND json_type(o.record_json, '$.requests') = 'array'
-                        GROUP BY provider_id""",
-                        params,
-                    )
-                    for row in core_agg:
-                        _accumulate(
-                            row["provider_id"],
-                            "",
-                            {
-                                "calls": row["calls"],
-                                "requests": row["requests"],
-                                "total_tokens": row["total_tokens"],
-                                "input_tokens": row["input_tokens"],
-                                "cached_input_tokens": row["cached_input_tokens"],
-                                "cache_creation_tokens": row["cache_creation_tokens"],
-                                "output_tokens": row["output_tokens"],
-                            },
-                        )
-                except sqlite3.OperationalError:
-                    # Fallback only if SQLite build lacks json_each
-                    obs_sql = (
-                        "SELECT turn_id, record_json FROM astrbot_core_reply_observations "
-                        + ("WHERE role_key = ?" if params else "")
-                    )
-                    turns_seen: dict[str, set[str]] = {}
-                    for obs_row in runtime.read_all(obs_sql, params):
-                        try:
-                            record = json.loads(obs_row["record_json"])
-                        except (TypeError, ValueError):
-                            continue
-                        if not isinstance(record, dict):
-                            continue
-                        tid = str(obs_row["turn_id"] or "")
-                        for req in record.get("requests") or ():
-                            if not isinstance(req, dict):
-                                continue
-                            pid = str(req.get("provider") or "").strip()
-                            if not pid:
-                                continue
-                            usage = req.get("usage") if isinstance(req.get("usage"), dict) else {}
-                            is_new_turn = tid not in turns_seen.setdefault(pid, set())
-                            if tid:
-                                turns_seen[pid].add(tid)
-                            _accumulate(
-                                pid,
-                                "",
-                                {
-                                    "calls": 1,
-                                    "requests": 1 if is_new_turn else 0,
-                                    "total_tokens": int(usage.get("tokens") or 0),
-                                    "input_tokens": int(usage.get("input_tokens") or 0),
-                                    "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
-                                    "cache_creation_tokens": int(usage.get("cache_creation_tokens") or 0),
-                                    "output_tokens": int(usage.get("output_tokens") or 0),
-                                },
-                            )
+                        rk = None
+                from companion_v2.model_gateway.core_observations import query_observed_model_catalog
+                for row in query_observed_model_catalog(runtime, role_key_value=rk):
+                    _accumulate(row["provider_id"], "", row)
 
                 # 3. Merge archived cold-telemetry daily rollups so lifetime provider
                 #    counts remain exact after cold observations are archived.
                 try:
                     from companion_v2.storage.telemetry_archive import load_core_daily_rollups
-                    rollup_role = params[0] if params else None
-                    for item in load_core_daily_rollups(runtime, role_key_value=rollup_role):
+                    for item in load_core_daily_rollups(runtime, role_key_value=rk):
                         totals = item["payload"].get("provider_totals") or {}
                         for pid, vals in totals.items():
                             if isinstance(vals, dict):

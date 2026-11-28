@@ -10,6 +10,7 @@ const ROOT = path.resolve(__dirname, "..");
 const PAGE_DIR = path.join(ROOT, "pages/陪伴小屋");
 const workbenchSource = fs.readFileSync(path.join(PAGE_DIR, "workbench-page.js"), "utf8");
 const pricingSource = fs.readFileSync(path.join(PAGE_DIR, "pricing-workbench.js"), "utf8");
+const currencySource = fs.readFileSync(path.join(PAGE_DIR, "quota-currency.js"), "utf8");
 const quotaSource = fs.readFileSync(path.join(PAGE_DIR, "quota-workbench.js"), "utf8");
 const modelsSource = fs.readFileSync(path.join(PAGE_DIR, "models-page.js"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -258,6 +259,9 @@ function quotaHarness() {
     removeEventListener(type, fn) {
       winHandlers.get(type)?.delete(fn);
     },
+    dispatchEvent(ev) {
+      for (const fn of [...(winHandlers.get(ev?.type) || [])]) fn(ev);
+    },
     CompanionProduct: {
       hosted: () => true,
       role: () => ({ model_api: "/astrbot_plugin_private_companion/model" }),
@@ -299,6 +303,7 @@ function quotaHarness() {
   };
   vm.runInNewContext(workbenchSource, { ...baseGlobals });
   vm.runInNewContext(pricingSource, { ...baseGlobals });
+  vm.runInNewContext(currencySource, { ...baseGlobals });
   vm.runInNewContext(quotaSource, { ...baseGlobals });
   vm.runInNewContext(modelsSource, { ...baseGlobals });
 
@@ -1078,6 +1083,7 @@ test("Live DOM: modal shell persists (===) with zero re-animation, zero scroll j
   };
   vm.runInNewContext(workbenchSource, { ...baseGlobals });
   vm.runInNewContext(pricingSource, { ...baseGlobals });
+  vm.runInNewContext(currencySource, { ...baseGlobals });
   vm.runInNewContext(quotaSource, { ...baseGlobals });
   vm.runInNewContext(modelsSource, { ...baseGlobals });
 
@@ -1373,24 +1379,40 @@ test("Dual-unit toggle switches custom currency display in-place, persists prefe
   await flush();
 
   assert.match(h.root.innerHTML, /qw-balance-value[^>]*>636\.06<\/span>[\s\S]*?qw-balance-unit">🍪<\/span>/);
-  assert.match(h.root.innerHTML, /≈ ¥63\.61/);
-  assert.match(h.root.innerHTML, /data-qw-toggle-unit="st-cookie"/);
-  assert.match(h.root.innerHTML, /🍪 ↔ ¥/);
+  assert.match(h.root.innerHTML, /≈ ¥63\.61 · \$8\.83/);
+  assert.match(h.root.innerHTML, /data-qw-set-unit="st-cookie" data-qw-unit="native"/);
+  assert.match(h.root.innerHTML, /data-qw-set-unit="st-cookie" data-qw-unit="cny"/);
+  assert.match(h.root.innerHTML, /data-qw-set-unit="st-cookie" data-qw-unit="usd"/);
   assert.match(h.root.innerHTML, /qw-sub-strip/);
-  assert.match(h.root.innerHTML, /订阅余量[\s\S]*?5,000 🍪 ≈ ¥500/);
+  assert.match(h.root.innerHTML, /订阅余量[\s\S]*?5,000 🍪 ≈ ¥500\.00/);
   assert.match(h.root.innerHTML, /2 个套餐/);
   assert.match(h.root.innerHTML, /含折合共 ¥63\.61/);
 
-  // Toggle unit mode native -> fiat
-  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  // Switch unit mode native -> cny -> usd via lightweight display-unit endpoint
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "cny" });
   await flush();
 
   assert.match(h.root.innerHTML, /qw-balance-value[^>]*>¥63\.61<\/span>/);
-  assert.match(h.root.innerHTML, /qw-balance-conv[^>]*>636\.06 🍪<\/span>/);
-  const saveReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations");
-  assert.ok(saveReq, "Unit toggle should silently persist display_unit_mode");
-  assert.equal(saveReq.values.probe_after_save, false);
-  assert.equal(saveReq.values.station.display_unit_mode, "fiat");
+  assert.match(h.root.innerHTML, /原值 636\.06 🍪 · ≈ \$8\.83/);
+  const saveReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit");
+  assert.ok(saveReq, "Unit switch should silently persist via POST /quota/stations/<id>/display-unit");
+  assert.equal(saveReq.values.display_unit_mode, "cny");
+  saveReq.resolve({ saved: true, station_id: "st-cookie", display_unit_mode: "cny", edit_token: "tok-v2" });
+  await flush();
+
+  // Switch to USD -> updates balance, subline, subscriptions, and last-use cost together!
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "usd" });
+  await flush();
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>\$8\.83<\/span>/);
+  assert.match(h.root.innerHTML, /原值 636\.06 🍪 · ≈ ¥63\.61（汇率 7\.20）/);
+  const saveUsdReq = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit").pop();
+  assert.equal(saveUsdReq.values.display_unit_mode, "usd");
+
+  // Hero total balance card also supports in-place [ ¥ | $ ] switch!
+  h.root.click("[data-qw-hero-currency]", { qwHeroCurrency: "USD" });
+  await flush();
+  assert.match(h.root.innerHTML, /折合总余额（USD）/);
+  assert.match(h.root.innerHTML, /含折合共 \$8\.83/);
 
   h.page.unmount();
 });
@@ -1403,9 +1425,10 @@ test("Primary station KPI, 1-click set primary, focusQuota(awareness), and 5+2 m
   await flush();
 
   const html = h.root.innerHTML;
-  // 5+2 tab separator wrapper & divider
+  // Keep the five configuration tabs and two operations tabs in their groups.
   assert.match(html, /class="model-tabs-wrap"/);
-  assert.match(html, /class="model-tabs-sep"/);
+  assert.match(html, /class="model-tabs-group is-primary"/);
+  assert.match(html, /class="model-tabs-group is-ops"/);
 
   // Hero KPI #4 and primary card badge + 1-click set primary button
   assert.match(html, /主站 · DeepSeek 官方/);
@@ -1499,36 +1522,509 @@ test("Polish: openAwareness honors reduced motion, resize listener cleans up on 
   assert.equal(h.scrollCalls.length, 1);
   assert.equal(h.scrollCalls[0].opts.behavior, "auto");
 
-  // 2) Rapid double-click on toggleUnitMode: native -> fiat -> native -> ONLY 1 in-flight POST at a time,
-  //    then serializes 2nd POST with updated edit_token ("tok-u2") instead of racing with stale "tok-u1"!
-  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
-  h.root.click("[data-qw-toggle-unit]", { qwToggleUnit: "st-cookie" });
+  // 2) Rapid clicks on setStationUnitMode: native -> cny -> usd -> ONLY 1 in-flight POST at a time,
+  //    then serializes 2nd POST cleanly via /quota/stations/<id>/display-unit!
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "cny" });
+  h.root.click("[data-qw-set-unit]", { qwSetUnit: "st-cookie", qwUnit: "usd" });
   await flush();
-  const posts1 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations");
+  const posts1 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit");
   assert.equal(posts1.length, 1, "Rapid clicks must not fire concurrent POSTs");
-  assert.equal(posts1[0].values.edit_token, "tok-u1");
-  assert.equal(posts1[0].values.station.display_unit_mode, "fiat");
+  assert.equal(posts1[0].values.display_unit_mode, "cny");
 
-  // Resolve 1st POST with refreshed edit_token -> queued 2nd toggle ("native") fires automatically with "tok-u2"
-  posts1[0].resolve({
-    edit_token: "tok-u2",
-    stations: [{ ...payload.stations[0], display_unit_mode: "fiat" }],
-    summary: payload.summary,
-  });
+  // Resolve 1st POST -> queued 2nd switch ("usd") fires automatically
+  posts1[0].resolve({ saved: true, station_id: "st-cookie", display_unit_mode: "cny", edit_token: "tok-u2" });
   await flush();
-  const posts2 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations");
-  assert.equal(posts2.length, 2, "Queued second toggle should flush after first POST finishes");
-  assert.equal(posts2[1].values.edit_token, "tok-u2");
-  assert.equal(posts2[1].values.station.display_unit_mode, "native");
-  posts2[1].resolve({
-    edit_token: "tok-u3",
-    stations: [{ ...payload.stations[0], display_unit_mode: "native" }],
-    summary: payload.summary,
-  });
+  const posts2 = h.requests.filter(r => r.method === "POST" && r.route === "model/quota/stations/st-cookie/display-unit");
+  assert.equal(posts2.length, 2, "Queued second switch should flush after first POST finishes");
+  assert.equal(posts2[1].values.display_unit_mode, "usd");
+  posts2[1].resolve({ saved: true, station_id: "st-cookie", display_unit_mode: "usd", edit_token: "tok-u3" });
   await flush();
+  assert.match(h.root.innerHTML, /qw-balance-value[^>]*>\$1\.39<\/span>/);
+
+  // 2b) Cross-page companion:balance-unit-change event updates station card immediately
+  h.winHandlers.get("companion:balance-unit-change")?.forEach(fn => fn({
+    type: "companion:balance-unit-change",
+    detail: { scopeKey: "station:st-cookie", stationId: "st-cookie", unit: "native", source: "maintenance" },
+  }));
   assert.match(h.root.innerHTML, /qw-balance-value[^>]*>100<\/span>/);
 
-  // 3) Unmount removes window resize listener cleanly
+  // 3) Unmount removes window resize and unit-sync listeners cleanly
   h.page.unmount();
   assert.equal(h.winHandlers.get("resize")?.size || 0, 0, "unmount must remove window resize listener");
+  assert.equal(h.winHandlers.get("companion:balance-unit-change")?.size || 0, 0, "unmount must remove unit-sync listener");
+});
+
+test("Logo cache never poisons on available:false, clears backoff on manual refresh, uses localStorage L2 cache, and schedules 2.5s bg sync", async () => {
+  const h = quotaHarness();
+  const payload = sampleQuotaPayload({ background_refresh_scheduled: true });
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+
+  h.requests.find(r => r.method === "GET" && r.route === "model/quota").resolve(payload);
+  await flush();
+  await flush();
+
+  // 1) background_refresh_scheduled=true schedules a 2500ms silent follow-up sync
+  const bgTimer = h.timers.find(t => !t.cleared && t.ms === 2500);
+  assert.ok(bgTimer, "background_refresh_scheduled should schedule a 2.5s silent follow-up GET /quota");
+
+  // 2) First /quota/icon returns available:false -> MUST NOT poison iconCache
+  const iconReq1 = h.requests.find(r => r.method === "GET" && r.route === "model/quota/icon" && r.params?.id === "st-ds");
+  assert.ok(iconReq1);
+  iconReq1.resolve({ available: false, data_url: "" });
+  // Station with ok:true and empty logo_version (st-relay) also triggers bounded on-demand /quota/icon
+  const relayOnDemand = h.requests.find(r => r.method === "GET" && r.route === "model/quota/icon" && r.params?.id === "st-relay");
+  assert.ok(relayOnDemand, "Station with ok:true and empty logo_version should attempt bounded on-demand icon hydration");
+  assert.equal(relayOnDemand.params.v, undefined);
+  relayOnDemand.resolve({ available: false, data_url: "" });
+  await flush();
+  assert.doesNotMatch(h.root.innerHTML, /data:image\/png;base64,/);
+
+  // Manual refresh clears backoff and retries /quota/icon for the SAME logo_version!
+  h.root.click("[data-qw-refresh-all]");
+  await flush();
+  const refReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/refresh");
+  assert.ok(refReq);
+  refReq.resolve(sampleQuotaPayload({ background_refresh_scheduled: false }));
+  await flush();
+  await flush();
+
+  const dsIconReqs = h.requests.filter(r => r.method === "GET" && r.route === "model/quota/icon" && r.params?.id === "st-ds");
+  assert.equal(dsIconReqs.length, 2, "Manual refresh must clear icon backoff and retry icon fetch without poisoning");
+  const pngDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+  // Server returns a newer version ("v2-ds") than snapshot's stale "v1-ds": L2 localStorage MUST persist "v2-ds" (never overwritten back to "v1-ds")!
+  dsIconReqs[1].resolve({ available: true, version: "v2-ds", data_url: pngDataUrl });
+  await flush();
+  assert.match(h.root.innerHTML, /data:image\/png;base64,iVBORw0KGgoAAAANSUhEUg==/);
+
+  // 3) Logo is persisted in localStorage L2 cache under companion-qw-logo.v1:st-ds with actualVer="v2-ds"
+  const storedRaw = h.localStore.getItem("companion-qw-logo.v1:st-ds");
+  assert.ok(storedRaw, "Verified logo should be written to localStorage L2 cache");
+  assert.equal(JSON.parse(storedRaw).v, "v2-ds", "localStorage L2 cache must retain server actualVer without being overwritten by stale snapshot version");
+  assert.equal(JSON.parse(storedRaw).dataUrl, pngDataUrl);
+
+  // 4) Fresh harness with pre-seeded localStorage renders real logo on first frame with ZERO /quota/icon requests for st-ds!
+  h.page.unmount();
+  const h2 = quotaHarness();
+  h2.localStore.setItem("companion-qw-logo.v1:st-ds", storedRaw);
+  h2.page.mount(h2.root, { initialTab: "quota" });
+  await flush();
+  const p2 = sampleQuotaPayload();
+  p2.snapshots["st-ds"].logo_version = "v2-ds";
+  h2.requests.find(r => r.method === "GET" && r.route === "model/quota").resolve(p2);
+  await flush();
+  assert.match(h2.root.innerHTML, /data:image\/png;base64,iVBORw0KGgoAAAANSUhEUg==/, "First frame should render L2 cached logo immediately");
+  assert.equal(
+    h2.requests.filter(r => r.route === "model/quota/icon" && r.params?.id === "st-ds").length,
+    0,
+    "L2 localStorage cache hit should skip redundant /quota/icon network call"
+  );
+  h2.page.unmount();
+});
+
+test("Wallet ledger row, 1-click inline threshold editor, universal multi-station subscription progress bars, and wallet edit modal UX", async () => {
+  const h = quotaHarness();
+  const future12d = new Date(Date.now() + (12 * 86400 + 3600) * 1000).toISOString();
+  const future2d = new Date(Date.now() + (2 * 86400 + 3600) * 1000).toISOString();
+  const payload = sampleQuotaPayload({
+    stations: [
+      {
+        id: "st-xy",
+        name: "星渊中转站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://api.syuan.org",
+        enabled: true,
+        participate_in_awareness: true,
+        low_threshold: null,
+        critical_threshold: null,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "native",
+      },
+      {
+        id: "st-key",
+        name: "单 Key 限额站",
+        adapter_id: "openai_billing",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://compat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        low_percent: 15,
+        has_token: true,
+        has_proxy: false,
+      },
+      {
+        id: "st-sub2",
+        name: "Sub2API 多套餐站",
+        adapter_id: "sub2api",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://sub.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+      },
+    ],
+    snapshots: {
+      "st-xy": {
+        station_id: "st-xy",
+        ok: true,
+        remaining: 55.73,
+        used: 807.48,
+        total: null,
+        remaining_percent: null,
+        quota_model: "wallet",
+        display_type: "CNY",
+        symbol: "¥",
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-key": {
+        station_id: "st-key",
+        ok: true,
+        remaining: 15.8,
+        used: 4.2,
+        total: 20.0,
+        remaining_percent: 79.0,
+        quota_model: "capped",
+        is_key_scoped: true,
+        display_type: "USD",
+        symbol: "$",
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-sub2": {
+        station_id: "st-sub2",
+        ok: true,
+        remaining: 25.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "月度主力包", remaining: 15.0, used: 5.0, total: 20.0, remaining_percent: 75.0, display_type: "USD", symbol: "$", expires_at: future12d, status: "active" },
+          { name: "夜间流量包", remaining: 3.0, used: 27.0, total: 30.0, remaining_percent: 10.0, display_type: "USD", symbol: "$", expires_at: future2d, status: "low" },
+          { name: "备用体验包", remaining: 2.0, used: 8.0, total: 10.0, remaining_percent: 20.0, display_type: "USD", symbol: "$", expires_at: future12d, status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      total_stations: 3,
+      ok_count: 3,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      health_by_id: { "st-xy": "normal", "st-key": "normal", "st-sub2": "normal" },
+      quota_model_by_id: { "st-xy": "wallet", "st-key": "capped", "st-sub2": "wallet" },
+      effective_thresholds_by_id: {
+        "st-xy": { quota_model: "wallet", source: "default", unit: "CNY", symbol: "¥", low: 10, critical: 3, fiat_currency: "CNY", fiat_symbol: "¥", fiat_per_native: 1, cny_low: 10, cny_critical: 3, usd_low: 1.39, usd_critical: 0.42 },
+        "st-key": { quota_model: "capped", source: "none", unit: "USD", symbol: "$", low: null, critical: null, fiat_currency: "USD", fiat_symbol: "$", fiat_per_native: 1, low_percent: 15 },
+        "st-sub2": { quota_model: "wallet", source: "default", unit: "USD", symbol: "$", low: 2, critical: 0.5, fiat_currency: "USD", fiat_symbol: "$", fiat_per_native: 1, cny_low: 14.4, cny_critical: 3.6, usd_low: 2, usd_critical: 0.5 },
+      },
+    },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  // 1) Wallet station renders crisp ledger reference row (NO fake progress bar / 总额 / 剩 %)
+  const xyCardHtml = h.root.innerHTML.split('data-qw-card="st-xy"')[1].split('data-qw-card="st-key"')[0];
+  assert.match(xyCardHtml, /¥55\.73/);
+  assert.match(xyCardHtml, /累计消费 ¥807\.48/);
+  assert.match(xyCardHtml, /data-qw-threshold-open="st-xy"[^>]*>预警线 ¥10</);
+  assert.doesNotMatch(xyCardHtml, /qw-progress-track/, "Wallet card must not render misleading progress bar");
+  assert.doesNotMatch(xyCardHtml, /总额/, "Wallet card must not fabricate total");
+
+  // 2) Capped key-scoped station keeps real progress bar with Key 已用 / 限额 / 剩 79.0%
+  const keyCardHtml = h.root.innerHTML.split('data-qw-card="st-key"')[1].split('data-qw-card="st-sub2"')[0];
+  assert.match(keyCardHtml, /qw-progress-track/);
+  assert.match(keyCardHtml, /Key 已用 \$4\.20/);
+  assert.match(keyCardHtml, /限额 \$20\.00 · 剩 79\.0%/);
+
+  // 3) Universal subscriptions panel on Sub2API defaults to a compact collapsible summary strip (aria-expanded="false", inert drawer, weighted 33.3%, earliest expiry), and expands all 3 plans on click
+  const sub2CardHtml = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2CardHtml, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="false"/);
+  assert.match(sub2CardHtml, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+  assert.match(sub2CardHtml, /class="qw-sub-count-pill">3 个套餐</);
+  assert.match(sub2CardHtml, /剩 33\.3%/, "Weighted remaining percentage across 20/60 USD plans must be 33.3%");
+  assert.match(sub2CardHtml, /\$20\.00 \/ \$60\.00/);
+  assert.match(sub2CardHtml, /最早 2 天后到期/);
+  assert.match(sub2CardHtml, /qw-subs-summary-bar/);
+  assert.match(sub2CardHtml, /明细/);
+
+  // Clicking the summary strip expands the drawer cleanly (removes inert, sets aria-expanded="true", shows all 3 plans)
+  h.root.click("[data-qw-subs-toggle]", { qwSubsToggle: "st-sub2" });
+  const sub2Expanded = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2Expanded, /data-qw-subscriptions="st-sub2"[^>]*class="[^"]*is-expanded|class="[^"]*is-expanded"[^>]*data-qw-subscriptions="st-sub2"/);
+  assert.match(sub2Expanded, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="true"/);
+  assert.doesNotMatch(sub2Expanded, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+  assert.match(sub2Expanded, /收起/);
+  const subsListAfter = sub2Expanded.split('class="qw-subs-list is-scrollable"')[1];
+  assert.ok(subsListAfter, "3+ subscriptions should enable bounded scroll container class is-scrollable");
+  assert.equal((subsListAfter.match(/data-qw-sub-item/g) || []).length, 3, "All 3 subscriptions should render inside expanded drawer");
+  assert.match(subsListAfter, /月度主力包/);
+  assert.match(subsListAfter, /剩 75\.0%/);
+  assert.match(subsListAfter, /夜间流量包/);
+  assert.match(subsListAfter, /剩 10\.0%/);
+  assert.match(subsListAfter, /备用体验包/);
+  assert.match(subsListAfter, /qw-sub-bar-track/);
+  assert.match(subsListAfter, /qw-sub-expiry/);
+
+  // Refreshing station preserves expanded state in memory (does not jump back to collapsed)
+  h.root.click("[data-qw-refresh-one]", { qwRefreshOne: "st-sub2" });
+  await flush();
+  const refreshSub2 = h.requests.find(r => r.method === "POST" && r.route === "model/quota/refresh");
+  assert.ok(refreshSub2);
+  refreshSub2.resolve(payload);
+  await flush();
+  const sub2AfterRefresh = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2AfterRefresh, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="true"/, "Refresh must preserve expanded subscription drawer state");
+  assert.doesNotMatch(sub2AfterRefresh, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+
+  // Clicking again collapses cleanly
+  h.root.click("[data-qw-subs-toggle]", { qwSubsToggle: "st-sub2" });
+  const sub2CollapsedAgain = h.root.innerHTML.split('data-qw-card="st-sub2"')[1];
+  assert.match(sub2CollapsedAgain, /data-qw-subs-toggle="st-sub2"[^>]*aria-expanded="false"/);
+  assert.match(sub2CollapsedAgain, /data-qw-subs-drawer="st-sub2"[^>]*inert/);
+
+  // 4) 1-click inline threshold editor on wallet card: click 预警线 ¥10 -> pick ¥20 preset -> save via /thresholds
+  h.root.click("[data-qw-threshold-open]", { qwThresholdOpen: "st-xy" });
+  assert.match(h.root.innerHTML, /data-qw-threshold-editor="st-xy"/);
+  h.root.click("[data-qw-th-preset-low]", { qwThPresetLow: "20", qwThPresetCrit: "5" });
+  h.root.click("[data-qw-th-save]");
+  await flush();
+  const thReq = h.requests.find(r => r.method === "POST" && r.route === "model/quota/stations/st-xy/thresholds");
+  assert.ok(thReq, "Saving inline threshold editor must POST model/quota/stations/<id>/thresholds");
+  assert.equal(thReq.values.low_threshold, 20);
+  assert.equal(thReq.values.critical_threshold, 5);
+  thReq.resolve({
+    ...payload,
+    summary: {
+      ...payload.summary,
+      effective_thresholds_by_id: {
+        ...payload.summary.effective_thresholds_by_id,
+        "st-xy": { ...payload.summary.effective_thresholds_by_id["st-xy"], source: "custom", low: 20, critical: 5, cny_low: 20, cny_critical: 5 },
+      },
+    },
+  });
+  await flush();
+  assert.match(h.root.innerHTML, /预警线 ¥20/);
+  assert.doesNotMatch(h.root.innerHTML, /data-qw-threshold-editor="st-xy"/);
+
+  // 5) Edit modal for wallet station promotes threshold card and hides inapplicable low_percent; capped station shows low_percent
+  h.root.click("[data-qw-edit]", { qwEdit: "st-xy" });
+  assert.match(h.root.innerHTML, /data-qw-wallet-thresholds/);
+  assert.match(h.root.innerHTML, /偏低预警金额/);
+  assert.doesNotMatch(h.root.innerHTML, /data-qw-field="low_percent"/, "Wallet edit modal must hide inapplicable low_percent");
+  h.root.click("[data-qw-close-wizard]");
+
+  h.root.click("[data-qw-edit]", { qwEdit: "st-key" });
+  assert.doesNotMatch(h.root.innerHTML, /data-qw-wallet-thresholds/);
+  assert.match(h.root.innerHTML, /data-qw-field="low_percent"/, "Capped edit modal must keep low_percent");
+
+  h.page.unmount();
+});
+
+test("Universal subscription summary aligns with fiat-station currency mode and handles mixed-currency plans safely", async () => {
+  const h = quotaHarness();
+  const future10d = new Date(Date.now() + 10 * 86400 * 1000).toISOString();
+  const payload = sampleQuotaPayload({
+    stations: [
+      {
+        id: "st-usd-cny",
+        name: "Sub2API 美元转人民币站",
+        adapter_id: "sub2api",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://sub-fx.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "cny",
+      },
+      {
+        id: "st-mixed-fiat",
+        name: "跨法币多套餐站",
+        adapter_id: "custom_script",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://mixed-fiat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "native",
+      },
+      {
+        id: "st-mixed-incompat",
+        name: "异构币种套餐站",
+        adapter_id: "custom_script",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://mixed-incompat.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "native",
+      },
+    ],
+    snapshots: {
+      "st-usd-cny": {
+        station_id: "st-usd-cny",
+        ok: true,
+        remaining: 25.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "主力包", remaining: 15.0, used: 5.0, total: 20.0, remaining_percent: 75.0, display_type: "USD", symbol: "$", expires_at: future10d, status: "active" },
+          { name: "加餐包", remaining: 5.0, used: 5.0, total: 10.0, remaining_percent: 50.0, display_type: "USD", symbol: "$", expires_at: future10d, status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-mixed-fiat": {
+        station_id: "st-mixed-fiat",
+        ok: true,
+        remaining: 10.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "美元包", remaining: 10.0, used: 0.0, total: 10.0, remaining_percent: 100.0, display_type: "USD", symbol: "$", status: "active" },
+          { name: "人民币包", remaining: 20.0, used: 0.0, total: 20.0, remaining_percent: 100.0, display_type: "CNY", symbol: "¥", status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+      "st-mixed-incompat": {
+        station_id: "st-mixed-incompat",
+        ok: true,
+        remaining: 10.0,
+        quota_model: "wallet",
+        display_type: "USD",
+        symbol: "$",
+        subscriptions: [
+          { name: "美元包", remaining: 10.0, used: 0.0, total: 10.0, remaining_percent: 100.0, display_type: "USD", symbol: "$", status: "active" },
+          { name: "Token 包", remaining: 50000, used: 50000, total: 100000, remaining_percent: 50.0, display_type: "TOKENS", symbol: "tokens", status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      display_currency: "CNY",
+      display_symbol: "¥",
+      usd_cny_rate: 7.2,
+      total_stations: 3,
+      ok_count: 3,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      health_by_id: { "st-usd-cny": "normal", "st-mixed-fiat": "normal", "st-mixed-incompat": "normal" },
+      quota_model_by_id: { "st-usd-cny": "wallet", "st-mixed-fiat": "wallet", "st-mixed-incompat": "wallet" },
+    },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  // 1) USD station switched to cny converts BOTH header total ($20 -> ¥144.00) and child bars ($15/$20 -> ¥108.00/¥144.00)
+  const usdCnyCard = h.root.innerHTML.split('data-qw-card="st-usd-cny"')[1].split('data-qw-card="st-mixed-fiat"')[0];
+  assert.match(usdCnyCard, /class="qw-subs-head[^"]*"[\s\S]*?<strong class="qw-num">¥144\.00<\/strong>/);
+  assert.match(usdCnyCard, /¥144\.00 \/ ¥216\.00/);
+  assert.match(usdCnyCard, /剩 66\.7%/);
+  assert.match(usdCnyCard, /剩余 ¥108\.00 \/ ¥144\.00/);
+  assert.match(usdCnyCard, /剩余 ¥36\.00 \/ ¥72\.00/);
+  assert.doesNotMatch(usdCnyCard, /class="qw-subs-head[^"]*"[\s\S]*?\$20\.00/);
+
+  // 2) Mixed USD + CNY subscriptions follow the active USD view (10 + 20/7.2).
+  const mixedFiatCard = h.root.innerHTML.split('data-qw-card="st-mixed-fiat"')[1].split('data-qw-card="st-mixed-incompat"')[0];
+  assert.match(mixedFiatCard, /class="qw-subs-head[^"]*"[\s\S]*?<strong class="qw-num">折合 \$12\.78<\/strong>/);
+  assert.match(mixedFiatCard, /剩余 \$2\.78 \/ \$2\.78/);
+
+  // 3) Incompatible USD + TOKENS subscriptions show 多币种 instead of adding 10 + 50000
+  const mixedIncompatCard = h.root.innerHTML.split('data-qw-card="st-mixed-incompat"')[1];
+  assert.match(mixedIncompatCard, /class="qw-subs-head[^"]*"[\s\S]*?<strong class="qw-num">多币种<\/strong>/);
+  assert.doesNotMatch(mixedIncompatCard, /50,010/);
+
+  h.page.unmount();
+});
+
+test("Compact subscription strip degrades gracefully for uncapped/no-expiry plans and folds credit rate caption inline without extra line", async () => {
+  const h = quotaHarness();
+  const payload = sampleQuotaPayload({
+    stations: [
+      {
+        id: "st-uncapped",
+        name: "无限额套餐站",
+        adapter_id: "newapi",
+        source_mode: "manual",
+        astrbot_provider_id: "",
+        base_url: "https://uncapped.example.test",
+        enabled: true,
+        participate_in_awareness: false,
+        has_token: true,
+        has_proxy: false,
+        display_unit_mode: "fiat",
+        fiat_currency: "CNY",
+        fiat_per_base_unit: 1.0,
+      },
+    ],
+    snapshots: {
+      "st-uncapped": {
+        station_id: "st-uncapped",
+        ok: true,
+        remaining: 732.98,
+        used: 3150.0,
+        quota_model: "wallet",
+        display_type: "CREDIT",
+        symbol: "🍪",
+        custom_exchange_rate: 10,
+        site_recharge_price: 1.0,
+        inferred_fiat_currency: "CNY",
+        fiat_remaining: 73.30,
+        fiat_used: 315.0,
+        subscriptions: [
+          { name: "无限量畅享包", remaining: 500, total: null, fiat_remaining: 50.0, display_type: "CREDIT", symbol: "🍪", fiat_currency: "CNY", status: "active" },
+        ],
+        checked_at: "2026-11-26T09:00:00+08:00",
+      },
+    },
+    summary: {
+      ...sampleQuotaPayload().summary,
+      total_stations: 1,
+      ok_count: 1,
+      low_count: 0,
+      critical_count: 0,
+      error_count: 0,
+      health_by_id: { "st-uncapped": "normal" },
+      quota_model_by_id: { "st-uncapped": "wallet" },
+    },
+  });
+
+  h.page.mount(h.root, { initialTab: "quota" });
+  await flush();
+  h.requests.find(r => r.route === "model/quota").resolve(payload);
+  await flush();
+
+  const card = h.root.innerHTML.split('data-qw-card="st-uncapped"')[1];
+  // 1) Credit rate caption folds inline next to conversion text and omits redundant standalone .qw-extra-line
+  assert.match(card, /class="qw-balance-rate qw-num"[^>]*>· 10 🍪 = ¥1<\/span>/);
+  assert.doesNotMatch(card, /class="qw-extra-line"/, "Rate caption must fold inline rather than burning an extra vertical row");
+
+  // 2) Single non-generic plan shows plan name in pill; uncapped/no-expiry omits progress bar & shows clean fallback without dangling dots
+  assert.match(card, /class="qw-sub-count-pill">无限量畅享包</);
+  assert.doesNotMatch(card, /qw-subs-summary-bar/, "Uncapped-only subscriptions must not render a fake summary progress bar");
+  assert.match(card, /不限上限套餐/);
+  assert.doesNotMatch(card, /qw-subs-dot/, "Single metadata fragment must never emit a dangling separator dot");
+
+  h.page.unmount();
 });

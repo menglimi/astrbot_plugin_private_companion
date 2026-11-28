@@ -69,20 +69,42 @@ class PresenceDiagnosticTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         app.role_state.write(context, data=state_data(online_mode="busy", presence="专注中"),
                              expected_revision=0, operation_key="busy")
         await self.start(host)
-        await self.until(lambda: bool(port.modes))
+        await self.until(lambda: bool(port.statuses))
+        # Default presence_priority='custom_first': custom_status wins and online_status reports shadowed_by.
         diagnostics = manager.status(self.core).unwrap()["presentation_diagnostics"]
+        self.assertEqual(diagnostics["priority"], "custom_first")
+        self.assertEqual(diagnostics["effective_channel"], "custom_status")
+        self.assertEqual(diagnostics["custom_status"]["state"], "recorded")
+        self.assertEqual(diagnostics["custom_status"]["desired"]["wording"], "专注中")
+        self.assertIsNone(diagnostics["custom_status"]["shadowed_by"])
+        self.assertEqual(diagnostics["online_status"]["state"], "idle")
+        self.assertIsNone(diagnostics["online_status"]["desired"])
+        self.assertIsNone(diagnostics["online_status"]["reason"])
+        self.assertEqual(diagnostics["online_status"]["shadowed_by"], "custom_status")
+
+        # Switching to online_first lets online_status win and shadows custom_status.
+        self.configure(manager, presence_priority="online_first")
+        await app.presence._sync_status()
+        diagnostics = manager.status(self.core).unwrap()["presentation_diagnostics"]
+        self.assertEqual(diagnostics["priority"], "online_first")
+        self.assertEqual(diagnostics["effective_channel"], "online_status")
         self.assertEqual(diagnostics["online_status"]["state"], "recorded")
         self.assertEqual(diagnostics["online_status"]["desired"]["mode"], "online")
         self.assertEqual(diagnostics["custom_status"]["state"], "idle")
         self.assertIsNone(diagnostics["custom_status"]["desired"])
         self.assertIsNone(diagnostics["custom_status"]["reason"])
-        app.role_state.write(context, data=state_data(presence="专注中"),
+        self.assertEqual(diagnostics["custom_status"]["shadowed_by"], "online_status")
+
+        # Clearing online_mode lets custom_status take over cleanly even under online_first.
+        app.role_state.write(context, data=state_data(presence="画画中"),
                              expected_revision=1, operation_key="wording")
         diagnostics = manager.status(self.core).unwrap()["presentation_diagnostics"]
+        self.assertEqual(diagnostics["effective_channel"], "custom_status")
         self.assertEqual(diagnostics["custom_status"]["state"], "waiting")
         self.assertEqual(diagnostics["online_status"]["state"], "idle")
+        self.assertEqual(diagnostics["online_status"]["shadowed_by"], "custom_status")
         self.assertIsNone(diagnostics["online_status"]["reason"])
-        self.assertEqual(port.statuses, [])
+        self.assertEqual([w for _, w in port.statuses], ["专注中"])
 
     async def test_original_receipt_is_readable_before_restart_binding_without_resend_or_retimestamp(self):
         port, app, context, _, _ = await self.current_plan(result={"state": "unknown", "code": "presence_ack_unknown"})

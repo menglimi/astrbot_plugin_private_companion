@@ -41,10 +41,18 @@ DEFAULT_LOW_PERCENT = 10.0
 DISPLAY_TYPES = ("", "CNY", "USD", "CREDIT", "TOKENS")
 SNAPSHOT_DISPLAY_TYPES = ("CNY", "USD", "CREDIT", "TOKENS")
 FIAT_CURRENCIES = ("", "CNY", "USD")
-DISPLAY_UNIT_MODES = ("native", "fiat")
+DISPLAY_UNIT_MODES = ("native", "fiat", "cny", "usd")
 SOURCE_MODES = ("manual", "astrbot_provider")
 AWARENESS_MODES = ("primary", "aggregate_sum", "any_low")
 VALID_HEALTH_STATES = ("normal", "low", "critical", "error", "disabled", "pending")
+QUOTA_MODELS = ("wallet", "capped")
+WALLET_ONLY_ADAPTER_IDS = frozenset({"newapi", "newapi_user_id", "deepseek", "siliconflow", "moonshot"})
+CAPPED_ONLY_ADAPTER_IDS = frozenset({"openai_billing"})
+DEFAULT_WALLET_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "CNY": (10.0, 3.0),
+    "USD": (2.0, 0.5),
+}
+SUBSCRIPTION_STATUSES = ("active", "low", "critical", "exhausted", "expired")
 MAX_SUBSCRIPTIONS_PER_STATION = 12
 
 _STATION_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
@@ -233,6 +241,141 @@ def convert_currency_amount(
     return round(amount / rate, 6)
 
 
+def _format_compact_rate(value: float) -> str:
+    if not math.isfinite(value) or value <= 0:
+        return ""
+    if abs(value - round(value)) < 1e-6:
+        return str(int(round(value)))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def normalize_display_unit_mode(
+    mode: object,
+    available_units: Iterable[str],
+    *,
+    inferred_fiat_currency: str = "",
+    display_type: str = "",
+) -> str:
+    """Normalize a display_unit_mode (including legacy 'fiat') against available_units."""
+    avail = [str(u).strip().lower() for u in available_units if str(u).strip()]
+    if not avail:
+        avail = ["native"]
+    raw = str(mode or "").strip().lower()
+    inferred = str(inferred_fiat_currency or "").strip().upper()
+    dtype = str(display_type or "").strip().upper()
+    default_unit = "cny" if dtype == "CNY" else ("usd" if dtype == "USD" else avail[0])
+    if default_unit not in avail:
+        default_unit = avail[0]
+
+    if raw == "fiat":
+        mapped = "usd" if inferred == "USD" else ("cny" if inferred == "CNY" else default_unit)
+        return mapped if mapped in avail else default_unit
+    if raw == "native":
+        if "native" in avail:
+            return "native"
+        return default_unit
+    if raw in avail:
+        return raw
+    return default_unit
+
+
+def resolve_currency_views(
+    *,
+    remaining: float | None,
+    display_type: str,
+    symbol: str = "",
+    fiat_remaining: float | None = None,
+    inferred_fiat_currency: str = "",
+    usd_cny_rate: float = DEFAULT_FALLBACK_USD_CNY,
+    preferred_unit: str = "native",
+    custom_exchange_rate: float | None = None,
+    fiat_per_base_unit: float | None = None,
+    scope_key: str = "",
+    station_id: str = "",
+) -> dict[str, Any]:
+    """Single source of truth for native / CNY / USD balance views without outbound HTTP."""
+    dtype = str(display_type or "CREDIT").strip().upper()
+    if dtype not in SNAPSHOT_DISPLAY_TYPES:
+        dtype = "CREDIT"
+    rate = normalize_usd_cny_rate(usd_cny_rate)
+    inferred = str(inferred_fiat_currency or "").strip().upper()
+    if dtype in ("CNY", "USD"):
+        inferred = dtype
+    elif inferred not in ("CNY", "USD"):
+        inferred = ""
+
+    rem_val = round(float(remaining), 6) if (remaining is not None and not isinstance(remaining, bool) and math.isfinite(float(remaining))) else None
+    fiat_val = round(float(fiat_remaining), 6) if (fiat_remaining is not None and not isinstance(fiat_remaining, bool) and math.isfinite(float(fiat_remaining))) else None
+
+    native_sym = normalize_currency_symbol(dtype, symbol)
+    if not native_sym and dtype == "TOKENS":
+        native_sym = "tokens"
+    native_label = (
+        "人民币" if dtype == "CNY"
+        else ("美元" if dtype == "USD" else ("原始 Token" if dtype == "TOKENS" else "站内原值"))
+    )
+
+    cny_amount: float | None = None
+    usd_amount: float | None = None
+    available_units: list[str]
+    rate_caption = ""
+
+    if dtype == "CNY":
+        cny_amount = rem_val
+        usd_amount = convert_currency_amount(rem_val, "CNY", "USD", rate) if rem_val is not None else None
+        available_units = ["cny", "usd"]
+    elif dtype == "USD":
+        usd_amount = rem_val
+        cny_amount = convert_currency_amount(rem_val, "USD", "CNY", rate) if rem_val is not None else None
+        available_units = ["cny", "usd"]
+    elif dtype == "CREDIT" and fiat_val is not None and inferred in ("CNY", "USD"):
+        if inferred == "CNY":
+            cny_amount = fiat_val
+            usd_amount = convert_currency_amount(fiat_val, "CNY", "USD", rate)
+        else:
+            usd_amount = fiat_val
+            cny_amount = convert_currency_amount(fiat_val, "USD", "CNY", rate)
+        available_units = ["native", "cny", "usd"]
+        if (
+            custom_exchange_rate is not None
+            and fiat_per_base_unit is not None
+            and not isinstance(custom_exchange_rate, bool)
+            and not isinstance(fiat_per_base_unit, bool)
+            and float(custom_exchange_rate) > 0
+            and float(fiat_per_base_unit) > 0
+        ):
+            per_fiat = _format_compact_rate(float(custom_exchange_rate) / float(fiat_per_base_unit))
+            if per_fiat:
+                fiat_sym = "$" if inferred == "USD" else "¥"
+                unit_lbl = native_sym or "积分"
+                rate_caption = f"{per_fiat} {unit_lbl} = {fiat_sym}1"
+    else:
+        available_units = ["native"]
+
+    normalized_pref = normalize_display_unit_mode(
+        preferred_unit,
+        available_units,
+        inferred_fiat_currency=inferred,
+        display_type=dtype,
+    )
+
+    return {
+        "scope_key": str(scope_key or (f"station:{station_id}" if station_id else "")),
+        "station_id": str(station_id or ""),
+        "display_type": dtype,
+        "native_symbol": native_sym,
+        "native_label": native_label,
+        "native_amount": rem_val,
+        "cny_amount": cny_amount,
+        "usd_amount": usd_amount,
+        "usd_cny_rate": rate,
+        "inferred_fiat_currency": inferred,
+        "rate_caption": rate_caption,
+        "preferred_unit": normalized_pref,
+        "available_units": available_units,
+    }
+
+
 def redact_quota_text(text: object, secrets: Iterable[str] = (), *, max_len: int = MAX_ERROR_CHARS) -> str:
     """Redact credentials, proxy passwords, and control chars before returning/logging text."""
     raw = str(text or "")
@@ -363,7 +506,7 @@ class QuotaStationSpec:
 
         unit_mode = str(self.display_unit_mode or "native").strip().lower()
         if unit_mode not in DISPLAY_UNIT_MODES:
-            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native 或 fiat")
+            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native、fiat、cny 或 usd")
         object.__setattr__(self, "display_unit_mode", unit_mode)
 
         if isinstance(self.interval_sec, bool) or type(self.interval_sec) is not int:
@@ -538,35 +681,133 @@ class QuotaStationSpec:
         )
 
 
-def _sanitize_subscription_items(raw: object) -> tuple[dict[str, Any], ...]:
+def default_wallet_thresholds(currency: str) -> tuple[float | None, float | None]:
+    """Return sensible default (low, critical) absolute thresholds for a wallet currency."""
+    cur = str(currency or "").strip().upper()
+    pair = DEFAULT_WALLET_THRESHOLDS.get(cur)
+    if pair is None:
+        return None, None
+    return pair[0], pair[1]
+
+
+def normalize_subscription_item(
+    raw: object,
+    *,
+    default_display_type: str = "",
+    default_symbol: str = "",
+    default_fiat_currency: str = "",
+    default_source: str = "",
+) -> dict[str, Any] | None:
+    """Normalize a subscription / periodic quota package dict into a protocol-agnostic structure."""
+    if not isinstance(raw, dict):
+        return None
+
+    def _num(*keys: str) -> float | None:
+        for key in keys:
+            val = raw.get(key)
+            if val is None or isinstance(val, bool):
+                continue
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(num) and num >= 0:
+                return round(num, 6)
+        return None
+
+    rem = _num("remaining", "amount_remaining", "remaining_quota", "remain_quota")
+    used = _num("used", "amount_used", "used_amount", "used_quota")
+    total = _num("total", "limit", "amount_total", "total_amount", "total_quota", "quota")
+    if rem is None and total is not None and used is not None:
+        rem = round(max(0.0, total - used), 6)
+    if used is None and total is not None and rem is not None:
+        used = round(max(0.0, total - rem), 6)
+    if rem is None and total is None:
+        return None
+
+    raw_pct = _num("remaining_percent")
+    if raw_pct is not None:
+        pct: float | None = round(max(0.0, min(100.0, raw_pct)), 2)
+    elif rem is not None and total is not None and total > 0:
+        pct = round(max(0.0, min(100.0, (rem / total) * 100.0)), 2)
+    else:
+        pct = None
+
+    raw_dt = str(raw.get("display_type") or raw.get("currency") or default_display_type or "").strip().upper()
+    dtype = raw_dt if raw_dt in SNAPSHOT_DISPLAY_TYPES else ""
+    raw_sym = str(raw.get("symbol") or default_symbol or "")
+    symbol = normalize_currency_symbol(dtype, raw_sym) if (dtype or raw_sym) else ""
+
+    fiat_cur = str(raw.get("fiat_currency") or default_fiat_currency or "").strip().upper()
+    if fiat_cur not in FIAT_CURRENCIES:
+        fiat_cur = ""
+    fiat_rem = _num("fiat_remaining")
+    fiat_used = _num("fiat_used")
+    fiat_total = _num("fiat_total")
+    if fiat_used is None and fiat_total is not None and fiat_rem is not None:
+        fiat_used = round(max(0.0, fiat_total - fiat_rem), 6)
+
+    name = _clean_line(
+        str(raw.get("name") or raw.get("title") or raw.get("plan_name") or ""),
+        max_len=80,
+    ) or "订阅套餐"
+    expires_at = _clean_line(
+        str(raw.get("expires_at") or raw.get("end_time") or raw.get("reset_at") or ""),
+        max_len=64,
+    )
+    source = _clean_line(str(raw.get("source") or default_source or ""), max_len=48)
+
+    raw_status = str(raw.get("status") or "").strip().lower()
+    if raw_status in SUBSCRIPTION_STATUSES:
+        status = raw_status
+    elif rem is not None and rem <= 0 and (total is None or total > 0):
+        status = "exhausted"
+    elif pct is not None and pct <= 5.0:
+        status = "critical"
+    elif pct is not None and pct <= 15.0:
+        status = "low"
+    else:
+        status = "active"
+
+    return {
+        "name": name,
+        "remaining": rem,
+        "used": used,
+        "total": total,
+        "remaining_percent": pct,
+        "display_type": dtype,
+        "currency": dtype,
+        "symbol": symbol,
+        "fiat_remaining": fiat_rem,
+        "fiat_used": fiat_used,
+        "fiat_total": fiat_total,
+        "fiat_currency": fiat_cur,
+        "expires_at": expires_at,
+        "status": status,
+        "source": source,
+    }
+
+
+def _sanitize_subscription_items(
+    raw: object,
+    *,
+    default_display_type: str = "",
+    default_symbol: str = "",
+    default_fiat_currency: str = "",
+) -> tuple[dict[str, Any], ...]:
     if not isinstance(raw, (list, tuple)):
         return ()
     out: list[dict[str, Any]] = []
     for item in raw:
-        if not isinstance(item, dict):
+        normalized = normalize_subscription_item(
+            item,
+            default_display_type=default_display_type,
+            default_symbol=default_symbol,
+            default_fiat_currency=default_fiat_currency,
+        )
+        if normalized is None:
             continue
-        def _num(key: str) -> float | None:
-            val = item.get(key)
-            if val is None or isinstance(val, bool):
-                return None
-            try:
-                num = float(val)
-            except (TypeError, ValueError):
-                return None
-            return round(num, 6) if math.isfinite(num) and num >= 0 else None
-
-        entry = {
-            "name": _clean_line(str(item.get("name") or ""), max_len=80),
-            "remaining": _num("remaining"),
-            "used": _num("used"),
-            "total": _num("total"),
-            "fiat_remaining": _num("fiat_remaining"),
-            "fiat_total": _num("fiat_total"),
-            "expires_at": _clean_line(str(item.get("expires_at") or ""), max_len=64),
-        }
-        if entry["remaining"] is None and entry["total"] is None:
-            continue
-        out.append(entry)
+        out.append(normalized)
         if len(out) >= MAX_SUBSCRIPTIONS_PER_STATION:
             break
     return tuple(out)
@@ -586,6 +827,7 @@ class QuotaSnapshot:
     used: float | None = None
     total: float | None = None
     remaining_percent: float | None = None
+    quota_model: str = ""
     display_type: str = "CREDIT"
     symbol: str = ""
     quota_per_unit: float = 0.0
@@ -616,12 +858,26 @@ class QuotaSnapshot:
         if dtype not in SNAPSHOT_DISPLAY_TYPES:
             dtype = "CREDIT"
         object.__setattr__(self, "display_type", dtype)
-        object.__setattr__(self, "symbol", normalize_currency_symbol(dtype, self.symbol))
+        norm_sym = normalize_currency_symbol(dtype, self.symbol)
+        object.__setattr__(self, "symbol", norm_sym)
         fiat_cur = str(self.inferred_fiat_currency or "").strip().upper()
         if fiat_cur not in FIAT_CURRENCIES:
             fiat_cur = ""
         object.__setattr__(self, "inferred_fiat_currency", fiat_cur)
-        object.__setattr__(self, "subscriptions", _sanitize_subscription_items(self.subscriptions))
+        qmodel = str(self.quota_model or "").strip().lower()
+        if qmodel not in QUOTA_MODELS:
+            qmodel = ""
+        object.__setattr__(self, "quota_model", qmodel)
+        object.__setattr__(
+            self,
+            "subscriptions",
+            _sanitize_subscription_items(
+                self.subscriptions,
+                default_display_type=dtype,
+                default_symbol=norm_sym,
+                default_fiat_currency=dtype if dtype in ("CNY", "USD") else fiat_cur,
+            ),
+        )
         object.__setattr__(self, "server_address", _clean_line(self.server_address, max_len=256))
         object.__setattr__(self, "error", _clean_line(self.error, max_len=MAX_ERROR_CHARS))
         object.__setattr__(self, "error_code", _clean_line(self.error_code, max_len=64))
@@ -636,8 +892,10 @@ class QuotaSnapshot:
         object.__setattr__(self, "logo_error", _clean_line(self.logo_error, max_len=128))
         object.__setattr__(self, "latency_ms", max(0, int(self.latency_ms or 0)))
 
-        # Compute remaining_percent when missing and total > 0.
-        if self.remaining_percent is None and self.remaining is not None and self.total is not None and self.total > 0:
+        # Pay-as-you-go wallets NEVER fabricate remaining_percent from lifetime cumulative spend.
+        if qmodel == "wallet":
+            object.__setattr__(self, "remaining_percent", None)
+        elif self.remaining_percent is None and self.remaining is not None and self.total is not None and self.total > 0:
             pct = max(0.0, min(100.0, (self.remaining / self.total) * 100.0))
             object.__setattr__(self, "remaining_percent", round(pct, 2))
 
@@ -653,6 +911,7 @@ class QuotaSnapshot:
             "used": self.used,
             "total": self.total,
             "remaining_percent": self.remaining_percent,
+            "quota_model": self.quota_model,
             "display_type": self.display_type,
             "symbol": self.symbol,
             "quota_per_unit": self.quota_per_unit,
@@ -704,6 +963,7 @@ class QuotaSnapshot:
             used=_opt_float("used"),
             total=_opt_float("total"),
             remaining_percent=_opt_float("remaining_percent"),
+            quota_model=str(raw.get("quota_model") or ""),
             display_type=str(raw.get("display_type") or "CREDIT"),
             symbol=str(raw.get("symbol") or ""),
             quota_per_unit=_opt_float("quota_per_unit") or 0.0,
@@ -769,8 +1029,137 @@ class QuotaAwarenessPolicy:
         )
 
 
-def evaluate_station_health(spec: QuotaStationSpec, snapshot: QuotaSnapshot | None) -> str:
-    """Classify one station into normal/low/critical/error/disabled/pending."""
+def resolve_station_quota_model(
+    spec: QuotaStationSpec | None,
+    snapshot: QuotaSnapshot | None,
+) -> str:
+    """Resolve whether a station represents a pay-as-you-go ``wallet`` or a ``capped`` quota pool."""
+    if snapshot is not None and snapshot.quota_model in QUOTA_MODELS:
+        return snapshot.quota_model
+    if spec is not None and spec.adapter_id in WALLET_ONLY_ADAPTER_IDS and not (snapshot and snapshot.is_key_scoped):
+        return "wallet"
+    if (snapshot is not None and snapshot.is_key_scoped) or (spec is not None and spec.adapter_id in CAPPED_ONLY_ADAPTER_IDS):
+        return "capped"
+    if snapshot is not None and snapshot.total is not None and snapshot.total > 0:
+        return "capped"
+    return "wallet"
+
+
+def _infer_fiat_per_native(spec: QuotaStationSpec | None, snapshot: QuotaSnapshot | None) -> tuple[str, float | None]:
+    """Return ``(fiat_currency, fiat_per_native_unit)`` for a station snapshot."""
+    snap_dt = (snapshot.display_type if snapshot is not None else "") or (spec.display_type if spec is not None else "")
+    snap_dt = str(snap_dt or "").strip().upper()
+    if snap_dt in ("CNY", "USD"):
+        return snap_dt, 1.0
+    fiat_cur = str(
+        (spec.fiat_currency if spec is not None and spec.fiat_currency else "")
+        or (snapshot.inferred_fiat_currency if snapshot is not None else "")
+    ).strip().upper()
+    if fiat_cur not in ("CNY", "USD"):
+        return "", None
+    if snapshot is not None and snapshot.remaining is not None and snapshot.fiat_remaining is not None and snapshot.remaining > 0:
+        ratio = snapshot.fiat_remaining / snapshot.remaining
+        if math.isfinite(ratio) and ratio > 0:
+            return fiat_cur, ratio
+    if snapshot is not None and snapshot.custom_exchange_rate and snapshot.custom_exchange_rate > 0:
+        pbu = (
+            spec.fiat_per_base_unit
+            if (spec is not None and spec.fiat_per_base_unit is not None and spec.fiat_per_base_unit > 0)
+            else (snapshot.site_recharge_price if fiat_cur == "CNY" else None)
+        )
+        if pbu is not None and pbu > 0:
+            ratio = pbu / snapshot.custom_exchange_rate
+            if math.isfinite(ratio) and ratio > 0:
+                return fiat_cur, ratio
+    return fiat_cur, None
+
+
+def resolve_effective_thresholds(
+    spec: QuotaStationSpec,
+    snapshot: QuotaSnapshot | None,
+    *,
+    usd_cny_rate: float = DEFAULT_FALLBACK_USD_CNY,
+) -> dict[str, Any]:
+    """Single source of truth for per-station effective warning thresholds and currency conversions."""
+    rate = normalize_usd_cny_rate(usd_cny_rate)
+    qmodel = resolve_station_quota_model(spec, snapshot)
+    snap_dt = (
+        snapshot.display_type
+        if (snapshot is not None and snapshot.checked_at and snapshot.display_type)
+        else (
+            spec.display_type
+            or ("CNY" if spec.adapter_id in ("deepseek", "siliconflow", "moonshot") else ("USD" if spec.adapter_id in ("openrouter", "sub2api", "openai_billing") else ""))
+        )
+    )
+    snap_dt = str(snap_dt or "").strip().upper()
+    symbol = (snapshot.symbol if (snapshot is not None and snapshot.symbol) else "") or normalize_currency_symbol(snap_dt)
+    fiat_cur, fiat_per_native = _infer_fiat_per_native(spec, snapshot)
+    fiat_symbol = normalize_currency_symbol(fiat_cur) if fiat_cur in ("CNY", "USD") else ""
+
+    source = "none"
+    low: float | None = None
+    critical: float | None = None
+
+    if spec.low_threshold is not None or spec.critical_threshold is not None:
+        if spec.low_threshold == 0 and spec.critical_threshold in (None, 0):
+            source = "disabled"
+            low = 0.0
+            critical = 0.0
+        else:
+            source = "custom"
+            low = round(spec.low_threshold, 6) if spec.low_threshold is not None else None
+            critical = round(spec.critical_threshold, 6) if spec.critical_threshold is not None else None
+    elif qmodel == "wallet":
+        def_low_fiat, def_crit_fiat = default_wallet_thresholds(fiat_cur)
+        if def_low_fiat is not None and fiat_per_native is not None and fiat_per_native > 0:
+            source = "default"
+            low = round(def_low_fiat / fiat_per_native, 6)
+            critical = round(def_crit_fiat / fiat_per_native, 6) if def_crit_fiat is not None else None
+
+    def _to_fiat(val: float | None) -> float | None:
+        if val is None or fiat_per_native is None or fiat_per_native <= 0:
+            return None
+        return round(val * fiat_per_native, 6)
+
+    fiat_low = _to_fiat(low)
+    fiat_critical = _to_fiat(critical)
+    cny_low = convert_currency_amount(fiat_low, fiat_cur, "CNY", rate) if (fiat_low is not None and fiat_cur in ("CNY", "USD")) else None
+    cny_critical = convert_currency_amount(fiat_critical, fiat_cur, "CNY", rate) if (fiat_critical is not None and fiat_cur in ("CNY", "USD")) else None
+    usd_low = convert_currency_amount(fiat_low, fiat_cur, "USD", rate) if (fiat_low is not None and fiat_cur in ("CNY", "USD")) else None
+    usd_critical = convert_currency_amount(fiat_critical, fiat_cur, "USD", rate) if (fiat_critical is not None and fiat_cur in ("CNY", "USD")) else None
+
+    return {
+        "quota_model": qmodel,
+        "source": source,
+        "unit": snap_dt,
+        "symbol": symbol,
+        "low": low,
+        "critical": critical,
+        "fiat_currency": fiat_cur,
+        "fiat_symbol": fiat_symbol,
+        "fiat_per_native": round(fiat_per_native, 8) if fiat_per_native is not None else None,
+        "fiat_low": fiat_low,
+        "fiat_critical": fiat_critical,
+        "cny_low": cny_low,
+        "cny_critical": cny_critical,
+        "usd_low": usd_low,
+        "usd_critical": usd_critical,
+        "low_percent": spec.low_percent if qmodel == "capped" else None,
+    }
+
+
+def evaluate_station_health(
+    spec: QuotaStationSpec,
+    snapshot: QuotaSnapshot | None,
+    *,
+    usd_cny_rate: float = DEFAULT_FALLBACK_USD_CNY,
+) -> str:
+    """Classify one station into normal/low/critical/error/disabled/pending.
+
+    Pay-as-you-go ``wallet`` stations evaluate strictly by absolute balance thresholds
+    (custom or currency defaults, with ``0`` disabling alerts) and NEVER use lifetime
+    cumulative spend to fabricate a remaining percentage.
+    """
     if not spec.enabled:
         return "disabled"
     if snapshot is None or not snapshot.checked_at:
@@ -780,15 +1169,28 @@ def evaluate_station_health(spec: QuotaStationSpec, snapshot: QuotaSnapshot | No
     if snapshot.remaining is None:
         return "normal"
 
+    eff = resolve_effective_thresholds(spec, snapshot, usd_cny_rate=usd_cny_rate)
+    qmodel = eff["quota_model"]
     remaining = snapshot.remaining
+    low_t = eff["low"]
+    crit_t = eff["critical"]
+
+    if qmodel == "wallet":
+        if eff["source"] == "disabled":
+            return "normal"
+        if crit_t is not None and crit_t > 0 and remaining <= crit_t:
+            return "critical"
+        if low_t is not None and low_t > 0 and remaining <= low_t:
+            return "low"
+        return "normal"
+
+    # Capped / key-scoped pool: support absolute thresholds AND real remaining_percent.
     pct = snapshot.remaining_percent
     if pct is None and snapshot.total is not None and snapshot.total > 0:
         pct = (remaining / snapshot.total) * 100.0
-    elif pct is None and snapshot.used is not None and (remaining + snapshot.used) > 0:
-        pct = (remaining / (remaining + snapshot.used)) * 100.0
 
     # Critical check
-    if spec.critical_threshold is not None and spec.critical_threshold > 0 and remaining <= spec.critical_threshold:
+    if eff["source"] != "disabled" and crit_t is not None and crit_t > 0 and remaining <= crit_t:
         return "critical"
     if (
         snapshot.display_type in ("CNY", "USD")
@@ -799,7 +1201,7 @@ def evaluate_station_health(spec: QuotaStationSpec, snapshot: QuotaSnapshot | No
         return "critical"
 
     # Low check
-    if spec.low_threshold is not None and spec.low_threshold > 0 and remaining <= spec.low_threshold:
+    if eff["source"] != "disabled" and low_t is not None and low_t > 0 and remaining <= low_t:
         return "low"
     if (
         snapshot.display_type in ("CNY", "USD")
@@ -835,14 +1237,19 @@ def summarize_quota_portfolio(
     non_fiat_count = 0
     per_station_health: dict[str, str] = {}
     per_station_converted: dict[str, float | None] = {}
+    per_station_quota_model: dict[str, str] = {}
+    per_station_thresholds: dict[str, dict[str, Any]] = {}
     latest_checked_at = ""
 
     for spec in station_list:
         snap = snapshots.get(spec.id)
-        health = evaluate_station_health(spec, snap)
+        eff = resolve_effective_thresholds(spec, snap, usd_cny_rate=rate)
+        health = evaluate_station_health(spec, snap, usd_cny_rate=rate)
         counts[health] += 1
         per_station_health[spec.id] = health
         per_station_converted[spec.id] = None
+        per_station_quota_model[spec.id] = eff["quota_model"]
+        per_station_thresholds[spec.id] = eff
 
         if snap and snap.checked_at and snap.checked_at > latest_checked_at:
             latest_checked_at = snap.checked_at
@@ -900,6 +1307,8 @@ def summarize_quota_portfolio(
         "latest_checked_at": latest_checked_at,
         "health_by_id": per_station_health,
         "converted_remaining_by_id": per_station_converted,
+        "quota_model_by_id": per_station_quota_model,
+        "effective_thresholds_by_id": per_station_thresholds,
     }
 
 
@@ -1181,6 +1590,71 @@ class QuotaStationStore:
                 ]
 
             return self._write_unlocked(next_stations, next_awareness)
+
+    def update_station_display_unit(
+        self,
+        station_id: object,
+        display_unit_mode: object,
+        *,
+        seed_stations: tuple[QuotaStationSpec, ...] | list[QuotaStationSpec] = (),
+    ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        """Atomically persist only display_unit_mode for one station without touching secrets or other fields."""
+        sid = str(station_id or "").strip()
+        mode = str(display_unit_mode or "").strip().lower()
+        if not sid or not _STATION_ID_RE.fullmatch(sid):
+            raise QuotaSettingsError("quota_station_not_found", "未找到指定的站点")
+        if mode not in DISPLAY_UNIT_MODES:
+            raise QuotaSettingsError("quota_config_invalid", "显示单位模式必须是 native、fiat、cny 或 usd")
+        with _STORE_LOCK:
+            stations, awareness, _current_token = self._read_unlocked()
+            if not self.exists() and seed_stations:
+                stations = list(seed_stations)
+            existing = next((st for st in stations if st.id == sid), None)
+            if existing is None:
+                raise QuotaSettingsError("quota_station_not_found", "未找到指定的站点")
+            updated = QuotaStationSpec.from_dict({**existing.to_storage_dict(), "display_unit_mode": mode})
+            next_stations = [updated if st.id == sid else st for st in stations]
+            ordered, next_awareness, next_token = self._write_unlocked(next_stations, awareness)
+            return updated, ordered, next_awareness, next_token
+
+    def update_station_thresholds(
+        self,
+        station_id: object,
+        *,
+        low_threshold: object = None,
+        critical_threshold: object = None,
+        low_percent: object = None,
+        has_low_threshold: bool = True,
+        has_critical_threshold: bool = True,
+        has_low_percent: bool = False,
+        seed_stations: tuple[QuotaStationSpec, ...] | list[QuotaStationSpec] = (),
+    ) -> tuple[QuotaStationSpec, list[QuotaStationSpec], QuotaAwarenessPolicy, str]:
+        """Atomically update per-station warning thresholds without touching credentials or proxies."""
+        with _STORE_LOCK:
+            stations, awareness, _current_token = self._read_unlocked()
+            if not self.exists() and seed_stations:
+                stations = list(seed_stations)
+            sid = str(station_id or "").strip()
+            existing = next((st for st in stations if st.id == sid), None)
+            if existing is None:
+                raise QuotaSettingsError("quota_station_not_found", "未找到指定的站点")
+            raw = existing.to_storage_dict()
+            if has_low_threshold:
+                raw["low_threshold"] = low_threshold
+            if has_critical_threshold:
+                raw["critical_threshold"] = critical_threshold
+            if has_low_percent and low_percent is not None:
+                raw["low_percent"] = low_percent
+            # When disabling alerts via low_threshold == 0 without an explicit critical_threshold,
+            # clear any older higher critical_threshold cleanly so validation passes.
+            norm_low = _optional_nonneg(raw.get("low_threshold"), field="偏低提醒阈值")
+            norm_crit = _optional_nonneg(raw.get("critical_threshold"), field="告急提醒阈值")
+            if norm_low == 0 and (not has_critical_threshold or norm_crit is None):
+                raw["critical_threshold"] = 0.0
+            spec = QuotaStationSpec.from_dict(raw)
+            next_stations = [spec if st.id == sid else st for st in stations]
+            ordered, next_awareness, next_token = self._write_unlocked(next_stations, awareness)
+            return spec, ordered, next_awareness, next_token
 
     def export_redacted_document(self) -> dict[str, Any]:
         """Return a backup-safe document with all tokens and proxy URLs stripped."""

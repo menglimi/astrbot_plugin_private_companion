@@ -134,11 +134,26 @@ class NativePerceptionWebAPI:
                 lookahead_days=display_lookahead)
         except Exception:
             incoming_dates = ()
+        try:
+            date_summary = app.contact_schedule.date_events.configured_summary(
+                context, SimpleNamespace(values=contact["settings"]), at,
+                lookahead_days=display_lookahead)
+        except Exception:
+            date_summary = {
+                "configured_count": 0,
+                "configured_items": [],
+                "next_upcoming": None,
+                "lookahead_days": display_lookahead,
+            }
         contact = {
             **contact,
             "dates": json.dumps(list(incoming_dates), ensure_ascii=False,
                                 sort_keys=True, separators=(",", ":")),
             "lookaheadDays": display_lookahead,
+            "lookahead_days": date_summary["lookahead_days"],
+            "configured_count": date_summary["configured_count"],
+            "configured_items": date_summary["configured_items"],
+            "next_upcoming": date_summary["next_upcoming"],
         }
         port = app.contact_schedule.news_events.port
         # ContactManagement has already authorized and read the effective window values.
@@ -364,25 +379,56 @@ class NativePerceptionWebAPI:
             result["confidence"] = round(max(0.0, min(1.0, confidence)), 2)
         return result
 
+    @staticmethod
+    def _reality_camera_enabled(registry):
+        if registry is None:
+            return False
+        service_getter = getattr(registry, "service", None)
+        service = service_getter("reality") if callable(service_getter) else None
+        if service is None:
+            return False
+        config = getattr(service, "config", None)
+        public_getter = getattr(config, "public", None)
+        if callable(public_getter):
+            try:
+                public = public_getter()
+            except Exception:
+                public = None
+            if isinstance(public, dict):
+                if public.get("enabled") is False:
+                    return False
+                camera_cfg = public.get("camera")
+                if isinstance(camera_cfg, dict) and type(camera_cfg.get("enabled")) is bool:
+                    return camera_cfg["enabled"]
+        flag = getattr(service, "enable_reality_touch_camera", None)
+        if type(flag) is bool:
+            return flag
+        return False
+
     def _reality_camera_snapshot(self, app, context, operator, observed_at):
         if context.scope.kind is not ScopeKind.PRIVATE:
-            return {"state": "unavailable", "reason": "reality_private_required"}
+            return {"state": "unavailable", "reason": "reality_private_required", "enabled": False}
         registry = getattr(self.controller, "native_extensions", None)
         declarations = registry.declarations() if registry is not None else ()
         entries = tuple(item for item in declarations
                         if item.descriptor.tool.action == REALITY_CAMERA_ACTION)
         if (len(entries) != 1 or registry.current_declaration(entries[0].host_tool_id) != entries[0]):
-            return {"state": "unavailable", "reason": "reality_provider_unavailable"}
+            return {"state": "unavailable", "reason": "reality_provider_unavailable", "enabled": False}
+        camera_enabled = self._reality_camera_enabled(registry)
         try:
             access = RealityCameraAccess(app, context, entries[0].descriptor.package)
             status = access.status(operator, observed_at)
         except TaskError as error:
-            return {"state": "unavailable", "reason": error.code}
+            return {"state": "unavailable", "reason": error.code, "enabled": camera_enabled}
+        if not camera_enabled:
+            if not status["invokable"]:
+                return {"state": "blocked", "reason": status["reason"], "enabled": False}
+            return {"state": "disabled", "reason": "camera_disabled", "enabled": False}
         if not status["invokable"]:
-            return {"state": "blocked", "reason": status["reason"]}
+            return {"state": "blocked", "reason": status["reason"], "enabled": True}
         external = getattr(app, "external", None)
         if external is None:
-            return {"state": "ready", "reason": "no_recent_observation"}
+            return {"state": "ready", "reason": "no_recent_observation", "enabled": True}
         rows = self._reality_result_rows(app, context, REALITY_CAMERA_ACTION)
         for row in rows:
             try:
@@ -396,14 +442,14 @@ class NativePerceptionWebAPI:
                 observation = self._public_camera_observation(native.get("observation"))
                 if (native.get("captured") is True and native.get("status") in ("success", "observation_uncertain")
                         and observation):
-                    return {"state": "available", "reason": "",
+                    return {"state": "available", "reason": "", "enabled": True,
                             "status": native["status"], "answer_available": native.get("answer_available") is True,
                             "purpose": native.get("purpose", ""), "observation": observation,
                             "message": native.get("message", ""),
                             "captured_at": row["finished_at"] or row["created_at"]}
             except (TaskError, ValueError, TypeError, KeyError, AttributeError):
                 continue
-        return {"state": "ready", "reason": "no_recent_observation"}
+        return {"state": "ready", "reason": "no_recent_observation", "enabled": True}
 
     @staticmethod
     def _screen_snapshot(app, context, observed_at):

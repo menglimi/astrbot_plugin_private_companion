@@ -308,6 +308,7 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                     "/quota/test",
                     "/quota/exchange-token",
                     "/quota/stations",
+                    "/quota/stations/<station_id>/thresholds",
                     "/quota/stations/delete",
                     "/quota/refresh",
                     "/quota/awareness",
@@ -971,6 +972,309 @@ class QuotaWebApiIntegrationTests(unittest.TestCase):
                 # 4) PricingCatalogService injection works safely both standalone & with setter
                 cat_svc = api._pricing_catalog_service(Path(tmp), ctrl.session)
                 self.assertIsNotNone(cat_svc)
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
+    def test_icon_cold_start_disk_hit_single_flight_lazy_fetch_and_bg_refresh_flag(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                icon_hits = [0]
+
+                def router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "system_name": "冷启动站",
+                                    "server_address": "https://alias-cold.example.test",
+                                    "quota_display_type": "CNY",
+                                    "quota_per_unit": 500000,
+                                    "logo": "/logo.png",
+                                },
+                            },
+                        )
+                    if url.endswith("/logo.png"):
+                        icon_hits[0] += 1
+                        return _FakeResponse(200, PNG_BYTES, {"Content-Type": "image/png"})
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(200, {"success": True, "data": {"quota": 5_000_000, "used_quota": 0}})
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc1 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc1.store.read()
+                svc1.store.upsert_station(
+                    tok,
+                    {
+                        "id": "cold-st",
+                        "name": "冷启动站",
+                        "adapter_id": "newapi",
+                        "base_url": "https://cold.example.test",
+                        "auth_token": "tok-cold",
+                    },
+                )
+                # 1) Initial dashboard before any snapshot reports background_refresh_scheduled=True
+                api = ModelWebAPI(ctrl)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest()):
+                        res_dash = await api._quota_api.dashboard()
+                    self.assertEqual(res_dash["status"], "ok")
+                    self.assertTrue(res_dash["data"]["background_refresh_scheduled"])
+
+                await close_quota_watch_services(ctrl)
+
+                # 2) Clear disk logos to test cold-start miss -> Single-Flight lazy fetch on GET /quota/icon
+                logo_dir = Path(tmp) / "quota" / "logos"
+                if logo_dir.exists():
+                    for p in logo_dir.iterdir():
+                        p.unlink(missing_ok=True)
+                icon_hits[0] = 0
+
+                svc2 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(query={"id": "cold-st"})):
+                        r1, r2 = await asyncio.gather(api._quota_api.icon(), api._quota_api.icon())
+                self.assertEqual(r1["status"], "ok")
+                self.assertTrue(r1["data"]["available"])
+                self.assertEqual(r1["data"]["data_url"], r2["data"]["data_url"])
+                self.assertEqual(icon_hits[0], 1, "Concurrent /quota/icon misses must collapse via single-flight")
+                self.assertTrue((logo_dir / "cold-st.bin").exists())
+                await close_quota_watch_services(ctrl)
+
+                # 3) Cold restart with empty memory: GET /quota/icon serves directly from disk (0 upstream fetches!)
+                icon_hits[0] = 0
+                svc3 = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                # Seed a snapshot with ok=True and empty logo_version to verify dashboard backfills disk logo_version
+                from companion_v2.model_gateway.quota import QuotaSnapshot
+
+                svc3.snapshot_cache.put(
+                    QuotaSnapshot(
+                        station_id="cold-st",
+                        ok=True,
+                        remaining=10.0,
+                        display_type="CNY",
+                        logo_version="",
+                        checked_at="2026-11-24T12:00:00+00:00",
+                    )
+                )
+                dash_backfill = svc3.get_dashboard_payload(runtime=ctrl.runtime, session=ctrl.session)
+                self.assertTrue(
+                    dash_backfill["snapshots"]["cold-st"]["logo_version"],
+                    "get_dashboard_payload must backfill logo_version from persistent disk cache when snapshot logo_version is empty",
+                )
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(query={"id": "cold-st"})):
+                        r_disk = await api._quota_api.icon()
+                self.assertEqual(r_disk["status"], "ok")
+                self.assertTrue(r_disk["data"]["available"])
+                self.assertTrue(r_disk["data"]["data_url"].startswith("data:image/png;base64,"))
+                self.assertEqual(icon_hits[0], 0, "Restarted service should hit persistent disk logo cache without network I/O")
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
+    def test_display_unit_endpoint_and_balance_currency_context_for_all_modes(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                pstore = PricingSettingsStore(Path(tmp))
+                pdoc = pstore.read()
+                pstore.update(pdoc["revision"], {"display_currency": "CNY", "exchange_rate": {"mode": "manual", "manual_usd_cny": 6.68}})
+
+                upstream_hits = [0]
+
+                def router(method, url, _kw):
+                    upstream_hits[0] += 1
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {
+                                "success": True,
+                                "data": {
+                                    "system_name": "Credit Relay",
+                                    "quota_display_type": "CUSTOM",
+                                    "quota_per_unit": 500000,
+                                    "custom_currency_symbol": "🍪",
+                                    "custom_currency_exchange_rate": 10,
+                                    "price": 1,
+                                },
+                            },
+                        )
+                    if url.endswith("/api/user/self"):
+                        return _FakeResponse(200, {"success": True, "data": {"id": 1, "quota": 36649136, "used_quota": 500000}})
+                    if url.endswith("/api/user/topup/info"):
+                        return _FakeResponse(200, {"success": True, "data": {"price": 1, "pay_methods": [{"type": "alipay"}]}})
+                    if url.endswith("/api/subscription/self"):
+                        return _FakeResponse(404, b"")
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc.store.read()
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "relay-credit",
+                        "name": "Credit Relay",
+                        "adapter_id": "newapi",
+                        "base_url": "https://credit-relay.example.test",
+                        "auth_token": "secret-credit-relay-tok",
+                        "participate_in_awareness": True,
+                    },
+                )
+                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "relay-credit"})
+                await svc.refresh_station("relay-credit")
+
+                api = ModelWebAPI(ctrl)
+                route_paths = {path for path, _h, _m, _d in api.routes()}
+                self.assertIn("/astrbot_plugin_private_companion/model/quota/stations/<station_id>/display-unit", route_paths)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    # 1) GET /model/balance returns legacy fields + structured 3-way currency_context
+                    res_bal = await api.balance()
+                    self.assertEqual(res_bal["status"], "ok")
+                    bal = res_bal["data"]
+                    self.assertTrue(bal["available"])
+                    self.assertEqual(bal["station_id"], "relay-credit")
+                    cc = bal["currency_context"]
+                    self.assertEqual(cc["scope_key"], "station:relay-credit")
+                    self.assertEqual(cc["available_units"], ["native", "cny", "usd"])
+                    self.assertEqual(cc["preferred_unit"], "native")
+                    self.assertAlmostEqual(cc["usd_cny_rate"], 6.68, places=2)
+                    self.assertAlmostEqual(cc["cny_amount"], 73.298272, places=3)
+                    self.assertAlmostEqual(cc["usd_amount"], 73.298272 / 6.68, places=3)
+                    self.assertEqual(cc["rate_caption"], "10 🍪 = ¥1")
+
+                    # 2) POST /quota/stations/<station_id>/display-unit persists without touching secrets or upstream!
+                    hits_before = upstream_hits[0]
+                    req_unit = _FakeRequest(body={"display_unit_mode": "usd"})
+                    with patch("astrbot_host.quota_api.request", req_unit):
+                        res_u = await api._quota_api.save_station_display_unit(station_id="relay-credit")
+                    self.assertEqual(res_u["status"], "ok")
+                    self.assertEqual(res_u["data"]["display_unit_mode"], "usd")
+                    self.assertEqual(upstream_hits[0], hits_before, "Display unit update must not hit upstream")
+                    stored, _, _ = svc.store.read()
+                    self.assertEqual(stored[0].display_unit_mode, "usd")
+                    self.assertEqual(stored[0].auth_token, "secret-credit-relay-tok")
+
+                    # Reject unknown extra fields & invalid mode
+                    with patch("astrbot_host.quota_api.request", _FakeRequest(body={"display_unit_mode": "cny", "auth_token": "hack"})):
+                        res_bad = await api._quota_api.save_station_display_unit(station_id="relay-credit")
+                    self.assertEqual(res_bad["status"], "error")
+                    self.assertEqual(res_bad["data"]["code"], "quota_request_invalid")
+
+                    # Re-reading /model/balance reflects persisted preferred_unit='usd'
+                    res_bal2 = await api.balance()
+                    self.assertEqual(res_bal2["data"]["currency_context"]["preferred_unit"], "usd")
+
+                await close_quota_watch_services(ctrl)
+
+        asyncio.run(run())
+
+    def test_wallet_balance_port_omits_fake_total_and_thresholds_endpoint_updates_atomically(self):
+        from companion_v2.proactive.balance_events import balance_level
+
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                probe_hits = [0]
+
+                def router(method, url, _kw):
+                    if url.endswith("/api/status"):
+                        return _FakeResponse(
+                            200,
+                            {"success": True, "data": {"system_name": "星渊", "quota_display_type": "CNY", "quota_per_unit": 500000, "usd_exchange_rate": 1}},
+                        )
+                    if url.endswith("/api/user/self"):
+                        probe_hits[0] += 1
+                        # Remaining ¥55.73, lifetime spent ¥807.48 (6.46% if miscalculated!)
+                        return _FakeResponse(
+                            200,
+                            {"success": True, "data": {"quota": 27_865_000, "used_quota": 403_740_000, "group": "default"}},
+                        )
+                    if url.endswith("/api/subscription/self"):
+                        return _FakeResponse(404, b"")
+                    if "/api/log/self" in url:
+                        return _FakeResponse(200, {"success": True, "data": {"items": []}})
+                    return _FakeResponse(404, b"")
+
+                ctrl = _make_controller(tmp)
+                svc = get_quota_watch_service(ctrl, Path(tmp), session_factory=_mock_factory(router)[0])
+                _, _, tok = svc.store.read()
+                _, _, _, tok = svc.store.upsert_station(
+                    tok,
+                    {
+                        "id": "syuan",
+                        "name": "星渊",
+                        "adapter_id": "newapi",
+                        "base_url": "https://api.syuan.org",
+                        "auth_token": "secret-syuan-tok",
+                        "participate_in_awareness": True,
+                    },
+                )
+                svc.store.update_awareness(tok, {"mode": "primary", "primary_station_id": "syuan"})
+                await svc.refresh_station("syuan")
+                self.assertEqual(probe_hits[0], 1)
+
+                # MultiStationBalancePort MUST pass total=None for wallet so balance_level never fires false % alert!
+                port = configured_balance_port(ctrl.config, context=ctrl.context, runtime_root=Path(tmp), controller=ctrl)
+                obs = await port.fetch()
+                self.assertAlmostEqual(float(obs.balance), 55.73, places=2)
+                self.assertIsNone(obs.total)
+                default_prefs = {
+                    "balance_low_threshold": Decimal("10"),
+                    "balance_critical_threshold": Decimal("3"),
+                    "balance_low_percent_threshold": Decimal("15"),
+                    "balance_critical_percent_threshold": Decimal("5"),
+                }
+                self.assertIsNone(balance_level(obs, default_prefs))
+
+                # POST /quota/stations/<station_id>/thresholds updates thresholds atomically with 0 upstream re-probes
+                api = ModelWebAPI(ctrl)
+
+                async def fake_auth(allow_query_keys=()):
+                    return (ctrl.session, NS(), NS(), None)
+
+                with patch.object(api, "_run_authorized_read", side_effect=fake_auth):
+                    # Raise low_threshold to 60 -> ¥55.73 immediately becomes "low"
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={"low_threshold": 60, "critical_threshold": 20}),
+                    ):
+                        res_low = await api._quota_api.save_station_thresholds(station_id="syuan")
+                    self.assertEqual(res_low["status"], "ok")
+                    self.assertEqual(probe_hits[0], 1, "Threshold update must not re-probe upstream")
+                    self.assertEqual(res_low["data"]["summary"]["health_by_id"]["syuan"], "low")
+                    self.assertEqual(res_low["data"]["summary"]["effective_thresholds_by_id"]["syuan"]["low"], 60.0)
+                    self.assertEqual(res_low["data"]["summary"]["effective_thresholds_by_id"]["syuan"]["source"], "custom")
+
+                    # Set low_threshold=0 -> alerts disabled, back to "normal", auth_token intact
+                    with patch(
+                        "astrbot_host.quota_api.request",
+                        _FakeRequest(body={"low_threshold": 0}),
+                    ):
+                        res_off = await api._quota_api.save_station_thresholds(station_id="syuan")
+                    self.assertEqual(res_off["status"], "ok")
+                    self.assertEqual(res_off["data"]["summary"]["health_by_id"]["syuan"], "normal")
+                    self.assertEqual(res_off["data"]["summary"]["effective_thresholds_by_id"]["syuan"]["source"], "disabled")
+
+                    # Verify secret preserved cleanly
+                    stored, _, _ = svc.store.read()
+                    self.assertEqual(stored[0].auth_token, "secret-syuan-tok")
 
                 await close_quota_watch_services(ctrl)
 

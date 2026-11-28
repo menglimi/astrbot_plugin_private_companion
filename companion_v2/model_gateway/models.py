@@ -421,6 +421,7 @@ class ModelEnvelope:
     on_reply_prefix: Callable[[ModelDraft], Awaitable[bool]] | None = field(default=None, compare=False, repr=False)
     reply_prefix_ready: Callable[[ModelDraft], bool] | None = field(default=None, compare=False, repr=False)
     refusal_terms: tuple[str, ...] = ()
+    image_history_budget: object | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

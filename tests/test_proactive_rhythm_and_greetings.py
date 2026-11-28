@@ -11,14 +11,18 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from companion_v2.configuration.models import ConfigurationError
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationError
+from companion_v2.configuration.registry import FieldRegistry
+from companion_v2.configuration.service import ConfigurationService
 from companion_v2.conversation.native_turns import NativeConversationTurns
 from companion_v2.execution.models import TaskError
 from companion_v2.proactive import rhythm
 from companion_v2.proactive.configuration import (CURVE_CEILING, CURVE_FLOOR, DEFAULT_HOUR_CURVE, GROUP,
-                                                  configuration_fields, curve_text, hour_activity_curve)
+                                                  ContactConfigurationOwner, configuration_fields, curve_text,
+                                                  hour_activity_curve)
 from companion_v2.proactive.greetings import ANCHOR_PURPOSE, INSOMNIA_PURPOSE
 from companion_v2.proactive.preferences import ContactPreferences
+from companion_v2.proactive.rhythm_configuration import relationship_target_for
 from tests.contact_schedule_support import ContactScheduleFixture
 from tests.test_role_presence import FakePresence
 from tests.test_role_tool_loop import answered
@@ -145,6 +149,27 @@ class RhythmConfigurationTests(unittest.TestCase):
 class RhythmSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase):
     def records(self, app):
         return [json.loads(row["record_json"]) for row in self.contacts(app)]
+
+    async def test_startup_restores_legacy_neutral_preset_and_preserves_later_off(self):
+        context = self.contact_context()
+        installation = ConfigTarget(self.runtime.installation_id, ConfigLayer.INSTALLATION)
+        registry = FieldRegistry(version="legacy-intensity", fields=configuration_fields())
+        saved = SimpleNamespace(configuration=ConfigurationService(
+            self.runtime, registry, owners=(ContactConfigurationOwner(self.runtime),)))
+        self.settings(saved, {"automatic_enabled": True, "proactive_intensity_preset": "off"},
+                      target=installation, actor=self.core).unwrap()
+        self.clock.advance(datetime(2026, 11, 26, tzinfo=timezone.utc) - self.clock.now())
+        self.settings(saved, {"interval_seconds": 1500}, target=installation, actor=self.core).unwrap()
+        self.settings(saved, {"proactive_intensity_preset": "off"},
+                      target=relationship_target_for(context), actor=self.core).unwrap()
+
+        app = self.host().application
+        defaults = app.configuration.read(
+            self.core, target=installation, group_id=GROUP, observed_at=self.clock.now()).unwrap()
+        self.assertEqual(defaults.fields[GROUP + ".proactive_intensity_preset"].value, "custom")
+        self.assertEqual(defaults.fields[GROUP + ".interval_seconds"].value, 1500)
+        self.assertEqual(self.preferences(app, context).automatic_reason(), "contact_intensity_off")
+        self.assertIsNone(self.preferences(app, self.other_window_context(actor=self.core)).automatic_reason())
 
     async def test_off_blocks_planning_and_pending_automatic_delivery(self):
         host, _ = await self.scheduled(automatic=False)

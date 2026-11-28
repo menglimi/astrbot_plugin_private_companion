@@ -849,9 +849,13 @@ class ModelWebAPI:
                             "provider_label": port.provider_label, "currency_label": port.currency_label,
                             "observed_at": None, "amount": None, **extra_meta, **balance_failure_data(error)}
                 else:
-                    from .service_balance import balance_observation_data
+                    from .service_balance import balance_observation_data, legacy_balance_currency_context
                     meta_fn = getattr(port, "balance_metadata", None)
                     extra_meta = meta_fn(observation) if callable(meta_fn) else {"source_kind": "legacy_balance"}
+                    if "currency_context" not in extra_meta:
+                        legacy_ctx = legacy_balance_currency_context(port, observation, runtime_root=runtime_root)
+                        if legacy_ctx is not None:
+                            extra_meta = {**extra_meta, "currency_context": legacy_ctx}
                     data = {"configured": True, "available": True, "provider": port.provider,
                             "provider_label": port.provider_label, "state": "available",
                             **extra_meta, **balance_observation_data(port, observation)}
@@ -1690,7 +1694,7 @@ class ModelWebAPI:
                 raise ValueError("invalid voice changes")
             for name, value in changes.items():
                 if name == "voice_timeout_seconds":
-                    if type(value) is not int or not 1 <= value <= 120:
+                    if type(value) is not int or not 1 <= value <= 300:
                         raise ValueError("invalid voice timeout")
                 elif type(value) is not str or len(value) > 128:
                     raise ValueError("invalid voice binding")

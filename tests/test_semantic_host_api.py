@@ -193,6 +193,214 @@ class PrivateSemanticAPITests(SemanticRequests, unittest.IsolatedAsyncioTestCase
         self.assertEqual(self.native.registered_web_apis, [])
         self.assertEqual((await self.semantic_request(self.selection))["data"]["code"], "staging_host_terminated")
 
+    async def test_reaction_confirmation_filters_batch_actions_and_reset_failures_api(self):
+        (await self.controller.initialize_profile()).unwrap()
+        (await self.controller.start()).unwrap()
+        app = self.controller.session.application
+        service = app.semantics
+        context = self.controller.session.profile.target
+        owner = service.ensure_reaction_catalog(context)
+
+        def make_png(color):
+            buf = io.BytesIO()
+            Image.new("RGB", (64, 64), color).save(buf, format="PNG")
+            return buf.getvalue()
+
+        from astrbot_host.media import inspect_image
+
+        awaiting_items = []
+        for idx, color in enumerate(("red", "green", "blue", "yellow")):
+            captured = inspect_image(make_png(color), 0)
+            item, _ = service.reactions.import_image_with_status(
+                owner, captured,
+                {"name": f"待审表情{idx}", "description": f"描述{idx}", "intents": "打招呼"},
+                collection_source="private_capture", auto_reviewed=True, enabled=False,
+            )
+            updated = service.store.put(
+                owner, "reaction", item["id"],
+                {**item["payload"], "collection_state": "awaiting_confirmation"},
+                expected=item["revision"], enabled=False,
+            )
+            awaiting_items.append(updated)
+
+        # Also add one enabled and one manually disabled sticker.
+        enabled_import = await self.semantic_request(
+            self.selection, action="import",
+            content=base64.b64encode(make_png("purple")).decode("ascii"),
+            metadata={"name": "已启用表情", "description": "已启用"},
+        )
+        enabled_item = enabled_import["data"]["item"]
+        disabled_import = await self.semantic_request(
+            self.selection, action="import",
+            content=base64.b64encode(make_png("orange")).decode("ascii"),
+            metadata={"name": "手动停用表情", "description": "停用"},
+        )
+        disabled_item = disabled_import["data"]["item"]
+        await self.semantic_request(
+            self.selection, action="edit", kind="reaction",
+            id=disabled_item["id"], revision=disabled_item["revision"],
+            values={"name": "手动停用表情", "description": "停用"}, enabled=False,
+        )
+
+        # Verify collection_filter queries and manually_disabled count.
+        awaiting_res = await self.semantic_request(
+            self.selection, kind="reaction", collection_filter="awaiting_confirmation",
+        )
+        self.assertEqual(awaiting_res["status"], "ok", awaiting_res)
+        self.assertEqual(len(awaiting_res["data"]["items"]), 4)
+        self.assertEqual(awaiting_res["data"]["catalog"]["reaction"]["awaiting_confirmation"], 4)
+        self.assertEqual(awaiting_res["data"]["catalog"]["reaction"]["manually_disabled"], 1)
+        self.assertEqual(awaiting_res["data"]["catalog"]["reaction"]["disabled"], 5)
+
+        enabled_res = await self.semantic_request(
+            self.selection, kind="reaction", collection_filter="enabled",
+        )
+        self.assertEqual([row["id"] for row in enabled_res["data"]["items"]], [enabled_item["id"]])
+
+        disabled_res = await self.semantic_request(
+            self.selection, kind="reaction", collection_filter="disabled",
+        )
+        self.assertEqual([row["id"] for row in disabled_res["data"]["items"]], [disabled_item["id"]])
+
+        invalid_filter = await self.semantic_request(
+            self.selection, kind="reaction", collection_filter="bogus",
+        )
+        self.assertEqual(invalid_filter["data"]["code"], "semantic_request_invalid")
+
+        # Single confirm_reaction enables item and transitions collection_state to confirmed.
+        first = awaiting_items[0]
+        stale_confirm = await self.semantic_request(
+            self.selection, action="confirm_reaction", id=first["id"], revision=first["revision"] - 1,
+        )
+        self.assertEqual(stale_confirm["data"]["code"], "semantic_conflict")
+        confirmed = await self.semantic_request(
+            self.selection, action="confirm_reaction", id=first["id"], revision=first["revision"],
+        )
+        self.assertEqual(confirmed["status"], "ok", confirmed)
+        self.assertTrue(confirmed["data"]["item"]["enabled"])
+        self.assertEqual(confirmed["data"]["item"]["payload"]["collection_state"], "confirmed")
+
+        # Single reject_reaction deletes item permanently.
+        second = awaiting_items[1]
+        rejected = await self.semantic_request(
+            self.selection, action="reject_reaction", id=second["id"], revision=second["revision"],
+        )
+        self.assertEqual(rejected["status"], "ok", rejected)
+        self.assertTrue(rejected["data"]["deleted"])
+        missing = await self.semantic_request(self.selection, kind="reaction", id=second["id"])
+        self.assertEqual(missing["data"]["code"], "semantic_item_missing")
+
+        # Batch confirm by items with one valid and one stale revision.
+        third, fourth = awaiting_items[2], awaiting_items[3]
+        batch_confirm = await self.semantic_request(
+            self.selection, action="batch_confirm_reactions",
+            items=[
+                {"id": third["id"], "revision": third["revision"]},
+                {"id": fourth["id"], "revision": fourth["revision"] + 99},
+            ],
+        )
+        self.assertEqual(batch_confirm["status"], "ok", batch_confirm)
+        self.assertEqual(batch_confirm["data"]["confirmed_count"], 1)
+        self.assertEqual(batch_confirm["data"]["confirmed_ids"], [third["id"]])
+        self.assertEqual(batch_confirm["data"]["conflicts"], [fourth["id"]])
+
+        # Batch reject remaining awaiting item.
+        batch_reject = await self.semantic_request(
+            self.selection, action="batch_reject_reactions",
+            items=[{"id": fourth["id"], "revision": fourth["revision"]}],
+        )
+        self.assertEqual(batch_reject["status"], "ok", batch_reject)
+        self.assertEqual(batch_reject["data"]["rejected_count"], 1)
+        self.assertEqual(batch_reject["data"]["rejected_ids"], [fourth["id"]])
+
+        # Guard: confirm_reaction / reject_reaction and batch variants must never
+        # delete enabled items or re-enable manually disabled items.
+        enabled_current = (await self.semantic_request(
+            self.selection, kind="reaction", id=enabled_item["id"],
+        ))["data"]["item"]
+        disabled_current = (await self.semantic_request(
+            self.selection, kind="reaction", id=disabled_item["id"],
+        ))["data"]["item"]
+
+        reject_enabled = await self.semantic_request(
+            self.selection, action="reject_reaction",
+            id=enabled_current["id"], revision=enabled_current["revision"],
+        )
+        self.assertEqual(reject_enabled["data"]["code"], "semantic_conflict")
+        reject_disabled = await self.semantic_request(
+            self.selection, action="reject_reaction",
+            id=disabled_current["id"], revision=disabled_current["revision"],
+        )
+        self.assertEqual(reject_disabled["data"]["code"], "semantic_conflict")
+        confirm_disabled = await self.semantic_request(
+            self.selection, action="confirm_reaction",
+            id=disabled_current["id"], revision=disabled_current["revision"],
+        )
+        self.assertEqual(confirm_disabled["data"]["code"], "semantic_conflict")
+
+        batch_reject_ids = await self.semantic_request(
+            self.selection, action="batch_reject_reactions",
+            ids=[enabled_current["id"], disabled_current["id"]],
+        )
+        self.assertEqual(batch_reject_ids["status"], "ok", batch_reject_ids)
+        self.assertEqual(batch_reject_ids["data"]["rejected_count"], 0)
+        self.assertEqual(set(batch_reject_ids["data"]["conflicts"]),
+                         {enabled_current["id"], disabled_current["id"]})
+
+        batch_reject_items = await self.semantic_request(
+            self.selection, action="batch_reject_reactions",
+            items=[{"id": enabled_current["id"], "revision": enabled_current["revision"]}],
+        )
+        self.assertEqual(batch_reject_items["status"], "ok", batch_reject_items)
+        self.assertEqual(batch_reject_items["data"]["rejected_count"], 0)
+        self.assertEqual(batch_reject_items["data"]["conflicts"], [enabled_current["id"]])
+
+        batch_confirm_ids = await self.semantic_request(
+            self.selection, action="batch_confirm_reactions",
+            ids=[disabled_current["id"], enabled_current["id"]],
+        )
+        self.assertEqual(batch_confirm_ids["status"], "ok", batch_confirm_ids)
+        self.assertEqual(batch_confirm_ids["data"]["confirmed_count"], 0)
+        self.assertEqual(set(batch_confirm_ids["data"]["conflicts"]),
+                         {disabled_current["id"], enabled_current["id"]})
+
+        # Verify enabled and manually disabled items remain intact with unchanged state.
+        still_enabled = (await self.semantic_request(
+            self.selection, kind="reaction", id=enabled_current["id"],
+        ))["data"]["item"]
+        still_disabled = (await self.semantic_request(
+            self.selection, kind="reaction", id=disabled_current["id"],
+        ))["data"]["item"]
+        self.assertTrue(still_enabled["enabled"])
+        self.assertFalse(still_disabled["enabled"])
+
+        # Record failed collection run + open breaker, then reset_collection_failures via API.
+        service.store.record_reaction_collection(
+            owner, "ev-fail-api", "private_capture", "failed",
+            code="TimeoutError", detail="timed out", at=100.0,
+        )
+        service._reaction_collection_failures = 5
+        service._reaction_collection_cooldown_until = support.NOW.timestamp() + 300
+        reset_res = await self.semantic_request(self.selection, action="reset_collection_failures")
+        self.assertEqual(reset_res["status"], "ok", reset_res)
+        self.assertEqual(reset_res["data"]["cleared_runs"], 1)
+        self.assertFalse(reset_res["data"]["circuit"]["open"])
+
+        # Non-core operator denied on new actions.
+        operator = dashboard_operator(self.controller.runtime, "admin", at=support.NOW)
+        policy = ObjectAccessPolicy(self.controller.runtime)
+        policy.set_tier(operator.subject, AuthorizationTier.IMPORTANT,
+                        expected_revision=policy.revision, observed_at=support.NOW)
+        for act, kwargs in (
+            ("confirm_reaction", {"id": "x", "revision": 1}),
+            ("reject_reaction", {"id": "x", "revision": 1}),
+            ("batch_confirm_reactions", {"ids": ["x"]}),
+            ("batch_reject_reactions", {"ids": ["x"]}),
+            ("reset_collection_failures", {}),
+        ):
+            denied = await self.semantic_request(self.selection, action=act, **kwargs)
+            self.assertEqual(denied["data"]["code"], "core_access_required")
+
 
 class GroupSemanticAPITests(SemanticRequests, GroupMemoryManagementFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):

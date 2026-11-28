@@ -80,6 +80,35 @@ window.CompanionImageMaterialsPage = (() => {
   const live = ticket => state.root?.isConnected && ticket === state.ticket
     && state.scope === (product()?.scopeKey?.() || "");
   const role = () => product()?.role?.() || null;
+  let albumAutoLoader = null;
+  let albumAppendError = false;
+  function destroyAlbumAutoLoader() {
+    try { albumAutoLoader?.destroy?.(); } catch (_) {}
+    albumAutoLoader = null;
+  }
+  function syncAlbumAutoLoader() {
+    const host = state.root?.querySelector?.("[data-im-album-autoscroll]");
+    if (!host || !window.CompanionAutoScroll) { destroyAlbumAutoLoader(); return; }
+    if (!albumAutoLoader) {
+      albumAutoLoader = window.CompanionAutoScroll.mount({
+        host,
+        hasMore: () => Boolean(state.albumCursor),
+        isLoading: () => Boolean(state.albumLoading),
+        hasError: () => albumAppendError,
+        errorMessage: () => albumAppendError ? (state.albumError || "读取更早的产出失败，已保留已加载图片。") : "",
+        loadedCount: () => state.album.length,
+        cursor: () => state.albumCursor || "",
+        itemLabel: "张",
+        manualButtonAttrs: () => ({"data-im-load-more": "", ...(state.albumLoading ? {disabled: ""} : {})}),
+        manualButtonLabel: () => state.albumLoading ? "正在读取…" : "读取更早的产出",
+        scrollTopTarget: () => state.root?.querySelector?.(".image-materials-album-section"),
+        onLoadMore: () => loadAlbum(state.ticket, true),
+        onRetry: () => { albumAppendError = false; state.albumError = ""; return loadAlbum(state.ticket, true); },
+      });
+    } else {
+      albumAutoLoader.refresh(host);
+    }
+  }
 
   function operationKey(prefix) {
     let value = "";
@@ -240,7 +269,11 @@ window.CompanionImageMaterialsPage = (() => {
           <span class="image-materials-album-meta"><b>${esc(item.width || "—")} × ${esc(item.height || "—")}</b><small>${esc((item.created_at || "时间未记录") + action)}</small></span>
         </button>`;
       }).join("")}</div>`;
-      if (state.albumCursor) body += `<button type="button" class="button small image-materials-load-more" data-im-load-more ${state.albumLoading ? "disabled" : ""}>${state.albumLoading ? "正在读取…" : "读取更早的产出"}</button>`;
+      if (window.CompanionAutoScroll) {
+        body += `<div class="image-materials-album-loader" data-im-album-autoscroll></div>`;
+      } else if (state.albumCursor) {
+        body += `<button type="button" class="button small image-materials-load-more" data-im-load-more ${state.albumLoading ? "disabled" : ""}>${state.albumLoading ? "正在读取…" : "读取更早的产出"}</button>`;
+      }
     }
     return `<section class="image-materials-section image-materials-album-section"><header class="image-materials-section-head"><h4>从产出相册登记</h4><button type="button" class="button small" data-im-refresh ${state.albumLoading || state.inventoryLoading || state.action ? "disabled" : ""}>刷新</button></header>${body}${renderReferenceEditor()}</section>`;
   }
@@ -470,6 +503,7 @@ window.CompanionImageMaterialsPage = (() => {
     const root = state.root;
     if (!root?.isConnected) return;
     if (!state.scope || !role()?.image_material_api) {
+      destroyAlbumAutoLoader();
       root.innerHTML = `<section class="image-materials-card"><div class="image-materials-empty-head"><h3>参考素材与衣柜</h3></div>${statusCard("等待私聊角色绑定", "参考图和衣柜需要一个已绑定的私聊角色。先到「账号与会话」完成绑定，再返回这里。", "empty")}</section>`;
       return;
     }
@@ -481,6 +515,7 @@ window.CompanionImageMaterialsPage = (() => {
       <section class="image-materials-library"><header class="image-materials-section-head"><h4>参考图库</h4><span class="image-materials-count">${activeReferences().length} / 24 张生效</span><div class="image-materials-section-tools"><button type="button" class="button small primary" data-im-toggle-upload aria-expanded="${state.uploadOpen}" aria-controls="image-materials-upload">${state.uploadOpen ? "收起上传" : "添加参考图"}</button><button type="button" class="button small" data-im-refresh ${state.inventoryLoading || state.albumLoading || state.action ? "disabled" : ""}>刷新状态</button><button type="button" class="button small" data-im-save-gallery ${!galleryOrderDirty() || state.action || state.inventoryLoading ? "disabled" : ""}>${state.action === "save-gallery" ? "正在保存…" : "保存图库"}</button></div></header>${renderUploadForm()}${renderReferenceList()}</section>
       <div class="image-materials-columns">${renderAlbum()}<section class="image-materials-section image-materials-wardrobe-section"><header class="image-materials-section-head"><h4>衣柜</h4><span class="image-materials-count">${activeWardrobe().length} / 24 件生效</span></header><div class="image-materials-wardrobe-tools"><button type="button" class="button small image-materials-add-wardrobe" data-im-toggle-wardrobe aria-expanded="${state.wardrobeOpen}" aria-controls="image-materials-wardrobe-add">${state.wardrobeOpen ? "收起新增" : "新增衣物"}</button>${withdrawnWardrobeCount() > 0 ? `<button type="button" class="button small" data-im-toggle-withdrawn-wardrobe aria-pressed="${state.showWithdrawnWardrobe}">${state.showWithdrawnWardrobe ? "隐藏已撤回" : `显示已撤回 (${withdrawnWardrobeCount()})`}</button>` : ""}</div>${renderWardrobeForm()}${renderWardrobeList()}</section></div>
     </section>`;
+    syncAlbumAutoLoader();
     window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}});
   }
 
@@ -509,7 +544,10 @@ window.CompanionImageMaterialsPage = (() => {
 
   async function loadAlbum(ticket, append = false) {
     if (!live(ticket) || state.albumLoading || (append && !state.albumCursor)) return;
-    state.albumLoading = true; if (!append) state.albumError = ""; render();
+    state.albumLoading = true;
+    albumAppendError = false;
+    if (!append) { state.albumError = ""; albumAutoLoader?.reset?.(); }
+    render();
     try {
       const value = await request("GET", apiPath("/album"), append ? {cursor: state.albumCursor} : undefined);
       if (!live(ticket)) return;
@@ -522,8 +560,13 @@ window.CompanionImageMaterialsPage = (() => {
       if (state.selectedImage && !state.album.some(item => item.image_id === state.selectedImage)) state.selectedImage = "";
       state.albumCursor = typeof value.next_cursor === "string" && value.next_cursor ? value.next_cursor : null;
       state.albumLoaded = true;
+      state.albumError = "";
+      albumAppendError = false;
     } catch (error) {
-      if (live(ticket)) state.albumError = errorText(error, "产出相册暂不可读，请刷新后重试。");
+      if (live(ticket)) {
+        state.albumError = errorText(error, "产出相册暂不可读，请刷新后重试。");
+        if (append) albumAppendError = true;
+      }
     } finally {
       if (live(ticket)) { state.albumLoading = false; render(); }
     }
@@ -883,6 +926,8 @@ window.CompanionImageMaterialsPage = (() => {
   }
 
   function unmount() {
+    destroyAlbumAutoLoader();
+    albumAppendError = false;
     clearTimeout(state.outfitTimer);
     state.outfitPhoto = null; state.outfitError = ""; state.outfitOperation = "";
     state.ticket++; state.abort?.abort(); state.abort = null; state.root = null; state.scope = "";

@@ -1,11 +1,15 @@
 """AstrBot embedding, rerank and visual-analysis ports; no provider secrets leave here."""
 
+import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 
 from companion_v2.execution.models import TaskError, digest
+
+logger = logging.getLogger(__name__)
 
 
 SLANG_SEARCH_ENV = ("COMPANION_V2_SLANG_SEARCH_URL", "COMPANION_V2_SLANG_SEARCH_API_KEY",
@@ -208,7 +212,7 @@ class NativeSemanticModels:
             raise ValueError("incomplete rerank response")
         return scores
 
-    async def analyze(self, identifier, prompt, images=()):
+    def _resolve_analysis_provider(self, identifier, images):
         provider = self.resolve(identifier, "analysis")
         if images:
             config = getattr(provider, "provider_config", {})
@@ -225,7 +229,11 @@ class NativeSemanticModels:
                 if provider is None:
                     raise TaskError("semantic_vision_provider_unavailable",
                                     "image analysis requires a configured vision provider")
-        kwargs = {"prompt": prompt, "max_tokens": 1400}
+        return provider
+
+    @staticmethod
+    async def _invoke_analysis(provider, prompt, images, *, max_tokens):
+        kwargs = {"prompt": prompt, "max_tokens": max_tokens}
         if images:
             kwargs["image_urls"] = list(images)
         response = await awaited(provider.text_chat(**kwargs))
@@ -234,5 +242,38 @@ class NativeSemanticModels:
             raise ValueError("invalid analysis response")
         text = text.strip()
         if text.startswith("```") and text.endswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            inner = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            text = inner.rsplit("```", 1)[0].strip()
         return json.loads(text)
+
+    async def analyze(self, identifier, prompt, images=(), *, max_tokens=1400,
+                      fallback_identifier="", timeout_seconds=None):
+        effective_max_tokens = max_tokens if type(max_tokens) is int and max_tokens > 0 else 1400
+        effective_fallback = str(fallback_identifier or "").strip()
+
+        async def _run_provider(provider):
+            coro = self._invoke_analysis(provider, prompt, images, max_tokens=effective_max_tokens)
+            if timeout_seconds is not None:
+                return await asyncio.wait_for(coro, timeout_seconds)
+            return await coro
+
+        primary_provider = None
+        try:
+            primary_provider = self._resolve_analysis_provider(identifier, images)
+            return await _run_provider(primary_provider)
+        except Exception as primary_error:
+            if not effective_fallback:
+                raise
+            try:
+                fallback_provider = self._resolve_analysis_provider(effective_fallback, images)
+            except Exception:
+                raise primary_error
+            if fallback_provider is primary_provider:
+                raise primary_error
+            logger.warning(
+                "[CompanionV2] 语义分析主模型失败，切换备用模型 primary=%s fallback=%s error_type=%s",
+                str(identifier or self.default_analysis or "<default>")[:120],
+                effective_fallback[:120],
+                type(primary_error).__name__,
+            )
+            return await _run_provider(fallback_provider)

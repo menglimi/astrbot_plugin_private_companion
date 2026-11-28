@@ -912,7 +912,7 @@ class ContactSchedule:
                 return None
             thought = Thought("conversation-burst-" + digest([burst.origin_contact_id, burst.index]),
                 opportunity, ThoughtKind.CONVERSATION,
-                f"这是同一阵念头里的第{burst.index + 1}条短消息，顺着刚才没说完的余韵补充一个具体细节或换个轻巧角度，不要重复上一条，也不要求对方回应。",
+                f"这是同一阵念头里的第{burst.index + 1}条短消息，顺着刚才没说完的余韵自然补充一个具体细节或换个轻巧角度，不要重复上一条，说完即止。",
                 EvidenceSnapshot(context.scope, at, (event.source,)), 1.0)
             return (context, opportunity, (ContactIntent("chat", thought),), batch["role_instruction"],
                     {**origin, "burst_event": burst.document()})
@@ -944,7 +944,7 @@ class ContactSchedule:
         candidates = []
         if chat_reason is None:
             thought = Thought("conversation-check-in", opportunity, ThoughtKind.CONVERSATION,
-                "这是一次低压力的主动联系机会。可以从角色自己的想法、兴趣或真实对话里自然开口；不要求依赖最近某条消息或具体事件。先找一个此刻想分享的小念头、具体感想或轻问题，简短说到位，不要求对方立即回复。自己的主观想法不需要活动完成回执；涉及刚做过的事、共同经历或用户状态时仍以材料为据。候选不贴切时可从人格兴趣换个独立切口；确实无话可说、只是重述旧话或越过明确边界时跳过。",
+                "这是一次日常主动联系机会。可以从角色自己的想法、兴趣或真实对话里自然开口；不要求依赖最近某条消息或具体事件。先找一个此刻想分享的小念头、具体感想或轻问题，简短自然地说到位即止，无需附加「不用急着回」之类的客套收尾。自己的主观想法不需要活动完成回执；涉及刚做过的事、共同经历或用户状态时仍以材料为据。候选不贴切时可从人格兴趣换个独立切口；确实无话可说、只是重述旧话或越过明确边界时跳过。",
                 EvidenceSnapshot(context.scope, at, (event.source,)), 1.0)
             candidates.append(("chat", ContactIntent("chat", thought), None))
         if relationship_candidate is not None:
@@ -1370,7 +1370,7 @@ class ContactSchedule:
         marker = {"contact_id": row["contact_id"], "delivery_id": row["delivery_id"],
                   "delivered_at": row["delivered_at"], "purpose": purpose, "expires_at": stamp(expires)}
         thought = Thought("followup-thought-" + digest(marker), opportunity, ThoughtKind.CONVERSATION,
-            "上一条主动消息已有一段时间。只在原话仍有自然承接价值时轻轻接一句；不知道对方是否看过，也不催促回应。",
+            "上一条主动消息已有一段时间。只在原话仍有自然承接价值时轻轻接一句；不知道对方是否看过，自然说完即可，不追问也不客套。",
             EvidenceSnapshot(context.scope, at, (event.source,)), 1.0)
         return opportunity, (ContactIntent("followup", thought),), marker
 

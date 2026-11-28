@@ -157,6 +157,7 @@ def batch_semantic_dots(query_vector, candidate_vectors):
 
 
 DEFAULTS = {"enabled": True, "embedding_provider": "", "rerank_provider": "", "analysis_provider": "",
+            "vision_review_provider": "", "vision_review_fallback_provider": "",
             "memory_enabled": True, "reactions_enabled": True,
             "reactions_private_enabled": True, "reactions_group_enabled": False,
             "reactions_collection_private_enabled": False, "reactions_collection_group_enabled": False,
@@ -169,11 +170,28 @@ DEFAULTS = {"enabled": True, "embedding_provider": "", "rerank_provider": "", "a
             "slang_learning": True, "slang_web_search_enabled": False,
             "slang_web_search_candidates": 4, "slang_web_search_results": 2,
             "vision_review": True, "timeout_seconds": 8,
+            "analysis_timeout_seconds": 30, "vision_review_timeout_seconds": 15,
             "batch_size": 24, "learning_interval_seconds": 21600}
 LEGACY_LEARNING_INTERVAL_DEFAULT = 900
-INTEGER_LIMITS = {"timeout_seconds": (1, 30), "batch_size": (1, 64),
+INTEGER_LIMITS = {"timeout_seconds": (1, 30), "analysis_timeout_seconds": (5, 120),
+                  "vision_review_timeout_seconds": (3, 60), "batch_size": (1, 64),
                   "learning_interval_seconds": (60, 86400), "slang_web_search_candidates": (1, 12),
                   "slang_web_search_results": (1, 5), "reactions_cooldown_seconds": (0, 3600)}
+COLLECTION_FILTERS = frozenset(("all", "awaiting_confirmation", "enabled", "disabled", "pending_analysis"))
+_SECRET_LIKE_RE = re.compile(
+    r"(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]+|https?://\S+|data:image/\S+)",
+    re.IGNORECASE,
+)
+
+
+def sanitize_collection_detail(detail):
+    """Return a short, control-free, secret-redacted diagnostic detail or None."""
+    if type(detail) is not str:
+        return None
+    cleaned = "".join(ch if ord(ch) >= 32 else " " for ch in detail)
+    cleaned = _SECRET_LIKE_RE.sub("[redacted]", cleaned)
+    cleaned = " ".join(cleaned.split()).strip()
+    return cleaned[:160] if cleaned else None
 PROBABILITY_FIELDS = frozenset(("reactions_trigger_probability", "reactions_collection_private_probability",
                                "reactions_collection_group_probability"))
 SETTING_OPTIONS = {
@@ -259,7 +277,11 @@ class SemanticStore:
             db.execute("""CREATE TABLE IF NOT EXISTS reaction_collection_runs (
                 owner TEXT NOT NULL, run_key TEXT NOT NULL, scope TEXT NOT NULL,
                 status TEXT NOT NULL, code TEXT, item_id TEXT, updated_at REAL NOT NULL,
+                detail TEXT,
                 PRIMARY KEY(owner,run_key))""")
+            run_columns = {row["name"] for row in db.execute("PRAGMA table_info(reaction_collection_runs)")}
+            if "detail" not in run_columns:
+                db.execute("ALTER TABLE reaction_collection_runs ADD COLUMN detail TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS reaction_collection_recent ON reaction_collection_runs(owner,updated_at DESC)")
             db.execute("""CREATE TABLE IF NOT EXISTS reaction_collection_totals (
                 owner TEXT NOT NULL, scope TEXT NOT NULL, status TEXT NOT NULL, count INTEGER NOT NULL,
@@ -403,13 +425,9 @@ class SemanticStore:
         changes = self.validate_changes(changes)
         snapshot = self.configuration_snapshot()
         settings = {"revision": snapshot["revision"], **snapshot["values"], **changes}
-        if not (1 <= settings["timeout_seconds"] <= 30 and 1 <= settings["batch_size"] <= 64
-                and 60 <= settings["learning_interval_seconds"] <= 86400
-                and 1 <= settings["slang_web_search_candidates"] <= 12
-                and 1 <= settings["slang_web_search_results"] <= 5
+        if not (all(low <= settings[name] <= high for name, (low, high) in INTEGER_LIMITS.items())
                 and all(math.isfinite(settings[name]) and 0 <= settings[name] <= 1
-                        for name in PROBABILITY_FIELDS)
-                and 0 <= settings["reactions_cooldown_seconds"] <= 3600):
+                        for name in PROBABILITY_FIELDS)):
             raise ValueError("semantic settings outside supported range")
         settings.pop("revision")
         explicit = sorted(set(snapshot["explicit"]) | set(changes))
@@ -432,10 +450,21 @@ class SemanticStore:
                               (owner, kind, after, limit)).fetchall()
             return [self._decode_item_row(r) for r in rows]
 
-    def list_recent_page(self, owner, kind, *, after="", limit=24):
+    def list_recent_page(self, owner, kind, *, after="", limit=24, collection_filter="all"):
         """Return up to ``limit`` items newest-first plus the next opaque cursor."""
         if type(after) is not str or type(limit) is not int or limit < 1:
             raise ValueError("invalid catalog pagination")
+        if type(collection_filter) is not str or collection_filter not in COLLECTION_FILTERS:
+            raise ValueError("invalid collection filter")
+        if kind != "reaction" and collection_filter != "all":
+            raise ValueError("collection filter requires reaction catalog")
+        filter_sql = {
+            "all": "",
+            "awaiting_confirmation": " AND json_extract(payload, '$.collection_state')='awaiting_confirmation' AND enabled=0",
+            "enabled": " AND enabled=1",
+            "disabled": " AND enabled=0 AND COALESCE(json_extract(payload, '$.collection_state'), '')!='awaiting_confirmation'",
+            "pending_analysis": " AND json_extract(payload, '$.analysis')='pending'",
+        }[collection_filter]
         with self.db(read_only=True) as db:
             if after:
                 if not after.startswith("r:") or not after[2:].isascii() or not after[2:].isdigit():
@@ -444,14 +473,16 @@ class SemanticStore:
                 if cursor < 1:
                     raise ValueError("invalid catalog cursor")
                 rows = db.execute(
-                    "SELECT rowid AS _rowid, * FROM items WHERE owner=? AND kind=? AND rowid<? "
-                    "ORDER BY rowid DESC LIMIT ?",
+                    "SELECT rowid AS _rowid, * FROM items WHERE owner=? AND kind=? AND rowid<?"
+                    + filter_sql
+                    + " ORDER BY rowid DESC LIMIT ?",
                     (owner, kind, cursor, limit + 1),
                 ).fetchall()
             else:
                 rows = db.execute(
-                    "SELECT rowid AS _rowid, * FROM items WHERE owner=? AND kind=? "
-                    "ORDER BY rowid DESC LIMIT ?",
+                    "SELECT rowid AS _rowid, * FROM items WHERE owner=? AND kind=?"
+                    + filter_sql
+                    + " ORDER BY rowid DESC LIMIT ?",
                     (owner, kind, limit + 1),
                 ).fetchall()
         has_more = len(rows) > limit
@@ -459,6 +490,19 @@ class SemanticStore:
         next_after = f"r:{page[-1]['_rowid']}" if has_more else None
         items = [self._decode_item_row(row) for row in page]
         return items, next_after
+
+    def list_awaiting_confirmation_reactions(self, owner, *, limit=500):
+        """Return reaction items currently awaiting manual confirmation, newest-first."""
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("invalid batch limit")
+        with self.db(read_only=True) as db:
+            rows = db.execute(
+                "SELECT * FROM items WHERE owner=? AND kind='reaction' "
+                "AND json_extract(payload, '$.collection_state')='awaiting_confirmation' AND enabled=0 "
+                "ORDER BY rowid DESC LIMIT ?",
+                (owner, limit),
+            ).fetchall()
+        return [self._decode_item_row(row) for row in rows]
 
     def reaction_frames(self, owner, identifier) -> tuple[bytes, ...]:
         """Load animation frame bytes for one reaction, resolving file markers transparently."""
@@ -673,19 +717,21 @@ class SemanticStore:
                        (owner, kind, identifier, expected))
         return {"deleted": True}
 
-    def record_reaction_collection(self, owner, run_key, scope, status, *, at, code=None, item_id=None):
+    def record_reaction_collection(self, owner, run_key, scope, status, *, at, code=None, item_id=None, detail=None):
         terminal = {"added", "pending_confirmation", "duplicate", "rejected", "failed", "cancelled"}
         if (scope not in ("private_capture", "group_capture") or status not in terminal | {"checking"}
                 or type(at) not in (int, float)):
             raise ValueError("invalid reaction collection record")
+        safe_detail = sanitize_collection_detail(detail)
         with self.db() as db:
             previous = db.execute("SELECT status FROM reaction_collection_runs WHERE owner=? AND run_key=?",
                                   (owner, run_key)).fetchone()
             was_terminal = previous is not None and previous["status"] in terminal
-            db.execute("""INSERT INTO reaction_collection_runs VALUES (?,?,?,?,?,?,?)
+            db.execute("""INSERT INTO reaction_collection_runs(owner,run_key,scope,status,code,item_id,updated_at,detail)
+                VALUES (?,?,?,?,?,?,?,?)
                 ON CONFLICT(owner,run_key) DO UPDATE SET scope=excluded.scope,status=excluded.status,
-                code=excluded.code,item_id=excluded.item_id,updated_at=excluded.updated_at""",
-                (owner, run_key, scope, status, code, item_id, float(at)))
+                code=excluded.code,item_id=excluded.item_id,updated_at=excluded.updated_at,detail=excluded.detail""",
+                (owner, run_key, scope, status, code, item_id, float(at), safe_detail))
             if status in terminal and not was_terminal:
                 db.execute("""INSERT INTO reaction_collection_totals VALUES (?,?,?,1)
                     ON CONFLICT(owner,scope,status) DO UPDATE SET count=count+1""",
@@ -693,6 +739,19 @@ class SemanticStore:
             db.execute("""DELETE FROM reaction_collection_runs WHERE owner=? AND run_key NOT IN
                 (SELECT run_key FROM reaction_collection_runs WHERE owner=? ORDER BY updated_at DESC LIMIT 100)""",
                 (owner, owner))
+
+    def reset_reaction_collection_failures(self, owner):
+        """Clear persisted failure totals and failed run rows for one catalog owner."""
+        with self.db() as db:
+            cleared_totals = db.execute(
+                "DELETE FROM reaction_collection_totals WHERE owner=? AND status='failed'",
+                (owner,),
+            ).rowcount
+            cleared_runs = db.execute(
+                "DELETE FROM reaction_collection_runs WHERE owner=? AND status='failed'",
+                (owner,),
+            ).rowcount
+        return {"cleared_totals": cleared_totals, "cleared_runs": cleared_runs}
 
     def reaction_collection_summary(self, owner):
         scopes = ("private_capture", "group_capture")
@@ -702,7 +761,7 @@ class SemanticStore:
             for row in db.execute("SELECT scope,status,count FROM reaction_collection_totals WHERE owner=?", (owner,)):
                 if row["scope"] in summary and row["status"] in statuses:
                     summary[row["scope"]][row["status"]] = row["count"]
-            recent = [dict(row) for row in db.execute("""SELECT scope,status,code,updated_at
+            recent = [dict(row) for row in db.execute("""SELECT scope,status,code,detail,updated_at
                 FROM reaction_collection_runs WHERE owner=? ORDER BY updated_at DESC,run_key DESC LIMIT 8""",
                 (owner,))]
         return {"totals": summary, "recent": recent}
@@ -739,7 +798,8 @@ class SemanticStore:
                     db.execute("UPDATE offers SET owner=? WHERE batch=? AND call=? AND owner=?",
                                (target_owner, row["batch"], row["call"], source_owner))
             db.execute("""INSERT OR IGNORE INTO reaction_collection_runs
-                SELECT ?,run_key,scope,status,code,item_id,updated_at FROM reaction_collection_runs
+                (owner,run_key,scope,status,code,item_id,updated_at,detail)
+                SELECT ?,run_key,scope,status,code,item_id,updated_at,detail FROM reaction_collection_runs
                 WHERE owner=?""", (target_owner, source_owner))
             totals = db.execute("SELECT scope,status,count FROM reaction_collection_totals WHERE owner=?",
                                 (source_owner,)).fetchall()

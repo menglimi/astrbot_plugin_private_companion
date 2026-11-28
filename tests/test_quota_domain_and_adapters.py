@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from companion_v2.model_gateway.quota import (
+    DISPLAY_UNIT_MODES,
     QuotaAwarenessPolicy,
     QuotaSettingsError,
     QuotaSnapshot,
@@ -22,7 +23,9 @@ from companion_v2.model_gateway.quota import (
     convert_currency_amount,
     evaluate_station_health,
     normalize_currency_symbol,
+    normalize_display_unit_mode,
     redact_quota_text,
+    resolve_currency_views,
     slugify_station_id,
     summarize_quota_portfolio,
 )
@@ -276,6 +279,91 @@ class QuotaDomainTests(unittest.TestCase):
         with self.assertRaises(QuotaSettingsError):
             QuotaStationSpec(id="s2", name="坏阈值", adapter_id="newapi", base_url="https://a.example.test", low_threshold=5.0, critical_threshold=10.0)
 
+    def test_three_way_currency_views_and_atomic_display_unit_update(self):
+        self.assertEqual(DISPLAY_UNIT_MODES, ("native", "fiat", "cny", "usd"))
+        # 1) CREDIT station with CNY fiat mapping -> 3-way [native, cny, usd]
+        v_cookie = resolve_currency_views(
+            remaining=732.98272,
+            display_type="CREDIT",
+            symbol="🍪",
+            fiat_remaining=73.298272,
+            inferred_fiat_currency="CNY",
+            usd_cny_rate=6.68,
+            preferred_unit="fiat",
+            custom_exchange_rate=10.0,
+            fiat_per_base_unit=1.0,
+            station_id="relay-credit",
+        )
+        self.assertEqual(v_cookie["available_units"], ["native", "cny", "usd"])
+        self.assertEqual(v_cookie["preferred_unit"], "cny")
+        self.assertAlmostEqual(v_cookie["cny_amount"], 73.298272, places=4)
+        self.assertAlmostEqual(v_cookie["usd_amount"], 73.298272 / 6.68, places=4)
+        self.assertEqual(v_cookie["rate_caption"], "10 🍪 = ¥1")
+
+        # 2) CREDIT station with USD fiat mapping -> 3-way, legacy 'fiat' maps to 'usd'
+        v_cred_usd = resolve_currency_views(
+            remaining=100.0,
+            display_type="CREDIT",
+            symbol="★",
+            fiat_remaining=10.0,
+            inferred_fiat_currency="USD",
+            usd_cny_rate=7.2,
+            preferred_unit="fiat",
+            station_id="overseas",
+        )
+        self.assertEqual(v_cred_usd["available_units"], ["native", "cny", "usd"])
+        self.assertEqual(v_cred_usd["preferred_unit"], "usd")
+        self.assertAlmostEqual(v_cred_usd["usd_amount"], 10.0, places=4)
+        self.assertAlmostEqual(v_cred_usd["cny_amount"], 72.0, places=4)
+
+        # 3) CNY & USD native stations deduplicate to 2-way [cny, usd]
+        v_cny = resolve_currency_views(remaining=72.0, display_type="CNY", usd_cny_rate=7.2, preferred_unit="native", station_id="ds")
+        self.assertEqual(v_cny["available_units"], ["cny", "usd"])
+        self.assertEqual(v_cny["preferred_unit"], "cny")
+        self.assertAlmostEqual(v_cny["usd_amount"], 10.0, places=4)
+
+        v_usd = resolve_currency_views(remaining=10.0, display_type="USD", usd_cny_rate=7.2, preferred_unit="native", station_id="or")
+        self.assertEqual(v_usd["available_units"], ["cny", "usd"])
+        self.assertEqual(v_usd["preferred_unit"], "usd")
+        self.assertAlmostEqual(v_usd["cny_amount"], 72.0, places=4)
+
+        # 4) TOKENS & unmapped CREDIT -> single unit [native]
+        v_tok = resolve_currency_views(remaining=50000, display_type="TOKENS", usd_cny_rate=7.2, preferred_unit="usd")
+        self.assertEqual(v_tok["available_units"], ["native"])
+        self.assertEqual(v_tok["preferred_unit"], "native")
+        self.assertIsNone(v_tok["cny_amount"])
+        self.assertIsNone(v_tok["usd_amount"])
+
+        self.assertEqual(normalize_display_unit_mode("fiat", ["native", "cny", "usd"], inferred_fiat_currency="USD"), "usd")
+
+        # 5) Atomic update_station_display_unit preserves secrets and rejects bad inputs
+        with tempfile.TemporaryDirectory() as tmp:
+            store = QuotaStationStore(Path(tmp))
+            _, _, tok0 = store.read()
+            created, _, _, _ = store.upsert_station(
+                tok0,
+                {
+                    "id": "relay-credit",
+                    "name": "Credit Relay",
+                    "adapter_id": "newapi",
+                    "base_url": "https://credit-relay.example.test",
+                    "auth_token": "secret-must-survive-999",
+                    "proxy_url": "http://u:pw@127.0.0.1:7890",
+                },
+            )
+            self.assertEqual(created.display_unit_mode, "native")
+            updated, _, _, _ = store.update_station_display_unit("relay-credit", "usd")
+            self.assertEqual(updated.display_unit_mode, "usd")
+            self.assertEqual(updated.auth_token, "secret-must-survive-999")
+            self.assertEqual(updated.proxy_url, "http://u:pw@127.0.0.1:7890")
+
+            with self.assertRaises(QuotaSettingsError) as bad_unit:
+                store.update_station_display_unit("relay-credit", "btc")
+            self.assertEqual(bad_unit.exception.code, "quota_config_invalid")
+            with self.assertRaises(QuotaSettingsError) as missing_st:
+                store.update_station_display_unit("no-such-station", "cny")
+            self.assertEqual(missing_st.exception.code, "quota_station_not_found")
+
 
 class SecurityAndLogoTests(unittest.TestCase):
     def test_ssrf_and_http_guards(self):
@@ -388,7 +476,9 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertTrue(snap.ok)
             self.assertAlmostEqual(snap.remaining, 5.0, places=4)
             self.assertAlmostEqual(snap.used, 1.0, places=4)
-            self.assertAlmostEqual(snap.total, 6.0, places=4)
+            self.assertIsNone(snap.total)
+            self.assertIsNone(snap.remaining_percent)
+            self.assertEqual(snap.quota_model, "wallet")
             self.assertEqual(snap.display_type, "CNY")
             self.assertEqual(snap.symbol, "¥")
             self.assertEqual(snap.group_name, "vip")
@@ -773,7 +863,8 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertEqual(snap_c10.symbol, "🍪")
             self.assertAlmostEqual(snap_c10.remaining, 732.98, places=4)
             self.assertAlmostEqual(snap_c10.used, 2614.72, places=4)
-            self.assertAlmostEqual(snap_c10.total, 3347.70, places=4)
+            self.assertIsNone(snap_c10.total)
+            self.assertEqual(snap_c10.quota_model, "wallet")
             self.assertAlmostEqual(snap_c10.last_used_cost, 0.05, places=6)
             self.assertIn("10 🍪", snap_c10.extra)
             self.assertIn("¥73.30", snap_c10.extra)
@@ -1105,11 +1196,14 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertAlmostEqual(snap.remaining, 732.98, places=4)
             self.assertAlmostEqual(snap.fiat_remaining, 73.298, places=4)
             self.assertAlmostEqual(snap.fiat_used, 261.472, places=4)
-            self.assertAlmostEqual(snap.fiat_total, 334.77, places=4)
+            self.assertIsNone(snap.fiat_total)
+            self.assertEqual(snap.quota_model, "wallet")
             self.assertAlmostEqual(snap.fiat_last_used_cost, 0.005, places=6)
             self.assertIn("10 🍪 = ¥1", snap.extra)
             self.assertEqual(snap.server_address, "https://cookie.example.test")
             self.assertEqual(len(snap.subscriptions), 2)
+            self.assertAlmostEqual(snap.subscriptions[0]["remaining_percent"], round((59 / 70) * 100.0, 2), places=2)
+            self.assertEqual(snap.subscriptions[0]["source"], "newapi_subscription")
             sub_rem_sum = sum(s["remaining"] for s in snap.subscriptions)
             sub_fiat_sum = sum(s["fiat_remaining"] for s in snap.subscriptions)
             self.assertAlmostEqual(sub_rem_sum, 4180.0, places=2)
@@ -1324,6 +1418,400 @@ class QuotaAdaptersAndDetectorTests(unittest.TestCase):
             self.assertIn("10 ★ = $1", snap_stripe_manual.extra)
 
         asyncio.run(run())
+
+    def test_logo_disk_persistence_swr_exponential_backoff_expanded_candidates_and_proxy_fallback(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as tmp:
+                logo_dir = Path(tmp) / "quota" / "logos"
+                now_box = [datetime(2026, 11, 27, 0, 0, tzinfo=timezone.utc)]
+                cache = StationLogoCache(cache_dir=logo_dir, now=lambda: now_box[0])
+
+                # 1) Expanded direct candidate (/logo.svg) + server_address alias discovery + disk atomic persistence
+                safe_svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#4a7"/></svg>'
+                f1, calls1 = _mock_factory({
+                    ("GET", "https://web-alias.example.test/logo.svg"): _FakeResponse(200, safe_svg, {"Content-Type": "image/svg+xml"}),
+                })
+                ver1, err1 = await cache.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f1,
+                )
+                self.assertTrue(ver1)
+                self.assertEqual(err1, "")
+                self.assertTrue((logo_dir / "st-persist.bin").exists())
+                self.assertTrue((logo_dir / "st-persist.meta.json").exists())
+
+                # Cold restart: new StationLogoCache instance reads straight from disk with 0 HTTP requests
+                restarted = StationLogoCache(cache_dir=logo_dir, now=lambda: now_box[0])
+                disk_entry = restarted.get("st-persist")
+                self.assertIsNotNone(disk_entry)
+                self.assertTrue(disk_entry.usable)
+                self.assertEqual(disk_entry.version, ver1)
+                self.assertEqual(disk_entry.mime_type, "image/svg+xml")
+
+                # 2) Stale-While-Revalidate + Exponential Backoff (5m -> 15m -> 1h): NEVER wipes good logo on upstream error!
+                now_box[0] = now_box[0] + timedelta(hours=25)
+                f_fail, fail_calls = _mock_factory({
+                    ("GET", "https://api-edge.example.test/"): _FakeResponse(502, b"bad gateway"),
+                    ("GET", "https://web-alias.example.test/"): _FakeResponse(502, b"bad gateway"),
+                })
+                ver_swr1, err_swr1 = await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(ver_swr1, ver1)
+                self.assertEqual(err_swr1, "")
+                kept1 = restarted.get("st-persist")
+                self.assertTrue(kept1.usable)
+                self.assertEqual(kept1.fail_count, 1)
+                self.assertEqual(kept1.next_retry_at, now_box[0] + timedelta(minutes=5))
+                calls_after_fail1 = len(fail_calls)
+
+                # Within 5m backoff -> 0 upstream requests, still serves old logo
+                now_box[0] = now_box[0] + timedelta(minutes=3)
+                ver_backoff, _ = await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(ver_backoff, ver1)
+                self.assertEqual(len(fail_calls), calls_after_fail1)
+
+                # After 5m -> 2nd failure backs off 15m; after 15m -> 3rd failure backs off 1h
+                now_box[0] = now_box[0] + timedelta(minutes=3)
+                await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(restarted.get("st-persist").fail_count, 2)
+                self.assertEqual(restarted.get("st-persist").next_retry_at, now_box[0] + timedelta(minutes=15))
+
+                now_box[0] = now_box[0] + timedelta(minutes=16)
+                await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_fail,
+                )
+                self.assertEqual(restarted.get("st-persist").fail_count, 3)
+                self.assertEqual(restarted.get("st-persist").next_retry_at, now_box[0] + timedelta(hours=1))
+                self.assertTrue(restarted.get("st-persist").usable)
+
+                # Recovery after 1h updates logo cleanly and resets fail_count
+                now_box[0] = now_box[0] + timedelta(hours=1, minutes=1)
+                f_recover, _ = _mock_factory({
+                    ("GET", "https://web-alias.example.test/favicon.png"): _FakeResponse(200, PNG_BYTES, {"Content-Type": "image/png"}),
+                })
+                ver_rec, err_rec = await restarted.refresh(
+                    "st-persist",
+                    "https://api-edge.example.test",
+                    "",
+                    extra_roots=("https://web-alias.example.test",),
+                    session_factory=f_recover,
+                )
+                self.assertTrue(ver_rec and ver_rec != ver1)
+                self.assertEqual(err_rec, "")
+                self.assertEqual(restarted.get("st-persist").fail_count, 0)
+                self.assertIsNone(restarted.get("st-persist").next_retry_at)
+
+                # 3) Tampered disk binary fails sniff validation safely
+                (logo_dir / "st-persist.bin").write_bytes(b"<script>evil()</script>")
+                tampered_cache = StationLogoCache(cache_dir=logo_dir, now=lambda: now_box[0])
+                tampered_entry = tampered_cache.get("st-persist")
+                self.assertTrue(tampered_entry is None or not tampered_entry.usable)
+
+                # 4) Proxy transport error safely falls back to direct fetch for public credential-free icon
+                seen_proxies: list[str] = []
+
+                def proxy_fallback_factory(**session_kwargs):
+                    px = str(session_kwargs.get("proxy_url") or "")
+
+                    def handler(method, url, _kw):
+                        seen_proxies.append(px)
+                        if px:
+                            raise OSError("proxy refused")
+                        if url == "https://px.example.test/favicon.svg":
+                            return _FakeResponse(200, safe_svg, {"Content-Type": "image/svg+xml"})
+                        return _FakeResponse(404, b"")
+
+                    from tests.test_quota_domain_and_adapters import _FakeSession
+
+                    return _FakeSession(handler)
+
+                ver_px, err_px = await cache.refresh(
+                    "st-proxy-fb",
+                    "https://px.example.test",
+                    "",
+                    proxy_url="http://127.0.0.1:7899",
+                    session_factory=proxy_fallback_factory,
+                )
+                self.assertTrue(ver_px)
+                self.assertEqual(err_px, "")
+                self.assertIn("http://127.0.0.1:7899", seen_proxies)
+                self.assertIn("", seen_proxies)
+
+                # 5) forget() removes disk files cleanly
+                cache.forget("st-persist")
+                self.assertFalse((logo_dir / "st-persist.bin").exists())
+                self.assertFalse((logo_dir / "st-persist.meta.json").exists())
+
+        asyncio.run(run())
+
+    def test_wallet_vs_capped_health_thresholds_and_universal_subscriptions(self):
+        from companion_v2.model_gateway.quota import (
+            resolve_effective_thresholds,
+            resolve_station_quota_model,
+        )
+
+        async def run():
+            now_dt = datetime(2026, 11, 25, 8, 0, tzinfo=timezone.utc)
+            # 1) Old-account pay-as-you-go wallet (remaining ¥55.73, lifetime used ¥807.48) must stay "normal"
+            spec_xy = QuotaStationSpec(id="xy", name="星渊", adapter_id="newapi", base_url="https://api.syuan.org")
+            snap_xy = QuotaSnapshot(
+                station_id="xy",
+                ok=True,
+                remaining=55.73,
+                used=807.48,
+                quota_model="wallet",
+                display_type="CNY",
+                symbol="¥",
+                checked_at=now_dt.isoformat(),
+            )
+            self.assertIsNone(snap_xy.total)
+            self.assertIsNone(snap_xy.remaining_percent)
+            self.assertEqual(evaluate_station_health(spec_xy, snap_xy), "normal")
+            eff_xy = resolve_effective_thresholds(spec_xy, snap_xy, usd_cny_rate=7.2)
+            self.assertEqual(eff_xy["quota_model"], "wallet")
+            self.assertEqual(eff_xy["source"], "default")
+            self.assertEqual(eff_xy["low"], 10.0)
+            self.assertEqual(eff_xy["critical"], 3.0)
+
+            # Even a legacy cached snapshot with fabricated total & empty quota_model heals immediately to "wallet"
+            legacy_cached = QuotaSnapshot.from_dict({
+                "station_id": "xy",
+                "ok": True,
+                "remaining": 55.73,
+                "used": 807.48,
+                "total": 863.21,
+                "remaining_percent": 6.46,
+                "display_type": "CNY",
+                "checked_at": now_dt.isoformat(),
+            })
+            self.assertEqual(resolve_station_quota_model(spec_xy, legacy_cached), "wallet")
+            self.assertEqual(evaluate_station_health(spec_xy, legacy_cached), "normal")
+
+            # Wallet triggers low/critical strictly on absolute balance thresholds
+            snap_low = QuotaSnapshot(station_id="xy", ok=True, remaining=8.5, used=800.0, quota_model="wallet", display_type="CNY", checked_at=now_dt.isoformat())
+            snap_crit = QuotaSnapshot(station_id="xy", ok=True, remaining=2.5, used=800.0, quota_model="wallet", display_type="CNY", checked_at=now_dt.isoformat())
+            self.assertEqual(evaluate_station_health(spec_xy, snap_low), "low")
+            self.assertEqual(evaluate_station_health(spec_xy, snap_crit), "critical")
+
+            # Custom threshold overrides default; setting low_threshold=0 disables alerts completely
+            spec_custom = QuotaStationSpec(id="xy", name="星渊", adapter_id="newapi", base_url="https://api.syuan.org", low_threshold=60.0, critical_threshold=20.0)
+            self.assertEqual(evaluate_station_health(spec_custom, snap_xy), "low")
+            spec_disabled = QuotaStationSpec(id="xy", name="星渊", adapter_id="newapi", base_url="https://api.syuan.org", low_threshold=0.0, critical_threshold=0.0)
+            self.assertEqual(evaluate_station_health(spec_disabled, snap_crit), "normal")
+            self.assertEqual(resolve_effective_thresholds(spec_disabled, snap_crit)["source"], "disabled")
+
+            # 2) OpenRouter /credits is wallet (no fabricated total/percent); /auth/key with limit is capped
+            reg = default_registry()
+            f_or_wallet, _ = _mock_factory({
+                ("GET", "https://openrouter.ai/api/v1/credits"): _FakeResponse(
+                    200, {"data": {"total_credits": 500.0, "total_usage": 495.0}}
+                ),
+            })
+            or_spec = QuotaStationSpec(id="or-w", name="OpenRouter", adapter_id="openrouter", base_url="https://openrouter.ai/api/v1")
+            or_snap = await reg.get("openrouter").probe(
+                or_spec,
+                AdapterProbeContext(base_url=or_spec.base_url, astrbot_api_key="or-tok", now=lambda: now_dt, session_factory=f_or_wallet),
+            )
+            self.assertTrue(or_snap.ok)
+            self.assertEqual(or_snap.quota_model, "wallet")
+            self.assertIsNone(or_snap.total)
+            self.assertIsNone(or_snap.remaining_percent)
+            self.assertAlmostEqual(or_snap.remaining, 5.0)
+            self.assertAlmostEqual(or_snap.used, 495.0)
+            self.assertEqual(evaluate_station_health(or_spec, or_snap), "normal")  # $5 > default $2
+
+            # 3) Sub2API multi-plan subscriptions normalize into universal protocol-agnostic items with remaining_percent
+            f_sub, _ = _mock_factory({
+                ("GET", "https://sub.example.test/v1/usage"): _FakeResponse(
+                    200,
+                    {
+                        "isValid": True,
+                        "remaining": 18.0,
+                        "unit": "USD",
+                        "planName": "Team Pro",
+                        "subscriptions": [
+                            {"name": "月度主力包", "remaining": 15.0, "limit": 20.0, "expiresAt": int(now_dt.timestamp()) + 86400 * 12},
+                            {"name": "夜间流量包", "remaining": 3.0, "limit": 30.0, "expiresAt": int(now_dt.timestamp()) + 86400 * 2},
+                        ],
+                    },
+                ),
+            })
+            sub_spec = QuotaStationSpec(id="sub1", name="Sub2API站", adapter_id="sub2api", base_url="https://sub.example.test")
+            sub_snap = await reg.get("sub2api").probe(
+                sub_spec,
+                AdapterProbeContext(base_url=sub_spec.base_url, astrbot_api_key="sub-tok", now=lambda: now_dt, session_factory=f_sub),
+            )
+            self.assertTrue(sub_snap.ok)
+            self.assertEqual(len(sub_snap.subscriptions), 2)
+            self.assertAlmostEqual(sub_snap.subscriptions[0]["remaining_percent"], 75.0, places=2)
+            self.assertEqual(sub_snap.subscriptions[0]["source"], "sub2api_plan")
+            self.assertTrue(sub_snap.subscriptions[0]["expires_at"])
+            self.assertAlmostEqual(sub_snap.subscriptions[1]["remaining_percent"], 10.0, places=2)
+            self.assertEqual(sub_snap.subscriptions[1]["status"], "low")
+
+            # 4) Atomic store threshold update preserves secrets & allows disabling via 0
+            with tempfile.TemporaryDirectory() as tmp:
+                store = QuotaStationStore(Path(tmp))
+                _, _, tok = store.read()
+                store.upsert_station(
+                    tok,
+                    {
+                        "id": "xy",
+                        "name": "星渊",
+                        "adapter_id": "newapi",
+                        "base_url": "https://api.syuan.org",
+                        "auth_token": "secret-tok-keep",
+                        "proxy_url": "http://127.0.0.1:7890",
+                        "low_threshold": 25.0,
+                        "critical_threshold": 10.0,
+                    },
+                )
+                updated, _, _, _ = store.update_station_thresholds("xy", low_threshold=0.0, critical_threshold=None, has_critical_threshold=False)
+                self.assertEqual(updated.auth_token, "secret-tok-keep")
+                self.assertEqual(updated.proxy_url, "http://127.0.0.1:7890")
+                self.assertEqual(updated.low_threshold, 0.0)
+                self.assertEqual(updated.critical_threshold, 0.0)
+
+        asyncio.run(run())
+
+    def test_custom_script_subscriptions_validation_redaction_and_probe(self):
+        from unittest.mock import patch
+        from astrbot_host.quota_adapters.script_adapter import CustomScriptAdapter
+        from astrbot_host.service_balance_script import ScriptServiceBalancePort
+
+        now_dt = datetime(2026, 11, 25, 8, 0, tzinfo=timezone.utc)
+        exp_ts = int(now_dt.timestamp()) + 86400 * 7
+        settings = {
+            "advanced_script": "({ request: { url: 'https://relay.example.test/u' }, extractor: (r) => r })",
+            "advanced_base_url": "https://relay.example.test",
+            "advanced_api_key": "sk-secret-api-999",
+            "advanced_access_token": "tok-secret-access-888",
+            "advanced_user_id": "1001",
+            "advanced_proxy_url": "",
+        }
+
+        with patch("astrbot_host.service_balance_script.importlib.util.find_spec", return_value=True):
+            port = ScriptServiceBalancePort(settings, now=lambda: now_dt)
+            obs = port.parse(
+                {
+                    "isValid": True,
+                    "remaining": 42.5,
+                    "unit": "USD",
+                    "planName": "Team",
+                    "subscriptions": [
+                        {
+                            "name": "主力包 sk-secret-api-999",
+                            "remaining": 15.0,
+                            "limit": 20.0,
+                            "expiresAt": exp_ts,
+                        },
+                        {
+                            "title": "夜间包 tok-secret-access-888",
+                            "used": 27.0,
+                            "total": 30.0,
+                            "currency": "CNY",
+                            "expires_at": "2026-12-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                now_dt,
+            )
+            self.assertEqual(float(obs.balance), 42.5)
+            self.assertEqual(len(port.last_subscriptions), 2)
+            sub0, sub1 = port.last_subscriptions
+            self.assertNotIn("sk-secret-api-999", sub0["name"])
+            self.assertIn("[redacted]", sub0["name"])
+            self.assertAlmostEqual(sub0["remaining_percent"], 75.0, places=2)
+            self.assertEqual(sub0["display_type"], "USD")
+            self.assertEqual(sub0["source"], "custom_script")
+            self.assertTrue(sub0["expires_at"].startswith("2026-12-02"))
+            self.assertNotIn("tok-secret-access-888", sub1["name"])
+            self.assertAlmostEqual(sub1["remaining"], 3.0, places=2)
+            self.assertAlmostEqual(sub1["remaining_percent"], 10.0, places=2)
+            self.assertEqual(sub1["display_type"], "CNY")
+            self.assertEqual(sub1["status"], "low")
+
+            # Missing subscriptions resets stale last_subscriptions
+            port.parse({"isValid": True, "remaining": 10.0, "unit": "USD"}, now_dt)
+            self.assertEqual(port.last_subscriptions, ())
+
+            # Strict validation rejects non-list, unknown keys, and non-finite/negative numbers
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": "bad"}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": 1, "evil": 1}]}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": -5}]}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": True}]}, now_dt)
+            with self.assertRaises(ValueError):
+                port.parse({"remaining": 10.0, "subscriptions": [{"name": "ok", "remaining": 1, "expiresAt": -10}]}, now_dt)
+
+            # End-to-end CustomScriptAdapter.probe forwards port.last_subscriptions into QuotaSnapshot
+            async def fake_fetch(self_port):
+                return self_port.parse(
+                    {
+                        "isValid": True,
+                        "remaining": 42.5,
+                        "unit": "USD",
+                        "subscriptions": [
+                            {"name": "周期额度包", "remaining": 8.0, "total": 10.0, "expiresAt": exp_ts},
+                        ],
+                    },
+                    now_dt,
+                )
+
+            async def run_probe():
+                adapter = CustomScriptAdapter()
+                spec = QuotaStationSpec(
+                    id="script-sub",
+                    name="脚本多套餐站",
+                    adapter_id="custom_script",
+                    base_url="https://relay.example.test",
+                    custom_script=settings["advanced_script"],
+                )
+                with patch.object(ScriptServiceBalancePort, "fetch", new=fake_fetch):
+                    snap = await adapter.probe(
+                        spec,
+                        AdapterProbeContext(
+                            base_url=spec.base_url,
+                            auth_token="sk-secret-api-999",
+                            custom_script=spec.custom_script,
+                            now=lambda: now_dt,
+                        ),
+                    )
+                self.assertTrue(snap.ok)
+                self.assertEqual(snap.quota_model, "wallet")
+                self.assertEqual(len(snap.subscriptions), 1)
+                self.assertEqual(snap.subscriptions[0]["name"], "周期额度包")
+                self.assertAlmostEqual(snap.subscriptions[0]["remaining_percent"], 80.0, places=2)
+                self.assertEqual(snap.subscriptions[0]["source"], "custom_script")
+
+            asyncio.run(run_probe())
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from .output_configuration import MAX_TASK_TIMEOUT_SECONDS, task_timeout_seconds
 from .package import package_hash
 from .references import (EDIT_REFERENCE_ROLES, ReferenceSelectionError, edit_role,
                          select_edit_tickets)
-from .types import (MAX_REFERENCE_IMAGES, ImageInvocation, NativeImageError, ReferenceImage,
+from .types import (ASPECT_RATIOS, MAX_REFERENCE_IMAGES, ImageInvocation, NativeImageError, ReferenceImage,
                     ReferenceOffer, document, fingerprint, require_text)
 from .waiting import deadline_timestamp, wait_for_output
 
@@ -20,6 +20,7 @@ PLUGIN_ID = "astrbot_plugin_private_companion.image"
 PROVIDER_ID = "image.native"
 REFERENCE_ROLES = frozenset((*EDIT_REFERENCE_ROLES, "edit_mask"))
 IMAGE_OPERATIONS = ("generate", "edit", "mask_edit")
+SUBJECT_MODES = ("character", "scene_only", "edit_preserve")
 
 
 def scope_key(context: dict) -> str:
@@ -68,8 +69,30 @@ class NativeImageProvider:
         self._live()
         tools = []
         for operation in IMAGE_OPERATIONS:
-            properties = {"prompt": {"type": "string"}, "negative_prompt": {"type": "string"}}
+            properties = {
+                "prompt": {"type": "string"},
+                "negative_prompt": {"type": "string"},
+                "subject_mode": {
+                    "type": "string",
+                    "enum": list(SUBJECT_MODES),
+                    "description": (
+                        "可选：明确画面主体模式。"
+                        "character=角色本人入镜/自拍/合照（默认应用角色固定提示词与参考）；"
+                        "scene_only=纯风景/纯静物/空场景或无角色主体（跳过角色固定提示词，也不自动补塞角色参考）；"
+                        "edit_preserve=基于已有图片做局部修改/换风格/微调并优先保持原图构图与画风。"
+                    ),
+                },
+            }
             required = ["prompt"]
+            if operation in ("generate", "edit"):
+                properties["aspect_ratio"] = {
+                    "type": "string",
+                    "enum": list(ASPECT_RATIOS),
+                    "description": (
+                        "可选：画面宽高比（留空则使用默认画布；改图留空时默认保持原图比例）。"
+                        "横版常用 3:2 或 16:9，竖版常用 2:3 或 9:16，方图用 1:1。"
+                    ),
+                }
             if operation == "edit":
                 properties["artifact_id"] = {"type": "string", "description": "仅编辑本身份与当前会话范围内 Image 已保存的原图时填写非空产物 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不能填写路径。"}
                 properties["reference_ids"] = {"type": "array", "items": {"type": "string"},
@@ -129,7 +152,9 @@ class NativeImageProvider:
                 raise NativeImageError("invalid_native_context", unconfirmed=False)
             args = value["arguments"]
             operation = value["action"].split(".", 1)[1]
-            allowed = {"prompt", "negative_prompt"}
+            allowed = {"prompt", "negative_prompt", "subject_mode"}
+            if operation in ("generate", "edit"):
+                allowed.add("aspect_ratio")
             if operation == "edit":
                 allowed.update(("artifact_id", "reference_ids", "reference_indices", "reference_roles"))
             elif operation == "mask_edit":
@@ -139,6 +164,12 @@ class NativeImageProvider:
             require_text(args["prompt"], "prompt")
             if not isinstance(args.get("negative_prompt", ""), str):
                 raise NativeImageError("invalid_negative_prompt", unconfirmed=False)
+            if "aspect_ratio" in args:
+                if type(args["aspect_ratio"]) is not str or args["aspect_ratio"] not in ASPECT_RATIOS:
+                    raise NativeImageError("invalid_aspect_ratio", unconfirmed=False)
+            if "subject_mode" in args:
+                if type(args["subject_mode"]) is not str or args["subject_mode"] not in SUBJECT_MODES:
+                    raise NativeImageError("invalid_subject_mode", unconfirmed=False)
             if operation == "edit" and "artifact_id" in args and args["artifact_id"] != "":
                 require_text(args["artifact_id"], "artifact_id")
                 if any(name in args for name in ("reference_roles", "reference_ids", "reference_indices")):
@@ -366,9 +397,22 @@ class NativeImageProvider:
                     or any(not isinstance(nai_prompt[key], str) for key in ("positive", "negative"))):
                 raise NativeImageError("invalid_image_prompt_preferences", unconfirmed=False)
             envelope["nai_prompt"] = nai_prompt
+        parameters = {}
+        if "aspect_ratio" in arguments:
+            parameters["aspect_ratio"] = arguments["aspect_ratio"]
+        image_intent = value.get("image_intent")
+        if image_intent is not None:
+            if (not isinstance(image_intent, dict)
+                    or set(image_intent) != {"subject_mode", "preserve_source_style", "allow_fallback_references"}
+                    or image_intent["subject_mode"] not in SUBJECT_MODES
+                    or type(image_intent["preserve_source_style"]) is not bool
+                    or type(image_intent["allow_fallback_references"]) is not bool):
+                raise NativeImageError("invalid_image_intent", unconfirmed=False)
+            envelope["image_intent"] = dict(image_intent)
         try:
             invocation = ImageInvocation(scope, value["invocation_id"], value["invocation_id"], value["origin_key"],
                                          operation, arguments["prompt"], negative_prompt=arguments.get("negative_prompt", ""),
+                                         parameters=parameters,
                                          reference_ids=(tuple(ref.reference_id for ref in refs)
                                                         or tuple(offer.reference_id for offer in reference_offers)),
                                          envelope=envelope, model_call=model_call)

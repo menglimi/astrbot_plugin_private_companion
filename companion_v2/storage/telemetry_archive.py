@@ -661,14 +661,14 @@ def archive_cold_telemetry(
                 # This ensures retries after a sidecar-committed/primary-rolled-back
                 # crash never silently drop rollup stats, while concurrent callers
                 # never double-count.
-                live_ids = {
-                    row["turn_id"]
+                live_revisions = {
+                    row["turn_id"]: int(row["revision"] or 0)
                     for row in connection.execute(
-                        f"SELECT turn_id FROM {CORE_OBS_TABLE} WHERE turn_id IN ({marks})",
+                        f"SELECT turn_id, revision FROM {CORE_OBS_TABLE} WHERE turn_id IN ({marks})",
                         tuple(turn_ids),
                     ).fetchall()
                 }
-                live_items = [item for item in resolved_rows if item["turn_id"] in live_ids]
+                live_items = [item for item in resolved_rows if item["turn_id"] in live_revisions]
                 if not live_items:
                     continue
 
@@ -745,6 +745,12 @@ def archive_cold_telemetry(
                     f"DELETE FROM {CORE_OBS_TABLE} WHERE turn_id IN ({live_marks})",
                     tuple(live_turn_ids),
                 ).rowcount
+                from companion_v2.model_gateway.core_observations import remove_turns_from_observed_catalog
+                remove_turns_from_observed_catalog(
+                    connection,
+                    live_turn_ids,
+                    deleted_revision_sum=sum(live_revisions[tid] for tid in live_turn_ids),
+                )
                 stats["core_rows_archived"] += int(deleted or 0)
                 stats["core_bytes_reclaimed_estimate"] += sum(item["raw_bytes"] for item in live_items)
 

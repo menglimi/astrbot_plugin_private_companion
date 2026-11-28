@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import importlib.util
 import json
+import math
 import re
 import threading
 from urllib.parse import unquote, urlsplit
@@ -17,14 +18,40 @@ from urllib.parse import unquote, urlsplit
 import aiohttp
 
 from companion_v2.execution.models import digest
+from companion_v2.model_gateway.quota import (
+    MAX_SUBSCRIPTIONS_PER_STATION,
+    SNAPSHOT_DISPLAY_TYPES,
+    normalize_subscription_item,
+)
 from companion_v2.proactive.balance_events import BalanceObservation
 from .service_balance import MAX_RESPONSE_BYTES, ServiceBalancePort, _amount
 
 MAX_SCRIPT_BYTES = 16384
 MAX_REQUEST_BYTES = 16384
+MAX_SCRIPT_SUBSCRIPTION_INPUT = 32
 _SCRIPT_WORKERS_LOCK = threading.Lock()
 SCRIPT_WORKERS: ThreadPoolExecutor | None = None
-RESULT_FIELDS = ("isValid", "invalidMessage", "remaining", "unit", "planName", "total", "used", "extra")
+RESULT_FIELDS = ("isValid", "invalidMessage", "remaining", "unit", "planName", "total", "used", "extra", "subscriptions")
+SUBSCRIPTION_RESULT_FIELDS = frozenset({
+    "name",
+    "title",
+    "planName",
+    "plan_name",
+    "remaining",
+    "used",
+    "total",
+    "limit",
+    "currency",
+    "display_type",
+    "symbol",
+    "fiat_remaining",
+    "fiat_used",
+    "fiat_total",
+    "fiat_currency",
+    "expires_at",
+    "expiresAt",
+    "status",
+})
 
 
 def _get_script_workers() -> ThreadPoolExecutor:
@@ -157,6 +184,7 @@ class ScriptServiceBalancePort:
         self.variables = {"baseUrl": self.base_url, "apiKey": self.api_key,
                           "accessToken": self.access_token, "userId": self.user_id}
         self.source_fingerprint = digest([self.provider, self.script, self.variables, self.proxy_url])
+        self.last_subscriptions = ()
 
     def _safe_text(self, value):
         if type(value) is not str:
@@ -193,7 +221,64 @@ class ScriptServiceBalancePort:
                 raise ValueError("balance request body exceeds 16 KiB")
         return url, method, headers, body
 
+    def _parse_subscriptions(self, raw_subs, *, default_unit=None):
+        if raw_subs is None:
+            return ()
+        if type(raw_subs) is not list:
+            raise ValueError("balance extractor subscriptions must be a list")
+        if len(raw_subs) > MAX_SCRIPT_SUBSCRIPTION_INPUT:
+            raise ValueError("balance extractor subscriptions exceeds limit")
+        unit_upper = str(default_unit or "").strip().upper()
+        default_dt = unit_upper if unit_upper in SNAPSHOT_DISPLAY_TYPES else ""
+        default_sym = "" if default_dt else str(default_unit or "")[:12]
+
+        numeric_fields = ("remaining", "used", "total", "limit", "fiat_remaining", "fiat_used", "fiat_total")
+        text_fields = ("name", "title", "planName", "plan_name", "currency", "display_type", "symbol", "fiat_currency", "status")
+        parsed = []
+        for item in raw_subs:
+            if type(item) is not dict:
+                raise ValueError("invalid balance subscription item")
+            if set(item) - SUBSCRIPTION_RESULT_FIELDS:
+                raise ValueError("unknown balance subscription fields")
+            cleaned = {}
+            for key in numeric_fields:
+                if key in item and item[key] is not None:
+                    val = item[key]
+                    if type(val) not in (int, float) or not math.isfinite(val) or val < 0:
+                        raise ValueError("invalid balance subscription amount")
+                    cleaned[key] = float(val)
+            for key in text_fields:
+                if key in item and item[key] is not None:
+                    mapped = "plan_name" if key == "planName" else key
+                    cleaned[mapped] = self._safe_text(item[key])
+            raw_exp = item.get("expires_at") if item.get("expires_at") is not None else item.get("expiresAt")
+            if raw_exp is not None:
+                if type(raw_exp) in (int, float):
+                    if not math.isfinite(raw_exp) or raw_exp <= 0:
+                        raise ValueError("invalid balance subscription expiry")
+                    ts = float(raw_exp) / 1000.0 if raw_exp > 1e11 else float(raw_exp)
+                    try:
+                        cleaned["expires_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    except (OverflowError, OSError, ValueError):
+                        raise ValueError("invalid balance subscription expiry") from None
+                elif type(raw_exp) is str:
+                    cleaned["expires_at"] = self._safe_text(raw_exp)[:64]
+                else:
+                    raise ValueError("invalid balance subscription expiry")
+            normalized = normalize_subscription_item(
+                cleaned,
+                default_display_type=default_dt,
+                default_symbol=default_sym,
+                default_source="custom_script",
+            )
+            if normalized is not None:
+                parsed.append(normalized)
+                if len(parsed) >= MAX_SUBSCRIPTIONS_PER_STATION:
+                    break
+        return tuple(parsed)
+
     def parse(self, result, observed_at):
+        self.last_subscriptions = ()
         if type(result) is not dict:
             raise ValueError("balance extractor must return one object")
         validity = result.get("isValid")
@@ -217,6 +302,7 @@ class ScriptServiceBalancePort:
         unit = text["unit"]
         if unit and len(unit) > 24:
             raise ValueError("balance unit must be at most 24 characters")
+        self.last_subscriptions = self._parse_subscriptions(result.get("subscriptions"), default_unit=unit)
         return BalanceObservation(balance, total, observed_at, unit=unit or None, used=used,
                                   plan_name=text["planName"], extra=text["extra"])
 

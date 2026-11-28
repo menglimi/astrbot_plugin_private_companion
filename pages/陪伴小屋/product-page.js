@@ -1342,11 +1342,19 @@ window.CompanionProduct = (() => {
       api:kind==="designer"?"/"+HOST+"/persona-designer":kind==="identity"?catalog?.acquaintance_api
         :workspaceApi(kind)};
   }
+  let pendingWorkshopHandoff = null;
   function sendWorkspaceContext(owner, context) {
+    let handoff = null;
+    if (context.kind === "persona" && pendingWorkshopHandoff
+        && Date.now() - pendingWorkshopHandoff.at < 30000) {
+      handoff = {text: pendingWorkshopHandoff.text, personaId: pendingWorkshopHandoff.personaId};
+      pendingWorkshopHandoff = null;
+    }
     owner.contentWindow.postMessage({channel:"companion-workspace",kind:"context",
       context:{pluginName:HOST,pageName:context.kind,tab:context.tab,
         confirm:typeof window.CompanionConfirm==="function",
         selection:{...selected},member_edit:context.member_edit||null,
+        handoff,
         display:{role_name:roleLabel(),account_name:accountLabel(roleTarget()||{}),subject_name:subjectLabel(target()),scope_kind:context.scope_kind,
           target_label:target()?targetLabel(target()):"窗口未选择"}}},"*");
   }
@@ -1448,6 +1456,19 @@ window.CompanionProduct = (() => {
       owner.parentElement.dataset.workspaceTab=message.mode;
       owner.title=({create:"创建人格",optimize:"拟人优化"}[message.mode])+"工作区";
       document.dispatchEvent(new CustomEvent("companion:persona-mode-change",{detail:{mode:message.mode}}));
+      return;
+    }
+    if(message.kind==="send-to-workshop"){
+      if(context.kind!=="designer"||typeof message.text!=="string"||!message.text.trim())return;
+      try{ valid(); }catch{ return; }
+      pendingWorkshopHandoff={
+        text:message.text.slice(0,30000),
+        personaId:typeof message.personaId==="string"?message.personaId.slice(0,200):"",
+        at:Date.now(),
+      };
+      document.dispatchEvent(new CustomEvent("companion:persona-handoff",{
+        detail:{text:pendingWorkshopHandoff.text,personaId:pendingWorkshopHandoff.personaId},
+      }));
       return;
     }
     if(message.kind==="host-mappings-updated"){
@@ -1553,8 +1574,8 @@ window.CompanionProduct = (() => {
       } else if(context.kind==="designer") {
         const memory=window.CompanionPersonaDesignerMemory;
         if(!memory)throw fail("persona_designer_unavailable");
-        const local=(method==="GET"&&["designer/client-state","designer/client-result"].includes(path))
-          ||(method==="POST"&&["designer/client-state","designer/client-ack"].includes(path));
+        const local=(method==="GET"&&["designer/client-state","designer/client-result","designer/local-draft"].includes(path))
+          ||(method==="POST"&&["designer/client-state","designer/client-ack","designer/local-draft"].includes(path));
         if(local){
           const result=memory.handle(method,path,message.body);
           send({kind:"response",requestId:message.requestId,ok:true,data:result});return;

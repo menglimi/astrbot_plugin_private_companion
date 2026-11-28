@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import time
+from typing import Any
 
-from companion_v2.model_gateway.quota import QuotaSnapshot, QuotaStationSpec
+from companion_v2.model_gateway.quota import (
+    QuotaSnapshot,
+    QuotaStationSpec,
+    normalize_currency_symbol,
+    normalize_subscription_item,
+)
 
 from .base import (
     AdapterCapabilities,
@@ -172,7 +178,97 @@ class Sub2ApiAdapter(QuotaAdapter):
 
         raw_unit = str(ctx.display_type or payload.get("unit") or quota_obj.get("unit") or "USD").strip().upper()
         display_type = raw_unit if raw_unit in ("CNY", "USD", "CREDIT", "TOKENS") else "CREDIT"
+        symbol = normalize_currency_symbol(display_type)
         plan_name = str(payload.get("planName") or payload.get("plan_name") or "").strip()
+
+        def _iso_expiry(raw_val: Any) -> str:
+            num = safe_number(raw_val)
+            if num is not None and num > 0:
+                ts = num / 1000.0 if num > 1e12 else num
+                try:
+                    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                except (OSError, OverflowError, ValueError):
+                    return ""
+            if isinstance(raw_val, str) and raw_val.strip():
+                try:
+                    dt = datetime.fromisoformat(raw_val.strip().replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.isoformat()
+                except ValueError:
+                    return ""
+            return ""
+
+        subs_out: list[dict[str, Any]] = []
+        for list_key in ("subscriptions", "plans", "packages"):
+            raw_list = payload.get(list_key)
+            if isinstance(raw_list, list):
+                for entry in raw_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    e_unit = str(entry.get("unit") or entry.get("currency") or display_type).strip().upper()
+                    e_dt = e_unit if e_unit in ("CNY", "USD", "CREDIT", "TOKENS") else display_type
+                    e_exp = _iso_expiry(
+                        entry.get("expiresAt")
+                        or entry.get("expires_at")
+                        or entry.get("end_time")
+                        or entry.get("resetAt")
+                        or entry.get("reset_at")
+                    )
+                    norm = normalize_subscription_item(
+                        {
+                            "name": entry.get("name") or entry.get("planName") or entry.get("title") or plan_name or "订阅套餐",
+                            "remaining": safe_number(entry.get("remaining")),
+                            "used": safe_number(entry.get("used")),
+                            "total": safe_number(entry.get("limit") if entry.get("limit") is not None else entry.get("total")),
+                            "display_type": e_dt,
+                            "symbol": normalize_currency_symbol(e_dt),
+                            "fiat_currency": e_dt if e_dt in ("CNY", "USD") else "",
+                            "fiat_remaining": safe_number(entry.get("remaining")) if e_dt in ("CNY", "USD") else None,
+                            "fiat_total": safe_number(entry.get("limit") if entry.get("limit") is not None else entry.get("total")) if e_dt in ("CNY", "USD") else None,
+                            "expires_at": e_exp,
+                            "status": entry.get("status") or "",
+                            "source": "sub2api_plan",
+                        },
+                        default_display_type=display_type,
+                        default_symbol=symbol,
+                        default_fiat_currency=display_type if display_type in ("CNY", "USD") else "",
+                        default_source="sub2api_plan",
+                    )
+                    if norm is not None:
+                        subs_out.append(norm)
+                if subs_out:
+                    break
+
+        top_exp = _iso_expiry(
+            payload.get("expiresAt")
+            or payload.get("expires_at")
+            or quota_obj.get("expiresAt")
+            or quota_obj.get("resetAt")
+            or payload.get("resetAt")
+        )
+        if not subs_out and top_exp and total is not None and total > 0:
+            norm_top = normalize_subscription_item(
+                {
+                    "name": plan_name or "周期额度套餐",
+                    "remaining": round(max(0.0, rem), 6),
+                    "used": round(max(0.0, used), 6) if used is not None else None,
+                    "total": round(max(0.0, total), 6),
+                    "display_type": display_type,
+                    "symbol": symbol,
+                    "fiat_currency": display_type if display_type in ("CNY", "USD") else "",
+                    "fiat_remaining": round(max(0.0, rem), 6) if display_type in ("CNY", "USD") else None,
+                    "fiat_total": round(max(0.0, total), 6) if display_type in ("CNY", "USD") else None,
+                    "expires_at": top_exp,
+                    "source": "sub2api_plan",
+                },
+                default_display_type=display_type,
+                default_symbol=symbol,
+                default_fiat_currency=display_type if display_type in ("CNY", "USD") else "",
+                default_source="sub2api_plan",
+            )
+            if norm_top is not None:
+                subs_out.append(norm_top)
 
         return QuotaSnapshot(
             station_id=spec.id,
@@ -180,7 +276,10 @@ class Sub2ApiAdapter(QuotaAdapter):
             remaining=round(max(0.0, rem), 6),
             used=round(max(0.0, used), 6) if used is not None else None,
             total=round(max(0.0, total), 6) if total is not None else None,
+            quota_model="capped" if (total is not None and total > 0) else "wallet",
             display_type=display_type,
+            symbol=symbol,
+            subscriptions=tuple(subs_out[:12]),
             group_name=plan_name,
             checked_at=checked_at,
             latency_ms=ctx.elapsed_ms(started),
@@ -329,6 +428,7 @@ class OpenAiBillingAdapter(QuotaAdapter):
                 remaining=round(remaining, 6),
                 used=round(used_usd, 6),
                 total=round(hard_limit, 6),
+                quota_model="capped",
                 display_type=display_type,
                 group_name="单 Key 限额",
                 extra="按该 sk- 密钥限额统计（非账户总余额）",
@@ -364,6 +464,7 @@ class OpenAiBillingAdapter(QuotaAdapter):
                         remaining=round(max(0.0, avail), 6),
                         used=round(max(0.0, used), 6) if used is not None else None,
                         total=round(max(0.0, granted), 6) if granted is not None else None,
+                        quota_model="capped" if (granted is not None and granted > 0) else "wallet",
                         display_type=display_type,
                         group_name="单 Key 限额",
                         is_key_scoped=True,

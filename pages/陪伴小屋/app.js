@@ -80,6 +80,7 @@ function savePersonaRecreationMode(mode){
   try{if(typeof localStorage!=='undefined'&&localStorage)localStorage.setItem('companion.persona-mode',mode);}catch{}
 }
 let personaRecreationMode=readPersonaRecreationMode();
+let personaGuideOpen=false;
 let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
@@ -1199,6 +1200,7 @@ function paintPanel(){
   const commit=()=>{
     product.unmountWorkspace?.();
     unmountConfigEditors();
+    destroyQzoneAlbumAutoLoader();
     host.innerHTML=furniture?renderFurniturePanel(furniture)
       :section?renderSectionPanel(section)
       :view?renderViewPanel(view)
@@ -1303,7 +1305,7 @@ function mountPanelWorkspaces(){
   const roleWeatherHost=$('#perceptionRoleWeatherWorkspace');
   const stateHost=roleWeatherHost||roleStateHost;
   guarded('角色状态',()=>stateHost
-    ?window.CompanionStatePage?.mount(stateHost,{section:roleWeatherHost?'weather':roleStateHost.dataset.stateSection||'state',feature:roleStateHost?.dataset.stateFeature||''})
+    ?window.CompanionStatePage?.mount(stateHost,{section:roleWeatherHost?'weather':roleStateHost.dataset.stateSection||'state',feature:roleStateHost?.dataset.stateInitialFeature||''})
     :window.CompanionStatePage?.unmount());
   const replyHost=$('#replyWorkspace');
   const decisionReplyHost=$('#decisionReplyWorkspace');
@@ -2271,7 +2273,7 @@ function consoleLoading(text){return `<p class="console-loading" role="status">$
    脚本生效范围里重复声明同名函数只有后者生效，留着这份等于留一个改了不生效的陷阱。
    configLink / consoleLoading / consoleMountHead / providerSummary 同名重复且内容一致，
    一并收拢——重复本身不影响行为，但会让「改了一处没生效」变得无从判断。 */
-function renderRoleState(section='',feature=''){return `<section id="roleStateWorkspace" ${section?`data-state-section="${section}" `:''}${feature?`data-state-feature="${feature}" `:''}aria-label="${section==='contact'?'行为规划与沉默':'角色状态维护'}">${consoleLoading(section==='contact'?'正在读取联系节奏与沉默设置…':'正在连接角色状态工作区…')}</section>`;}
+function renderRoleState(section='',feature=''){return `<section id="roleStateWorkspace" ${section?`data-state-section="${section}" `:''}${feature?`data-state-initial-feature="${feature}" `:''}aria-label="${section==='contact'?'行为规划与沉默':'角色状态维护'}">${consoleLoading(section==='contact'?'正在读取联系节奏与沉默设置…':'正在连接角色状态工作区…')}</section>`;}
 /* 日记与生活的工作区容器。
  *
  * 它不是自带版式的页面模块，而是 iframe 工作区（pages/日记与生活/），
@@ -2801,12 +2803,45 @@ const qzoneState={phase:'idle',status:null,feeds:{},scope:'friends',notice:null,
      动作结束后整块重画，选择不该跟着丢。目录本身不缓存——每份都从最近一次
      status 里取，宿主换了目录（升级、改配置）下次读取就会跟上。 */
   publishTopic:'',publishScene:'',confirmDisable:false,publishImages:[],album:null,albumOpen:false,
+  albumAppendError:false,albumAppendErrorText:'',
   imageScope:'',imageLoading:false,
   /* 日程建议的处理态。回执框一次只开在一条建议上，输入留在这里而不是留在
      节点上——动作结束后整块重画，重画时填了一半的回执不该跟着丢。
      confirmSuggestionFor 与它互斥：同一条建议上不会同时开着回执框和忽略确认。 */
   suggestionReceiptFor:'',suggestionReceiptDraft:'',suggestionResultRefDraft:'',
   suggestionConfirmFor:''};
+let qzoneAlbumAutoLoader=null;
+function destroyQzoneAlbumAutoLoader(){
+  try{qzoneAlbumAutoLoader?.destroy?.();}catch{}
+  qzoneAlbumAutoLoader=null;
+}
+function syncQzoneAlbumAutoLoader(){
+  const host=document.querySelector('#actionQzoneBody [data-qzone-album-autoscroll]');
+  if(!host||!qzoneState.albumOpen||!window.CompanionAutoScroll){destroyQzoneAlbumAutoLoader();return;}
+  if(!qzoneAlbumAutoLoader){
+    qzoneAlbumAutoLoader=window.CompanionAutoScroll.mount({
+      host,
+      hasMore:()=>Boolean(qzoneState.album?.next_cursor),
+      isLoading:()=>Boolean(qzoneState.busy&&qzoneState.acting==='album'),
+      hasError:()=>Boolean(qzoneState.albumAppendError),
+      errorMessage:()=>qzoneState.albumAppendErrorText||'读取相册图片失败，已保留已加载图片。',
+      loadedCount:()=>(qzoneState.album?.items||[]).length,
+      cursor:()=>qzoneState.album?.next_cursor||'',
+      itemLabel:'张',
+      manualButtonAttrs:()=>({'data-qzone-action':'album-next',...(qzoneState.busy||qzoneState.imageLoading?{disabled:''}:{})}),
+      manualButtonLabel:'加载更多',
+      scrollTopTarget:()=>document.querySelector('#actionQzoneBody [aria-label="选择相册图片"]'),
+      onLoadMore:()=>qzoneRun('album',()=>qzoneLoadAlbum(qzoneState.album?.next_cursor)),
+      onRetry:()=>{
+        qzoneState.albumAppendError=false;
+        qzoneState.albumAppendErrorText='';
+        return qzoneRun('album',()=>qzoneLoadAlbum(qzoneState.album?.next_cursor));
+      },
+    });
+  }else{
+    qzoneAlbumAutoLoader.refresh(host);
+  }
+}
 function qzoneStatus(){const status=qzoneState.status;return status&&typeof status==='object'?status:null;}
 /* 凭据行的当前结论。缺字段按 unknown 处理：那是「不知道」，不是「失败」。 */
 function qzoneCredentialState(){
@@ -3314,39 +3349,66 @@ function qzoneCredentialMarkup(credential){
   /* 「没有可用来源」只在失败态出现；unknown 只意味着还没读过，不能替用户下结论。 */
   const failed=QZONE_CREDENTIAL_FAILED_STATES.includes(state);
   const showSource=state!=='unknown'&&(source!=='none'||failed);
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">凭据</span>
-    <span class="action-qzone-status-value"><span class="action-qzone-chip ${tone}">${escapeHTML(QZONE_CREDENTIAL_STATES[state]||'状态未知')}</span>`
-    +`${showSource?`<span>${escapeHTML(QZONE_CREDENTIAL_SOURCES[source]||'来源未知')}</span>`:''}`
-    +`${state==='unknown'?'<span class="action-qzone-reason">刷新凭据或读一次空间即可确认。</span>':''}`
-    +`${masked?`<span>账号 ${escapeHTML(masked)}</span>`:''}`
-    +`${reason?`<span class="action-qzone-reason">${escapeHTML(reason)}</span>`:''}</span>
-    <button class="button small" type="button" data-qzone-action="refresh-credentials" ${qzoneState.busy?'disabled':''}>${I('key-round')}<span>刷新凭据</span></button>
-  </div>`;
+  const facts=[];
+  if(showSource)facts.push(escapeHTML(QZONE_CREDENTIAL_SOURCES[source]||'来源未知'));
+  if(masked)facts.push(`账号 <b class="action-qzone-num">${escapeHTML(masked)}</b>`);
+  if(state==='unknown'&&!facts.length)facts.push('尚未执行首次凭据读取');
+  const note=state==='unknown'
+    ? '<p class="action-qzone-tile-foot">刷新凭据或读一次空间即可确认。</p>'
+    : '';
+  return `<article class="action-qzone-tile" data-qzone-tile="credential">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('key-round')}<span>凭据状态</span></span>
+      <span class="action-qzone-indicator ${tone}"><i aria-hidden="true"></i>${escapeHTML(QZONE_CREDENTIAL_STATES[state]||'状态未知')}</span>
+    </header>
+    <div class="action-qzone-tile-body">
+      ${facts.length?`<p class="action-qzone-tile-line">${facts.join('<span class="action-qzone-sep" aria-hidden="true">·</span>')}</p>`:''}
+      ${reason?`<p class="action-qzone-tile-reason${failed?' is-warn':''}">${escapeHTML(reason)}</p>`:''}
+      ${note}
+    </div>
+  </article>`;
 }
 function qzoneConsentMarkup(status){
   const granted=QZONE_CAPABILITIES.filter(([id])=>qzoneCapabilityGranted(status,id));
   const flags=[['已安装',status.installed===true],['包版本一致',status.active===true],
     ['角色已启用',status.role_enabled===true],['身份授权',status.invoke_granted===true]];
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">授权</span>
-    <span class="action-qzone-status-value">${flags.map(([label,on])=>
-      `<span class="action-qzone-chip ${on?'is-ok':'is-off'}">${label}</span>`).join('')}`
-    +`<span>能力 ${granted.length} / ${QZONE_CAPABILITIES.length}`
-    +`${granted.length?`（${escapeHTML(granted.map(([,name])=>name).join('、'))}）`:''}</span></span>
-    <button class="button small" type="button" data-qzone-action="refresh-status" ${qzoneState.busy?'disabled':''}>${I('refresh-cw')}<span>重新读取</span></button>
-  </div>`;
+  const allGranted=granted.length===QZONE_CAPABILITIES.length;
+  const tone=allGranted?'is-ok':granted.length?'is-warn':'is-off';
+  return `<article class="action-qzone-tile" data-qzone-tile="consent">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('shield-check')}<span>授权与能力</span></span>
+      <span class="action-qzone-tile-metric ${tone}">能力 ${granted.length} / ${QZONE_CAPABILITIES.length}</span>
+    </header>
+    <div class="action-qzone-tile-body">
+      <ul class="action-qzone-checks">${flags.map(([label,on])=>
+        `<li class="${on?'is-ok':'is-off'}"><i aria-hidden="true"></i><span>${label}</span></li>`).join('')}</ul>
+      <p class="action-qzone-tile-foot">${granted.length
+        ? `已授权：${escapeHTML(granted.map(([,name])=>name).join(' · '))}`
+        : '尚未授权任何能力。'}</p>
+    </div>
+  </article>`;
 }
 function qzoneSwitchMarkup(settings){
-  /* 设置读不出来时（宿主还没给运行设置）这一行整块不渲染：
-     一个只有标签、没有内容的空行比没有这一行更像坏了。 */
+  /* 设置读不出来时（宿主还没给运行设置）这一张卡整块不渲染：
+     一个只有标题、没有内容的空卡比没有这张卡更像坏了。 */
   if(!Object.keys(settings).length)return '';
   const rows=[['总开关','enabled'],['点赞','like_enabled'],['回复','comment_enabled'],['发说说','publish_enabled']];
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">能力开关</span>
-    <span class="action-qzone-status-value">${rows.map(([label,key])=>
-      `<span class="action-qzone-chip ${settings[key]===true?'is-ok':'is-off'}">${label} · ${settings[key]===true?'开':'关'}</span>`).join('')}</span>
-  </div>`;
+  const onCount=rows.filter(([,key])=>settings[key]===true).length;
+  const masterOn=settings.enabled===true;
+  const badgeText=masterOn?`${onCount} / ${rows.length} 开启`:'总开关已关';
+  const badgeTone=masterOn?(onCount===rows.length?'is-ok':'is-warn'):'is-off';
+  return `<article class="action-qzone-tile" data-qzone-tile="switches">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('sliders-horizontal')}<span>能力开关</span></span>
+      <span class="action-qzone-tile-metric ${badgeTone}">${badgeText}</span>
+    </header>
+    <div class="action-qzone-tile-body">
+      <div class="action-qzone-switch-grid">${rows.map(([label,key])=>{
+        const on=settings[key]===true;
+        return `<div class="action-qzone-switch-item ${on?'is-ok':'is-off'}"><span>${label}</span><strong><i aria-hidden="true"></i>${on?'开':'关'}</strong></div>`;
+      }).join('')}</div>
+    </div>
+  </article>`;
 }
 function qzoneLimitsMarkup(settings){
   const parts=[['每次读取动态',settings.feed_recent_posts,'条'],
@@ -3361,25 +3423,34 @@ function qzoneLimitsMarkup(settings){
   return `<p class="action-qzone-limits">${I('clock-3')}<span>`
     +`${parts.map(([label,value,unit])=>`${label} ${escapeHTML(String(value))}${unit?' '+unit:''}`).join(' · ')}</span></p>`;
 }
-/* 主题策略：说清「谁在决定主题」，以及目录里有几个主题是开着的。
+/* 主题策略与频控：说清「谁在决定主题」、目录里有几个主题是开着的，以及动作节流。
  * 措辞不能暗示「已经在自动发布」——自动发布要同时满足两项设置，光看
  * topic_auto_enabled 是不够的，所以这里只报取值，不做任何「已启用」的断言。 */
 function qzoneTopicPolicyMarkup(settings){
-  if(!Object.keys(settings).length)return '';
+  const hasSettings=Object.keys(settings).length>0;
+  const limits=qzoneLimitsMarkup(settings);
+  if(!hasSettings&&!limits)return '';
   const auto=settings.topic_auto_enabled===true;
   const confirm=settings.topic_require_confirmation!==false;
   const topics=qzoneTopicTopics();
   /* 目录没读到时不编「0 个已开启」：那是把「没读到」说成了「一个都没开」。 */
-  const count=topics.length
-    ? `已启用主题 ${topics.length} 个（目录里当前可用的）`
+  const badge=topics.length?`已启用主题 ${topics.length} 个`:'目录未读取';
+  const badgeTitle=topics.length
+    ? `目录里当前可用的主题共 ${topics.length} 个`
     : '主题目录还没有读到';
-  return `<div class="action-qzone-status-row">
-    <span class="action-qzone-status-label">主题策略</span>
-    <span class="action-qzone-status-value">
-      <span class="action-qzone-chip ${auto?'is-warn':'is-off'}">模型自行发布 · ${auto?'开':'关'}（默认关）</span>
-      <span class="action-qzone-chip ${confirm?'is-ok':'is-warn'}">主题人工确认 · ${confirm?'开':'关'}（默认开）</span>
-      <span>${escapeHTML(count)}</span></span>
-  </div>`;
+  return `<article class="action-qzone-tile" data-qzone-tile="policy">
+    <header class="action-qzone-tile-head">
+      <span class="action-qzone-tile-title">${I('sparkles')}<span>频控与主题策略</span></span>
+      ${hasSettings?`<span class="action-qzone-tile-metric ${topics.length?'is-ok':'is-off'}" title="${escapeHTML(badgeTitle)}">${escapeHTML(badge)}</span>`:''}
+    </header>
+    <div class="action-qzone-tile-body">
+      ${hasSettings?`<div class="action-qzone-policy-list">
+        <div class="action-qzone-policy-item"><span>模型自行发布</span><span class="action-qzone-indicator ${auto?'is-warn':'is-off'}"><i aria-hidden="true"></i>${auto?'开':'关'}<em>（默认关）</em></span></div>
+        <div class="action-qzone-policy-item"><span>主题人工确认</span><span class="action-qzone-indicator ${confirm?'is-ok':'is-warn'}"><i aria-hidden="true"></i>${confirm?'开':'关'}<em>（默认开）</em></span></div>
+      </div>${topics.length?'':'<p class="action-qzone-tile-note">主题目录还没有读到</p>'}`:''}
+      ${limits}
+    </div>
+  </article>`;
 }
 function qzoneStateText(status){
   if(status.installed!==true)return '未安装';
@@ -3391,20 +3462,56 @@ function qzoneStateText(status){
   if(consented['qzone.post.publish']===true&&status.publish_granted!==true)return '缺少发布授权';
   return '已启用';
 }
-function qzoneStatusMarkup(status,full){
+function qzoneHeadMarkup(status){
+  const hasStatus=Boolean(status);
   const blocked=typeof qzoneStatus()?.runtime?.blocked_reason==='string'&&qzoneStatus().runtime.blocked_reason.trim();
-  const tone=status.installed!==true?'is-off':qzoneUsable(status)&&qzoneAuthorizationComplete(status)&&!blocked
-    ?'is-ok':'is-warn';
-  const reason=QZONE_STATUS_REASONS[status.reason]||'';
+  const tone=!hasStatus
+    ? (qzoneState.phase==='error'?'is-warn':'is-off')
+    : (status.installed!==true?'is-off':qzoneUsable(status)&&qzoneAuthorizationComplete(status)&&!blocked?'is-ok':'is-warn');
+  const stateLabel=!hasStatus
+    ? (qzoneState.phase==='error'?'读取失败':'正在读取')
+    : qzoneStateText(status);
+  const reason=hasStatus?(QZONE_STATUS_REASONS[status.reason]||''):'';
+  const version=hasStatus?`扩展版本 ${String(status.package_version||'未知')}`:'';
+  const actions=hasStatus
+    ? `<div class="action-qzone-head-actions">
+        <button class="button small action-qzone-tool" type="button" data-qzone-action="refresh-credentials" ${qzoneState.busy?'disabled':''}>${I('key-round')}<span>${qzoneActing('credentials')?'正在刷新…':'刷新凭据'}</span></button>
+        <button class="button small action-qzone-tool" type="button" data-qzone-action="refresh-status" ${qzoneState.busy?'disabled':''}>${I('refresh-cw')}<span>${qzoneActing('status')?'正在读取…':'重新读取'}</span></button>
+      </div>`
+    : (qzoneState.phase==='error'
+      ? `<div class="action-qzone-head-actions">
+          <button class="button small action-qzone-tool" type="button" data-qzone-action="refresh-status" ${qzoneState.busy?'disabled':''}>${I('refresh-cw')}<span>重新读取</span></button>
+        </div>`
+      : '');
+  return `<header class="action-qzone-head">
+    <div class="action-qzone-head-main">
+      <span class="action-qzone-mark">${I('star')}</span>
+      <div class="action-qzone-copy">
+        <div class="action-qzone-eyebrow">
+          <p class="action-kicker action-kicker-light">QQ 空间拓展</p>
+          ${version?`<span class="action-qzone-sep" aria-hidden="true">·</span><span class="action-qzone-version">${escapeHTML(version)}</span>`:''}
+        </div>
+        <div class="action-qzone-title-row">
+          <h2 id="action-qzone-title">QQ 空间</h2>
+          <span class="action-qzone-badge ${tone}"><i aria-hidden="true"></i>${escapeHTML(stateLabel)}</span>
+          ${reason?`<span class="action-qzone-head-reason">${escapeHTML(reason)}</span>`:''}
+        </div>
+        <p class="action-qzone-subtitle">动态、回复与发布</p>
+      </div>
+    </div>
+    ${actions}
+  </header>`;
+}
+function qzoneStatusMarkup(status,full){
+  const tiles=[
+    qzoneCredentialMarkup(status.credential),
+    full?qzoneConsentMarkup(status):'',
+    full?qzoneSwitchMarkup(qzoneSettings()):'',
+    full?qzoneTopicPolicyMarkup(qzoneSettings()):'',
+  ].filter(Boolean);
   return `<div class="action-qzone-status">
-    <p class="action-qzone-state"><span class="action-qzone-chip ${tone}">${escapeHTML(qzoneStateText(status))}</span>`
-    +`${reason?`<span>${escapeHTML(reason)}</span>`:''}`
-    +`<span>扩展版本 ${escapeHTML(String(status.package_version||'未知'))}</span></p>
-    ${qzoneCredentialMarkup(status.credential)}
-    ${full?qzoneConsentMarkup(status):''}
-    ${full?qzoneSwitchMarkup(qzoneSettings()):''}
-    ${full?qzoneLimitsMarkup(qzoneSettings()):''}
-    ${full?qzoneTopicPolicyMarkup(qzoneSettings()):''}
+    ${qzoneHeadMarkup(status)}
+    <div class="action-qzone-grid${tiles.length===1?' is-single':''}">${tiles.join('')}</div>
   </div>`;
 }
 function qzoneInstallMarkup(installed){
@@ -3602,6 +3709,8 @@ function qzoneImageScope(){
   const scope=qzoneRoute('publish');
   if(qzoneState.imageScope!==scope){
     qzoneState.publishImages=[];qzoneState.album=null;qzoneState.albumOpen=false;
+    qzoneState.albumAppendError=false;qzoneState.albumAppendErrorText='';
+    destroyQzoneAlbumAutoLoader();
     qzoneState.imageScope=scope;
   }
   return scope;
@@ -3643,13 +3752,32 @@ async function qzoneChooseImages(files){
 }
 async function qzoneLoadAlbum(cursor){
   const scope=qzoneImageScope();
+  qzoneState.albumAppendError=false;
+  qzoneState.albumAppendErrorText='';
+  if(!cursor)qzoneAlbumAutoLoader?.reset?.();
   const result=await qzoneFetch('GET','album',cursor?{cursor}:undefined,false);
   if(scope!==qzoneImageScope())return;
-  if(!result.ok){qzoneNotice(result.text,true);return;}
+  if(!result.ok){
+    qzoneNotice(result.text,true);
+    if(cursor){
+      qzoneState.albumAppendError=true;
+      qzoneState.albumAppendErrorText=result.text||'读取相册图片失败，请重试。';
+    }
+    return;
+  }
   const data=result.data;
-  if(!Array.isArray(data?.items)){qzoneNotice('没有读到相册图片，请重新读取。',true);return;}
+  if(!Array.isArray(data?.items)){
+    qzoneNotice('没有读到相册图片，请重新读取。',true);
+    if(cursor){
+      qzoneState.albumAppendError=true;
+      qzoneState.albumAppendErrorText='没有读到相册图片，请重新读取。';
+    }
+    return;
+  }
   qzoneState.album={items:cursor?[...(qzoneState.album?.items||[]),...data.items]:data.items,next_cursor:data.next_cursor};
   qzoneState.albumOpen=true;
+  qzoneState.albumAppendError=false;
+  qzoneState.albumAppendErrorText='';
 }
 function qzoneImagePickerMarkup(){
   const disabled=qzoneState.busy||qzoneState.imageLoading;
@@ -3665,7 +3793,9 @@ function qzoneImagePickerMarkup(){
       <figcaption>${escapeHTML(item.name||'相册图片')}</figcaption><button type="button" class="button small" data-qzone-action="image-remove" data-qzone-image="${index}" aria-label="移除第 ${index+1} 张图片" ${disabled?'disabled':''}>移除</button></figure>`).join('')}</div>
     ${qzoneState.albumOpen?`<section aria-label="选择相册图片"><div class="action-qzone-row"><strong>当前角色相册</strong><button type="button" class="button small" data-qzone-action="album-close" ${disabled?'disabled':''}>收起</button></div>
       <div class="qzone-album-images">${(qzoneState.album?.items||[]).map((item,index)=>`<button type="button" data-qzone-action="album-select" data-qzone-image="${index}" aria-label="选择相册图片 ${index+1}" ${disabled||pictures.some(p=>p.image_id===item.image_id)?'disabled':''}><img src="${escapeHTML(preview(item))}" alt="相册图片 ${index+1}"><span>${pictures.some(p=>p.image_id===item.image_id)?'已选择':'选择'}</span></button>`).join('')||'<p>相册里还没有图片，可先选择本地图片。</p>'}</div>
-      ${qzoneState.album?.next_cursor?`<button type="button" class="button small" data-qzone-action="album-next" ${disabled?'disabled':''}>加载更多</button>`:''}</section>`:''}
+      ${window.CompanionAutoScroll
+        ?(qzoneState.album?.next_cursor||qzoneState.album?.items?.length?'<div data-qzone-album-autoscroll></div>':'')
+        :(qzoneState.album?.next_cursor?`<button type="button" class="button small" data-qzone-action="album-next" ${disabled?'disabled':''}>加载更多</button>`:'')}</section>`:''}
   </div>`;
 }
 function qzonePublishBlocked(){
@@ -3715,15 +3845,17 @@ function qzoneBody(){
     /* 还没有状态：要么在读，要么读失败。两种必须说得不一样——
        「正在读取…」停在一次失败之后是最容易骗人的界面。 */
     const failed=qzoneState.phase==='error';
-    return `${failed?'':'<p class="action-qzone-loading" role="status">正在读取 QQ 空间的当前状态…</p>'}
-      ${qzoneNoticeMarkup()}
-      ${failed?`<div class="action-qzone-row">${button('重新读取','data-qzone-action="refresh-status"','small')}</div>`:''}`;
+    return `<div class="action-qzone-status">
+        ${qzoneHeadMarkup(null)}
+        ${failed?'':'<p class="action-qzone-loading" role="status">正在读取 QQ 空间的当前状态…</p>'}
+        ${qzoneNoticeMarkup()}
+      </div>`;
   }
   const installed=status.installed===true;
   const usable=qzoneUsable(status);
-  return `${qzoneNoticeMarkup()}
+  return `${qzoneStatusMarkup(status,usable||installed)}
     ${qzoneBlockedMarkup()}
-    ${qzoneStatusMarkup(status,usable||installed)}
+    ${qzoneNoticeMarkup()}
     ${usable?(qzoneAuthorizationComplete(status)?'':qzoneAuthorizationMarkup(status)):qzoneInstallMarkup(installed)}
     ${installed?qzoneSuggestionBlockMarkup():''}
     ${installed?qzoneConfigMarkup():''}
@@ -3733,12 +3865,6 @@ function qzoneBody(){
 }
 function renderQzoneSection(){
   return `<section class="action-qzone" id="action-qzone" aria-labelledby="action-qzone-title">
-    <header class="action-qzone-head">
-      <span class="action-qzone-mark">${I('star')}</span>
-      <div class="action-qzone-copy"><p class="action-kicker action-kicker-light">QQ 空间拓展</p>
-        <h2 id="action-qzone-title">QQ 空间</h2>
-        <p>动态、回复与发布</p></div>
-    </header>
     <div class="action-qzone-body" id="actionQzoneBody">${qzoneBody()}</div>
   </section>`;
 }
@@ -3768,12 +3894,14 @@ function paintQzone(){
   }else if(next){
     mountQzoneConfigEditor();
   }
+  syncQzoneAlbumAutoLoader();
   icons();
 }
 /* 挂载：面板每次重画都会走这里，所以这里不无条件重读——只有第一次、
  * 上次读失败、或上次读已超过一分钟才拉一次状态，免得来回切分区时反复请求。 */
 function mountQzoneSection(){
   if(!document.getElementById('actionQzoneBody'))return;
+  syncQzoneAlbumAutoLoader();
   const stale=qzoneState.phase==='ready'&&Date.now()-qzoneState.loadedAt>60000;
   if(qzoneState.phase==='idle'||qzoneState.phase==='error'||stale){
     qzoneStart('status',()=>qzoneLoadStatus({busyPaint:true}));
@@ -4402,14 +4530,14 @@ function renderMemoryPageOriginal(){return consoleSections([
 ]);}
 /* 模型页自带页头、页签与刷新控件；不再套配置控制台的子类统计与边界卡，
    避免「模型分配」说明块与真实工作区重复占据首屏。只保留分区卡片容器。 */
-function renderModelsPage(){return `<div class="models-management-page"><section id="modelWorkspace" class="console-section" aria-label="任务模型配置">${consoleLoading('正在读取任务模型配置…')}</section><section class="models-budget-section" aria-labelledby="models-budget-heading"><div><h2 id="models-budget-heading">后台任务预算</h2><p>达到限额后暂停启动新的可选任务；已运行的任务会完成，交互回复不受影响。</p></div>${configEditors('budgetConfigWorkspace',['budget'],'后台任务预算')}</section></div>`;}
+function renderModelsPage(){return `<div class="models-management-page"><section id="modelWorkspace" class="console-section" aria-label="任务模型配置">${consoleLoading('正在读取任务模型配置…')}</section><section class="models-budget-section" aria-labelledby="models-budget-heading"><header class="models-budget-head"><div class="models-budget-copy"><span class="models-budget-eyebrow">全局保护 · 每日 Token 软限额</span><h2 id="models-budget-heading">后台任务预算</h2><p>默认关闭；全局开启后角色设置才生效。达到限额后暂缓启动新的可选后台任务，已运行任务会正常收尾，交互回复不受影响。</p></div><span class="models-budget-status" data-budget-status="off" aria-live="polite">已关闭</span></header>${configEditors('budgetConfigWorkspace',['budget'],'后台任务预算')}</section></div>`;}
 /* 治理与维护 = 账号与会话运行状态 + 备份与还原。风控与用量那两块本来就没有可写端点，
    旧版各放一张 boundaryCard 解释「为什么没有开关」；按「接不上就删」直接去掉。 */
 function renderPhoneUsage(){
   const guide=typeof product.role()?.config_api==='string'?'':pageNeedsTarget('手机使用');
   return `<div class="phone-usage-page">${guide||
     `<section id="phoneSetupWorkspace" class="phone-setup" aria-labelledby="phoneSetupTitle"></section>
-    <details class="phone-advanced"><summary>${I('sliders-horizontal')}高级设置</summary>
+    <details class="phone-advanced"><summary><span class="phone-advanced-summary-main">${I('sliders-horizontal')}<span class="phone-advanced-summary-copy"><strong>高级设置</strong><small>设备路径、中文输入方式、步数上限与操作授权</small></span></span><span class="phone-advanced-summary-meta"><span class="mobile-config-count">3 组 · 9 项</span></span></summary>
       <section id="phoneAdbWorkspace" aria-label="手机使用设置">${consoleLoading('正在读取手机使用设置…')}</section>
     </details>`}</div>`;
 }
@@ -4479,8 +4607,10 @@ function outputConfigView(kind,overrides={}){
   return {note:'',navigationLimit:0,helps:Object.fromEntries(Object.keys(definition.helps||{}).map(key=>[key,''])),...overrides};
 }
 let learningPolicyDockCleanup=null;
+let budgetStatusCleanup=null;
 function unmountConfigEditors(){
   if(learningPolicyDockCleanup){learningPolicyDockCleanup();learningPolicyDockCleanup=null;}
+  if(budgetStatusCleanup){budgetStatusCleanup();budgetStatusCleanup=null;}
   for(const mount of configEditorMounts)mount?.unmount?.();
   configEditorMounts=[];
   roleProfileConfigMount=null;
@@ -4592,7 +4722,37 @@ function renderConfigEditors(){
     }),
   }));
   if($('#reactionConfigWorkspace'))configEditorMounts.push(mountConfigEditor('reactionConfigWorkspace',['reaction']));
-  if($('#budgetConfigWorkspace'))configEditorMounts.push(mountConfigEditor('budgetConfigWorkspace',['budget']));
+  if($('#budgetConfigWorkspace')){
+    if(budgetStatusCleanup){budgetStatusCleanup();budgetStatusCleanup=null;}
+    const budgetHost=$('#budgetConfigWorkspace');
+    let savedBudgetEnabled=false;
+    const updateBudgetBadge=(enabled,dirty=false)=>{
+      const badge=$('[data-budget-status]');
+      if(!badge)return;
+      const on=Boolean(enabled);
+      badge.dataset.budgetStatus=on?'on':'off';
+      badge.textContent=on?(dirty?'已启用 · 待保存':'已启用'):(dirty?'已关闭 · 待保存':'已关闭');
+    };
+    const syncBudgetDraft=()=>{
+      const toggle=budgetHost.querySelector('input[data-wb-field="enable_daily_token_soft_limit"]');
+      if(toggle)updateBudgetBadge(toggle.checked,toggle.checked!==savedBudgetEnabled);
+    };
+    const onWorkbenchState=event=>{
+      if(!event?.detail?.group||event.detail.group==='budget')syncBudgetDraft();
+    };
+    configEditorMounts.push(mountConfigEditor('budgetConfigWorkspace',['budget'],{
+      budget:{onStatus:value=>{
+        savedBudgetEnabled=Boolean(value?.settings?.enable_daily_token_soft_limit);
+        updateBudgetBadge(savedBudgetEnabled,false);
+      }},
+    }));
+    budgetHost.addEventListener('change',syncBudgetDraft);
+    window.addEventListener('companion:workbench-state',onWorkbenchState);
+    budgetStatusCleanup=()=>{
+      budgetHost.removeEventListener('change',syncBudgetDraft);
+      window.removeEventListener('companion:workbench-state',onWorkbenchState);
+    };
+  }
   if($('#busyGateWorkspace'))configEditorMounts.push(mountConfigEditor('busyGateWorkspace',['busy_gate']));
   if($('#recallConfigWorkspace'))configEditorMounts.push(mountConfigEditor('recallConfigWorkspace',['recall']));
   if($('#screenConfigWorkspace'))configEditorMounts.push(mountConfigEditor('screenConfigWorkspace',['screen']));
@@ -4693,11 +4853,13 @@ function renderConfigEditors(){
   }));
   if($('#phoneAdbWorkspace')){
     const setup=$('#phoneSetupWorkspace');
+    const adbRoot=$('#phoneAdbWorkspace');
     const editor=mountConfigEditor('phoneAdbWorkspace',['device.phone'],{
       'device.phone':{navigationLimit:0,onStatus:status=>setup?.phoneSetup?.syncStatus(status)}
     });
     if(editor)configEditorMounts.push(editor);
-    window.CompanionPhoneSetup?.mount(setup,{editor});
+    const phoneSetup=window.CompanionPhoneSetup?.mount(setup,{editor,adbRoot});
+    if(phoneSetup)configEditorMounts.push(phoneSetup);
   }
    /* proactive.contact（160 项、四层）同样长期是「编辑器与声明都在、却没有挂载点」
       的缺口——它连编辑器与声明都没有。主动联系页保留完整直接配置；感知页按来源
@@ -4722,19 +4884,42 @@ function renderConfigEditors(){
 }
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
 const PERSONA_HUB_MODES=[
-  {id:'questionnaire',label:'规范人格',kicker:'结构化核对',icon:'notebook-pen',
-    summary:'按字段整理、补齐已有设定，逐项审核后保存底稿。',
-    steps:['选人格或粘贴文本','按字段核对并选强度','生成基础稿审核保存']},
-  {id:'create',label:'创建人格',kicker:'从零共创',icon:'sparkles',
-    summary:'从一个想法出发，通过五阶段对话聊出性格、经历与说话方式。',
-    steps:['选模型并说出想法','五阶段推敲角色细节','整理成稿保存或复制']},
-  {id:'optimize',label:'拟人优化',kicker:'基于现有人设',icon:'sliders-horizontal',
-    summary:'载入现有人设，围绕“哪里不像”逐段微调，保留原来的她。',
-    steps:['载入人设指出痛点','逐段优化性格与口吻','对照原文确认后保存']},
+  {id:'questionnaire',label:'规范人格',subtitle:'整理已有设定',kicker:'结构化核对',icon:'notebook-pen',
+    summary:'手里已有完整人设，想一键理清结构并逐段对照修改。'},
+  {id:'create',label:'创建人格',subtitle:'从零聊出角色',kicker:'从零共创',icon:'sparkles',
+    summary:'脑子里只有一个模糊想法，像聊天一样 5 步捏出完整人设。'},
+  {id:'optimize',label:'拟人优化',subtitle:'去 AI 味更像真人',kicker:'痛点微调',icon:'sliders-horizontal',
+    summary:'已有设定但觉得说话像机器或容易 OOC，点选痛点逐段微调。'},
 ];
-function personaGuideStepsMarkup(mode){
-  const item=PERSONA_HUB_MODES.find(entry=>entry.id===mode)||PERSONA_HUB_MODES[0];
-  return item.steps.map((step,index)=>`<li><span>0${index+1}</span><p>${step}</p></li>`).join('');
+function syncPersonaGuideUI(mode=personaRecreationMode){
+  const strip=document.getElementById('persona-helper-strip');
+  const toggle=document.getElementById('persona-guide-toggle');
+  if(toggle){
+    toggle.setAttribute('aria-expanded',String(personaGuideOpen));
+    toggle.classList.toggle('is-open',personaGuideOpen);
+  }
+  if(strip){
+    strip.hidden=!personaGuideOpen;
+    strip.querySelectorAll?.('[data-persona-guide-pick]')?.forEach(card=>{
+      const active=card.dataset.personaGuidePick===mode;
+      card.classList.toggle('is-current',active);
+      card.setAttribute('aria-pressed',String(active));
+      const badge=card.querySelector?.('.persona-helper-current');
+      if(badge)badge.hidden=!active;
+      const cta=card.querySelector?.('.persona-helper-card-cta');
+      if(cta){
+        const info=PERSONA_HUB_MODES.find(item=>item.id===card.dataset.personaGuidePick);
+        cta.textContent=active?'正在使用此模式':(info?`切换到「${info.label}」`:'切换到此模式');
+      }
+    });
+  }
+}
+function setPersonaGuideOpen(open,{focusTrigger=false}={}){
+  personaGuideOpen=Boolean(open);
+  syncPersonaGuideUI(personaRecreationMode);
+  if(!personaGuideOpen&&focusTrigger){
+    document.getElementById('persona-guide-toggle')?.focus?.({preventScroll:true});
+  }
 }
 function syncPersonaModeUI(mode){
   if(!PERSONA_MODE_IDS.includes(mode))return;
@@ -4743,21 +4928,14 @@ function syncPersonaModeUI(mode){
     button.classList.toggle('is-active',active);
     button.setAttribute('aria-selected',String(active));
     button.setAttribute('tabindex',active?'0':'-1');
-    const badge=button.querySelector('.persona-mode-current');
-    if(badge)badge.textContent=active?'当前':'';
-  });
-  document.querySelectorAll('[data-persona-switch]').forEach(button=>{
-    const active=button.dataset.personaSwitch===mode;
-    button.classList.toggle('is-active',active);
-    button.setAttribute('aria-pressed',String(active));
   });
   const panel=document.getElementById('persona-workspace-panel');
   if(panel)panel.setAttribute('aria-labelledby','persona-mode-'+mode);
-  const stepsEl=document.getElementById('persona-guide-steps');
-  if(stepsEl)stepsEl.innerHTML=personaGuideStepsMarkup(mode);
+  syncPersonaGuideUI(mode);
 }
 function switchPersonaMode(mode,focusSelector){
   if(!PERSONA_MODE_IDS.includes(mode))return;
+  personaGuideOpen=false;
   personaRecreationMode=mode;
   savePersonaRecreationMode(mode);
   paintPanel();
@@ -4767,13 +4945,21 @@ function switchPersonaMode(mode,focusSelector){
 function renderPersonaPage(){
   const current=PERSONA_HUB_MODES.find(mode=>mode.id===personaRecreationMode)||PERSONA_HUB_MODES[0];
   const workspace=current.id==='questionnaire'?product.workspace('persona'):product.workspace('designer',current.id);
-  const quickTabs=PERSONA_HUB_MODES.map(mode=>{
+  const modeTabs=PERSONA_HUB_MODES.map(mode=>{
     const active=mode.id===current.id;
-    return `<button type="button" class="persona-bar-tab${active?' is-active':''}" data-persona-switch="${mode.id}" aria-pressed="${active}">${I(mode.icon)}<span>${mode.label}</span></button>`;
+    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-bar-tab${active?' is-active':''}" data-persona-recreation="${mode.id}" data-persona-switch="${mode.id}" aria-selected="${active}" tabindex="${active?'0':'-1'}" aria-controls="persona-workspace-panel">${I(mode.icon)}<span>${mode.label}</span></button>`;
   }).join('');
-  const cards=PERSONA_HUB_MODES.map(mode=>{
+  const guideCards=PERSONA_HUB_MODES.map(mode=>{
     const active=mode.id===current.id;
-    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-mode-card${active?' is-active':''}" data-persona-recreation="${mode.id}" aria-selected="${active}" tabindex="${active?'0':'-1'}" aria-controls="persona-workspace-panel"><span class="persona-mode-icon">${I(mode.icon)}</span><span class="persona-mode-copy"><span class="persona-mode-title"><strong>${mode.label}</strong><small>${mode.kicker}</small></span><span class="persona-mode-summary">${mode.summary}</span></span><span class="persona-mode-current" aria-hidden="true">${active?'当前':''}</span></button>`;
+    return `<button type="button" class="persona-helper-card${active?' is-current':''}" data-persona-guide-pick="${mode.id}" aria-pressed="${active}">
+      <div class="persona-helper-card-top">
+        <span class="persona-helper-card-ico" aria-hidden="true">${I(mode.icon)}</span>
+        <div class="persona-helper-card-titles"><strong>${mode.label}</strong><span>${mode.subtitle}</span></div>
+        <span class="persona-helper-current"${active?'':' hidden'}>${I('check')}<span>当前模式</span></span>
+      </div>
+      <p class="persona-helper-card-desc">${mode.summary}</p>
+      <span class="persona-helper-card-foot"><span class="persona-helper-card-cta">${active?'正在使用此模式':`切换到「${mode.label}」`}</span>${I('arrow-right')}</span>
+    </button>`;
   }).join('');
   return `<div class="persona-hub">
     <header class="persona-hub-bar" aria-label="人格处理导航">
@@ -4782,12 +4968,18 @@ function renderPersonaPage(){
         <span class="persona-hub-divider" aria-hidden="true"></span>
         <div class="persona-hub-bar-title"><h2>人格处理</h2><span class="persona-hub-role">${roleName()}</span></div>
       </div>
-      <div class="persona-bar-switch" role="group" aria-label="快捷切换人格处理方式">${quickTabs}</div>
+      <div class="persona-hub-bar-controls">
+        <div class="persona-bar-switch" role="tablist" aria-label="人格处理方式">${modeTabs}</div>
+        <button type="button" id="persona-guide-toggle" class="persona-helper-trigger${personaGuideOpen?' is-open':''}" data-persona-guide-toggle aria-expanded="${personaGuideOpen}" aria-controls="persona-helper-strip">${I('help-circle')}<span>怎么选</span></button>
+      </div>
     </header>
-    <div class="persona-mode-grid" role="tablist" aria-label="人格处理方式">${cards}</div>
-    <section class="persona-guide" aria-live="polite">
-      <ol class="persona-steps" id="persona-guide-steps">${personaGuideStepsMarkup(current.id)}</ol>
-      <details class="persona-helper"><summary>怎么选？</summary><div class="persona-helper-body"><p>已有完整文本、想按字段校对 → <strong>规范人格</strong>；只有想法、想从零聊出来 → <strong>创建人格</strong>；已有人设、但口吻不像 → <strong>拟人优化</strong>。</p><p class="persona-helper-note">三种入口都只产出可核对的底稿/草稿，不会直接覆盖当前 AstrBot 线上人设。</p></div></details>
+    <section id="persona-helper-strip" class="persona-helper-strip" aria-label="人格处理模式选择向导"${personaGuideOpen?'':' hidden'}>
+      <div class="persona-helper-strip-head">
+        <div class="persona-helper-strip-title"><strong>不知道选哪个？按你手头的情况直接点一张卡片</strong><span>点击任意卡片即可立即切换并收起向导</span></div>
+        <button type="button" class="persona-helper-close" data-persona-guide-close aria-label="收起模式选择向导">${I('x')}<span>收起</span></button>
+      </div>
+      <div class="persona-helper-cards">${guideCards}</div>
+      <p class="persona-helper-note">${I('shield-check')}<span>三种模式都只生成可编辑草稿，绝不会直接覆盖正在使用的线上人设。</span></p>
     </section>
     <section class="persona-workspace" id="persona-workspace-panel" role="tabpanel" aria-labelledby="persona-mode-${current.id}">${workspace}</section>
   </div>`;
@@ -4800,6 +4992,9 @@ document.addEventListener('companion:persona-mode-change',event=>{
   // A restored draft already lives in the iframe. Update the entry without
   // remounting it and interrupting the restore operation.
   syncPersonaModeUI(mode);
+});
+document.addEventListener('companion:persona-handoff',()=>{
+  switchPersonaMode('questionnaire');
 });
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
@@ -7131,6 +7326,23 @@ document.addEventListener('click',event=>{
     }
     if(scrollToPageAnchor(hash)){event.preventDefault();return;}
   }
+  if(el.dataset.personaGuideToggle!==undefined){
+    setPersonaGuideOpen(!personaGuideOpen);
+    return;
+  }
+  if(el.dataset.personaGuideClose!==undefined){
+    setPersonaGuideOpen(false,{focusTrigger:true});
+    return;
+  }
+  if(el.dataset.personaGuidePick){
+    const nextMode=el.dataset.personaGuidePick;
+    if(nextMode===personaRecreationMode){
+      setPersonaGuideOpen(false,{focusTrigger:true});
+    }else{
+      switchPersonaMode(nextMode,'[role="tab"][data-persona-recreation="'+nextMode+'"]');
+    }
+    return;
+  }
   if(el.dataset.personaRecreation){
     switchPersonaMode(el.dataset.personaRecreation,'[data-persona-recreation="'+el.dataset.personaRecreation+'"]');
     return;
@@ -7465,7 +7677,7 @@ document.addEventListener('keydown',event=>{
   if(arrangementDraft&&handleRoomEditorKey(event))return;
   const personaTab=event.target.closest?.('[role="tab"][data-persona-recreation]');
   if(personaTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
-    const tabs=$$('.persona-mode-grid [role="tab"][data-persona-recreation]');
+    const tabs=$$('.persona-bar-switch [role="tab"][data-persona-recreation]');
     const index=tabs.indexOf(personaTab);
     if(index>=0&&tabs.length){
       event.preventDefault();
@@ -7539,6 +7751,15 @@ document.addEventListener('keydown',event=>{
       chooseMemoryRoute(tabs[next].dataset.memoryRoute);
     }
     return;
+  }
+  if(event.key==='Escape'&&personaGuideOpen
+     &&!$('#searchDialog')?.open&&!$('#detailDialog')?.open&&!$('#navigationDialog')?.open){
+    const strip=document.getElementById('persona-helper-strip');
+    if(strip&&!strip.hidden){
+      event.preventDefault();
+      setPersonaGuideOpen(false,{focusTrigger:true});
+      return;
+    }
   }
   /* Esc：从配置分区回到小屋。只在没有弹窗打开时接管——
      搜索与详情弹窗自己的 Esc 关闭优先，否则用户按 Esc 想关弹窗，

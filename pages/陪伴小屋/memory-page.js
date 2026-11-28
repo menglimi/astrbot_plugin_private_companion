@@ -96,6 +96,7 @@ window.CompanionMemoryPage = (() => {
     {key:"forgotten",   label:"已遗忘", tone:"mem-state-forgotten"},
   ];
   const retentionLabels = {session:"本次会话",short:"短期",durable:"长期",protected:"受保护"};
+  const subjectLabels = {self:"当前对象",user:"对方",partner:"对方",bot:"角色自身",assistant:"角色自身",shared:"双方共同",group:"当前群聊"};
   const sourceLabels = {human_message:"对方消息",bot_message:"角色消息",source:"原始资料",observation:"观察记录"};
   const queryLabels = {fact:"事实",source:"原始来源",experience:"共同经历"};
   /* 整理流程的六个阶段。running 是「在途」，failed/empty 是另一类结局，
@@ -112,10 +113,20 @@ window.CompanionMemoryPage = (() => {
   const count = value => Number.isInteger(value) && value >= 0 ? String(value) : "尚未统计";
   const num = value => Number.isFinite(value) && value >= 0 ? String(value) : "—";
   const when = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "待定";
+  const clock = value => {
+    const ms = typeof value === "number" ? value : Date.parse(value);
+    if (!Number.isFinite(ms)) return "";
+    return new Date(ms).toLocaleTimeString("zh-CN", {hour12:false});
+  };
   const day = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleDateString("zh-CN") : "待定";
   const reason = code => errors[code] || (formatErrors.has(code) ? "模型输出有未完成或格式不合规的条目，已有结果保留，可修复剩余项。" : code ? "当前状态未能确认，请刷新核对。" : "暂无具体原因");
+  const subjectLabel = value => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) return "—";
+    return subjectLabels[raw.toLowerCase()] || raw;
+  };
   const badge = (text, tone="") => `<span class="mem-badge ${tone}">${e(text)}</span>`;
-  const button = (id, text, disabled=false, kind="") => `<button type="button" id="${id}" class="mem-btn${kind?" is-"+kind:""}"${disabled?" disabled":""}>${text}</button>`;
+  const button = (id, text, disabled=false, kind="", extraClass="") => `<button type="button" id="${id}" class="mem-btn${kind?" is-"+kind:""}${extraClass?" "+extraClass:""}"${disabled?" disabled":""}>${text}</button>`;
   const problem = code => Object.assign(new Error(reason(code)), {code});
   /* 图标内联成字符串：这一页不引外部图标库，避免多一次请求与一个依赖。
      只在「去向确实不同」的地方用图标，不做装饰。 */
@@ -127,12 +138,18 @@ window.CompanionMemoryPage = (() => {
     migrate:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>',
     clear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14M9 7V4h6v3"/><path d="M7 7v13h10V7"/><path d="M11 11v6M13 11v6"/></svg>',
     back:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m14 6-6 6 6 6"/></svg>',
-    refresh:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4v4h-4"/></svg>',
+    refresh:'<svg class="mem-spin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4v4h-4"/></svg>',
+    plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
     search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m17 17 3 3"/></svg>',
     info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></svg>',
     alert:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16h.01"/></svg>',
   };
-  let root = null, bridge = null, version = 0, timer = null, data = null, backgroundLoading = false;
+  let root = null, bridge = null, version = 0, activeRefreshTicket = 0, timer = null, data = null, backgroundLoading = false;
+
+  function clearRefreshing() {
+    activeRefreshTicket = 0;
+    if (data && data.refreshing) data.refreshing = false;
+  }
 
   function blank() {
     return {catalog:null, target:-1, role:0, area:"facts", tab:"facts",
@@ -148,6 +165,7 @@ window.CompanionMemoryPage = (() => {
          所以它不进 load() 的轮询——那些轮询只刷数据，不该让这句话闪。 */
       ownership:null,
       addOpen:false, addText:"",
+      refreshing:false, lastRefreshedAt:null,
       pending:null, pendingMutation:null, busy:false, loading:false, notice:"", error:false, ready:false};
   }
   function current() { return data?.catalog?.targets[data.target]; }
@@ -243,7 +261,7 @@ window.CompanionMemoryPage = (() => {
        用户自己在看，8 秒刷一次只会把筛选与滚动位置晃掉。 */
     if (data?.ready && role()?.memory_api && !document.hidden && !data.addOpen && data.area === "reflections") {
       // Poll only reads. Neither a timer nor a page reload can queue a model call.
-      timer = setTimeout(() => { if (!data.busy && !data.loading && !backgroundLoading) load({silent:true}); else schedule(); }, 8000);
+      timer = setTimeout(() => { if (!data.busy && !data.loading && !data.refreshing && !backgroundLoading) load({silent:true}); else schedule(); }, 8000);
     }
   }
   function notice(message, error=false) { data.notice = message; data.error = error; }
@@ -356,16 +374,13 @@ window.CompanionMemoryPage = (() => {
   /* ================= 视图：页头 ================= */
 
   function headMarkup() {
-    /* 页头不放说明句。
-       切到哪个视图，标题就是那件事，左侧轨道已经写了它是干什么的；
-       再加一行「这里可以……每条都带……」是把导航重说一遍，占掉了第一屏。
-       真正需要当场知道的规则（比如「这不是删除」）写在动作旁边，不写在这里。 */
     const AREA_TITLE = {
       reflections:"整理与修复", facts:"事实治理", query:"来源与经历",
       archive:"冷归档", migrate:"迁移", clear:"范围清理",
     };
     return `<header class="mem-head">
       <div class="mem-head-title"><h2>${e(AREA_TITLE[data.area])}</h2></div>
+      <div class="mem-progress"${data.loading && !data.refreshing?"":" hidden"} role="progressbar" aria-label="正在读取…"><i></i></div>
     </header>`;
   }
 
@@ -376,19 +391,18 @@ window.CompanionMemoryPage = (() => {
   function vitalsMarkup() {
     const stats = tally(data.corpus);
     const total = Math.max(1, stats.total);
-    const seg = (key, tone) => stats[key]
+    const seg = (key) => stats[key]
       ? `<i class="mem-state-${key}" data-w="${(stats[key]/total*100).toFixed(2)}" style="background:currentColor;width:0"></i>`
       : "";
     return `<section class="mem-block">
-      <div class="mem-block-head"><h3>当前语料</h3>${
-        data.hasMore?``:""}</div>
+      <div class="mem-block-head"><h3>当前语料</h3></div>
       <div class="mem-block-body">
         <div class="mem-vitals">
           <div class="mem-vitals-figure"><b data-count="${stats.total}">0</b><span>条事实<br>共 ${num(stats.total)} 条</span></div>
           <div class="mem-vitals-rest">
-            <div class="mem-band">${LIFECYCLE.map(entry=>seg(entry.key,entry.tone)).join("")}</div>
+            <div class="mem-band">${LIFECYCLE.map(entry=>seg(entry.key)).join("")}</div>
             <div class="mem-legend">${LIFECYCLE.map(entry=>
-              `<span class="mem-state-${entry.key}"><em></em>${e(entry.label)} <b>${num(stats[entry.key])}</b></span>`).join("")}</div>
+              `<span class="mem-state-${entry.key}"><em></em><span class="mem-legend-label">${e(entry.label)}</span> <b>${num(stats[entry.key])}</b></span>`).join("")}</div>
           </div>
         </div>
       </div>
@@ -444,23 +458,28 @@ window.CompanionMemoryPage = (() => {
         <div><span>整理批次</span><strong>${countValue(reflections.total)}</strong><small>${e(historyCounts)}</small></div>
       </div>
       <section class="mem-linkage" aria-label="外部记忆联动">
-        <div class="mem-linkage-head"><div><h4>外部记忆插件</h4><p>${e(linkageNote)}</p></div><span class="mem-badge ${linkageTone}">${e(linkageTitle)}</span></div>
+        <div class="mem-linkage-head"><div><h4>外部记忆插件</h4>${linkageNote?`<p>${e(linkageNote)}</p>`:""}</div><span class="mem-badge ${linkageTone}">${e(linkageTitle)}</span></div>
         ${showCompanionGuideButton ? `<div class="mc-hint-actions"><button type="button" class="mem-btn is-primary" data-mc-hint-action="open-guide">查看「我会牢牢记住你」安装指南</button></div>` : ""}
         ${linkage.state === "ready" ? `<dl class="mem-linkage-counts">${categories.map(item =>
-          `<div><dt>${e(categoryLabels[item.key] || "其他")}</dt><dd>${countValue(item.count)}</dd></div>`).join("")}
-          <div><dt>合计</dt><dd>${countValue(linkage.counts?.total)}</dd></div></dl>` : ""}
+          `<div${Number(item.count) > 0 ? ' class="is-nonzero"' : ""}><dt>${e(categoryLabels[item.key] || "其他")}</dt><dd>${countValue(item.count)}</dd></div>`).join("")}
+          <div class="mem-linkage-total"><dt>合计</dt><dd>${countValue(linkage.counts?.total)}</dd></div></dl>` : ""}
       </section>
     </section>`;
   }
 
-  function filtersMarkup() {
+  function filterChipsMarkup() {
     const stats = tally(data.corpus);
     const chips = [["all","全部",stats.total],...LIFECYCLE.map(entry=>[entry.key,entry.label,stats[entry.key]])];
-    return `<div class="mem-filters">
+    return `<div class="mem-filter-chips" role="group" aria-label="按状态筛选事实">
       ${chips.map(([key,label,n])=>`<button type="button" class="mem-chip" data-filter="${key}"
         aria-pressed="${data.filter===key}">${e(label)} <b>${num(n)}</b></button>`).join("")}
-      <span class="mem-search">${ICON.search}<input id="memory-search" type="search"
-        value="${e(data.search)}" placeholder="按表述、谓词或对象搜索" aria-label="搜索事实"></span>
+    </div>`;
+  }
+
+  function searchBarMarkup() {
+    return `<div class="mem-list-toolbar">
+      <label class="mem-search">${ICON.search}<input id="memory-search" type="search"
+        value="${e(data.search)}" placeholder="按表述、谓词或对象搜索" aria-label="搜索事实"></label>
     </div>`;
   }
 
@@ -489,7 +508,7 @@ window.CompanionMemoryPage = (() => {
           ${item.unavailable_reason?`<span>${e(reason(item.unavailable_reason))}</span>`:""}
         </span>
       </button>`;
-    }).join("");
+    }).join("") + (window.CompanionAutoScroll ? `<div class="mem-corpus-loader" data-memory-facts-autoscroll></div>` : "");
   }
 
   /* 状态环：conic-gradient 画置信度，环本身的颜色由 .mem-state-* 给出
@@ -503,71 +522,88 @@ window.CompanionMemoryPage = (() => {
       title="${confidence===null?"没有可用置信度":"置信度 "+pct+"%"}"><i>${confidence===null?"—":pct+"%"}</i></div>`;
   }
 
+  /* 六阶段线性轨道仅用于进行中/线性完成的批次；失败、部分保存、已放弃、空批次
+     改由结构化顶栏与语义摘要卡清晰表达，不再画出悬空的单个红点。 */
   function stageTrackMarkup(state) {
-    if (!STAGES.includes(state)) {
-      const label = stateLabels[state] || "待核对";
-      return `<ul class="mem-stages"><li class="is-failed" style="flex:1">${e(label)}</li></ul>`;
-    }
+    if (!STAGES.includes(state)) return "";
     const now = STAGES.indexOf(state);
-    return `<ul class="mem-stages">${STAGES.map((stage,index)=>{
+    return `<div class="mem-stages-wrap"><ul class="mem-stages">${STAGES.map((stage,index)=>{
       const cls = index < now ? "is-done" : index === now ? (state==="complete"?"is-done is-now":"is-now") : "";
       return `<li class="${cls}">${e(stateLabels[stage])}</li>`;
-    }).join("")}</ul>`;
+    }).join("")}</ul></div>`;
   }
 
   function sourceButtons(sources, sessionId) {
     if (!sources?.length) return `<p class="mem-plain">来源不可读取。</p>`;
     return `<div class="mem-results">${sources.map((source,index)=>
       `<button type="button" class="mem-source-link" data-source-handle="${e(source.handle)}" data-source-session="${e(sessionId)}">
-        ${ICON.info}查看来源 ${index+1}${source.source_kind?` · ${e(sourceLabels[source.source_kind] || "其他来源")}`:""}${source.start!==undefined?` · ${e(source.start)}–${e(source.end)}`:""}
+        ${ICON.info}<span>查看来源 ${index+1}${source.source_kind?` · ${e(sourceLabels[source.source_kind] || "其他来源")}`:""}${source.start!==undefined?` · ${e(source.start)}–${e(source.end)}`:""}</span>
       </button>`).join("")}</div>`;
   }
 
   function factDetailMarkup() {
     const value = data.factDetail?.item;
     if (!value) {
-      return `<div class="mem-detail-empty"><div class="mem-empty"><h3>选择一条事实</h3></div></div>`;
+      return `<div class="mem-detail-empty"><div class="mem-empty"><h3>选择一条事实</h3><p>点击左侧列表中的任意一条事实，可查看完整表述、元数据、原始来源与修订历史。</p></div></div>`;
     }
     const state = stateOf(value);
     const entry = LIFECYCLE.find(x=>x.key===state);
     const active = value.state === "active" && !value.read_only && !value.unavailable_reason;
     const pinned = value.context_mode === "pinned";
+    const subjectText = subjectLabel(value.subject);
+    const subjectTitle = value.subject && subjectText !== value.subject ? ` title="${e(value.subject)}"` : "";
+    const sourceCount = data.factDetail.sources?.length || 0;
     return `<div class="mem-detail-top">
       <button type="button" class="mem-btn is-quiet mem-detail-close" id="memory-detail-close">${ICON.back}返回列表</button>
       ${ringMarkup(value)}
-      <h3 id="memory-detail-heading" tabindex="-1">${e(value.predicate || "事实记录")}</h3>
-      <span class="mem-badge ${entry.tone}">${e(entry.label)}</span>
-      ${pinned?badge("核心事实","is-accent"):""}
+      <div class="mem-detail-title-group">
+        <h3 id="memory-detail-heading" tabindex="-1">${e(value.predicate || "事实记录")}</h3>
+      </div>
+      <div class="mem-detail-badges">
+        <span class="mem-badge ${entry.tone}">${e(entry.label)}</span>
+        ${pinned?badge("核心事实","is-accent"):""}
+      </div>
     </div>
-    <blockquote class="mem-quote">${e(value.representation || (value.unavailable_reason ? reason(value.unavailable_reason) : "来源不可读取，正文已隐藏。"))}</blockquote>
-    <dl class="mem-fields">
-      <div><dt>对象</dt><dd>${e(value.object || "—")}</dd></div>
+    <section class="mem-summary-card" aria-label="当前表述">
+      <span class="mem-summary-label">${ICON.facts}当前表述</span>
+      <p class="mem-summary-text">${e(value.representation || (value.unavailable_reason ? reason(value.unavailable_reason) : "来源不可读取，正文已隐藏。"))}</p>
+    </section>
+    <dl class="mem-meta-grid">
+      <div><dt>对象</dt><dd title="${e(value.object || "")}">${e(value.object || "—")}</dd></div>
       <div><dt>版本</dt><dd class="is-mono">v${e(value.revision)}</dd></div>
-      <div><dt>归属</dt><dd>${e(value.subject || "—")}</dd></div>
+      <div><dt>归属</dt><dd${subjectTitle}>${e(subjectText)}</dd></div>
       <div><dt>保留方式</dt><dd>${e(retentionLabels[value.retention] || value.retention || "—")}</dd></div>
     </dl>
     ${data.sourceResult?`<blockquote class="mem-source-text"><small>原始来源 · 字符 ${e(data.sourceResult.start)}–${e(data.sourceResult.end)} / ${e(data.sourceResult.total_chars)}</small>${e(data.sourceResult.text)}${
-      data.sourceResult.next_offset!==null?`<div style="margin-top:9px">${`<button type="button" class="mem-source-link" data-source-handle="${e(data.sourceResult.handle)}" data-source-session="${e(data.factDetail.session_id)}" data-source-start="${e(data.sourceResult.next_offset)}">继续查看后续</button>`}</div>`:""}</blockquote>`:""}
+      data.sourceResult.next_offset!==null?`<div class="mem-source-more"><button type="button" class="mem-source-link" data-source-handle="${e(data.sourceResult.handle)}" data-source-session="${e(data.factDetail.session_id)}" data-source-start="${e(data.sourceResult.next_offset)}">继续查看后续</button></div>`:""}</blockquote>`:""}
     <div class="mem-actions">
       ${active?button("memory-fact-pin",pinned?"取消置顶":"置顶为核心事实",data.busy||data.loading):""}
       ${active?button("memory-fact-retract","撤回",data.busy||data.loading):""}
       ${active?button("memory-fact-forget","遗忘",data.busy||data.loading,"danger"):""}
-      ${button("memory-revisions",data.revisions.length?`收起版本历史（${data.revisions.length}）`:"查看版本历史",data.busy||data.loading)}
+      ${button("memory-revisions",data.revisions.length?`收起版本历史（${data.revisions.length}）`:"查看版本历史",data.busy||data.loading,"","mem-actions-end")}
     </div>
-    ${active?`<form id="memory-correction-form" class="mem-form">
+    ${active?`<form id="memory-correction-form" class="mem-form mem-edit-card">
+      <div class="mem-card-head">
+        <h4>编辑并保存为新版本</h4>
+        <small>保留历史修订，不覆盖原记录</small>
+      </div>
       <label>事实对象<input id="memory-correct-object" maxlength="8192" value="${e(value.object || "")}" required></label>
       <label>展示表述<textarea id="memory-correct-representation" maxlength="8192" rows="3" required>${e(value.representation || "")}</textarea></label>
       <div class="mem-form-actions"><button class="mem-btn is-primary" type="submit" ${data.busy||data.loading?"disabled":""}>保存为新版本</button></div>
     </form>`:""}
-    <h4 class="mem-sub">原始来源</h4>
-    ${sourceButtons(data.factDetail.sources, data.factDetail.session_id)}
+    <section class="mem-source-card" aria-label="原始来源">
+      <div class="mem-card-head">
+        <h4>原始来源</h4>
+        ${sourceCount?`<small>关联 ${num(sourceCount)} 份</small>`:""}
+      </div>
+      ${sourceButtons(data.factDetail.sources, data.factDetail.session_id)}
+    </section>
     ${data.revisions.length?`<h4 class="mem-sub">版本历史<small>最新在上</small></h4>
       <ul class="mem-timeline">${[...data.revisions].reverse().map(row=>`<li>
         <time>第 ${e(row.revision)} 版</time>
         <p><span class="mem-timeline-op">${e(LIFECYCLE.find(entry=>entry.key===row.state)?.label || "历史版本")}</span>${e(row.representation || (row.unavailable_reason?reason(row.unavailable_reason):"该版本正文已按遗忘规则清除。"))}</p>
-        ${row.object?`<p style="color:var(--t-text-faint);font-size:11px">对象：${e(row.object)}</p>`:""}
-      </li>`).join("")}</ul>`:""}
-    ${data.factDetail.sources?.length?`<p class="mem-plain">关联 ${data.factDetail.sources.length} 份原始来源</p>`:""}`;
+        ${row.object?`<p class="mem-timeline-obj">对象：${e(row.object)}</p>`:""}
+      </li>`).join("")}</ul>`:""}`;
   }
 
   function addFormMarkup() {
@@ -582,11 +618,14 @@ window.CompanionMemoryPage = (() => {
   function factsMarkup() {
     return `${overviewMarkup()}${vitalsMarkup()}
       <section class="mem-block">
-        <div class="mem-add-row">${button("memory-add-open","手动新增一条事实",data.busy||data.loading)}</div>
+        <div class="mem-workbench-bar">
+          ${filterChipsMarkup()}
+          ${button("memory-add-open",`${ICON.plus}<span>手动新增一条事实</span>`,data.busy||data.loading)}
+        </div>
         ${data.addOpen?addFormMarkup():""}
         <div class="mem-split">
-          <div>
-            ${filtersMarkup()}
+          <div class="mem-list-pane">
+            ${searchBarMarkup()}
             <div class="mem-corpus" role="listbox" aria-label="事实列表">${
               data.loading && !data.corpus.length
                 ? `<div class="mem-skeleton"><i></i><i></i><i></i><i></i></div>`
@@ -599,24 +638,25 @@ window.CompanionMemoryPage = (() => {
 
   /* ================= 视图：整理与修复 ================= */
 
-  function detailMarkup() {
-    const item = data.detail;
-    if (!item) {
-      return `<div class="mem-detail-empty"><div class="mem-empty"><h3>选择一个批次</h3></div></div>`;
-    }
-    const job = item.continuation;
-    const receipts = Object.entries(item.receipts || {});
-    const issues = [...(item.issues || []), ...(item.unresolved_items || [])];
-    const canQueue = (item.resumable || item.retryable) && job?.state !== "queued" && !data.pending?.uncertain;
-    let action = item.retryable ? "修复未完成项" : "继续整理";
-    if (job?.state === "blocked") action = item.retryable ? "再次修复未完成项" : "再次继续整理";
-    return `<div class="mem-detail-top">
-      <button type="button" class="mem-btn is-quiet mem-detail-close" id="memory-detail-close">${ICON.back}返回列表</button>
-      <h3 id="memory-detail-heading" tabindex="-1">${e(item.state_label || stateLabels[item.state] || "待核对")}</h3>
-      <span class="mem-badge">${e(jobLabels[job?.state] || "尚未登记后台处理")}</span>
-    </div>
-    ${stageTrackMarkup(item.state)}
-    <p class="mem-quote" style="margin-top:17px">${e(item.summary ?? (
+  function reflectionTone(item, job) {
+    if (item?.state === "failed" || job?.state === "blocked") return "is-risk";
+    if (item?.state === "partial" || item?.state === "running") return "is-warn";
+    if (item?.state === "complete" || job?.state === "complete") return "is-ok";
+    if (job?.state === "queued" || STAGES.includes(item?.state)) return "is-accent";
+    return "is-neutral";
+  }
+
+  function reflectionJobBadgeTone(item, job) {
+    if (job?.state === "blocked") return " is-risk";
+    if (job?.state === "queued") return " is-accent";
+    if (job?.state === "complete") return " is-ok";
+    if (item?.state === "failed") return " is-risk";
+    if (item?.state === "partial" || item?.state === "running") return " is-warn";
+    return "";
+  }
+
+  function reflectionSummaryText(item) {
+    return item.summary ?? (
       item.state === "failed" && item.captured
         ? "模型原始输出已保留，但未通过校验，尚未写入事实；请查看下方原因并修复未完成项。"
         : item.state === "partial"
@@ -625,76 +665,146 @@ window.CompanionMemoryPage = (() => {
             ? "模型结果已保存，正在解析或等待写入。"
             : item.state === "failed"
               ? "本次整理未完成，没有可复用的模型结果；可明确发起修复。"
-              : "等待本批次的整理结果。"))}</p>
-    <dl class="mem-fields">
-      <div><dt>已处理项</dt><dd class="is-mono">${num(receipts.length)}</dd></div>
-      <div><dt>剩余来源</dt><dd class="is-mono">${e(count(item.remaining_sources))}</dd></div>
-      <div><dt>暂缓来源</dt><dd class="is-mono">${e(count(item.deferred_sources))}</dd></div>
-      <div><dt>不可用来源</dt><dd class="is-mono">${e(count(item.unavailable_sources))}</dd></div>
-    </dl>
-    ${item.selection?.phase ? `<p class="mem-plain">材料准备：${e(phases[item.selection.phase] || "正在准备")} · 已检查 ${e(count(item.selection.examined))} 项</p>` : ""}
-    ${item.continuation_needed ? '<p class="mem-plain">仍有后续材料待处理。</p>' : ""}
-    ${item.state === "running" ? `<p class="mem-notice is-error" style="margin-top:15px">${ICON.alert}<span>${e(reason("memory_reflection_uncertain"))}</span></p>` : ""}
-    ${job ? `<div class="mem-job"><strong>${e(jobLabels[job.state] || "待核对")}</strong>
-      <p>更新于 ${e(when(job.updated_at))}</p>
-      ${job.state === "queued"?`<p>下次检查：${e(when(job.next_at))}</p>`:""}
-      ${job.result_code?`<p>${e(reason(job.result_code))}</p>`:""}</div>` : ""}
-    ${item.selection?.blocked_code ? `<p class="mem-notice is-error" style="margin-top:15px">${ICON.alert}<span>${e(reason(item.selection.blocked_code))}</span></p>` : ""}
-    ${issues.length ? `<h4 class="mem-sub">待处理原因<small>${issues.length} 项</small></h4>
-      <ul class="mem-list">${issues.map((issue, index)=>`<li>待处理项 ${index + 1}：${e(reason(issue.code))}</li>`).join("")}</ul>` : ""}
-    <div class="mem-actions">
-      ${item.resumable || item.retryable ? button("memory-queue",data.busy?"正在提交…":action,!canQueue || data.busy || data.loading,"primary") : ""}
-      ${["failed", "partial"].includes(item.state) && !item.repair_batch
-        ? button("memory-discard","放弃本次整理",data.busy || data.loading) : ""}
-      ${item.repair_batch?button("memory-repair-link","查看后续修复",data.busy || data.loading):""}
-      ${button("memory-detail-refresh","刷新状态",data.busy || data.loading)}
-    </div>
-    ${canQueue ? '<p class="mem-plain">继续或修复可能调用已配置的整理模型；仅处理当前对象与角色的这批材料。</p>' : ""}
-    ${receipts.length ? `<h4 class="mem-sub">处理确认<small>${receipts.length} 项</small></h4>
-      <ul class="mem-list">${receipts.map(([,r], index)=>`<li>处理记录 ${index + 1}：${e(typeof r === "object" && r ? (r.code ? reason(r.code) : stateLabels[r.state] || jobLabels[r.state] || "已有确认") : "已有确认")}</li>`).join("")}</ul>` : ""}
-    ${item.retry_of ? '<p class="mem-plain">这批材料来自一次明确的修复操作。</p>' : ""}`;
+              : "等待本批次的整理结果。");
   }
 
-  function reflectionsMarkup() {
-    const list = data.items;
+  function reflectionSyncText(job) {
+    if (data.refreshing) return "正在同步最新状态…";
+    if (data.lastRefreshedAt) return `已刷新 ${clock(data.lastRefreshedAt)}`;
+    if (job?.updated_at) return `更新于 ${when(job.updated_at)}`;
+    return "";
+  }
+
+  function reflectionViewsInnerMarkup() {
     const byState = data.overview?.local?.reflections?.by_state || {};
     const pendingCount = Object.entries(byState).reduce((sum, [key, value]) =>
       sum + (["complete", "empty"].includes(key) ? 0 : Number(value) || 0), 0);
-    return `<section class="mem-block">
-      <div class="mem-reflection-views" role="group" aria-label="整理批次范围">
-        <button type="button" data-reflection-view="pending" aria-pressed="${!data.history}">待处理 <b>${num(pendingCount)}</b></button>
-        <button type="button" data-reflection-view="history" aria-pressed="${data.history}">全部批次 <b>${num(data.overview?.local?.reflections?.total || 0)}</b></button>
+    return `<button type="button" data-reflection-view="pending" aria-pressed="${!data.history}">待处理 <b>${num(pendingCount)}</b></button>
+      <button type="button" data-reflection-view="history" aria-pressed="${data.history}">全部批次 <b>${num(data.overview?.local?.reflections?.total || 0)}</b></button>`;
+  }
+
+  function reflectionListBarInnerMarkup() {
+    const list = data.items;
+    const showPager = data.page > 0 || Boolean(data.next);
+    return `<span>本页 ${num(list.length)} 批${data.corpus.length?` · 语料 ${num(data.corpus.length)} 条事实`:""}</span>
+      ${showPager ? `<span class="mem-refl-pager">${button("memory-previous","上一页",data.page===0 || data.busy || data.loading)}
+        <span>第 ${data.page+1} 页</span>
+        ${button("memory-next","下一页",!data.next || data.busy || data.loading)}</span>` : ""}`;
+  }
+
+  function reflectionCorpusInnerMarkup() {
+    const list = data.items;
+    if (data.loading && !list.length) return `<div class="mem-skeleton"><i></i><i></i><i></i></div>`;
+    if (!list.length) {
+      return `<div class="mem-empty"><h3>${data.history ? "当前范围还没有整理记录" : "没有待处理的整理批次"}</h3></div>`;
+    }
+    return list.map((item, i) => {
+      const job = jobLabels[item.continuation?.state] || (item.retryable ? "可修复" : "待接续");
+      const tone = reflectionTone(item, item.continuation);
+      const cardTone = tone === "is-risk" ? " is-risk-item" : tone === "is-ok" ? " is-ok-item" : "";
+      const badgeTone = reflectionJobBadgeTone(item, item.continuation);
+      return `<button type="button" class="mem-batch${cardTone}" data-batch-index="${i}"
+        aria-current="${item.batch_id===data.detailId}">
+        <span class="mem-batch-top"><strong>${e(item.state_label || stateLabels[item.state] || "待核对")}</strong>
+          <span class="mem-badge${badgeTone}">${e(job)}</span>
+          ${item.self_reference?`<span class="mem-badge">${e(item.self_reference)}</span>`:""}</span>
+        <span class="mem-batch-summary">${e(item.summary ?? "摘要尚不可读取或仍待整理。")}</span>
+        <small>已处理 ${num(Object.keys(item.receipts || {}).length)} 项 · 剩余来源 ${e(count(item.remaining_sources))}</small>
+      </button>`;
+    }).join("");
+  }
+
+  function detailMarkup(changed = {}) {
+    const item = data.detail;
+    if (!item) {
+      return `<div class="mem-detail-empty"><div class="mem-empty"><h3>选择一个批次</h3><p>从左侧选择任意整理批次，可查看状态诊断与修复操作。</p></div></div>`;
+    }
+    const job = item.continuation;
+    const receipts = Object.entries(item.receipts || {});
+    const issues = [...(item.issues || []), ...(item.unresolved_items || [])];
+    const canQueue = (item.resumable || item.retryable) && job?.state !== "queued" && !data.pending?.uncertain;
+    let action = item.retryable ? "修复未完成项" : "继续整理";
+    if (job?.state === "blocked") action = item.retryable ? "再次修复未完成项" : "再次继续整理";
+    const tone = reflectionTone(item, job);
+    const badgeTone = reflectionJobBadgeTone(item, job);
+    const summaryTone = ["is-risk", "is-warn", "is-ok"].includes(tone) ? ` ${tone}` : "";
+    const jobTone = job?.state === "blocked" ? " is-blocked" : job?.state === "queued" ? " is-queued" : job?.state === "complete" ? " is-complete" : "";
+    const syncText = reflectionSyncText(job);
+    const pulse = key => changed[key] ? " mem-just-updated" : "";
+    const refreshDisabled = data.busy || data.loading || data.refreshing;
+    return `<div class="mem-detail-top">
+      <button type="button" class="mem-btn is-quiet mem-detail-close" id="memory-detail-close">${ICON.back}返回列表</button>
+      <div class="mem-detail-title-group">
+        <span class="mem-status-dot ${tone}" aria-hidden="true"></span>
+        <h3 id="memory-detail-heading" tabindex="-1">${e(item.state_label || stateLabels[item.state] || "待核对")}</h3>
       </div>
-      <div class="mem-filters" style="justify-content:space-between">
-        <span style="font-size:11.5px;color:var(--t-text-faint)">持续失败时可以先停掉定时整理，已存在的批次不会自动重试。</span>
-        ${button("memory-disable-reflection","关闭定时整理",data.busy||data.loading)}
+      <div class="mem-detail-badges">
+        <span class="mem-badge${badgeTone}${pulse("status")}">${e(jobLabels[job?.state] || "尚未登记后台处理")}</span>
+        ${syncText ? `<span class="mem-sync-meta${data.refreshing?" is-syncing":""}${pulse("sync")}" aria-live="polite">${e(syncText)}</span>` : ""}
+      </div>
+    </div>
+    ${stageTrackMarkup(item.state)}
+    <section class="mem-summary-card${summaryTone}${pulse("summary")}" aria-label="批次状态说明">
+      <span class="mem-summary-label">${tone === "is-risk" || tone === "is-warn" ? ICON.alert : ICON.info}状态说明</span>
+      <p class="mem-summary-text">${e(reflectionSummaryText(item))}</p>
+    </section>
+    <dl class="mem-meta-grid mem-refl-stats">
+      <div class="${pulse("receipts").trim()}"><dt>已处理项</dt><dd>${num(receipts.length)}</dd></div>
+      <div class="${(Number(item.remaining_sources) > 0 ? "is-emphasis" : "") + pulse("remaining")}"><dt>剩余来源</dt><dd>${e(count(item.remaining_sources))}</dd></div>
+      <div class="${pulse("deferred").trim()}"><dt>暂缓来源</dt><dd>${e(count(item.deferred_sources))}</dd></div>
+      <div class="${pulse("unavailable").trim()}"><dt>不可用来源</dt><dd>${e(count(item.unavailable_sources))}</dd></div>
+    </dl>
+    <div class="mem-diag-stack">
+      ${item.selection?.phase || item.continuation_needed ? `<div class="mem-prep-strip">
+        <span>${item.selection?.phase ? `<strong>材料准备：</strong>${e(phases[item.selection.phase] || "正在准备")} · 已检查 ${e(count(item.selection.examined))} 项` : "材料状态"}</span>
+        ${item.continuation_needed ? '<span class="mem-badge is-warn">仍有后续材料待处理</span>' : ""}
+      </div>` : ""}
+      ${item.state === "running" ? `<p class="mem-notice is-error">${ICON.alert}<span>${e(reason("memory_reflection_uncertain"))}</span></p>` : ""}
+      ${job ? `<div class="mem-job${jobTone}${pulse("job")}">
+        <div class="mem-job-head">
+          <strong>${e(jobLabels[job.state] || "待核对")}</strong>
+          <time>更新于 ${e(when(job.updated_at))}</time>
+        </div>
+        ${job.state === "queued"?`<p>下次检查：${e(when(job.next_at))}</p>`:""}
+        ${job.result_code?`<p>${e(reason(job.result_code))}</p>`:""}
+      </div>` : ""}
+      ${item.selection?.blocked_code ? `<p class="mem-notice is-error">${ICON.alert}<span>${e(reason(item.selection.blocked_code))}</span></p>` : ""}
+      ${issues.length ? `<section class="mem-issues-card" aria-label="待处理原因">
+        <div class="mem-card-head">
+          <h4>待处理原因</h4>
+          <small>${issues.length} 项</small>
+        </div>
+        <ul class="mem-issues-list">${issues.map((issue, index)=>`<li><span class="mem-issue-index">${index + 1}</span><span>${e(reason(issue.code))}</span></li>`).join("")}</ul>
+      </section>` : ""}
+    </div>
+    <div class="mem-actions">
+      ${item.resumable || item.retryable ? button("memory-queue",data.busy?"正在提交…":action,!canQueue || data.busy || data.loading,"primary") : ""}
+      ${["failed", "partial"].includes(item.state) && !item.repair_batch
+        ? button("memory-discard","放弃本次整理",data.busy || data.loading,"danger") : ""}
+      ${item.repair_batch?button("memory-repair-link","查看后续修复",data.busy || data.loading):""}
+      <button type="button" id="memory-detail-refresh" class="mem-btn${data.refreshing?" is-refreshing":""}"${refreshDisabled?" disabled":""} aria-busy="${data.refreshing}">${ICON.refresh}<span>${data.refreshing?"刷新中…":"刷新状态"}</span></button>
+    </div>
+    ${canQueue ? '<p class="mem-action-hint">继续或修复可能调用已配置的整理模型；仅处理当前对象与角色的这批材料。</p>' : ""}
+    ${receipts.length ? `<h4 class="mem-sub">处理确认<small>${receipts.length} 项</small></h4>
+      <ul class="mem-list">${receipts.map(([,r], index)=>`<li>处理记录 ${index + 1}：${e(typeof r === "object" && r ? (r.code ? reason(r.code) : stateLabels[r.state] || jobLabels[r.state] || "已有确认") : "已有确认")}</li>`).join("")}</ul>` : ""}
+    ${item.retry_of ? '<p class="mem-action-hint">这批材料来自一次明确的修复操作。</p>' : ""}`;
+  }
+
+  function reflectionsMarkup() {
+    return `<section class="mem-block">
+      <div class="mem-refl-bar">
+        <div class="mem-reflection-views" role="group" aria-label="整理批次范围">
+          ${reflectionViewsInnerMarkup()}
+        </div>
+        <div class="mem-refl-bar-right">
+          <span class="mem-refl-hint">持续失败时可先停掉定时整理，已有批次不会自动重试</span>
+          ${button("memory-disable-reflection","关闭定时整理",data.busy||data.loading)}
+        </div>
       </div>
       <div class="mem-split">
-        <div>
-          <div class="mem-filters" style="justify-content:space-between">
-            <span style="font-size:11.5px;color:var(--t-text-faint)">本页 ${num(list.length)} 批${
-              data.corpus.length?` · 语料 ${num(data.corpus.length)} 条事实`:""}</span>
-            <span style="display:flex;gap:7px">${button("memory-previous","上一页",data.page===0 || data.busy || data.loading)}
-            <span style="font-size:11.5px;color:var(--t-text-faint);align-self:center">第 ${data.page+1} 页</span>
-            ${button("memory-next","下一页",!data.next || data.busy || data.loading)}</span>
-          </div>
-          <div class="mem-corpus" role="listbox" aria-label="整理批次">${
-            data.loading && !list.length
-              ? `<div class="mem-skeleton"><i></i><i></i><i></i></div>`
-              : list.length
-                ? list.map((item,i)=>{
-                    const job = jobLabels[item.continuation?.state] || (item.retryable?"可修复":"待接续");
-                    const failing = item.state === "failed" || item.retryable;
-                    return `<button type="button" class="mem-batch" data-batch-index="${i}"
-                      aria-current="${item.batch_id===data.detailId}">
-                      <span class="mem-batch-top"><strong>${e(item.state_label || stateLabels[item.state] || "待核对")}</strong>
-                        <span class="mem-badge${failing?" is-risk":""}">${e(job)}</span>
-                        ${item.self_reference?`<span class="mem-badge">${e(item.self_reference)}</span>`:""}</span>
-                      <span>${e(item.summary ?? "摘要尚不可读取或仍待整理。")}</span>
-                      <small>已处理 ${num(Object.keys(item.receipts || {}).length)} 项 · 剩余来源 ${e(count(item.remaining_sources))}</small>
-                    </button>`;
-                  }).join("")
-                : `<div class="mem-empty"><h3>${data.history ? "当前范围还没有整理记录" : "没有待处理的整理批次"}</h3></div>`}</div>
+        <div class="mem-list-pane">
+          <div class="mem-refl-list-bar">${reflectionListBarInnerMarkup()}</div>
+          <div class="mem-corpus" role="listbox" aria-label="整理批次">${reflectionCorpusInnerMarkup()}</div>
         </div>
         <section class="mem-detail${data.detailId?" is-open":""}" aria-label="整理详情">${detailMarkup()}</section>
       </div>
@@ -733,7 +843,9 @@ window.CompanionMemoryPage = (() => {
           </li>`;
         }).join(""):`<li class="mem-empty"><h3>${e(result.index_state!=="ready"?"索引正在准备":"没有找到匹配记录")}</h3>
           <p>${e(result.index_state!=="ready"?"稍后重试，或换一个更具体的词。":"换一个词，或把资料类型改成「混合」再试一次。")}</p></li>`}</ul>
-        ${result.next_cursor?`<div style="margin-top:13px">${button("memory-query-next","继续读取下一页",data.busy||data.loading)}</div>`:""}`:""}
+        ${window.CompanionAutoScroll
+          ? (result.next_cursor || (result.items && result.items.length) ? `<div class="mem-query-loader" data-memory-query-autoscroll></div>` : "")
+          : (result.next_cursor ? `<div style="margin-top:13px">${button("memory-query-next","继续读取下一页",data.busy||data.loading)}</div>` : "")}`:""}
         ${data.sourceResult?`<blockquote class="mem-source-text"><small>原始来源 · 字符 ${e(data.sourceResult.start)}–${e(data.sourceResult.end)} / ${e(data.sourceResult.total_chars)}</small>${e(data.sourceResult.text)}${
           data.sourceResult.next_offset!==null?`<div style="margin-top:9px">${`<button type="button" class="mem-source-link" data-source-handle="${e(data.sourceResult.handle)}" data-source-session="${e(data.querySession)}" data-source-start="${e(data.sourceResult.next_offset)}">继续查看后续</button>`}</div>`:""}</blockquote>`:""}
       </div>
@@ -874,6 +986,147 @@ window.CompanionMemoryPage = (() => {
   const AREA_VIEW = {reflections:reflectionsMarkup, facts:factsMarkup, query:queryMarkup,
     archive:archiveMarkup, migrate:()=>`${exportMarkup()}${importMarkup()}`, clear:clearMarkup};
 
+  function noticeMarkup() {
+    if (!data.notice) return "";
+    return `<div id="memory-notice" class="mem-notice${data.error?" is-error":""}" role="status" aria-live="polite">${data.error?ICON.alert:ICON.info}<span>${e(data.notice)}</span></div>`;
+  }
+
+  function recoveryMarkup() {
+    return `${data.pending ? `<div class="mem-recovery"><span>${data.pending.uncertain?"上次提交结果未确认。":"保留了上次提交的位置，可继续查看后台结果。"}</span>${button("memory-recover",data.pending.uncertain?"核对上次提交":"查看上次提交",data.busy || data.loading)}</div>` : ""}${data.pendingMutation ? `<div class="mem-recovery"><span>${data.pendingMutation.kind==="clear"?"上次范围清理结果未确认，请核对。":"上次事实变更结果未确认，请刷新核对。"}</span>${button("memory-pending-refresh","刷新核对",data.busy||data.loading)}${button("memory-pending-dismiss","已核对，关闭提示",data.busy||data.loading)}</div>` : ""}`;
+  }
+
+  function captureScrollPositions() {
+    const saved = [];
+    let el = root;
+    while (el && el !== document.documentElement) {
+      if (typeof el.scrollTop === "number" && el.scrollTop > 0) saved.push([el, el.scrollTop]);
+      el = el.parentElement;
+    }
+    const corpus = root?.querySelector?.(".mem-corpus");
+    return {
+      winX: typeof window.scrollX === "number" ? window.scrollX : 0,
+      winY: typeof window.scrollY === "number" ? window.scrollY : 0,
+      corpusTop: corpus?.scrollTop || 0,
+      ancestors: saved,
+    };
+  }
+
+  function restoreScrollPositions(saved) {
+    if (!saved) return;
+    const corpus = root?.querySelector?.(".mem-corpus");
+    if (corpus) corpus.scrollTop = saved.corpusTop;
+    for (const [el, top] of saved.ancestors) {
+      if (el?.isConnected) el.scrollTop = top;
+    }
+    if (typeof window.scrollTo === "function" && (window.scrollX !== saved.winX || window.scrollY !== saved.winY)) {
+      window.scrollTo(saved.winX, saved.winY);
+    }
+  }
+
+  function reflectionDiffSnapshot(item) {
+    if (!item) return null;
+    return {
+      batch_id: item.batch_id || "",
+      state: item.state || "",
+      jobState: item.continuation?.state || "",
+      jobUpdated: item.continuation?.updated_at || "",
+      jobCode: item.continuation?.result_code || "",
+      summary: reflectionSummaryText(item),
+      receipts: Object.keys(item.receipts || {}).length,
+      remaining: count(item.remaining_sources),
+      deferred: count(item.deferred_sources),
+      unavailable: count(item.unavailable_sources),
+    };
+  }
+
+  function diffReflectionSnapshots(before, after) {
+    if (!before || !after || before.batch_id !== after.batch_id) return {sync: true};
+    return {
+      status: before.state !== after.state || before.jobState !== after.jobState,
+      summary: before.summary !== after.summary,
+      receipts: before.receipts !== after.receipts,
+      remaining: before.remaining !== after.remaining,
+      deferred: before.deferred !== after.deferred,
+      unavailable: before.unavailable !== after.unavailable,
+      job: before.jobState !== after.jobState || before.jobUpdated !== after.jobUpdated || before.jobCode !== after.jobCode,
+      sync: true,
+    };
+  }
+
+  function syncNoticeSlot() {
+    const slot = root?.querySelector?.("#memory-notice-slot");
+    if (slot) slot.innerHTML = noticeMarkup();
+  }
+
+  function syncRecoverySlot() {
+    const slot = root?.querySelector?.("#memory-recovery-slot");
+    if (slot) slot.innerHTML = recoveryMarkup();
+  }
+
+  function syncRefreshIndicators(refreshing) {
+    if (!root?.isConnected) return;
+    const btn = root.querySelector?.("#memory-detail-refresh");
+    if (btn) {
+      btn.disabled = Boolean(refreshing || data?.busy || data?.loading);
+      btn.setAttribute?.("aria-busy", String(Boolean(refreshing)));
+      btn.classList?.toggle?.("is-refreshing", Boolean(refreshing));
+      btn.innerHTML = `${ICON.refresh}<span>${refreshing ? "刷新中…" : "刷新状态"}</span>`;
+    }
+    const syncEl = root.querySelector?.(".mem-sync-meta");
+    if (syncEl) {
+      syncEl.classList?.toggle?.("is-syncing", Boolean(refreshing));
+      const text = reflectionSyncText(data?.detail?.continuation);
+      if (text) syncEl.textContent = text;
+    }
+  }
+
+  function patchReflectionsDom(changed = {}) {
+    if (!root?.isConnected || !data) return;
+    const detailEl = root.querySelector?.(".mem-detail");
+    const corpusEl = root.querySelector?.(".mem-corpus");
+    if (!detailEl || !corpusEl) { render(); return; }
+    const saved = captureScrollPositions();
+    const active = document.activeElement;
+    const focused = root.contains(active) && active?.id ? active.id : null;
+    const viewsEl = root.querySelector?.(".mem-reflection-views");
+    if (viewsEl) viewsEl.innerHTML = reflectionViewsInnerMarkup();
+    const listBarEl = root.querySelector?.(".mem-refl-list-bar");
+    if (listBarEl) listBarEl.innerHTML = reflectionListBarInnerMarkup();
+    corpusEl.innerHTML = reflectionCorpusInnerMarkup();
+    detailEl.classList?.remove?.("is-updating");
+    detailEl.removeAttribute?.("aria-busy");
+    detailEl.classList?.toggle?.("is-open", Boolean(data.detailId));
+    detailEl.innerHTML = detailMarkup(changed);
+    const railCount = root.querySelector?.(".mem-rail-count");
+    if (railCount) {
+      const pendingBatches = data.area === "reflections" && data.items.length ? data.items.length : 0;
+      railCount.textContent = num(pendingBatches);
+      railCount.hidden = !pendingBatches;
+    }
+    syncNoticeSlot();
+    syncRecoverySlot();
+    restoreScrollPositions(saved);
+    if (focused) root.querySelector?.("#" + CSS.escape(focused))?.focus?.({preventScroll: true});
+  }
+
+  function patchFactDetailDom() {
+    if (!root?.isConnected || !data) return;
+    const detailEl = root.querySelector?.(".mem-detail");
+    const corpusEl = root.querySelector?.(".mem-corpus");
+    if (!detailEl || !corpusEl) { render(); return; }
+    const saved = captureScrollPositions();
+    for (const card of corpusEl.querySelectorAll?.(".mem-card") || []) {
+      card.setAttribute?.("aria-current", String(card.dataset?.factId === data.selId));
+    }
+    detailEl.classList?.remove?.("is-updating");
+    detailEl.removeAttribute?.("aria-busy");
+    detailEl.classList?.toggle?.("is-open", Boolean(data.selId));
+    detailEl.innerHTML = factDetailMarkup();
+    syncNoticeSlot();
+    syncRecoverySlot();
+    restoreScrollPositions(saved);
+  }
+
   function render() {
     if (!root?.isConnected || !data) return;
     /* 焦点与滚动位置跨重绘保留：这一页每次状态变化都整块重建 innerHTML，
@@ -881,19 +1134,15 @@ window.CompanionMemoryPage = (() => {
        键盘与读屏都要重新找位置。 */
     const active = document.activeElement;
     const focused = root.contains(active) && active?.id ? active.id : null;
-    const corpus = root.querySelector(".mem-corpus");
-    const scroll = corpus?.scrollTop || 0;
-    const target = current();
+    const saved = captureScrollPositions();
     const ownership = ownerNotice();
     root.innerHTML = `<div class="mem-app">
       ${railMarkup()}
       <div class="mem-main">
-        <div class="mem-progress"${data.loading?"":" hidden"} role="progressbar" aria-label="正在读取…"><i></i></div>
         ${headMarkup()}
         ${ownership?`<p class="mem-ownership" role="status">${e(ownership)}</p>`:""}
-        ${data.notice?`<div id="memory-notice" class="mem-notice${data.error?" is-error":""}" role="status" aria-live="polite">${data.error?ICON.alert:ICON.info}<span>${e(data.notice)}</span></div>`:""}
-        ${data.pending ? `<div class="mem-recovery"><span>${data.pending.uncertain?"上次提交结果未确认。":"保留了上次提交的位置，可继续查看后台结果。"}</span>${button("memory-recover",data.pending.uncertain?"核对上次提交":"查看上次提交",data.busy || data.loading)}</div>` : ""}
-        ${data.pendingMutation ? `<div class="mem-recovery"><span>${data.pendingMutation.kind==="clear"?"上次范围清理结果未确认，请核对。":"上次事实变更结果未确认，请刷新核对。"}</span>${button("memory-pending-refresh","刷新核对",data.busy||data.loading)}${button("memory-pending-dismiss","已核对，关闭提示",data.busy||data.loading)}</div>` : ""}
+        <div id="memory-notice-slot" class="mem-notice-slot">${noticeMarkup()}</div>
+        <div id="memory-recovery-slot" class="mem-recovery-slot">${recoveryMarkup()}</div>
         ${!data.ready
           ? `<section class="mem-block"><div class="mem-skeleton"><i></i><i></i><i></i></div>
              <p class="mem-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看记录。"}</p></section>`
@@ -903,9 +1152,72 @@ window.CompanionMemoryPage = (() => {
             : AREA_VIEW[data.area]()}
       </div>
     </div>`;
-    if (corpus) { const next = root.querySelector(".mem-corpus"); if (next) next.scrollTop = scroll; }
+    restoreScrollPositions(saved);
     if (focused) root.querySelector("#"+CSS.escape(focused))?.focus({preventScroll:true});
+    syncAutoLoaders();
     animate();
+  }
+
+  let factsAutoLoader = null, queryAutoLoader = null;
+  let factsAppendError = false, factsAppendErrorText = "";
+  let queryAppendError = false, queryAppendErrorText = "";
+  function destroyAutoLoaders() {
+    try { factsAutoLoader?.destroy?.(); } catch (_) {}
+    try { queryAutoLoader?.destroy?.(); } catch (_) {}
+    factsAutoLoader = null;
+    queryAutoLoader = null;
+  }
+  function syncAutoLoaders() {
+    if (!window.CompanionAutoScroll || !root || !data) { destroyAutoLoaders(); return; }
+    const factsBox = root.querySelector?.(".mem-corpus") || null;
+    const factsHost = root.querySelector?.("[data-memory-facts-autoscroll]") || null;
+    if (data.area === "facts" && factsBox && factsHost) {
+      if (!factsAutoLoader) {
+        factsAutoLoader = window.CompanionAutoScroll.mount({
+          host: factsHost,
+          scrollRoot: factsBox,
+          rootMargin: "160px 0px",
+          hasMore: () => Boolean(data?.area === "facts" && data?.hasMore && !data?.search && data?.filter === "all"),
+          isLoading: () => Boolean(data?.loading || data?.busy),
+          hasError: () => factsAppendError,
+          errorMessage: () => factsAppendErrorText || "继续读取更早事实时失败，已保留已加载记录。",
+          loadedCount: () => visibleFacts().length,
+          cursor: () => data?.next || "",
+          itemLabel: "条事实",
+          manualButtonLabel: "读取更早的事实",
+          onLoadMore: () => loadMoreFacts(),
+          onRetry: () => { factsAppendError = false; factsAppendErrorText = ""; return loadMoreFacts(); },
+        });
+      } else {
+        factsAutoLoader.refresh(factsHost, factsBox);
+      }
+    } else if (factsAutoLoader) {
+      factsAutoLoader.refresh(null, null);
+    }
+    const queryHost = root.querySelector?.("[data-memory-query-autoscroll]") || null;
+    if (data.area === "query" && queryHost) {
+      if (!queryAutoLoader) {
+        queryAutoLoader = window.CompanionAutoScroll.mount({
+          host: queryHost,
+          hasMore: () => Boolean(data?.area === "query" && data?.queryResult?.next_cursor),
+          isLoading: () => Boolean(data?.loading || data?.busy),
+          hasError: () => queryAppendError,
+          errorMessage: () => queryAppendErrorText || "读取下一页查询结果失败，已保留已加载结果。",
+          loadedCount: () => (data?.queryResult?.items || []).length,
+          cursor: () => data?.queryResult?.next_cursor || "",
+          itemLabel: "条结果",
+          manualButtonAttrs: () => ({id: "memory-query-next", ...(data?.busy || data?.loading ? {disabled: ""} : {})}),
+          manualButtonLabel: "继续读取下一页",
+          scrollTopTarget: () => root?.querySelector?.(".mem-results"),
+          onLoadMore: () => runQuery({next: true}),
+          onRetry: () => { queryAppendError = false; queryAppendErrorText = ""; return runQuery({next: true}); },
+        });
+      } else {
+        queryAutoLoader.refresh(queryHost);
+      }
+    } else if (queryAutoLoader) {
+      queryAutoLoader.refresh(null);
+    }
   }
 
   /* 动效编排。
@@ -940,7 +1252,7 @@ window.CompanionMemoryPage = (() => {
 
   async function directory() {
     const ticket = ++version;
-    stopTimer(); backgroundLoading = false;
+    stopTimer(); clearRefreshing(); backgroundLoading = false;
     data = blank(); data.loading = true; render();
     try {
       /* 归属是独立的一次读，而且**先读**：它决定这一页顶上那句话，读不到也要
@@ -1013,17 +1325,20 @@ window.CompanionMemoryPage = (() => {
     });
   }
 
-  async function load({silent=false}={}) {
+  async function load({silent=false, inPlace=false}={}) {
     if (!root || !data.ready || !role()?.memory_api || data.busy) return;
-    if (silent && (data.loading || backgroundLoading)) return;
+    if (silent && (data.loading || data.refreshing || backgroundLoading)) return;
     const ticket = ++version;
     stopTimer();
     const previousSnapshot = silent ? dataSnapshot() : null;
+    const prevDetailSnapshot = inPlace && data.area === "reflections" ? reflectionDiffSnapshot(data.detail) : null;
     if (silent) backgroundLoading = true;
-    else { backgroundLoading = false; data.loading = true; render(); }
+    else if (inPlace) { clearRefreshing(); backgroundLoading = false; }
+    else { clearRefreshing(); backgroundLoading = false; data.loading = true; render(); }
     try {
       const path = endpoint();
       if (data.area === "facts") {
+        if (!silent) { factsAppendError = false; factsAppendErrorText = ""; factsAutoLoader?.reset?.(); }
         const [preloadResult, overviewResult] = await Promise.allSettled([
           preloadFacts(ticket), api("GET", path + "/overview"),
         ]);
@@ -1055,12 +1370,13 @@ window.CompanionMemoryPage = (() => {
         if (!live(ticket)) return;
         if (listedResult.status === "rejected") throw listedResult.reason;
         const listed = listedResult.value;
-        if (data.detailId && detailResult.status === "rejected") throw detailResult.reason;
+        if (data.detailId && detailResult.status === "rejected"
+            && detailResult.reason?.code !== "memory_reflection_unavailable") throw detailResult.reason;
         const detail = detailResult.status === "fulfilled" ? detailResult.value : null;
         if (!Array.isArray(listed.items) || (detail && detail.batch_id !== data.detailId)) throw problem("invalid_response");
         data.items = listed.items; data.next = listed.next_cursor || null;
         data.overview = overviewResult.status === "fulfilled" ? overviewResult.value : null;
-        data.detail = detail || listed.items[0] || null;
+        data.detail = detail || listed.items.find(item => item.batch_id === data.detailId) || listed.items[0] || null;
         data.detailId = data.detail?.batch_id || null;
         notice(overviewResult.status === "rejected" ? "整理批次已读取；全量状态统计暂不可用。" : "",
           overviewResult.status === "rejected");
@@ -1078,7 +1394,13 @@ window.CompanionMemoryPage = (() => {
       if (live(ticket)) {
         if (silent) {
           backgroundLoading = false;
-          if (dataSnapshot() !== previousSnapshot) render();
+          if (dataSnapshot() !== previousSnapshot) {
+            if (data.area === "reflections" && root.querySelector?.(".mem-detail")) patchReflectionsDom();
+            else render();
+          }
+        } else if (inPlace && data.area === "reflections") {
+          data.loading = false;
+          patchReflectionsDom(diffReflectionSnapshots(prevDetailSnapshot, reflectionDiffSnapshot(data.detail)));
         } else {
           data.loading = false;
           render();
@@ -1088,11 +1410,96 @@ window.CompanionMemoryPage = (() => {
     }
   }
 
+  /* 原地无闪烁刷新（Stale-While-Revalidate）：
+     只让「刷新状态」按钮旋转并更新轻状态标签，绝不清空列表/详情，绝不闪现
+     「选择一个批次」或顶部进度条，绝不跳动滚动位置；新数据返回后原地局部更新。 */
+  async function refreshReflectionInPlace() {
+    if (!root || !data?.ready || !role()?.memory_api || data.busy || data.loading || data.refreshing) return;
+    const ticket = ++version;
+    stopTimer();
+    backgroundLoading = false;
+    const targetId = data.detailId;
+    const prevIndex = Math.max(0, data.items.findIndex(item => item.batch_id === targetId));
+    const prevSnapshot = reflectionDiffSnapshot(data.detail);
+    activeRefreshTicket = ticket;
+    data.refreshing = true;
+    syncRefreshIndicators(true);
+    try {
+      const path = endpoint();
+      const query = {limit:20, history:data.history ? "1" : "0"};
+      if (data.cursors[data.page]) query.after_id = data.cursors[data.page];
+      const [listedResult, detailResult, overviewResult] = await Promise.allSettled([
+        api("GET", path + "/reflections", query),
+        targetId ? api("GET", path + "/reflections", {batch_id:targetId}) : Promise.resolve(null),
+        api("GET", path + "/overview"),
+      ]);
+      if (!live(ticket)) return;
+      if (listedResult.status === "rejected") throw listedResult.reason;
+      const listed = listedResult.value;
+      if (!Array.isArray(listed.items)) throw problem("invalid_response");
+      let detail = null;
+      if (targetId && detailResult.status === "fulfilled" && detailResult.value) {
+        if (detailResult.value.batch_id !== targetId) throw problem("invalid_response");
+        detail = detailResult.value;
+      } else if (targetId && detailResult.status === "rejected"
+                 && detailResult.reason?.code !== "memory_reflection_unavailable") {
+        throw detailResult.reason;
+      }
+      data.items = listed.items;
+      data.next = listed.next_cursor || null;
+      if (overviewResult.status === "fulfilled" && overviewResult.value) {
+        data.overview = overviewResult.value;
+      }
+      if (detail) {
+        data.detail = detail;
+        data.detailId = detail.batch_id;
+      } else if (targetId && listed.items.some(item => item.batch_id === targetId)) {
+        data.detail = listed.items.find(item => item.batch_id === targetId);
+        data.detailId = targetId;
+      } else {
+        const fallback = listed.items[Math.min(prevIndex, Math.max(0, listed.items.length - 1))] || null;
+        data.detail = fallback;
+        data.detailId = fallback?.batch_id || null;
+      }
+      data.lastRefreshedAt = Date.now();
+      if (overviewResult.status === "rejected") {
+        notice("整理状态已刷新；全量统计暂不可用。", true);
+      } else if (data.notice) {
+        notice("");
+      }
+      const changed = diffReflectionSnapshots(prevSnapshot, reflectionDiffSnapshot(data.detail));
+      if (activeRefreshTicket === ticket) { activeRefreshTicket = 0; data.refreshing = false; }
+      patchReflectionsDom(changed);
+    } catch (error) {
+      if (live(ticket)) {
+        if (activeRefreshTicket === ticket) { activeRefreshTicket = 0; data.refreshing = false; }
+        if (denied.has(error?.code)) {
+          failure(error);
+          render();
+        } else {
+          notice(error?.code ? `${reason(error.code)}（已保留当前显示内容）` : "状态刷新失败，已保留当前显示内容，请稍后重试。", true);
+          patchReflectionsDom();
+        }
+      }
+    } finally {
+      if (activeRefreshTicket === ticket) {
+        activeRefreshTicket = 0;
+        if (data) data.refreshing = false;
+      }
+      if (live(ticket)) {
+        syncRefreshIndicators(false);
+        schedule();
+      }
+    }
+  }
+
   /* 继续读取更早的事实（超出预读窗口时用）。追加而非替换，
      这样筛选与滚动位置都还在。 */
   async function loadMoreFacts() {
     if (!data.next || data.busy || data.loading) return;
-    const ticket = ++version; data.loading = true; render();
+    const ticket = ++version;
+    factsAppendError = false; factsAppendErrorText = "";
+    data.loading = true; render();
     try {
       const page = await api("GET", endpoint(), {limit:PAGE_SIZE, after_id:data.next});
       if (!live(ticket)) return;
@@ -1100,8 +1507,19 @@ window.CompanionMemoryPage = (() => {
       const seen = new Set(data.corpus.map(item=>item.atom_id));
       data.corpus = [...data.corpus, ...page.items.filter(item=>!seen.has(item.atom_id))];
       data.next = page.next_cursor || null; data.hasMore = Boolean(page.next_cursor);
+      factsAppendError = false; factsAppendErrorText = "";
       notice("");
-    } catch (error) { if (live(ticket)) failure(error); }
+    } catch (error) {
+      if (live(ticket)) {
+        if (denied.has(error?.code)) {
+          failure(error);
+        } else {
+          factsAppendError = true;
+          factsAppendErrorText = error?.code ? reason(error.code) : "继续读取更早事实时失败，已保留已加载记录。";
+          notice(factsAppendErrorText, true);
+        }
+      }
+    }
     finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
   }
 
@@ -1169,8 +1587,31 @@ window.CompanionMemoryPage = (() => {
   }
 
   async function selectBatch(id, focus=true) {
+    if (!id) return;
     const ticket = ++version;
-    stopTimer(); data.detailId = id; data.detail = null; data.loading = true; render();
+    stopTimer(); clearRefreshing();
+    const sameArea = data.area === "reflections" && Boolean(root?.querySelector?.(".mem-detail"));
+    const previewItem = data.items.find(item => item.batch_id === id) || null;
+    data.detailId = id;
+    if (previewItem) data.detail = previewItem;
+    if (sameArea) {
+      const detailEl = root.querySelector?.(".mem-detail");
+      const corpusEl = root.querySelector?.(".mem-corpus");
+      if (corpusEl) {
+        for (const btn of corpusEl.querySelectorAll?.(".mem-batch") || []) {
+          const item = data.items[Number(btn.dataset?.batchIndex)];
+          btn.setAttribute?.("aria-current", String(item?.batch_id === id));
+        }
+      }
+      if (detailEl) {
+        if (previewItem) detailEl.innerHTML = detailMarkup();
+        detailEl.classList?.add?.("is-updating", "is-open");
+        detailEl.setAttribute?.("aria-busy", "true");
+      }
+    } else {
+      data.loading = true;
+      render();
+    }
     try {
       const item = await api("GET",endpoint()+"/reflections",{batch_id:id});
       if (!live(ticket)) return;
@@ -1179,7 +1620,10 @@ window.CompanionMemoryPage = (() => {
     } catch (error) { if (live(ticket)) failure(error); }
     finally {
       if (live(ticket)) {
-        data.loading = false; render(); schedule();
+        data.loading = false;
+        if (sameArea) patchReflectionsDom();
+        else render();
+        schedule();
         if (focus) focusDetail();
       }
     }
@@ -1200,8 +1644,22 @@ window.CompanionMemoryPage = (() => {
     const item = data.corpus.find(value=>value.atom_id===id);
     if (!item) return;
     const ticket = ++version;
-    stopTimer(); data.selId = id; data.factDetail = null; data.revisions = []; data.sourceResult = null;
-    data.loading = true; render(); focusDetail();
+    const sameArea = data.area === "facts" && Boolean(root?.querySelector?.(".mem-detail"));
+    stopTimer(); clearRefreshing(); data.selId = id; data.revisions = []; data.sourceResult = null;
+    if (sameArea) {
+      const corpusEl = root.querySelector?.(".mem-corpus");
+      for (const card of corpusEl?.querySelectorAll?.(".mem-card") || []) {
+        card.setAttribute?.("aria-current", String(card.dataset?.factId === id));
+      }
+      const detailEl = root.querySelector?.(".mem-detail");
+      if (detailEl) {
+        detailEl.classList?.add?.("is-updating", "is-open");
+        detailEl.setAttribute?.("aria-busy", "true");
+      }
+      focusDetail();
+    } else {
+      data.factDetail = null; data.loading = true; render(); focusDetail();
+    }
     try {
       const detail = await api("POST",endpoint()+"/detail",{atom_id:id,revision:item.revision});
       if (!live(ticket)) return;
@@ -1215,22 +1673,48 @@ window.CompanionMemoryPage = (() => {
          让用户再点一次才看得到，等于藏起来。 */
       await loadRevisions({silent:true});
     } catch (error) { if (live(ticket)) failure(error, {preserveCorpus: true}); }
-    finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
+    finally {
+      if (live(ticket)) {
+        data.loading = false;
+        if (sameArea) patchFactDetailDom();
+        else render();
+        schedule();
+      }
+    }
   }
 
   async function loadRevisions({silent=false}={}) {
     const item = data.factDetail?.item;
     if (!item || data.busy) return;
-    if (!silent && data.revisions.length) { data.revisions = []; render(); return; }
+    const sameArea = data.area === "facts" && Boolean(root?.querySelector?.(".mem-detail"));
+    if (!silent && data.revisions.length) {
+      data.revisions = [];
+      if (sameArea) patchFactDetailDom(); else render();
+      return;
+    }
     const ticket = silent ? version : ++version;
-    if (!silent) { data.loading = true; render(); }
+    if (!silent) {
+      if (sameArea) {
+        const detailEl = root.querySelector?.(".mem-detail");
+        detailEl?.setAttribute?.("aria-busy", "true");
+      } else {
+        data.loading = true; render();
+      }
+    }
     try {
       const result = await api("GET",endpoint()+"/revisions",{atom_id:item.atom_id,limit:64});
       if (!live(ticket)) return;
       if (!Array.isArray(result.items)) throw problem("invalid_response");
       data.revisions = result.items;
     } catch (error) { if (live(ticket) && !silent) failure(error, {preserveCorpus: true}); }
-    finally { if (live(ticket)) { data.loading = false; render(); } }
+    finally {
+      if (live(ticket)) {
+        data.loading = false;
+        if (!silent) {
+          if (sameArea) patchFactDetailDom(); else render();
+        }
+      }
+    }
   }
 
   async function loadClearPreview() {
@@ -1255,6 +1739,8 @@ window.CompanionMemoryPage = (() => {
     const previous = next ? data.queryResult : null;
     const body = {query:data.queryText,kind:data.queryKind};
     if (next && previous?.next_cursor && data.querySession) Object.assign(body,{session_id:data.querySession,cursor:previous.next_cursor});
+    if (!next) { queryAppendError = false; queryAppendErrorText = ""; queryAutoLoader?.reset?.(); }
+    else { queryAppendError = false; queryAppendErrorText = ""; }
     const ticket = ++version; data.loading = true; stopTimer(); render();
     try {
       const result = await api("POST",endpoint()+"/query",body);
@@ -1262,8 +1748,20 @@ window.CompanionMemoryPage = (() => {
       if (!Array.isArray(result.items) || !result.session_id) throw problem("invalid_response");
       data.querySession = result.session_id;
       data.queryResult = previous ? {...result,items:[...(previous.items||[]),...result.items]} : result;
-      data.sourceResult = null; notice("");
-    } catch (error) { if (live(ticket)) failure(error); }
+      data.sourceResult = null;
+      queryAppendError = false; queryAppendErrorText = "";
+      notice("");
+    } catch (error) {
+      if (live(ticket)) {
+        if (next && !denied.has(error?.code)) {
+          queryAppendError = true;
+          queryAppendErrorText = error?.code ? reason(error.code) : "读取下一页查询结果失败，已保留当前结果。";
+          notice(queryAppendErrorText, true);
+        } else {
+          failure(error);
+        }
+      }
+    }
     finally { if (live(ticket)) { data.loading = false; render(); } }
   }
 
@@ -1496,16 +1994,19 @@ window.CompanionMemoryPage = (() => {
     });
     if (!confirmed) return;
     const ticket = ++version, target = data.detail.batch_id;
-    stopTimer();
+    stopTimer(); clearRefreshing();
     data.busy = true; notice("正在关闭本次整理…"); render();
     try {
       const receipt = await api("POST", endpoint() + "/reflections/discard",
         {batch_id: target, operation_key: crypto.randomUUID()});
       if (!live(ticket)) return;
       if (receipt?.state !== "abandoned") throw problem("invalid_response");
-      data.busy = false; data.detail = null; data.detailId = null;
-      notice("本次整理已放弃；已保存的事实和来源保持不变。");
-      await load();
+      data.busy = false; data.detailId = null;
+      await load({inPlace: true});
+      if (root && !data.error) {
+        notice("本次整理已放弃；已保存的事实和来源保持不变。");
+        syncNoticeSlot();
+      }
     } catch (error) {
       if (live(ticket)) { data.busy = false; failure(error); render(); schedule(); }
     }
@@ -1516,20 +2017,26 @@ window.CompanionMemoryPage = (() => {
     if (!recover && (!(data.detail?.resumable || data.detail?.retryable) || data.pending?.uncertain || data.detail.continuation?.state === "queued")) return;
     if (recover && !data.pending?.uncertain) return;
     const ticket = ++version, path = endpoint();
-    stopTimer();
+    stopTimer(); clearRefreshing();
     if (!recover) data.pending = {batch_id:data.detail.batch_id, operation_key:crypto.randomUUID(), tracked_batch_id:data.detail.batch_id, uncertain:true};
     const persisted = savePending(), request = {...data.pending};
-    data.busy = true; notice("正在登记后台处理…"); render();
+    data.busy = true; notice("正在登记后台处理…");
+    if (data.area === "reflections" && root?.querySelector?.(".mem-detail")) patchReflectionsDom();
+    else render();
     try {
       const receipt = await api("POST",path+"/reflections/queue",{batch_id:request.batch_id,operation_key:request.operation_key});
       if (!live(ticket)) return;
       if (typeof receipt.batch_id !== "string" || !receipt.batch_id || !jobLabels[receipt.state]) throw problem("invalid_response");
       data.pending = {...request,tracked_batch_id:receipt.batch_id,uncertain:false}; savePending();
-      data.detailId = receipt.batch_id; data.detail = null; data.area = "reflections"; data.tab = "reflections";
+      const sameBatch = data.detail?.batch_id === receipt.batch_id;
+      data.detailId = receipt.batch_id;
+      if (!sameBatch) data.detail = null;
+      data.area = "reflections"; data.tab = "reflections";
       data.busy = false;
-      await load();
+      await load({inPlace: sameBatch});
       if (root && data.pending?.operation_key === request.operation_key && !data.error) {
-        notice((jobLabels[receipt.state] || "已登记")+"。"+(persisted?"关闭页面后也可回到上次提交。":"浏览器无法保存操作标识，请在离开前核对结果。")); render();
+        notice((jobLabels[receipt.state] || "已登记")+"。"+(persisted?"关闭页面后也可回到上次提交。":"浏览器无法保存操作标识，请在离开前核对结果。"));
+        if (root.querySelector?.(".mem-detail")) patchReflectionsDom(); else render();
       }
     } catch (error) {
       if (live(ticket)) {
@@ -1537,12 +2044,13 @@ window.CompanionMemoryPage = (() => {
           data.pending = null; savePending(); failure(error);
         } else notice("未收到提交确认。请点击「核对上次提交」，沿用原请求确认结果。",true);
       }
-    } finally { if (live(ticket)) { data.busy = false; render(); schedule(); } }
+    } finally { if (live(ticket)) { data.busy = false; if (data.area === "reflections" && root?.querySelector?.(".mem-detail")) patchReflectionsDom(); else render(); schedule(); } }
   }
   /* ================= 事件 ================= */
 
   async function switchArea(area) {
     if (data.area === area) return;
+    ++version; stopTimer(); clearRefreshing();
     data.area = area; data.tab = area;
     data.sourceResult = null; data.notice = ""; data.error = false;
     data.cursors = [""]; data.page = 0;
@@ -1590,7 +2098,8 @@ window.CompanionMemoryPage = (() => {
     if (id === "memory-directory-refresh") { directory(); return; }
     if (id === "memory-disable-reflection") { disableReflection(); return; }
     if (id === "memory-refresh" || id === "memory-detail-refresh") {
-      if (id === "memory-detail-refresh" && data.area === "reflections" && data.detailId) selectBatch(data.detailId); else load();
+      if (data.area === "reflections") refreshReflectionInPlace();
+      else load();
       return;
     }
     if (id === "memory-detail-close") { closeDetail(); return; }
@@ -1630,7 +2139,23 @@ window.CompanionMemoryPage = (() => {
       return;
     }
     if (el.dataset.batchIndex !== undefined) { selectBatch(data.items[Number(el.dataset.batchIndex)].batch_id); return; }
-    if (el.dataset.filter !== undefined) { data.filter = el.dataset.filter; render(); return; }
+    if (el.dataset.filter !== undefined) {
+      data.filter = el.dataset.filter;
+      const corpusEl = root.querySelector?.(".mem-corpus");
+      const chipsEl = root.querySelector?.(".mem-filter-chips");
+      if (corpusEl && chipsEl) {
+        corpusEl.innerHTML = data.loading && !data.corpus.length
+          ? `<div class="mem-skeleton"><i></i><i></i><i></i><i></i></div>` : corpusMarkup();
+        for (const chip of chipsEl.querySelectorAll?.(".mem-chip") || []) {
+          chip.setAttribute?.("aria-pressed", String(chip.dataset?.filter === data.filter));
+        }
+        syncAutoLoaders();
+      } else {
+        render();
+      }
+      factsAutoLoader?.reset?.();
+      return;
+    }
     if (id === "memory-archive-confirm") { commitArchive(); return; }
     if (id === "memory-archive-restore-submit") { restoreArchive(); return; }
     if (id === "memory-export-run") { runExport(); return; }
@@ -1651,8 +2176,7 @@ window.CompanionMemoryPage = (() => {
     if (el.id === "memory-export-include") { data.exportIncludeArchived = el.checked; return; }
   }
 
-  /* 搜索输入：只重绘语料区，不重绘整页——否则每敲一个字输入框都会失焦。
-     这是「整块重绘」架构下唯一必须开的口子。 */
+  /* 搜索输入：只重绘语料区，不重绘整页——否则每敲一个字输入框都会失焦。 */
   let searchTimer = null;
   function input(event) {
     if (event.target.id === "memory-add-text") { data.addText = event.target.value; return; }
@@ -1661,15 +2185,11 @@ window.CompanionMemoryPage = (() => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       const corpus = root?.querySelector(".mem-corpus");
-      if (!corpus) { render(); return; }
+      if (!corpus) { factsAutoLoader?.reset?.(); render(); return; }
       corpus.innerHTML = data.loading && !data.corpus.length
-        ? `<div class="mem-skeleton"><i></i><i></i><i></i></div>` : corpusMarkup();
-      const chips = root.querySelector(".mem-filters");
-      const fresh = document.createElement("div");
-      fresh.innerHTML = filtersMarkup();
-      if (chips) chips.replaceWith(fresh.firstElementChild);
-      const search = root.querySelector("#memory-search");
-      if (search && document.activeElement !== search) { /* 保持原输入框，不重建 */ }
+        ? `<div class="mem-skeleton"><i></i><i></i><i></i><i></i></div>` : corpusMarkup();
+      syncAutoLoaders();
+      factsAutoLoader?.reset?.();
     }, 140);
   }
 
@@ -1686,9 +2206,10 @@ window.CompanionMemoryPage = (() => {
     else if(event.target.id==="memory-add-form") {event.preventDefault();addMemory();}
   }
 
-  /* 滚动到底自动续读：语料超出预读窗口时，用户滚到底就该继续拿到更早的条目，
-     而不是去找一个「下一页」按钮。 */
+  /* 滚动到底自动续读：优先由 CompanionAutoScroll（IntersectionObserver + 节流 + 熔断）接管；
+     未加载共享脚本时回退到原生滚动判定。 */
   function scroll(event) {
+    if (window.CompanionAutoScroll) return;
     const box = event.target;
     if (!box.classList?.contains("mem-corpus")) return;
     if (data.area !== "facts" || !data.hasMore || data.loading || data.busy) return;
@@ -1761,7 +2282,10 @@ window.CompanionMemoryPage = (() => {
     });
   }
   function unmount() {
-    ++version; stopTimer(); clearTimeout(searchTimer); backgroundLoading = false;
+    destroyAutoLoaders();
+    factsAppendError = false; factsAppendErrorText = "";
+    queryAppendError = false; queryAppendErrorText = "";
+    ++version; stopTimer(); clearRefreshing(); clearTimeout(searchTimer); backgroundLoading = false;
     root?.removeEventListener("click",click); root?.removeEventListener("change",change);
     root?.removeEventListener("submit",submit); root?.removeEventListener("input",input);
     root?.removeEventListener("keydown",keydown); root?.removeEventListener("scroll",scroll,true);
@@ -1770,7 +2294,7 @@ window.CompanionMemoryPage = (() => {
   document.addEventListener("visibilitychange",()=>{
     if (!data?.ready) return;
     if (document.hidden) { stopTimer(); return; }
-    if (!data.busy && !data.loading && !backgroundLoading && !data.addOpen && data.area === "reflections") load({silent:true});
+    if (!data.busy && !data.loading && !data.refreshing && !backgroundLoading && !data.addOpen && data.area === "reflections") load({silent:true});
   });
   /* `state.data` 只为测试驱动而暴露：本页的 data 是模块私有的，
      测试要断言归档/导入这些流程时没有别的入口。 */

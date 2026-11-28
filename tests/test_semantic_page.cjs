@@ -886,3 +886,296 @@ test('group view enables role-owned reaction management before selection_ready w
   assert.match(allNode.innerHTML, /data-semantic-kind="reaction"/, 'tabs stay accessible to switch back');
   page.unmount();
 });
+
+test('expression view exposes vision review model, fallback, timeout controls, Flash hint, and Chinese error localization', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  requests[0].resolve({
+    ...settingsCatalog(5, {
+      analysis_provider: 'main-vision',
+      vision_review_provider: 'flash-vision',
+      vision_review_fallback_provider: 'backup-vision',
+      analysis_timeout_seconds: 35,
+      vision_review_timeout_seconds: 12,
+    }),
+    providers: {
+      analysis: [
+        {id: 'main-vision', name: '主视觉'},
+        {id: 'flash-vision', name: 'Flash 快速视觉'},
+        {id: 'backup-vision', name: '备用视觉'},
+      ],
+    },
+    errors: {
+      reaction_collection: 'TimeoutError',
+      reaction_vision: 'http_502',
+    },
+    reaction_collection_circuit: {
+      open: true,
+      consecutive_failures: 5,
+      cooldown_remaining_seconds: 240,
+      reason: 'TimeoutError',
+      detail: 'upstream timed out',
+    },
+    reaction_collection: {
+      totals: {private_capture: {failed: 5}},
+      recent: [
+        {scope: 'private_capture', status: 'failed', code: 'TimeoutError', detail: 'timed out', updated_at: 1790900000},
+        {scope: 'group_capture', status: 'failed', code: 'http_429', detail: 'rate limited', updated_at: 1790900100},
+      ],
+    },
+  });
+  await flush();
+  assert.match(node.innerHTML, /name="analysis_provider"/);
+  assert.match(node.innerHTML, /name="vision_review_provider"/);
+  assert.match(node.innerHTML, /name="vision_review_fallback_provider"/);
+  assert.match(node.innerHTML, /name="analysis_timeout_seconds"[^>]*value="35"/);
+  assert.match(node.innerHTML, /name="vision_review_timeout_seconds"[^>]*value="12"/);
+  assert.match(node.innerHTML, /Flash 等快速非思考视觉模型/);
+  assert.match(node.innerHTML, /视觉或语义模型响应超时/);
+  assert.match(node.innerHTML, /上游模型网关错误（HTTP 502）/);
+  assert.doesNotMatch(node.innerHTML, /最近异常：[^<]*(TimeoutError|http_502)/);
+  assert.match(node.innerHTML, /自动收录冷却熔断中/);
+  assert.match(node.innerHTML, /semantic-run-badge is-warn[^>]*>超时</);
+  assert.match(node.innerHTML, /semantic-run-badge is-warn[^>]*>限流 429</);
+
+  // Submitting saves the new vision provider & timeout settings.
+  node.submit('semanticSettings', {
+    ...FORM,
+    analysis_provider: 'main-vision',
+    vision_review_provider: 'flash-vision',
+    vision_review_fallback_provider: 'backup-vision',
+    analysis_timeout_seconds: 40,
+    vision_review_timeout_seconds: 18,
+  });
+  assert.equal(requests[1].values.changes.vision_review_provider, 'flash-vision');
+  assert.equal(requests[1].values.changes.vision_review_fallback_provider, 'backup-vision');
+  assert.equal(requests[1].values.changes.analysis_timeout_seconds, 40);
+  assert.equal(requests[1].values.changes.vision_review_timeout_seconds, 18);
+  requests[1].resolve({});
+  await flush();
+  requests[2].resolve(settingsCatalog(6));
+  await flush();
+
+  // Reset collection failures button triggers reset_collection_failures action.
+  node.click('[data-semantic]', {semantic: 'reset-collection-failures'});
+  assert.equal(requests[3].values.action, 'reset_collection_failures');
+  requests[3].resolve({cleared_runs: 5, reaction_collection_circuit: {open: false}});
+  await flush();
+  requests[4].resolve(settingsCatalog(6));
+  await flush();
+  assert.match(node.innerHTML, /已重置自动收录失败统计与熔断冷却/);
+  page.unmount();
+});
+
+test('reaction confirmation UX supports filter jump, inline approve/reject, batch actions, and drawer primary CTA', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  let scrolled = false;
+  node.querySelector = selector => selector === '#semanticReactionCatalog'
+    ? {scrollIntoView() { scrolled = true; }}
+    : null;
+  page.mount(node, {view: 'expression'});
+
+  const awaiting1 = {
+    id: 'wait-1', kind: 'reaction', revision: 2, enabled: false,
+    payload: {name: '待确认笑脸', description: '大笑', analysis: 'auto_reviewed',
+      collection_source: 'private_capture', collection_state: 'awaiting_confirmation'},
+  };
+  const awaiting2 = {
+    id: 'wait-2', kind: 'reaction', revision: 3, enabled: false,
+    payload: {name: '待确认比心', description: '比心', analysis: 'auto_reviewed',
+      collection_source: 'group_capture', collection_state: 'awaiting_confirmation'},
+  };
+  const initialData = {
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 4, enabled: 1, disabled: 3, manually_disabled: 1, pending: 0, recognized: 4, awaiting_confirmation: 2}},
+    items: [awaiting1, awaiting2],
+  };
+  requests[0].resolve(initialData);
+  await flush();
+
+  // Awaiting cards show 待确认 badge (not 已停用) and inline quick actions.
+  assert.match(node.innerHTML, /semantic-row-state is-awaiting">待确认</);
+  assert.match(node.innerHTML, /data-semantic-confirm="wait-1"[^>]*>通过启用</);
+  assert.match(node.innerHTML, /data-semantic-reject="wait-1"[^>]*>拒绝删除</);
+  assert.match(node.innerHTML, /待人工确认 \(2\)/);
+  assert.match(node.innerHTML, /已停用 \(1\)/);
+
+  // Clicking 待处理 stat card or 待人工确认 badge jumps to awaiting_confirmation filter and scrolls.
+  node.click('[data-semantic-filter-jump]', {semanticFilterJump: 'awaiting_confirmation'});
+  assert.equal(scrolled, true);
+  assert.equal(requests[1].method, 'GET');
+  assert.equal(requests[1].values.collection_filter, 'awaiting_confirmation');
+  requests[1].resolve(initialData);
+  await flush();
+
+  // Batch bar and checkboxes appear on awaiting_confirmation tab.
+  assert.match(node.innerHTML, /semantic-batch-bar/);
+  assert.match(node.innerHTML, /data-semantic-select="wait-1"/);
+  assert.match(node.innerHTML, /data-semantic-select="wait-2"/);
+
+  // Inline confirm sends confirm_reaction directly.
+  node.click('[data-semantic-confirm]', {semanticConfirm: 'wait-1', semanticRevision: '2'});
+  assert.equal(requests[2].values.action, 'confirm_reaction');
+  assert.equal(requests[2].values.id, 'wait-1');
+  assert.equal(requests[2].values.revision, 2);
+  requests[2].resolve({item: {...awaiting1, enabled: true, revision: 3}});
+  await flush();
+  requests[3].resolve({...initialData, items: [awaiting2]});
+  await flush();
+  assert.match(node.innerHTML, /已通过并启用该表情素材/);
+
+  // Opening an awaiting item in the edit drawer shows 通过并启用 as primary CTA.
+  node.click('[data-semantic-open]', {semanticOpen: 'wait-2'});
+  assert.equal(requests[4].method, 'GET');
+  requests[4].resolve({item: awaiting2});
+  await flush();
+  assert.match(node.innerHTML, /semantic-editor-pill is-awaiting">待人工确认</);
+  assert.match(node.innerHTML, /data-semantic="editor-confirm"[^>]*>通过并启用</);
+  assert.match(node.innerHTML, /data-semantic="editor-reject"[^>]*>拒绝删除</);
+  node.click('[data-semantic]', {semantic: 'editor-confirm'});
+  assert.equal(requests[5].values.action, 'confirm_reaction');
+  assert.equal(requests[5].values.id, 'wait-2');
+  assert.equal(requests[5].values.revision, 3);
+  requests[5].resolve({item: {...awaiting2, enabled: true, revision: 4}});
+  await flush();
+  requests[6].resolve({...initialData, items: [], catalog: {reaction: {total: 4, enabled: 3, disabled: 1, manually_disabled: 1, awaiting_confirmation: 0}}});
+  await flush();
+  assert.match(node.innerHTML, /当前没有待人工确认的表情素材/);
+  page.unmount();
+});
+
+test('batch confirm and batch reject actions submit selected items from awaiting_confirmation tab', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  const handlers = {};
+  const origAdd = node.addEventListener.bind(node);
+  node.addEventListener = (type, handler) => { handlers[type] = handler; return origAdd(type, handler); };
+  page.mount(node, {view: 'expression'});
+
+  const rows = [
+    {id: 'a-1', kind: 'reaction', revision: 1, enabled: false,
+      payload: {name: '表情甲', analysis: 'auto_reviewed', collection_state: 'awaiting_confirmation'}},
+    {id: 'a-2', kind: 'reaction', revision: 2, enabled: false,
+      payload: {name: '表情乙', analysis: 'auto_reviewed', collection_state: 'awaiting_confirmation'}},
+  ];
+  const resp = {
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 2, enabled: 0, disabled: 2, manually_disabled: 0, awaiting_confirmation: 2}},
+    items: rows,
+  };
+  requests[0].resolve(resp);
+  await flush();
+
+  // Switch to awaiting_confirmation tab
+  node.click('[data-semantic-filter]', {semanticFilter: 'awaiting_confirmation'});
+  assert.equal(requests[1].values.collection_filter, 'awaiting_confirmation');
+  requests[1].resolve(resp);
+  await flush();
+
+  // Select all via checkbox change event -> triggers batch-confirm
+  handlers.change({target: {dataset: {semanticSelectAll: ''}, checked: true}});
+  assert.match(node.innerHTML, /批量通过所选 \(2\)/);
+  node.click('[data-semantic]', {semantic: 'batch-confirm'});
+  assert.equal(requests[2].values.action, 'batch_confirm_reactions');
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[2].values.items)), [
+    {id: 'a-1', revision: 1},
+    {id: 'a-2', revision: 2},
+  ]);
+  requests[2].resolve({confirmed_count: 2, confirmed_ids: ['a-1', 'a-2'], conflicts: []});
+  await flush();
+  requests[3].resolve({...resp, items: [rows[0]]});
+  await flush();
+  assert.match(node.innerHTML, /已批量通过并启用 2 张表情素材/);
+
+  // Single select + batch reject
+  handlers.change({target: {dataset: {semanticSelect: 'a-1'}, checked: true}});
+  await node.click('[data-semantic]', {semantic: 'batch-reject'});
+  assert.equal(requests[4].values.action, 'batch_reject_reactions');
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[4].values.items)), [{id: 'a-1', revision: 1}]);
+  requests[4].resolve({rejected_count: 1, rejected_ids: ['a-1'], conflicts: []});
+  await flush();
+  requests[5].resolve({...resp, items: []});
+  await flush();
+  assert.match(node.innerHTML, /已批量拒绝并删除 1 张表情素材/);
+  page.unmount();
+});
+
+test('batch analysis scans full unfiltered catalog from page 1 when a non-all filter tab is active', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+
+  const awaitingItem = {
+    id: 'await-1', kind: 'reaction', revision: 1, enabled: false,
+    payload: {name: '已审核待确认', analysis: 'auto_reviewed', collection_state: 'awaiting_confirmation'},
+  };
+  const pending1 = {
+    id: 'pending-1', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '第一页待补全', analysis: 'pending'},
+  };
+  const pending2 = {
+    id: 'pending-2', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '第二页待补全', analysis: 'pending'},
+  };
+  requests[0].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 3, enabled: 2, disabled: 1, pending: 2, awaiting_confirmation: 1}},
+    items: [awaitingItem],
+    next_after: null,
+  });
+  await flush();
+
+  // Switch to awaiting_confirmation tab (single page, 0 pending items visible, after.reaction is "").
+  node.click('[data-semantic-filter]', {semanticFilter: 'awaiting_confirmation'});
+  assert.equal(requests[1].values.collection_filter, 'awaiting_confirmation');
+  requests[1].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 3, enabled: 2, disabled: 1, pending: 2, awaiting_confirmation: 1}},
+    items: [awaitingItem],
+    next_after: null,
+  });
+  await flush();
+
+  // Trigger analyze-pending while filtered: must scan unfiltered catalog from page 1 without collection_filter.
+  node.click('[data-semantic]', {semantic: 'analyze-pending'});
+  assert.equal(requests[2].method, 'GET');
+  assert.equal(requests[2].values.kind, 'reaction');
+  assert.equal(requests[2].values.collection_filter, undefined);
+  assert.equal(requests[2].values.after, undefined);
+  requests[2].resolve({...settingsCatalog(), items: [awaitingItem, pending1], next_after: 'cursor-p2'});
+  await flush();
+
+  assert.equal(requests[3].method, 'GET');
+  assert.equal(requests[3].values.kind, 'reaction');
+  assert.equal(requests[3].values.collection_filter, undefined);
+  assert.equal(requests[3].values.after, 'cursor-p2');
+  requests[3].resolve({...settingsCatalog(), items: [pending2], next_after: null});
+  await flush();
+
+  assert.equal(requests[4].method, 'POST');
+  assert.equal(requests[4].values.action, 'analyze');
+  assert.equal(requests[4].values.id, 'pending-1');
+  requests[4].resolve({item: {...pending1, payload: {...pending1.payload, analysis: 'analyzed'}}});
+  await flush();
+
+  assert.equal(requests[5].method, 'POST');
+  assert.equal(requests[5].values.action, 'analyze');
+  assert.equal(requests[5].values.id, 'pending-2');
+  requests[5].resolve({item: {...pending2, payload: {...pending2.payload, analysis: 'analyzed'}}});
+  await flush();
+
+  // Final refresh restores the active awaiting_confirmation filter view.
+  assert.equal(requests[6].method, 'GET');
+  assert.equal(requests[6].values.collection_filter, 'awaiting_confirmation');
+  requests[6].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 3, enabled: 2, disabled: 1, pending: 0, awaiting_confirmation: 1}},
+    items: [awaitingItem],
+    next_after: null,
+  });
+  await flush();
+  assert.match(node.innerHTML, /已识别 2 张/);
+  page.unmount();
+});

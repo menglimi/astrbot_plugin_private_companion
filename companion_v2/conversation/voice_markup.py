@@ -40,7 +40,20 @@ _CONTROL_TAIL = rf"(?:(?!{_LT}\s*/?\s*(?:{_KNOWN}){_CONTROL_BOUNDARY})[^<\r\n])*
 _CONTROLS = re.compile(
     rf"{_LT}\s*(?P<close>/?)\s*(?P<tag>{'|'.join(_TAG_NAMES)}){_CONTROL_BOUNDARY}{_CONTROL_TAIL}{_GT}"
     rf"|{_LT}\s*(?P<pause>/?)\s*(?:{'|'.join(_PAUSE_NAMES)}){_CONTROL_BOUNDARY}{_CONTROL_TAIL}{_GT}"
-    r"|(?P<cue>(?<!\[)\[[^\[\]\r\n]+\](?!\]|\s*\())", re.I)
+    r"|(?P<cue>(?<!\[)\[[^\[\]\r\n]+\](?!\]|\s*\()|［[^［］\r\n]+］)", re.I)
+# FishAudio / TTS parenthetical performance cues stripped only when comparing
+# whether spoken speech covers visible text (never removed from ordinary prose).
+_COVERAGE_PAREN_CUES = re.compile(
+    r"\(\s*(?:"
+    r"laugh(?:s|ing)?|chuckle(?:s|ing)?|giggle(?:s|ing)?|snicker(?:s|ing)?|"
+    r"sigh(?:s|ing)?|whisper(?:s|ing)?|soft(?:ly)?|gentle|gently|quiet(?:ly)?|"
+    r"pause(?:s|d)?|breath(?:e|ing)?|inhale(?:s|ing)?|exhale(?:s|ing)?|gasp(?:s|ing)?|"
+    r"yawn(?:s|ing)?|pant(?:s|ing)?|cry(?:ing)?|sob(?:s|bing)?|sing(?:s|ing)?|hum(?:s|ming)?|"
+    r"happy|sad|angry|excited|calm|nervous|shy|serious|sarcastic|surprised|"
+    r"slow(?:ly)?|fast|loud(?:ly)?|low\s+voice|soft\s+voice|break|long-break"
+    r")(?:\s+[^()\r\n]{1,32})?\s*\)",
+    re.I,
+)
 # Body text outside a speech span may only lose controls that carry no wording:
 # the pause family and a fixed set of brackets that mark delivery. A paired
 # performance mark such as <soft>…</soft> stays verbatim there, because prose may
@@ -66,6 +79,11 @@ _BODY_CONTROL = re.compile(
 def visible_speech(text):
     """Unwrap known delivery tags and directions in an authored speech span."""
     return _CONTROLS.sub("", text)
+
+
+def strip_coverage_cues(text):
+    """Strip delivery controls including TTS parenthetical cues for coverage checks."""
+    return _COVERAGE_PAREN_CUES.sub("", visible_speech(text))
 
 
 def strip_performance_controls(text, *, singsing=False):

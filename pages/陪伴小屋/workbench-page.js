@@ -1099,20 +1099,85 @@ window.CompanionWorkbench = (() => {
       const count = Array.from(String(value ?? "")).length;
       return `<div class="wb-textarea-wrap">${textarea}<span class="wb-text-length${count > item.maximumChars ? " is-over-limit" : ""}" data-wb-counter="${e(item.name)}">${count} / ${e(item.maximumChars)} 字</span></div>`;
     }
+    const formatBoundDisplay = bound => {
+      if (typeof bound !== "number" || !Number.isFinite(bound)) return String(bound ?? "");
+      const abs = Math.abs(bound);
+      if (abs < 1e6) return String(bound);
+      const sign = bound < 0 ? "-" : "";
+      for (const [unit, suffix] of [[1e12, "万亿"], [1e8, "亿"], [1e4, "万"]]) {
+        if (abs >= unit) {
+          const scaled = abs / unit;
+          const text = Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(2).replace(/\.?0+$/, "");
+          return `${sign}${text} ${suffix}`;
+        }
+      }
+      return String(bound);
+    };
     const shown = e(toDisplay(item, value));
     /* 0–1 的概率在界面上按百分数编辑：步长与上下界也必须换算，
        否则输入框写着 100%，下面却提示 0–1、每次只能加减 0.01。 */
     const percent = item.kind === "float" && item.maximum === 1 && item.minimum === 0;
     const step = percent ? "1" : item.kind === "int" ? "1" : String(1 / Math.pow(10, item.decimals));
+    const minRaw = toDisplay(item, item.minimum);
+    const maxRaw = toDisplay(item, item.maximum);
+    const minShown = percent ? minRaw : formatBoundDisplay(item.minimum);
+    const maxShown = percent ? maxRaw : formatBoundDisplay(item.maximum);
+    const exactRange = `${Number.isFinite(item.minimum) && !percent ? item.minimum.toLocaleString("en-US") : minRaw} – ${Number.isFinite(item.maximum) && !percent ? item.maximum.toLocaleString("en-US") : maxRaw}${percent ? "%" : ""}`;
+    const rangeTitle = String(minShown) !== String(minRaw) || String(maxShown) !== String(maxRaw)
+      ? ` title="允许范围：${e(exactRange)}"` : "";
     const bounds = item.hasBounds
-      ? `<span class="wb-range">${e(toDisplay(item, item.minimum))} – ${e(toDisplay(item, item.maximum))}${percent ? "%" : ""}</span>` : "";
+      ? `<span class="wb-range"${rangeTitle}>${e(minShown)} – ${e(maxShown)}${percent ? "%" : ""}</span>` : "";
     const unit = percent ? " %" : "";
     return `<span class="wb-number"><input type="number" data-wb-field="${e(item.name)}"`
-      + ` min="${e(toDisplay(item, item.minimum))}" max="${e(toDisplay(item, item.maximum))}"`
+      + ` min="${e(minRaw)}" max="${e(maxRaw)}"`
       + ` step="${e(step)}" value="${shown}"${dis}>${unit ? `<span class="wb-unit">${unit.trim()}</span>` : ""}${bounds}</span>`;
   }
 
-  function fieldMarkup(state, container, name) {
+  function isWideFieldItem(item) {
+    if (!item || item.kind === "bool" || item.segmented) return false;
+    if (item.choices && item.input !== "chips") return false;
+    if (item.kind !== "text") return false;
+    if (item.input === "time" || item.input === "line") return false;
+    if (item.input === "chips" && item.chipOptions?.mode !== "multi") return false;
+    return true;
+  }
+
+  function computeGroupSpans(visibleNames, fields) {
+    const spans = new Map();
+    if (!visibleNames.length) return {spans, gridMode: ""};
+    if (visibleNames.length === 1) {
+      spans.set(visibleNames[0], " is-span-full");
+      return {spans, gridMode: "single"};
+    }
+    if (visibleNames.length === 3 && visibleNames.every(name => fields[name]?.kind === "bool")) {
+      return {spans, gridMode: "trio"};
+    }
+    let index = 0;
+    while (index < visibleNames.length) {
+      if (isWideFieldItem(fields[visibleNames[index]])) {
+        spans.set(visibleNames[index], " is-span-full");
+        index += 1;
+        continue;
+      }
+      const start = index;
+      while (index < visibleNames.length && !isWideFieldItem(fields[visibleNames[index]])) index += 1;
+      const run = visibleNames.slice(start, index);
+      if (run.length === 1) {
+        const first = run[0];
+        const isMaster = start === 0 && fields[first]?.kind === "bool" && visibleNames.length > 1;
+        spans.set(first, isMaster ? " is-span-full is-master-field" : " is-span-full");
+      } else if (run.length % 2 === 1) {
+        const first = run[0];
+        const isMaster = start === 0 && fields[first]?.kind === "bool"
+          && (run.length >= 5 || run.slice(1).some(name => fields[name]?.kind !== "bool"));
+        if (isMaster) spans.set(first, " is-span-full is-master-field");
+        else spans.set(run[run.length - 1], " is-span-full");
+      }
+    }
+    return {spans, gridMode: ""};
+  }
+
+  function fieldMarkup(state, container, name, spanClass = "") {
     const item = container.fields[name];
     if (!item) return "";
     const value = state.draft[name];
@@ -1131,6 +1196,11 @@ window.CompanionWorkbench = (() => {
        （见 wireFieldDescriptions）。只写 aria-invalid 不告诉读屏「为什么无效」。 */
     const helpId = `${state.instanceId}-help-${name}`;
     const errorId = `${state.instanceId}-error-${name}`;
+    const fieldNoteMarkup = (item, value, state) => {
+      if (typeof item.note !== "function") return "";
+      const html = item.note(value, state) || "";
+      return `<div class="wb-field-note" data-wb-field-note="${e(item.name)}">${html}</div>`;
+    };
     if (container.presentation === "policy") {
       const writeLayer = item.writeLayer || container.writeLayer;
       const overridden = provenance.explicit === true && provenance.layer === writeLayer
@@ -1142,13 +1212,15 @@ window.CompanionWorkbench = (() => {
         + `<div class="wb-field-main"><div class="wb-field-head"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>${policyReset}</div>`
         + (item.help ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
         + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
+        + fieldNoteMarkup(item, value, state)
         + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div></div>`;
     }
-    return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
+    return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}${spanClass}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
       + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
       + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
+      + fieldNoteMarkup(item, value, state)
       + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div>`
       + `<div class="wb-field-side">${reset}</div></div>`;
   }
@@ -1166,7 +1238,15 @@ window.CompanionWorkbench = (() => {
     const groupMarkup = (group, index) => {
       const names = group.fields.filter(name => container.fields[name]);
       if (!names.length) return "";
-      let rows = names.map(name => fieldMarkup(s, container, name)).join("");
+      const visibleNames = names.filter(name => {
+        const item = container.fields[name];
+        return !item?.visibleWhen || Object.entries(item.visibleWhen)
+          .every(([field, expected]) => s.draft?.[field] === expected);
+      });
+      const {spans, gridMode} = !journal && !policy
+        ? computeGroupSpans(visibleNames, container.fields)
+        : {spans: new Map(), gridMode: ""};
+      let rows = names.map(name => fieldMarkup(s, container, name, spans.get(name) || "")).join("");
       if (journal && container.group === "role_profile" && group.id === "identity") {
         /* 原来这里左侧还有一块 3:4 的虚线「像位」，只画姓名首字：
            它不读头像、不可点击、对屏幕阅读器隐藏，纯粹占掉 96px 宽。
@@ -1176,17 +1256,23 @@ window.CompanionWorkbench = (() => {
             .map(name => fieldMarkup(s, container, name)).join("")}</div></div>`
           + names.filter(name => !identityFields.includes(name)).map(name => fieldMarkup(s, container, name)).join("");
       }
-      /* 只有一段时不必重复标题。 */
-      const heading = grouped && group.title
+      const showHeader = Boolean(group.title && (grouped || (!journal && !policy && group.title !== container.title)));
+      const heading = showHeader
         ? `<h4 class="wb-group-head">${e(group.title)}</h4>` : "";
       /* 段落级的依赖说明必须渲染出来。它说的是「总闸关着时下面几项为什么没反应」——
          不显示的话，用户看到一排不起作用的开关却找不到原因。数据一直传到了这里
          （spec.sections 的 help 经 group.help 进来），只是渲染时被漏掉了。
          用与字段说明同一个 .wb-help 类，保持同一套排版。 */
-      const groupHelp = !journal && grouped && group.help
+      const groupHelp = !journal && (grouped || showHeader) && group.help
         ? `<p class="wb-help">${e(group.help)}</p>` : "";
-      return `<section class="wb-group" data-wb-group="${e(group.id || index)}">${heading}`
-        + `${groupHelp}<div class="wb-fields">${rows}</div></section>`;
+      const headerMarkup = !journal && !policy && (heading || groupHelp)
+        ? `<header class="wb-group-header"><div class="wb-group-copy">${heading}${groupHelp}</div>`
+          + `<span class="wb-group-count">${visibleNames.length} 项</span></header>`
+        : `${heading}${groupHelp}`;
+      const gridAttr = gridMode ? ` data-wb-grid="${e(gridMode)}"` : "";
+      const singleClass = !journal && !policy && visibleNames.length === 1 ? " is-single-field" : "";
+      return `<section class="wb-group${singleClass}" data-wb-group="${e(group.id || index)}">${headerMarkup}`
+        + `<div class="wb-fields"${gridAttr} data-wb-field-count="${visibleNames.length}">${rows}</div></section>`;
     };
     const useSectionNavigation = grouped && groups.length <= container.navigationLimit;
     const activeGroup = groups.find(group => group.id === state.activeGroupId)
@@ -1239,7 +1325,7 @@ window.CompanionWorkbench = (() => {
       : `<div class="wb-skeleton" role="status" aria-label="正在读取设置">`
         + `<div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div></div>`;
     const legend = !journal && !policy && s.status && container.layers.length > 1
-      ? `<div class="wb-rail-legend">${container.layers.map(layer =>
+      ? `<div class="wb-rail-legend"><span class="wb-rail-legend-label">层级</span>${container.layers.map(layer =>
           `<b>${e(LAYER_SHORT_LABELS[layer] || layer)}</b>`).join("<span>·</span>")}`
         + `</div>` : "";
      const pendingText = s.pending
@@ -1314,7 +1400,7 @@ window.CompanionWorkbench = (() => {
   function create(spec) {
     const {
       group, title, note = "", labels = {}, helps = {}, choices = {}, sections = null,
-      catalogs = {}, rows = {}, inputs = {}, suggestions = {}, segmentedChoices = [],
+      catalogs = {}, fieldNotes = {}, rows = {}, inputs = {}, suggestions = {}, segmentedChoices = [],
       visibility = {}, listFields = {}, chipOptions = {}, navigationLimit = 8,
       presentation = "", sectionTabPrefix = "", initialSection = null,
       mount: mountPoint, endpoint, order = null, pollMs = 0, query = null,
@@ -1480,6 +1566,7 @@ window.CompanionWorkbench = (() => {
         fields[name].writeLayer = definitions[name].write_layer || "";
         /* 目录型控件（选项来自读取结果，如 TTS 扩展）与多行文本框行数。 */
         if (typeof catalogs[name] === "function") fields[name].catalog = catalogs[name];
+        if (typeof fieldNotes[name] === "function") fields[name].note = fieldNotes[name];
         if (rows[name]) fields[name].rows = rows[name];
         /* 控件类型：默认按 kind 决定，`inputs` 覆盖成 time / line。
            time 值仍是字符串（'23:50'），所以 kind 保持 text，只换控件。 */
@@ -1962,6 +2049,19 @@ window.CompanionWorkbench = (() => {
       syncSourceIndeterminate(control);
     }
 
+    function syncActionsBar() {
+      const actions = mountPoint()?.querySelector(".wb-actions");
+      if (actions) {
+        const note = actions.querySelector(".wb-actions-note");
+        if (note) note.textContent = dirty() ? "有未保存的改动" : "与已保存一致";
+        const reset = actions.querySelector('[data-wb-action="reset"]');
+        if (reset) reset.disabled = !dirty();
+        actions.classList?.toggle?.("is-dirty", dirty() || state.stale || Object.keys(state.conflicts).length > 0 || state.busy);
+      }
+      updateSectionCounts();
+      emitState();
+    }
+
     function onInput(event) {
       const el = event.target;
       /* Native choice controls emit `input` before `change`. Repainting here
@@ -2016,6 +2116,7 @@ window.CompanionWorkbench = (() => {
         const row = el.closest(".wb-field");
         if (row) row.classList.toggle("is-dirty", state.base && result.value !== state.base[name]);
         applySourceValue(control, result.value);
+        syncActionsBar();
         return;
       }
       if (item.input === "identity-checklist" && el.type === "checkbox") {
@@ -2029,6 +2130,7 @@ window.CompanionWorkbench = (() => {
         if (row) row.classList.toggle("is-dirty", state.base && raw !== state.base[name]);
         const count = control?.querySelector(".wb-source-count");
         if (count) count.textContent = `已选 ${selected.length} 项`;
+        syncActionsBar();
         return;
       }
       const raw = item.kind === "bool" ? el.checked
@@ -2075,6 +2177,13 @@ window.CompanionWorkbench = (() => {
       }
       const toggle = el.closest(".wb-switch")?.querySelector(".wb-switch-state");
       if (toggle) toggle.textContent = raw ? "已开启" : "已关闭";
+      if (row && typeof item.note === "function") {
+        const noteSlot = row.querySelector?.("[data-wb-field-note]");
+        if (noteSlot) {
+          noteSlot.innerHTML = item.note(raw, state) || "";
+          window.lucide?.createIcons?.({nodes: noteSlot.querySelectorAll?.("[data-lucide]")});
+        }
+      }
       /* 已经被标红的字段：改对了就立刻撤掉标记，改得还不合法就把提示换成
          当前这句（例如字数从 340 降到 330，提示要跟着变），
          没标红的字段不在输入过程中突然变红——边打字边报错很吵。 */
@@ -2089,16 +2198,7 @@ window.CompanionWorkbench = (() => {
           if (noticeNode) noticeNode.textContent = state.notice;
         }
       }
-      const actions = mountPoint()?.querySelector(".wb-actions");
-      if (actions) {
-        const note = actions.querySelector(".wb-actions-note");
-        if (note) note.textContent = dirty() ? "有未保存的改动" : "与已保存一致";
-        const reset = actions.querySelector('[data-wb-action="reset"]');
-        if (reset) reset.disabled = !dirty();
-        actions.classList?.toggle?.("is-dirty", dirty() || state.stale || Object.keys(state.conflicts).length > 0 || state.busy);
-      }
-      updateSectionCounts();
-      emitState();
+      syncActionsBar();
     }
 
     function onClick(event) {

@@ -457,7 +457,10 @@
 .home-state-tooltip{position:absolute;z-index:60;bottom:calc(100% + 7px);left:50%;display:grid;gap:3px;width:max-content;min-width:116px;max-width:205px;padding:var(--sp-2) var(--sp-2);transform:translateX(-50%);border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface-raised);box-shadow:var(--t-shadow-lift);color:var(--t-text);text-align:left;white-space:normal;overflow-wrap:anywhere;opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--dur-fast),visibility var(--dur-fast)}
 .home-state-point:nth-child(4n+1) .home-state-tooltip,.home-state-point:nth-child(4n+2) .home-state-tooltip{left:0;transform:none;max-width:min(205px,calc(300% + 8px))}
 .home-state-point:nth-child(4n+3) .home-state-tooltip,.home-state-point:nth-child(4n) .home-state-tooltip{left:auto;right:0;transform:none;max-width:min(205px,calc(300% + 8px))}
-.home-state-point:hover .home-state-tooltip{opacity:1;visibility:visible}
+.home-state-point:hover .home-state-tooltip,
+.home-state-point:focus-within .home-state-tooltip,
+.home-state-point:focus-visible .home-state-tooltip,
+.home-state-point[data-tooltip-open="true"] .home-state-tooltip{opacity:1;visibility:visible}
 .home-state-tooltip b{font-size:var(--fs-micro);line-height:1.5}
 .home-state-tooltip>span{font-size:var(--fs-micro);line-height:1.55;color:var(--t-text-soft)}
 .home-state-empty{grid-column:1/-1;align-self:center;padding:0 var(--sp-1);font-size:var(--fs-tiny);color:var(--t-text-soft)}
@@ -676,8 +679,19 @@
 @media(max-width:760px){
   .home-agenda-rows{--agenda-rail:76px}
   .home-agenda-row{grid-template-columns:56px 10px minmax(0,1fr)}
-  .home-agenda-status{padding:11px 12px}
+  .home-agenda-status{padding:var(--sp-3)}
+  .home-agenda-item{grid-template-columns:22px minmax(0,1fr);column-gap:var(--sp-2)}
+  .home-agenda-body{display:block}
+  .home-agenda-body time{display:block;white-space:normal}
+  .home-agenda-body strong{margin-top:calc(var(--sp-1) * .5)}
+  .home-agenda-item:is([data-tone="active"],[data-tone="current"]) .home-agenda-body{display:block}
+  .home-lede-nav button,.home-tabs button{min-height:44px}
   .shell-side .home-agenda-scroll{max-height:none;overflow:visible;overscroll-behavior:auto;padding-right:0;-webkit-mask-image:none;mask-image:none}
+}
+@media(max-width:560px){
+  .room-doors{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .room-doors button+button{padding-left:0}
+  .room-doors button{min-height:44px;padding:var(--sp-2) var(--sp-1)}
 }
 @keyframes home-agenda-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes home-agenda-fade{from{opacity:0}to{opacity:1}}

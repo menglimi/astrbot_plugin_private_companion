@@ -192,6 +192,17 @@ class GroupReplyWebAPI:
                     if action in ("status", "configure"):
                         from .video.compressor import video_capabilities_status
                         status["video"] = video_capabilities_status()
+                        try:
+                            from .private_semantic_debounce import semantic_debounce_status
+                            status["private_debounce_semantic_status"] = semantic_debounce_status(
+                                getattr(controller, "config", None),
+                                data_root=getattr(controller, "data_root", None),
+                            )
+                        except Exception:
+                            status["private_debounce_semantic_status"] = {
+                                "onnx": {"ready": False, "reason": "unavailable"},
+                                "laya": {"ready": False, "mode": "", "model": "", "reason": "unavailable"},
+                            }
                 return outcome_response(result)
             except TaskError as error:
                 return outcome_response(Outcome.failed(error.code, str(error)))

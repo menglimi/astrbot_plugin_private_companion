@@ -39,6 +39,6 @@ test("英雄卡与小卡的徽标落到第二行，文字列不再被挤零", ()
 });
 
 test("小卡网格按最小列宽换行，而不是继续三等分", () => {
-  assert.match(CSS, /\.perception-mini-grid\.is-three\{grid-template-columns:repeat\(auto-fit,minmax\(170px,1fr\)\)\}/);
-  assert.match(CSS, /\.perception-mini-grid\.is-two\{grid-template-columns:repeat\(auto-fit,minmax\(180px,1fr\)\)\}/);
+  assert.match(CSS, /\.perception-mini-grid\.is-three\{grid-template-columns:repeat\(auto-fit,minmax\(min\(170px,100%\),1fr\)\)\}/);
+  assert.match(CSS, /\.perception-mini-grid\.is-two\{grid-template-columns:repeat\(auto-fit,minmax\(min\(180px,100%\),1fr\)\)\}/);
 });

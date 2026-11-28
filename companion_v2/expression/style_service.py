@@ -321,18 +321,31 @@ def _carried_flag(job, completion, name):
     return "unknown"
 
 
-def parse_output(raw, *, allowed_evidence, default_channels=None, limit=learning.MAX_SIGNALS_PER_RUN):
+def parse_output(raw, *, allowed_evidence, default_channels=None, limit=learning.MAX_SIGNALS_PER_RUN,
+                 tolerate_invalid_signals=True):
     """Bridge the candidate contract onto this service's error vocabulary.
 
     ``limit`` is the count the dispatched request actually asked for; it stays a
     hard cap here, so an answer wider than its own schema is refused instead of
-    accepted up to the product maximum.
+    accepted up to the product maximum. When ``tolerate_invalid_signals`` is
+    enabled, valid candidates in the same batch are retained while invalid ones
+    are filtered out with exact parse sub-reasons and field paths.
     """
     try:
         return learning.parse_output(raw, allowed_evidence=allowed_evidence,
-                                     default_channels=default_channels, limit=limit)
+                                     default_channels=default_channels, limit=limit,
+                                     tolerate_invalid_signals=tolerate_invalid_signals)
     except ValueError as error:
-        raise TaskError("expression_output_invalid", str(error) or "expression output is invalid") from error
+        parse_reason = getattr(error, "reason", None) or str(error) or "invalid_output"
+        field_path = getattr(error, "field_path", "") or ""
+        details = {"parse_error": parse_reason}
+        if field_path:
+            details["field_path"] = field_path
+        rejected_count = int(getattr(error, "rejected_count", 0) or 0)
+        if rejected_count > 0:
+            details["rejected_signals"] = rejected_count
+        raise TaskError("expression_output_invalid", str(error) or "expression output is invalid",
+                        details=details) from error
 
 
 # How long one admitted attempt may keep a material batch to itself. A model
@@ -768,14 +781,17 @@ class ExpressionStyleService:
         return "lease_expired"
 
     def _note_refusal(self, observation, code):
-        """Say which saved value refused this round, when the refusal named it.
-
-        A route that refuses a plan because the saved output ceiling is above what
-        the selected provider declares is not a prompt that grew too long; without
-        these numbers the operator has to guess which of the two ends to edit.
-        """
+        """Say which saved value or parse sub-reason refused this round, when recorded."""
         diagnosis = observation.get("diagnosis")
         if not isinstance(diagnosis, dict) or not diagnosis:
+            return
+        if code == "expression_output_invalid" or "parse_error" in diagnosis:
+            logger.warning("[CompanionV2] 表达学习输出校验失败 stage=%s code=%s parse_error=%s "
+                           "field_path=%s rejected_signals=%s",
+                           observation.get("stage") or "parse", code,
+                           diagnosis.get("parse_error", "unknown"),
+                           diagnosis.get("field_path", "unknown"),
+                           diagnosis.get("rejected_signals", 0))
             return
         logger.warning("[CompanionV2] 表达学习上限配置与模型能力不匹配 stage=%s code=%s "
                        "saved_max_output_tokens=%s provider_max_output_tokens=%s "
@@ -1526,12 +1542,12 @@ class ExpressionStyleService:
     def _note_parsed(task_id, job, proposed, counters):
         """How many candidates the model proposed and what happened to each."""
         logger.info("[CompanionV2] 表达学习解析结果 task=%s material=%s mode=%s proposed=%d "
-                    "dedup_signature=%d dedup_form=%d capacity_dropped=%d confidence_dropped=%d "
-                    "inserted=%d pending=%d adopted=%d support=%d",
+                    "invalid_dropped=%d dedup_signature=%d dedup_form=%d capacity_dropped=%d "
+                    "confidence_dropped=%d inserted=%d pending=%d adopted=%d support=%d",
                     task_id, str(job.get("material_hash") or "")[:12], job["policy"].learning_mode,
-                    proposed, counters["signature"], counters["form"], counters["capacity"],
-                    counters.get("confidence", 0), counters["inserted"], counters["inserted"], 0,
-                    counters["support"])
+                    proposed, counters.get("invalid", 0), counters["signature"], counters["form"],
+                    counters["capacity"], counters.get("confidence", 0), counters["inserted"],
+                    counters["inserted"], 0, counters["support"])
 
     def _checkpoint_state(self, context):
         """Whether this window holds a scan checkpoint; read-only, log-only.
@@ -1646,16 +1662,27 @@ class ExpressionStyleService:
         enter_stage(job, "parse")
         try:
             if completion.draft is None:
-                raise TaskError("expression_output_invalid", "style learning needs a complete response")
+                raise TaskError("expression_output_invalid", "style learning needs a complete response",
+                                details={"parse_error": "missing_draft", "field_path": "$"})
             output = parse_output(completion.draft.text,
                 allowed_evidence=sample_handles(job["samples"]),
-                default_channels=(context.scope.kind.value,), limit=limit)
+                default_channels=(context.scope.kind.value,), limit=limit,
+                tolerate_invalid_signals=True)
+            if output.rejected_signals:
+                rejected_summary = ",".join(
+                    f"{entry.reason}@{entry.field_path}" for entry in output.rejected_signals[:6]
+                )
+                logger.warning("[CompanionV2] 表达学习过滤无效候选并保留有效项 task=%s material=%s "
+                               "kept=%d rejected=%d reasons=%s",
+                               run.task.task_id, str(job.get("material_hash") or "")[:12],
+                               len(output.signals), len(output.rejected_signals), rejected_summary)
             leave_stage(job, "parse")
             await self.guard(context, job["instruction"])
             enter_stage(job, "commit")
             # Counters exist only for the parse log line; the accepted list and
             # every write keep exactly the order and conditions they had.
-            counters = {"signature": 0, "form": 0, "capacity": 0, "support": 0, "confidence": 0}
+            counters = {"invalid": len(output.rejected_signals), "signature": 0, "form": 0,
+                        "capacity": 0, "support": 0, "confidence": 0}
             with self.runtime.transaction() as connection:
                 run.validate()
                 run.begin_effect()

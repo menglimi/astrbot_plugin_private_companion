@@ -16,9 +16,15 @@ window.CompanionReplyPage = (() => {
   const choices = {
     group_tool_profile: {full: "完整工具", standard: "常用工具", lean: "精简工具"},
     private_tool_profile: {full: "完整工具", lean: "精简工具", custom: "按组自选", none: "关闭陪伴工具"},
+    private_debounce_semantic_mode: {
+      off: "关闭（仅按静默时间）",
+      laya: "复用 Laya 决策模型",
+      onnx: "本地 ONNX 小模型",
+    },
       streaming_mode: {buffered: "收齐后分段发送", incremental: "边生成边分段发送"},
       rule_mode: {words: "词列表", regex: "正则表达式", sentences: "按句子", paragraphs: "按段落"},
       part_gap_mode: {fixed: "固定", random: "随机", log: "按文本长度"},
+      t2i_segmentation_mode: {per_segment: "逐段判断", whole_reply: "整条合并转图", off: "关闭转图"},
     prompt_style_mode: {constraint: "约束", free: "自由", guided: "引导"},
     content_cleanup_mode: {words: "按清理词", regex: "按正则"},
     content_cleanup_scope: {leading: "句首", middle: "句中", trailing: "句尾"},
@@ -50,6 +56,7 @@ window.CompanionReplyPage = (() => {
       min_segment_chars: "短段合并参考字数", max_segments: "最多消息条数", part_gap_ms: "固定段间隔（毫秒）",
       part_gap_mode: "分段间隔方式", part_gap_min_ms: "随机间隔下限（毫秒）",
       part_gap_max_ms: "随机间隔上限（毫秒）", part_gap_log_base: "按长度调节强度",
+      t2i_segmentation_mode: "分段回复文本转图模式",
       image_position: "图片位置", prompt: "模型分段提示词", split_words: "分段标记词",
       match_width_variants: "兼容全角与半角标点", rule_regex: "分段正则表达式",
       prompt_style_mode: "提示词风格",
@@ -99,7 +106,8 @@ window.CompanionReplyPage = (() => {
       private_closing_guard_window_seconds: "收尾判断窗口（秒）",
       private_closing_guard_prompt_enabled: "同时提示模型自然收尾",
       private_debounce_enabled: "启用私聊连续输入防抖",
-      private_debounce_semantic_enabled: "使用本地模型判断是否说完",
+      private_debounce_semantic_mode: "语义补话判断",
+      private_debounce_semantic_enabled: "本地 ONNX 补话判断（旧开关）",
       private_debounce_min_ms: "最短静默（毫秒）",
       private_debounce_max_ms: "最长静默（毫秒）",
       private_debounce_total_ms: "单轮总上限（毫秒）",
@@ -182,6 +190,7 @@ window.CompanionReplyPage = (() => {
       part_gap_min_ms: "随机模式的最短等待时间。",
       part_gap_max_ms: "随机模式的最长等待时间。",
       part_gap_log_base: "按长度调节的曲线基数；数值越接近 1，长段与短段的间隔差异越明显。",
+      t2i_segmentation_mode: "仅在 AstrBot 开启「文本转图像（t2i）」时生效：逐段判断对超过字数阈值的单段正文转图并保留语音与分段；整条合并转图在总字数超阈值时合并为单张长图；关闭转图则分段或语音回复保持纯文字。",
       prompt: "模型自主决定边界时使用。最多 4000 字；可用 {{split_marker}} 表示边界。预览不调用模型，可用“模型边界示例”检查标记后的最终分段。",
       rule_mode: "选择分段词、分段正则或句子/段落规则；规则补充分段始终生效。",
       split_words: "输入标点或其他分隔词，回车添加；换行和空格可从常用分段词直接添加。默认不按英文句点 . 和全角右括号 ）分段；e.g. / U.S. / example.com 这类点号连写也会保持完整。",
@@ -226,7 +235,7 @@ window.CompanionReplyPage = (() => {
       voice_foreign_text_mode: "外文按原文、译文或双语朗读。",
       voice_position: "语音在整条回复里的位置。",
       voice_cooldown_seconds: "两次语音的最短间隔；0 表示不等待。",
-      voice_max_speech_chars: "单段朗读上限，超出会截断。",
+      voice_max_speech_chars: "单块语音最大字数，超出后会按句末标点自动拆成多条连续语音，不会截断丢字；长语音或慢速耳语建议设为 200–400。",
       voice_timeout_seconds: "等待合成的最长时间，超时退回文字。",
       voice_provider_id: "角色级绑定，私聊与群聊共用。",
       voice_zh_provider_id: "留空时跟随通用扩展。",
@@ -273,10 +282,11 @@ window.CompanionReplyPage = (() => {
       private_closing_guard_window_seconds: "只在这个时间窗口内判断收尾；超过窗口后仍按普通消息回复。范围 60–7200 秒。",
       private_closing_guard_prompt_enabled: "未触发静默时，把收尾语境作为本轮提示，提醒模型不要另起话题、追问或再补一条同义道别。",
       private_debounce_enabled: "仅纯文本私聊生效：第一条消息立即开始准备，短线补充并入同一轮，只触发一次模型请求。图片、语音、视频、文件、引用和命令立即处理。",
-      private_debounce_semantic_enabled: "需要在 AstrBot 插件配置中设置本地 ONNX 模型目录。等待补话仍受单轮总上限限制。",
+      private_debounce_semantic_mode: "对方把一句话拆成几条连发时，由模型判断“还没说完”并多等几秒收齐再回复。「复用 Laya 决策模型」直接使用「模型与连接 → Laya」里已配好的决策模型，无需额外部署；「本地 ONNX 小模型」独立于 Laya 运行，需在 AstrBot 插件配置「私聊语义防抖」填写模型目录并安装依赖。延长等待仍受「单轮总上限」限制（默认 8 秒，想多等请同步调大）。",
+      private_debounce_semantic_enabled: "旧版布尔兼容项；请优先通过「语义补话判断」选择关闭、复用 Laya 或本地 ONNX 模型。",
       private_debounce_min_ms: "长消息靠近这个下限；与最长静默相同时使用固定等待，推荐从 1500 毫秒起调整。",
       private_debounce_max_ms: "短消息靠近这个上限；实际窗口还受单轮总上限约束，默认 4000 毫秒。",
-      private_debounce_total_ms: "从第一条消息开始计算，达到该时间后不再等待新消息；默认 8000 毫秒，不能小于最长静默。",
+      private_debounce_total_ms: "从第一条消息开始计算，达到该时间后不再等待新消息；默认 8000 毫秒，不能小于最长静默。开启语义补话判断时，延长等待也不会超过这个总上限。",
       group_conversation_followup_enabled: "开启后，可由决策模型判断是否回应上一轮互动后的非点名发言；关闭后仅按独立唤醒策略参与。",
       group_conversation_followup_seconds: "距上次实际回复多久内可以续接，默认 120 秒。等待补充或选择旁听不会延长已回复链的有效时间。",
       group_conversation_followup_max_turns: "默认最多自动续接 3 轮，最初唤醒的回复不计入。按宿主发送调用正常返回的回复事件计数，分段与工具循环只算一轮；等待、旁听、失败或结果未知不消耗轮数。到限后停止自动续接及弱触发，明确 @、引用或直呼可重新开启；仅调整窗口时不影响其他群。",
@@ -327,28 +337,29 @@ window.CompanionReplyPage = (() => {
       {id: "segment", title: "分段回复", help: "",
        fields: ["enabled", "streaming", "streaming_mode", "llm_controlled", "rule_mode", "split_words",
                 "match_width_variants", "rule_regex", "threshold", "min_segment_chars", "max_segments", "prompt",
-                "part_gap_mode", "part_gap_ms", "part_gap_min_ms", "part_gap_max_ms", "part_gap_log_base"]},
+                "part_gap_mode", "part_gap_ms", "part_gap_min_ms", "part_gap_max_ms", "part_gap_log_base",
+                "t2i_segmentation_mode"]},
       {id: "style", title: "说话方式与表达形式", help: "",
        fields: ["prompt_style_mode", "style_prompt", "enable_humanized_expression", "humanized_expression_prompt"]},
       {id: "cleanup", title: "文字整理", help: "",
        fields: ["content_cleanup_enabled", "content_cleanup_mode", "content_cleanup_scope",
                 "content_cleanup_rule", "content_cleanup_words", "content_replacement_enabled",
                 "content_replacements"]},
-      {id: "wakeup_direct", title: "明确参与信号", help: "",
+      {id: "wakeup_direct", title: "明确参与信号", help: "控制群聊回应总闸、工具档位以及直呼词与提问识别门槛。",
        fields: ["group_wakeup_enabled", "group_tool_profile", "private_tool_profile", "private_tool_groups",
                 "group_wakeup_direct_words", "group_wakeup_context_words",
                 "group_wakeup_question_enabled", "group_wakeup_question_threshold"]},
-      {id: "wakeup_interest", title: "兴趣与概率参与", help: "",
+      {id: "wakeup_interest", title: "兴趣与概率参与", help: "配置兴趣关键词抽取与本轮图片相关性权重，未点名时按概率进入判断。",
        fields: ["group_wakeup_interest_keywords", "group_wakeup_interest_probability",
                 "group_wakeup_image_enabled", "group_wakeup_image_weight",
                 "group_wakeup_image_default_guidance_enabled"]},
-      {id: "wakeup_members", title: "直呼与成员", help: "",
+      {id: "wakeup_members", title: "直呼与成员", help: "管理角色群内昵称与主要成员专属直呼词，同一角色的群聊共用。",
        fields: ["group_wakeup_bot_name_enabled", "group_wakeup_bot_name",
                 "group_wakeup_primary_member_ids", "group_wakeup_owner_direct_words"]},
-      {id: "wakeup_cold_group", title: "冷场与等待", help: "",
+      {id: "wakeup_cold_group", title: "冷场与等待", help: "控制冷群重启评估与短消息合并等待时长。",
        fields: ["group_wakeup_cold_group_enabled", "group_wakeup_cold_group_threshold",
                 "group_wakeup_cold_group_idle_minutes", "group_wakeup_short_text_wait_ms"]},
-      {id: "wakeup_fatigue", title: "疲劳与冷却", help: "",
+      {id: "wakeup_fatigue", title: "疲劳与冷却", help: "限制短时间内频繁接话的节奏、冷却窗口与诊断记录条数。",
        fields: ["group_wakeup_fatigue_limit", "group_wakeup_fatigue_decay_minutes",
                 "group_wakeup_cooldown_seconds", "group_wakeup_generated_keyword_limit",
                 "group_wakeup_topic_interest_max_boost", "group_wakeup_debounce_pending_penalty",
@@ -358,42 +369,42 @@ window.CompanionReplyPage = (() => {
                 "group_conversation_followup_max_turns"]},
       {id: "private_debounce", title: "私聊节奏 · 连续输入", help: "第一条消息到达即开始准备，后续文本并入同一轮；总等待不超过配置上限。",
        fields: ["private_debounce_enabled", "private_debounce_min_ms", "private_debounce_max_ms",
-                "private_debounce_total_ms", "private_debounce_semantic_enabled"]},
+                "private_debounce_total_ms", "private_debounce_semantic_mode"]},
       {id: "silence_policy", title: "沉默策略", help: "统一管理哪些情况允许自动沉默；具体窗口与阈值仍在下方各分区调整。忙碌与休息闸门使用下方独立设置，它们只延期、不取消。Laya 的 wait/silent 与未点名群聊旁听仍由决策和群聊参与设置控制。",
        fields: ["recall_silence_enabled", "private_closing_guard_enabled", "group_air_guard_enabled"]},
-      {id: "group_air_guard", title: "空气护栏 · 细则", help: "",
+      {id: "group_air_guard", title: "空气护栏 · 细则", help: "按连续回复轮数与冷却时长防止群聊过度接话，明确点名始终可回应。",
        fields: ["group_high_intensity_enabled", "group_air_guard_window_seconds", "group_air_guard_max_bot_replies",
                 "group_air_guard_cooldown_seconds", "group_air_guard_polite_loop_limit"]},
-      {id: "private_closing", title: "私聊收尾 · 细则", help: "",
+      {id: "private_closing", title: "私聊收尾 · 细则", help: "在收尾时间窗内避免互相道晚安或重复告别。",
        fields: ["private_closing_guard_window_seconds",
                 "private_closing_guard_prompt_enabled"]},
-      {id: "group_content_safety", title: "内容护栏 · 挡说错话", help: "",
+      {id: "group_content_safety", title: "内容护栏 · 挡说错话", help: "守住群聊中的提示注入、跨会话隐私与现实承诺三条安全边界。",
        fields: ["enable_group_injection_guard", "enable_group_privacy_guard",
                 "enable_group_reality_promise_guard"]},
-      {id: "media_permissions", title: "角色级理解许可", help: "",
+      {id: "media_permissions", title: "角色级理解许可", help: "按私聊与群聊分别控制图片、视频、文件理解的启用许可。",
        fields: ["image_understanding_private_enabled", "image_understanding_group_enabled",
                 "video_understanding_private_enabled", "video_understanding_group_enabled",
                 "file_understanding_private_enabled", "file_understanding_group_enabled"]},
-      {id: "context_image", title: "上下文图片描述", help: "",
+      {id: "context_image", title: "上下文图片描述", help: "为连续聊天中收到的图片生成简要文字记录，供后续轮次理解。",
        fields: ["enable_context_image_captioning", "context_image_caption_max_items"]},
-      {id: "native_image", title: "AstrBot 原生动图理解", help: "",
+      {id: "native_image", title: "AstrBot 原生动图理解", help: "当消息含 GIF 动图时向主模型补充宫格帧顺序说明，提升连续动作理解准确度。",
        fields: ["astrbot_animated_image_understanding_enabled"]},
-      {id: "image_narration", title: "图片视觉转述", help: "",
+      {id: "image_narration", title: "图片视觉转述", help: "管理当前窗口图片转述增强、运行期缓存上限、角色自识线索及超时冷却参数。",
        fields: ["enable_private_image_self_recognition", "enable_private_image_vision_cache",
                 "private_image_vision_cache_max_items", "private_image_self_recognition_hint",
                 "private_image_vision_custom_prompt",
                 "private_image_vision_max_chars", "private_image_vision_wait_seconds",
                 "private_image_provider_failure_cooldown_seconds"]},
-      {id: "video_narration", title: "视频理解", help: "",
+      {id: "video_narration", title: "视频理解", help: "配置视频压缩上限、时长限制、超限处置策略、引用视频与问答增强。",
        fields: ["video_understanding_enabled", "video_understanding_target_mb",
                 "video_understanding_max_duration_seconds", "video_understanding_oversize_action",
                 "video_understanding_quoted_enabled", "video_understanding_qa_enabled",
                 "video_understanding_max_chars", "video_understanding_wait_seconds",
                 "video_self_recognition_hint", "video_understanding_prompt"]},
-      {id: "file_understanding", title: "文件理解", help: "",
+      {id: "file_understanding", title: "文件理解", help: "选择允许提取正文的文件格式，并限制单文件体积、正文预算与读取超时。",
        fields: ["file_understanding_enabled", "file_understanding_format_groups", "file_understanding_max_size_mb",
                 "file_understanding_max_chars", "file_understanding_timeout_seconds", "file_understanding_prompt"]},
-      {id: "forwards", title: "合并转发理解", help: "",
+      {id: "forwards", title: "合并转发理解", help: "决定当前窗口是否展开并改写合并转发消息中的节点与媒体。",
        fields: ["forward_message_adaptation_enabled"]},
       {id: "voice", title: "开关与触发", help: "语音总开关和当前对象的朗读开关都需开启；关闭时文字照常发送。",
        fields: ["voice_enabled", "voice_trigger_mode", "voice_probability", "voice_cooldown_seconds"]},
@@ -422,7 +433,7 @@ window.CompanionReplyPage = (() => {
        fields: ["framework_error_guard_enabled", "enable_forbidden_word_recall", "recall_forbidden_words",
                 "recall_forbidden_scope", "recall_forbidden_word_case_sensitive", "reply_diagnostic_limit"]},
     ],
-    segmentedChoices: ["rule_mode", "part_gap_mode", "streaming_mode", "prompt_style_mode"],
+    segmentedChoices: ["rule_mode", "part_gap_mode", "streaming_mode", "prompt_style_mode", "t2i_segmentation_mode"],
     inputs: {
       content_cleanup_scope: "chips",
       private_tool_groups: "chips",
@@ -460,7 +471,7 @@ window.CompanionReplyPage = (() => {
       private_closing_guard_window_seconds: {private_closing_guard_enabled: true},
       private_closing_guard_prompt_enabled: {private_closing_guard_enabled: true},
       private_debounce_min_ms: {private_debounce_enabled: true},
-      private_debounce_semantic_enabled: {private_debounce_enabled: true},
+      private_debounce_semantic_mode: {private_debounce_enabled: true},
       private_debounce_max_ms: {private_debounce_enabled: true},
       private_debounce_total_ms: {private_debounce_enabled: true},
     },
@@ -519,9 +530,7 @@ window.CompanionReplyPage = (() => {
         : view === "perception"
           ? ""
           : spec.note,
-      helps: view === "perception"
-        ? {...spec.helps, ...Object.fromEntries(sections.flatMap(section => section.fields).map(field => [field, ""]))}
-        : spec.helps,
+      helps: spec.helps,
       sections,
       order: sections.flatMap(section => section.fields),
     };
@@ -587,6 +596,71 @@ window.CompanionReplyPage = (() => {
     const item = (state.status?.tts?.providers || []).find(provider => provider.id === id);
     return item ? [item.id, item.model, item.voice].filter(Boolean).join(" · ") : id;
   }
+  function voiceConflictGuidance(draft) {
+    if (!draft || draft.voice_enabled !== true) return null;
+    if (draft.voice_generation_mode === "plain" && draft.voice_conversion_scope === "partial") {
+      return {
+        message: "当前为「朗读正文 + 部分转语音」：程序仍需要模型用语音标签挑出短句，建议切到「模型语音标签」。",
+        preset: "partial_recommended",
+        actionLabel: "一键切为模型语音标签",
+      };
+    }
+    if (draft.voice_delivery_mode === "voice_only" && draft.voice_conversion_scope === "partial") {
+      return {
+        message: "当前为「仅语音 + 部分转语音」：仅语音只在语音完整覆盖正文时才隐藏文字，未朗读部分仍会发出文字。",
+        preset: "voice_only_full",
+        actionLabel: "一键套用仅语音推荐",
+      };
+    }
+    if (draft.voice_delivery_mode === "voice_only"
+        && draft.voice_segment_mode === "whole"
+        && draft.enabled === true) {
+      return {
+        message: "分段回复开启且「朗读段落」为「整段回复」时，前面的文字气泡会先发出，「仅语音」无法隐藏已发出的文字；建议改为「每一段」。",
+        preset: "voice_only_segmented",
+        actionLabel: "一键改为逐段仅语音",
+      };
+    }
+    const maxChars = Number(draft.voice_max_speech_chars);
+    if (Number.isFinite(maxChars) && maxChars > 600) {
+      return {
+        message: `单段朗读上限当前为 ${maxChars} 字；系统会自动按预估时长分块防超时，长语音或耳语仍建议设为 200–400 字。`,
+        preset: "",
+        actionLabel: "",
+      };
+    }
+    return null;
+  }
+  function applyVoicePreset(preset) {
+    const draft = draftSettings();
+    if (!draft) return;
+    const patches = {
+      partial_recommended: {voice_generation_mode: "model_tag"},
+      voice_only_full: {
+        voice_conversion_scope: "full",
+        ...(draft.enabled === true && draft.voice_segment_mode === "whole" ? {voice_segment_mode: "each"} : {}),
+      },
+      voice_only_segmented: {voice_segment_mode: "each", voice_conversion_scope: "full"},
+    };
+    const patch = patches[preset];
+    if (!patch) return;
+    let touchedDom = false;
+    for (const [field, value] of Object.entries(patch)) {
+      const control = root?.querySelector?.(`[data-wb-field="${field}"]`);
+      if (control) {
+        control.value = String(value);
+        control.dispatchEvent?.(new Event("change", {bubbles: true}));
+        touchedDom = true;
+      } else {
+        draft[field] = value;
+      }
+    }
+    if (!touchedDom) {
+      schedulePreview();
+      notifyStatus();
+      renderVoiceHero();
+    }
+  }
   function voiceHeroMarkup() {
     const draft = draftSettings();
     if (!draft) {
@@ -608,9 +682,11 @@ window.CompanionReplyPage = (() => {
     const title = !enabled ? "语音朗读已关闭"
       : probability <= 0 ? "触发概率为 0，暂时不会朗读"
       : "下一轮可能带上朗读";
+    const guidance = reading ? voiceConflictGuidance(draft) : null;
     const alert = !enabled ? "文字会照常发送；需要声音时再打开「启用语音」，不会影响其他表达设置。"
       : probability <= 0 ? "当前触发概率是 0；把「触发概率」调高后才会合成语音。"
       : !draft.voice_provider_id ? "还没有绑定 TTS 扩展；在「模型与连接 → 语音」里选好发音人与音色后才会真的出声。"
+      : guidance ? guidance.message
       : "";
     const chips = [
       ["触发", trigger],
@@ -631,6 +707,9 @@ window.CompanionReplyPage = (() => {
       + (alert ? `<p class="voice-hero-alert" role="note">${icon("triangle-alert")}<span>${e(alert)}</span></p>` : "")
       + `<div class="voice-hero-chips">${chips}</div>`
       + `<div class="voice-hero-actions">`
+      + (guidance?.preset
+        ? `<button type="button" class="button small" data-voice-preset="${e(guidance.preset)}">${icon("sparkles")}${e(guidance.actionLabel)}</button>`
+        : "")
       + `<button type="button" class="button small" data-voice-jump="voice">${icon("sliders-horizontal")}调整开关与触发</button>`
       + `<a class="button small" href="#manage/models">${icon("audio-lines")}配置 TTS 引擎 ↗</a></div>`
       + `<p class="voice-hero-hint">TTS 在「模型与连接」配置；页尾的全局语音总开关也要开启。</p></div>`
@@ -853,11 +932,69 @@ window.CompanionReplyPage = (() => {
     } finally { clearTimeout(timer); }
   }
 
-  /* 旧版整段清理迁成三项全选；其余单值保持原样，避免无改动也变脏。 */
+  /* 旧版整段清理迁成三项全选；旧版私聊语义防抖布尔值同步推导三档模式，避免无改动也变脏。 */
   function normalizeReplyDraft(draft) {
     if (draft?.content_cleanup_scope === "all") {
       draft.content_cleanup_scope = "leading、middle、trailing";
     }
+    if (draft && !Object.hasOwn(draft, "private_debounce_semantic_mode")
+        && Object.hasOwn(draft, "private_debounce_semantic_enabled")) {
+      draft.private_debounce_semantic_mode = draft.private_debounce_semantic_enabled ? "onnx" : "off";
+    }
+  }
+
+  /* 语义补话判断的只读就绪徽标：按当前草稿选项与后端探测状态即时反馈是否真正生效。 */
+  function debounceSemanticStatusMeta(mode, statusPayload) {
+    const resolved = ["off", "laya", "onnx"].includes(mode) ? mode : "off";
+    const info = statusPayload?.private_debounce_semantic_status || {};
+    if (resolved === "laya") {
+      const laya = info.laya || {};
+      if (laya.ready === true) {
+        const detail = [laya.mode, laya.model].filter(Boolean).join(" · ");
+        return {
+          tone: "ok", iconName: "check-circle-2",
+          text: detail ? `Laya 已就绪（${detail}）` : "Laya 已就绪",
+        };
+      }
+      const layaReasons = {
+        disabled: "Laya 尚未启用（当前回退纯计时，请先在「模型与连接 → Laya」开启）",
+        endpoint_missing: "Laya 服务地址未填写（当前回退纯计时）",
+        package_missing: "本机未安装 Laya 依赖（当前回退纯计时）",
+        gpu_unavailable: "当前 PyTorch 不支持 CUDA，本地 Laya 未就绪（当前回退纯计时）",
+        model_missing: "本地 Laya 模型权重尚未就绪（当前回退纯计时）",
+      };
+      return {
+        tone: "warn", iconName: "triangle-alert",
+        text: layaReasons[laya.reason] || "Laya 尚未就绪（当前回退纯计时）",
+      };
+    }
+    if (resolved === "onnx") {
+      const onnx = info.onnx || {};
+      if (onnx.ready === true) {
+        return {tone: "ok", iconName: "check-circle-2", text: "本地 ONNX 模型已就绪"};
+      }
+      if (onnx.reason === "loading") {
+        return {tone: "muted", iconName: "loader-circle", text: "本地 ONNX 模型正在加载，就绪前按计时等待"};
+      }
+      const onnxReasons = {
+        model_dir_missing: "未配置本地 ONNX 目录（当前未生效，回退纯计时）",
+        dependencies_missing: "缺少 onnxruntime 或 tokenizers 依赖（当前未生效，回退纯计时）",
+        model_files_missing: "ONNX 目录缺少 model.onnx 或 tokenizer.json（当前未生效，回退纯计时）",
+        config_invalid: "本地 ONNX 配置路径或参数无效（当前未生效，回退纯计时）",
+        load_failed: "本地 ONNX 模型加载失败（当前未生效，回退纯计时）",
+      };
+      return {
+        tone: "warn", iconName: "triangle-alert",
+        text: onnxReasons[onnx.reason] || "未配置本地 ONNX 目录/依赖（当前未生效，回退纯计时）",
+      };
+    }
+    return {tone: "muted", iconName: "clock-3", text: "仅按上方最短 / 最长静默时间等待"};
+  }
+
+  function debounceSemanticBadgeMarkup(mode, statusPayload) {
+    const meta = debounceSemanticStatusMeta(mode, statusPayload);
+    return `<span class="reply-debounce-badge is-${e(meta.tone)}" data-reply-debounce-badge data-tone="${e(meta.tone)}" role="status" aria-live="polite">`
+      + `${icon(meta.iconName)}<span>${e(meta.text)}</span></span>`;
   }
 
   /* 读取由工作台负责；这里只订阅它的结果，用来渲染预览与保存摘要。 */
@@ -1399,6 +1536,11 @@ window.CompanionReplyPage = (() => {
       return;
     }
     const previewAction = event.target.closest("[data-reply-action]")?.dataset.replyAction;
+    const voicePreset = event.target.closest("[data-voice-preset]")?.dataset.voicePreset;
+    if (voicePreset) {
+      applyVoicePreset(voicePreset);
+      return;
+    }
     const voiceJump = event.target.closest("[data-voice-jump]")?.dataset.voiceJump;
     if (voiceJump) {
       const target = root?.querySelector?.(`[data-wb-group="${voiceJump}"]`);
@@ -1664,6 +1806,10 @@ window.CompanionReplyPage = (() => {
       endpoint: PREFIX + route,
       resetKey: "reset_to_inherit",
       normalizeDraft: normalizeReplyDraft,
+      fieldNotes: {
+        private_debounce_semantic_mode: (value, wbState) =>
+          debounceSemanticBadgeMarkup(value, wbState?.status || state.status),
+      },
       /* TTS 扩展目录要等读取之后才知道，所以选项由函数现取。 */
       catalogs: {
         voice_provider_id: () => providerOptions("跟随 AstrBot"),
@@ -1711,7 +1857,7 @@ window.CompanionReplyPage = (() => {
   }
 
   return {mount, unmount, choices, selectSection, setExpressionModule, setPerceptionModule, setDecisionView,
-    searchEntries,
+    searchEntries, debounceSemanticStatusMeta, debounceSemanticBadgeMarkup,
     get state() { return {instance, example: state.example, imageCount: state.imageCount,
       status: state.status, preview: state.preview, notice: state.notice, bad: state.bad}; }};
 })();

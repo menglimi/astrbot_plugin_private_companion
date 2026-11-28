@@ -82,7 +82,7 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.context = TaskContext(self.important, require(self.identity.resolve_role(SCOPE, observed_at=NOW)),
                                    AudienceRef(SCOPE, (self.important.subject,)))
 
-    def prepare(self, event_id="native-image", images=(), *, event=None):
+    def prepare(self, event_id="native-image", images=(), *, event=None, text="请帮我画图"):
         event = event if event is not None else FakeEvent()
         parts = []
         for data in images:
@@ -93,7 +93,7 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
             event.message_obj.message = parts
         original = NativeConversationInput(event_id, self.context.actor.principal,
             ConversationRoute(SCOPE, user=self.context.actor.subject), self.context.audience,
-            "请帮我画图", self.clock.now(), self.context.role_binding.role, "原人格")
+            text, self.clock.now(), self.context.role_binding.role, "原人格")
         prepared = {"context": self.context, "event_id": event_id, "native_input": original}
         async def authorize(value):
             return self.app.tasks.check_context_access(value["context"], action="conversation.reply", observed_at=self.clock.now())
@@ -149,6 +149,15 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assert_no_reply_work(event)
 
     async def test_real_sdk_loop_generates_caches_and_sends_the_actual_image_once(self):
+        await self.exercise_native_image_delivery("returned")
+
+    async def test_real_sdk_loop_reports_missing_image_send(self):
+        await self.exercise_native_image_delivery("not_sent")
+
+    async def test_real_sdk_loop_reports_unknown_image_send_without_replay(self):
+        await self.exercise_native_image_delivery("unknown")
+
+    async def exercise_native_image_delivery(self, outcome):
         from astrbot.core.agent.hooks import BaseAgentRunHooks
         from astrbot.core.agent.run_context import ContextWrapper
         from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
@@ -158,16 +167,22 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
         from astrbot.core.provider.entities import LLMResponse, ProviderRequest
         from astrbot.core.star.context import Context
+        from astrbot_host.core_reply_image_delivery import complete_generated_image_delivery
         from astrbot_host.core_reply_native_send import SendMessageToUserTool, inject_core_reply_send_tool
         from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
         from tests.test_core_reply_pipeline import PipelineEvent
 
-        event, original = self.prepare("native-image-loop", event=PipelineEvent())
-        request = ProviderRequest(prompt="来张自拍看看", system_prompt=original.system_prompt,
+        editing = outcome == "not_sent"
+        action = "image.edit" if editing else "image.generate"
+        prompt = "帮我把这张图改成蓝色" if editing else "来张自拍看看"
+        images = (image_bytes("red"),) if editing else ()
+        event, original = self.prepare("native-image-loop", images, event=PipelineEvent(), text=prompt)
+        request = ProviderRequest(prompt=prompt, system_prompt=original.system_prompt,
             func_tool=ToolSet(tools=[*original.func_tool.tools, SendMessageToUserTool()]))
         inject_core_reply_send_tool(event, request)
         host = Context.__new__(Context)
-        platform = NS(meta=lambda: NS(id="qq-main"), send_by_session=AsyncMock())
+        platform = NS(meta=lambda: NS(id="qq-main"),
+                      send_by_session=AsyncMock(side_effect=TimeoutError if outcome == "unknown" else None))
         host.platform_manager = NS(platform_insts=[platform])
         host.astrbot_config_mgr = NS(get_conf=lambda _: {})
         wrapper = ContextWrapper(context=AstrAgentContext(context=host, event=event))
@@ -177,14 +192,16 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
             requests.append(arguments)
             if len(requests) == 1:
                 return LLMResponse(role="assistant", completion_text="", tools_call_ids=["selfie-generate"],
-                    tools_call_name=[native_tool_name("image.generate")],
-                    tools_call_args=[{"prompt": "selfie，在书桌边穿着家居服"}])
+                    tools_call_name=[native_tool_name(action)],
+                    tools_call_args=[{"prompt": "蓝色" if editing else "selfie，在书桌边穿着家居服"}])
             if len(requests) == 2:
                 results = "\n".join(message.content for message in wrapper.messages
                                     if message.role == "tool" and isinstance(message.content, str))
                 path = re.search(r"cached at path='([^']+)'", results).group(1)
                 cached.append(Path(path))
-                self.assertEqual(cached[0].read_bytes(), image_bytes("red"))
+                self.assertEqual(cached[0].read_bytes(), image_bytes("blue" if editing else "red"))
+                if outcome == "not_sent":
+                    return LLMResponse(role="assistant", completion_text="给你看看。")
                 return LLMResponse(role="assistant", completion_text="", tools_call_ids=["selfie-send"],
                     tools_call_name=["send_message_to_user"], tools_call_args=[{"messages": [
                         {"type": "plain", "text": "头发还有一点乱呢。"}, {"type": "image", "path": path}]}])
@@ -195,6 +212,7 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
                 observe_core_tool_dispatch_begin(event, run_context)
 
             async def on_agent_done(self, run_context, response):
+                await complete_generated_image_delivery(event, response, runner=runner)
                 restore_core_tool_dispatch(event, run_context)
 
         provider = NS(provider_config={"id": "synthetic-image-model", "modalities": ["text", "image"]},
@@ -205,11 +223,22 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.addCleanup(_ACTIVE_AGENT_RUNNERS.pop, event.unified_msg_origin, None)
         self.addCleanup(restore_core_tool_dispatch, event)
         for _ in range(3):
+            if runner.done():
+                break
             _responses = [response async for response in runner.step()]
         self.assertTrue(runner.done())
         self.assertEqual(len(self.image_backend.calls), 1)
         self.assertEqual(len(cached), 1)
+        final_text = runner.get_final_llm_resp().completion_text
+        if outcome == "not_sent":
+            platform.send_by_session.assert_not_awaited()
+            self.assertEqual(final_text, "给你看看。\n\n图片已生成，但这轮没有发送。")
+            self.assert_no_reply_work(event)
+            return
         platform.send_by_session.assert_awaited_once()
+        expected_text = ("给你看看。\n\n图片已生成，发送结果暂时无法确认。"
+                         if outcome == "unknown" else "给你看看。")
+        self.assertEqual(final_text, expected_text)
         target, message = platform.send_by_session.call_args.args
         self.assertEqual(str(target), event.unified_msg_origin)
         self.assertEqual(message.get_plain_text(), "")
@@ -371,6 +400,8 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assert_no_reply_work(event)
 
     async def test_native_artifact_id_still_resolves_after_more_than_one_page_of_new_images(self):
+        self.configure_images(ImageOutputConfigurationOwner(self.runtime), output_fields(),
+                              {OUTPUT_GROUP + ".max_calls_per_turn": -1})
         event, request = self.prepare("native-image-artifact-retention")
         first = await self.call(event, request, "image.generate", {"prompt": "第一张"}, "retention-000")
         first_result = self.result(first, "red")

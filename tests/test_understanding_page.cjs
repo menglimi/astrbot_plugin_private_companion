@@ -122,3 +122,48 @@ test("understanding video tab reflects ffmpeg readiness and compression budget m
   assert.match(missing.stats[2].innerHTML, /超限：拒收/);
   missing.page.unmount();
 });
+
+test("understanding modern card redesign: balanced 3-tier KPIs, restored field helps, non-nested outer cards, and safe bottom clearance", () => {
+  const h = harness();
+  h.page.updateReplyStatus({
+    settings: {
+      enable_private_image_vision_cache: true,
+      private_image_vision_cache_max_items: 300,
+      private_image_provider_failure_cooldown_seconds: 60,
+      enable_context_image_captioning: true,
+      context_image_caption_max_items: 8,
+      astrbot_animated_image_understanding_enabled: true,
+      video_understanding_enabled: true,
+      video_understanding_target_mb: 10,
+      video_understanding_max_duration_seconds: 120,
+      video_understanding_max_chars: 2400,
+      video_understanding_wait_seconds: 45,
+      file_understanding_enabled: true,
+      file_understanding_max_size_mb: 12,
+      file_understanding_timeout_seconds: 20,
+      file_understanding_format_groups: '["文本","PDF","Word（DOCX）","Excel（XLSX）","PowerPoint（PPTX）"]',
+    },
+    video: {ffmpeg_available: true},
+    documents: {".txt": true, ".pdf": true},
+    web: {enabled: true, max_links: 3, max_chars: 4000, timeout_seconds: 12},
+  });
+  h.page.mount(h.root);
+  // Image KPI cards carry crisp micro-details so no card looks half-empty
+  assert.match(h.stats[1].innerHTML, /同图失败暂缓重试/);
+  assert.match(h.stats[1].innerHTML, /GIF 3×3 连续帧说明/);
+  // File KPI cards carry crisp micro-details
+  assert.match(h.stats[3].innerHTML, /全部组件已就绪/);
+  h.page.unmount();
+
+  const replyJs = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/reply-page.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/understanding-page.css"), "utf8");
+  assert.doesNotMatch(replyJs, /helps:\s*view === "perception"\s*\?/, "理解页字段应保留完整说明文本，避免开关卡出现大块空白");
+  assert.match(replyJs, /id:\s*"context_image",\s*title:\s*"上下文图片描述",\s*help:\s*"[^"]+"/);
+  assert.match(replyJs, /id:\s*"native_image",\s*title:\s*"AstrBot 原生动图理解",\s*help:\s*"[^"]+"/);
+  assert.match(replyJs, /id:\s*"image_narration",\s*title:\s*"图片视觉转述",\s*help:\s*"[^"]+"/);
+  assert.match(css, /\.understanding-page\{[^}]*padding-bottom:var\(--sp-6\)/);
+  assert.match(css, /\.understanding-editor-workspace \.reply-scope-note\{[^}]*border-left:3px solid var\(--t-accent\)/);
+  assert.match(css, /\.understanding-permissions \.wb-card:not\(\.wb-journal\):not\(\.wb-policy\) \.wb-group/);
+  assert.match(css, /\.understanding-forward-window-card \.wb-actions:not\(\.is-dirty\)/);
+  assert.match(css, /:root\[data-motion="off"\] \.understanding-tabs button/);
+});

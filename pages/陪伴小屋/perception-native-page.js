@@ -149,6 +149,16 @@ window.CompanionNativePerceptionPage = (() => {
         lookaheadDays:Number.isInteger(contactStatus.lookaheadDays)
           ? contactStatus.lookaheadDays : Number.isInteger(contact.important_date_lookahead_days)
             ? contact.important_date_lookahead_days : 0,
+        lookahead_days:Number.isInteger(contactStatus.lookahead_days)
+          ? contactStatus.lookahead_days
+          : Number.isInteger(contactStatus.lookaheadDays)
+            ? contactStatus.lookaheadDays
+            : Number.isInteger(contact.important_date_lookahead_days)
+              ? contact.important_date_lookahead_days : 0,
+        configured_count:Number.isInteger(contactStatus.configured_count) ? contactStatus.configured_count : null,
+        configured_items:Array.isArray(contactStatus.configured_items) ? contactStatus.configured_items : null,
+        next_upcoming:contactStatus.next_upcoming && typeof contactStatus.next_upcoming === "object"
+          ? contactStatus.next_upcoming : null,
         timezone:contact.quiet_timezone || "",
         balanceAwarenessEnabled:contact.balance_awareness_enabled === true,
         automaticAllowed:status.contact?.effective?.automatic_allowed === true}:{},

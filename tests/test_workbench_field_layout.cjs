@@ -151,3 +151,218 @@ test("数字输入框按内容取宽，不再拉伸到整幅", () => {
   assert.match(rule(".wb-number input"), /flex:\s*0\s+1\s+\d+px/,
     ".wb-number input 没有宽度上限：范围提示会被推到很远的地方");
 });
+
+test("共享工作台全宽分组白卡、3px 纤细层轨、智能跨列与非侵入式脏态保存条", () => {
+  const decisionCss = fs.readFileSync(path.join(DIR, "decision-page.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(rule(".wb-card-copy p"), /max-width:\s*none/, "卡片介绍段落不应被 62ch 硬截断成窄列三行");
+  assert.match(rule(".wb-rail"), /width:\s*3px/, "层轨应使用精致 3px 细色条而非厚重 11px 色块");
+  assert.match(rule(".wb-rail-legend"), /width:\s*fit-content/, "层轨图例在网格容器内应保持紧凑胶囊宽");
+  assert.match(rule(".wb-field.is-span-full"), /grid-column:\s*1\s*\/\s*-1/);
+  assert.match(rule(".wb-actions"), /position:\s*static/, "未修改态保存条应安静落底，不腰斩底部控件");
+  assert.match(rule(".wb-actions.is-dirty"), /position:\s*sticky/, "仅在存在未保存改动时吸底浮起保存条");
+  assert.match(mediaRule(".wb-actions.is-dirty", "max-width:760px"), /position:\s*static/, "窄屏脏态保存条也不应遮挡字段");
+  assert.match(decisionCss, /\.decision-editors \.wb-card-body\{[^}]*grid-template-columns:minmax\(0,1fr\)/,
+    "决策页配置分组应全宽单列堆叠，根除字段数不等分组并排扯出的大块空白");
+  assert.match(decisionCss, /\.decision-page\{[^}]*padding-bottom:var\(--sp-6\)/);
+  assert.match(rule(".models-budget-section .wb-card:not(.wb-journal):not(.wb-policy) .wb-group"),
+    /border:\s*0[\s\S]*background:\s*transparent/, "外层自带卡片壳的预算卡内不应再嵌套一层分组白卡边框");
+  assert.match(rule(".models-budget-section .wb-card .wb-actions"),
+    /position:\s*static[\s\S]*border:\s*0[\s\S]*border-top:\s*1px solid var\(--t-line\)/,
+    "预算卡内部动作条应保持无三边残框且不浮起遮挡");
+  assert.match(rule(".models-budget-section .wb-card .wb-actions.is-dirty"),
+    /position:\s*static[\s\S]*border:\s*0[\s\S]*border-top:\s*1px solid var\(--t-line\)/,
+    "预算卡脏态内部动作条也应保持无三边残框且不浮起遮挡");
+  assert.match(rule(".models-budget-section .wb-card .wb-rail-legend"),
+    /padding:\s*var\(--sp-1\)\s+var\(--sp-3\)/, "预算卡内胶囊层轨图例应保留左右内边距不挤字");
+
+  // 运行时验证 computeGroupSpans：单字段卡、主开关+4子项、3项对等开关与混合奇偶段落零空洞
+  const vm = require("node:vm");
+  const wbSource = fs.readFileSync(path.join(DIR, "workbench-page.js"), "utf8");
+  const win = {addEventListener() {}, removeEventListener() {}};
+  const ctx = vm.createContext({
+    window: win,
+    document: {documentElement: {dataset: {}}, addEventListener() {}, removeEventListener() {}},
+    console, Intl, Date, JSON, Math, Number, Object, Array, String, Set, Map, Boolean, Error, Promise,
+    Event: class Event { constructor(t) { this.type = t; } },
+    CustomEvent: class CustomEvent { constructor(t, o) { this.type = t; this.detail = o?.detail; } },
+    sessionStorage: {getItem: () => null, setItem() {}, removeItem() {}},
+    setTimeout: () => 1, clearTimeout() {},
+  });
+  vm.runInContext(wbSource, ctx);
+
+  const host = {innerHTML: "", addEventListener() {}, removeEventListener() {}, querySelector: () => null, querySelectorAll: () => [], closest: () => null};
+  const statusPayload = {
+    edit_token: "a".repeat(64),
+    scope: "role",
+    layers: ["installation", "role"],
+    settings: {
+      solo_flag: true,
+      master_on: true, child_a: true, child_b: true, child_c: true, child_d: true,
+      peer_1: true, peer_2: true, peer_3: true,
+      img_master: true, img_cache: true, img_max: 300, img_prompt: "", img_a: 10, img_b: 20, img_c: 30,
+    },
+    fields: {
+      solo_flag: {kind: "boolean"},
+      master_on: {kind: "boolean"}, child_a: {kind: "boolean"}, child_b: {kind: "boolean"}, child_c: {kind: "boolean"}, child_d: {kind: "boolean"},
+      peer_1: {kind: "boolean"}, peer_2: {kind: "boolean"}, peer_3: {kind: "boolean"},
+      img_master: {kind: "boolean"}, img_cache: {kind: "boolean"}, img_max: {kind: "integer"},
+      img_prompt: {kind: "text"}, img_a: {kind: "integer"}, img_b: {kind: "integer"}, img_c: {kind: "integer"},
+    },
+    provenance: {},
+  };
+  win.CompanionProduct = {
+    hosted: () => true,
+    bridgeNow: () => ({apiGet: async () => ({status: "ok", data: statusPayload}), apiPost: async () => ({status: "ok", data: {}})}),
+  };
+  const inst = win.CompanionWorkbench.create({
+    group: "test_layout",
+    title: "测试分组布局",
+    mount: () => host,
+    endpoint: "/astrbot_plugin_private_companion/test",
+    navigationLimit: 0,
+    sections: [
+      {id: "solo", title: "单项分组", help: "单字段说明", fields: ["solo_flag"]},
+      {id: "atmos", title: "主开关领衔", help: "总开关加四子项", fields: ["master_on", "child_a", "child_b", "child_c", "child_d"]},
+      {id: "trio", title: "三项对等开关", help: "三列对称", fields: ["peer_1", "peer_2", "peer_3"]},
+      {id: "mixed", title: "混合字段分组", help: "主开关+文本域+三数字", fields: ["img_master", "img_cache", "img_max", "img_prompt", "img_a", "img_b", "img_c"]},
+    ],
+  });
+  return inst.refresh().then(() => {
+    const html = host.innerHTML;
+    assert.match(html, /class="wb-group is-single-field" data-wb-group="solo"/);
+    assert.match(html, /class="wb-group-count">1 项<\/span>/);
+    assert.match(html, /class="wb-group-count">5 项<\/span>/);
+    assert.match(html, /class="wb-field is-span-full is-master-field" data-wb-row="master_on"/);
+    assert.match(html, /class="wb-field" data-wb-row="child_a"/);
+    assert.match(html, /data-wb-group="trio"[\s\S]*?class="wb-fields" data-wb-grid="trio"/);
+    assert.match(html, /class="wb-field is-span-full is-master-field" data-wb-row="img_master"/);
+    assert.match(html, /class="wb-field is-span-full" data-wb-row="img_c"/);
+    inst.unmount();
+  });
+});
+
+test("source-checklist 与 identity-checklist 勾选变更后即时同步 .wb-actions.is-dirty", async () => {
+  const vm = require("node:vm");
+  const wbSource = fs.readFileSync(path.join(DIR, "workbench-page.js"), "utf8");
+  const win = {addEventListener() {}, removeEventListener() {}};
+  const ctx = vm.createContext({
+    window: win,
+    document: {documentElement: {dataset: {}}, addEventListener() {}, removeEventListener() {}},
+    console, Intl, Date, JSON, Math, Number, Object, Array, String, Set, Map, Boolean, Error, Promise,
+    Event: class Event { constructor(t) { this.type = t; } },
+    CustomEvent: class CustomEvent { constructor(t, o) { this.type = t; this.detail = o?.detail; } },
+    sessionStorage: {getItem: () => null, setItem() {}, removeItem() {}},
+    setTimeout: () => 1, clearTimeout() {},
+  });
+  vm.runInContext(wbSource, ctx);
+
+  function makeClassList(initial = []) {
+    const set = new Set(initial);
+    return {
+      contains: c => set.has(c),
+      toggle: (c, force) => { const on = force === undefined ? !set.has(c) : Boolean(force); if (on) set.add(c); else set.delete(c); return on; },
+    };
+  }
+  const listeners = {};
+  const noteEl = {textContent: "与已保存一致"};
+  const resetBtn = {disabled: true};
+  const actionsEl = {
+    classList: makeClassList(["wb-actions"]),
+    querySelector: sel => sel === ".wb-actions-note" ? noteEl : sel === '[data-wb-action="reset"]' ? resetBtn : null,
+  };
+  const host = {
+    innerHTML: "",
+    addEventListener: (t, fn) => { listeners[t] = fn; },
+    removeEventListener: () => {},
+    querySelector: sel => sel === ".wb-actions" ? actionsEl : null,
+    querySelectorAll: () => [],
+    closest: () => null,
+  };
+  const statusPayload = {
+    edit_token: "b".repeat(64),
+    scope: "role",
+    layers: ["installation", "role"],
+    settings: {kb_sources: "", target_identities: "[]", source_limit: 16},
+    fields: {
+      kb_sources: {kind: "text"},
+      target_identities: {kind: "text"},
+      source_limit: {kind: "integer"},
+    },
+    provenance: {},
+  };
+  win.CompanionProduct = {
+    hosted: () => true,
+    bridgeNow: () => ({apiGet: async () => ({status: "ok", data: statusPayload}), apiPost: async () => ({status: "ok", data: {}})}),
+  };
+  const inst = win.CompanionWorkbench.create({
+    group: "test_checklists",
+    title: "清单脏态同步测试",
+    mount: () => host,
+    endpoint: "/astrbot_plugin_private_companion/test-checklists",
+    navigationLimit: 0,
+    inputs: {kb_sources: "source-checklist", target_identities: "identity-checklist"},
+    catalogs: {kb_sources: () => [{id: "kb1", name: "世界观", documents: []}], target_identities: () => [{id: "u1", label: "林夏"}]},
+    sections: [{id: "s", title: "清单", fields: ["kb_sources", "target_identities"]}],
+  });
+  inst.mount();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(inst.state.draft, "挂载刷新后应已加载配置草稿");
+  assert.equal(actionsEl.classList.contains("is-dirty"), false);
+
+  // 1. 勾选 source-checklist 复选框 -> .wb-actions.is-dirty 立即置 true
+  const srcRow = {classList: makeClassList(["wb-field"])};
+  const srcCount = {textContent: ""};
+  const srcControl = {
+    querySelectorAll: () => [],
+    querySelector: sel => sel === ".wb-source-count" ? srcCount : null,
+  };
+  listeners.change({
+    type: "change",
+    target: {
+      type: "checkbox",
+      checked: true,
+      dataset: {wbField: "kb_sources", wbSourceBase: "kb1"},
+      closest: sel => sel === ".wb-source-picker" ? srcControl : sel === ".wb-field" ? srcRow : null,
+    },
+  });
+  assert.equal(actionsEl.classList.contains("is-dirty"), true, "勾选知识源后保存条应立即标记 is-dirty");
+  assert.equal(noteEl.textContent, "有未保存的改动");
+  assert.equal(resetBtn.disabled, false);
+
+  // 取消勾选回到原值 -> 恢复干净态
+  listeners.change({
+    type: "change",
+    target: {
+      type: "checkbox",
+      checked: false,
+      dataset: {wbField: "kb_sources", wbSourceBase: "kb1"},
+      closest: sel => sel === ".wb-source-picker" ? srcControl : sel === ".wb-field" ? srcRow : null,
+    },
+  });
+  assert.equal(actionsEl.classList.contains("is-dirty"), false, "取消勾选回到基线后保存条应取消 is-dirty");
+  assert.equal(resetBtn.disabled, true);
+
+  // 2. 勾选 identity-checklist 复选框 -> .wb-actions.is-dirty 立即置 true
+  const idRow = {classList: makeClassList(["wb-field"])};
+  const idCount = {textContent: ""};
+  const checkedItem = {dataset: {wbIdentityId: "u1"}};
+  const idControl = {
+    querySelectorAll: sel => sel === "[data-wb-identity-id]:checked" ? [checkedItem] : [],
+    querySelector: sel => sel === ".wb-source-count" ? idCount : null,
+  };
+  listeners.change({
+    type: "change",
+    target: {
+      type: "checkbox",
+      checked: true,
+      dataset: {wbField: "target_identities", wbIdentityId: "u1"},
+      closest: sel => sel === ".wb-identity-picker" ? idControl : sel === ".wb-field" ? idRow : null,
+    },
+  });
+  assert.equal(actionsEl.classList.contains("is-dirty"), true, "勾选成员对象后保存条应立即标记 is-dirty");
+  assert.equal(idCount.textContent, "已选 1 项");
+  assert.equal(noteEl.textContent, "有未保存的改动");
+  assert.equal(resetBtn.disabled, false);
+
+  inst.unmount();
+});

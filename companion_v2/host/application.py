@@ -204,6 +204,7 @@ from companion_v2.host.tick_offload import (
     uses_default_method,
 )
 from companion_v2.proactive.configuration import ContactConfigurationOwner, GROUP as CONTACT_GROUP, with_contact_fields
+from companion_v2.proactive.rhythm_configuration import migrate_legacy_intensity
 from companion_v2.proactive.service import ProactiveContacts
 from companion_v2.proactive.scheduling import ContactSchedule
 
@@ -311,6 +312,7 @@ class CompanionApplication:
         if extra:
             registry = FieldRegistry(version=registry.version, fields=tuple(registry.fields.values()) + extra)
         reference_configuration_owner = ReferenceConfigurationOwner(runtime)
+        migrate_legacy_intensity(configuration_runtime)
         self.configuration = ConfigurationService(runtime, with_contact_fields(registry), store=configuration_runtime,
             owners=(ContactConfigurationOwner(runtime), GrowthConfigurationOwner(runtime),
                 SkillConfigurationOwner(runtime), RoleProfileConfigurationOwner(runtime),
@@ -400,7 +402,7 @@ class CompanionApplication:
             TaskRegistration(TaskDefinition(DELIVERY_KIND, "conversation.delivery", REPLY_ACTION, Lane.FOREGROUND,
                 side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding, timeout_seconds=30,
                 max_attempts=1, concurrency=self.worker_limit), lambda spec, at: self.delivery.validate(spec, at)),
-        ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + self.screen_interpretation.registrations + self.screen_peek.registrations + self.phone_actions.registrations + self.authoring.registrations + (external.registrations if external is not None else ())
+        ) + self.poke_reply_model.registrations + self.journal_writer.registrations + self.memory_reflection.registrations + self.role_reader.registrations + self.state_maintenance.registrations + self.calendar_planning.registrations + self.growth_progress.registrations + self.self_review.registrations + self.expression_style.registrations + self.proactive.registrations + self.outbound.registrations + self.image_review_service.registrations + self.context_image_caption.registrations + self.image_narration.registrations + self.video_narration.registrations + self.screen_interpretation.registrations + self.screen_peek.registrations + self.phone_actions.registrations + self.authoring.registrations + (external.registrations + external.core_tool_registrations if external is not None else ())
         registrations += self.expression_draft_review.registrations + self.daily_outfit.registrations + self.qzone_life_images.registrations
         self.tasks = TaskSupervisor(runtime, registrations, limits=limits, now=self.now)
         # Reference material shares this runtime and the supervisor that owns it, so

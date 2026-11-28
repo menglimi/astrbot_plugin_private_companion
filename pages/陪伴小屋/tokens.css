@@ -59,6 +59,12 @@
   --t-shadow:0 8px 28px rgba(96,80,60,.07);
   --t-shadow-lift:0 14px 36px rgba(96,80,60,.13);
   --t-brand:#a87d52;
+  --t-tab-track:color-mix(in srgb,var(--t-surface) 92%,var(--t-surface-soft));
+  --t-tab-hover-bg:color-mix(in srgb,var(--t-accent) 7%,transparent);
+  --t-tab-active-bg:var(--t-accent-quiet);
+  --t-tab-active-fg:var(--t-accent-ink);
+  --t-tab-active-border:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));
+  --t-tab-active-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-surface-raised) 72%,transparent),0 1px 2px color-mix(in srgb,var(--t-accent) 10%,transparent);
   /* 场景联动：界面用晨光时，小屋也走清晨光照 */
   --t-scene-light:dawn;
   --skin-heading-font:"Noto Serif SC","Songti SC","SimSun",serif;
@@ -104,6 +110,12 @@
   --t-shadow:0 8px 28px rgba(58,80,60,.06);
   --t-shadow-lift:0 14px 36px rgba(58,80,60,.12);
   --t-brand:#57875d;
+  --t-tab-track:color-mix(in srgb,var(--t-surface) 92%,var(--t-surface-soft));
+  --t-tab-hover-bg:color-mix(in srgb,var(--t-accent) 7%,transparent);
+  --t-tab-active-bg:var(--t-accent-quiet);
+  --t-tab-active-fg:var(--t-accent-ink);
+  --t-tab-active-border:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));
+  --t-tab-active-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-surface-raised) 72%,transparent),0 1px 2px color-mix(in srgb,var(--t-accent) 10%,transparent);
   --t-scene-light:day;
   --skin-heading-font:"MiSans","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --skin-canvas-pattern:linear-gradient(90deg,transparent 0 63px,color-mix(in srgb,var(--t-accent) 5%,transparent) 63px 64px);
@@ -147,6 +159,12 @@
   --t-shadow:0 8px 28px rgba(110,74,54,.08);
   --t-shadow-lift:0 14px 36px rgba(110,74,54,.14);
   --t-brand:#c26c4d;
+  --t-tab-track:color-mix(in srgb,var(--t-surface) 92%,var(--t-surface-soft));
+  --t-tab-hover-bg:color-mix(in srgb,var(--t-accent) 7%,transparent);
+  --t-tab-active-bg:var(--t-accent-quiet);
+  --t-tab-active-fg:var(--t-accent-ink);
+  --t-tab-active-border:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));
+  --t-tab-active-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-surface-raised) 72%,transparent),0 1px 2px color-mix(in srgb,var(--t-accent) 10%,transparent);
   --t-scene-light:dusk;
   --skin-heading-font:"Noto Serif SC","Songti SC","SimSun",serif;
   --skin-canvas-pattern:repeating-linear-gradient(135deg,transparent 0 11px,color-mix(in srgb,var(--t-accent) 4%,transparent) 11px 12px);
@@ -192,6 +210,12 @@
   --t-shadow:0 10px 26px rgba(0,0,0,.32);
   --t-shadow-lift:0 14px 32px rgba(0,0,0,.46);
   --t-brand:#8b9ed0;
+  --t-tab-track:color-mix(in srgb,var(--t-surface) 90%,var(--t-surface-soft));
+  --t-tab-hover-bg:color-mix(in srgb,var(--t-accent) 12%,transparent);
+  --t-tab-active-bg:color-mix(in srgb,var(--t-accent) 18%,var(--t-surface-raised));
+  --t-tab-active-fg:var(--t-accent-ink);
+  --t-tab-active-border:color-mix(in srgb,var(--t-accent) 42%,var(--t-line));
+  --t-tab-active-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-text-strong) 10%,transparent),0 1px 3px color-mix(in srgb,var(--t-canvas) 35%,transparent);
   --t-scene-light:night;
   --skin-heading-font:"Noto Serif SC","Songti SC","SimSun",serif;
   --skin-canvas-pattern:repeating-linear-gradient(0deg,transparent 0 35px,color-mix(in srgb,var(--t-accent) 5%,transparent) 35px 36px);
@@ -235,6 +259,12 @@
   --t-shadow:0 10px 26px rgba(0,0,0,.34);
   --t-shadow-lift:0 14px 32px rgba(0,0,0,.48);
   --t-brand:#aa8a63;
+  --t-tab-track:color-mix(in srgb,var(--t-surface) 90%,var(--t-surface-soft));
+  --t-tab-hover-bg:color-mix(in srgb,var(--t-accent) 12%,transparent);
+  --t-tab-active-bg:color-mix(in srgb,var(--t-accent) 18%,var(--t-surface-raised));
+  --t-tab-active-fg:var(--t-accent-ink);
+  --t-tab-active-border:color-mix(in srgb,var(--t-accent) 42%,var(--t-line));
+  --t-tab-active-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-text-strong) 10%,transparent),0 1px 3px color-mix(in srgb,var(--t-canvas) 35%,transparent);
   --t-scene-light:dusk;
   --skin-heading-font:"FangSong","STSong","Songti SC",serif;
   --skin-canvas-pattern:repeating-linear-gradient(90deg,transparent 0 79px,color-mix(in srgb,var(--t-accent) 5%,transparent) 79px 80px);
@@ -278,6 +308,12 @@
   --t-shadow:0 2px 0 rgba(0,0,0,.28);
   --t-shadow-lift:0 3px 0 rgba(0,0,0,.42);
   --t-brand:#0033cc;
+  --t-tab-track:var(--t-surface-soft);
+  --t-tab-hover-bg:var(--t-surface-sunken);
+  --t-tab-active-bg:var(--t-accent-quiet);
+  --t-tab-active-fg:var(--t-accent-ink);
+  --t-tab-active-border:var(--t-accent);
+  --t-tab-active-shadow:none;
   --t-scene-light:day;
   --skin-heading-font:"MiSans","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
   --skin-canvas-pattern:none;
@@ -299,6 +335,9 @@
   --t-surface-hover: var(--t-surface-soft);
   --t-accent-soft: var(--t-accent-quiet);
   --t-on-accent: var(--t-on-solid);
+  --t-tab-radius: var(--r-sm);
+  --t-tab-track-radius: var(--r-md);
+  --t-tab-ease: cubic-bezier(0.22,1,0.36,1);
 }
 
 /* === 尺寸：圆角 / 间距 / 字号 === */

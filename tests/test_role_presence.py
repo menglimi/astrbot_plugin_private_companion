@@ -316,7 +316,24 @@ class PresenceTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(port.modes, [])
         self.event_command(app, context, action="cancel", revision=1)
         await app.presence._sync_status()
+        # Default presence_priority='custom_first': role simulation wording wins over online_mode.
+        self.assertEqual([wording for _, wording in port.statuses], ["阅读中", "专注中"])
+        self.assertEqual(port.modes, [])
+        # Switching to presence_priority='online_first' restores online_mode precedence.
+        self.configure(manager, presence_priority="online_first")
+        await app.presence._sync_status()
         self.assertEqual([mode for _, mode in port.modes], ["online"])
+
+    async def test_custom_first_falls_back_to_online_mode_when_role_wording_is_empty(self):
+        port = FakePresence()
+        host, app, context, manager = self.setup_state(presence_port=port)
+        self.configure(manager, enabled=True, presence_enabled=True, online_status_enabled=True)
+        app.role_state.write(context, data=state_data(online_mode="invisible", presence=""),
+                             expected_revision=0, operation_key="empty-wording")
+        await self.start(host)
+        await self.until(lambda: bool(port.modes))
+        self.assertEqual([mode for _, mode in port.modes], ["invisible"])
+        self.assertEqual(port.statuses, [])
 
     async def test_unknown_online_ack_persists_without_resend_after_restart(self):
         port = FakePresence()

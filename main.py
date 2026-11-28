@@ -110,6 +110,7 @@ from .astrbot_host.core_reply_telemetry import (
 from .astrbot_host.calendar_command import parse_calendar_command
 from .astrbot_host.functional_commands import classify_functional_command, inject_functional_command_instruction
 from .astrbot_host.group_command import receive_group_llm_command
+from .astrbot_host.diagnostic_command import receive_diagnostic_command
 from .astrbot_host.reset_command import receive_reset_command
 from .astrbot_host.phone_command import receive_phone_command
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
@@ -452,11 +453,32 @@ class PrivateCompanionV2StagingPlugin(Star):
             user_id = getter() if callable(getter) else ""
         return str(user_id or "")
 
+    def _laya_debounce_service(self, context=None):
+        staging = getattr(self, "staging", None)
+        session = getattr(staging, "session", None) or getattr(staging, "last_session", None)
+        application = getattr(session, "application", None)
+        resolver = getattr(application, "laya_decision_resolver", None)
+        if callable(resolver) and context is not None:
+            try:
+                return resolver(context)
+            except Exception:
+                return None
+        return None
+
     def _private_debounce_manager(self):
         manager = getattr(self, "_private_debounce", None)
         if manager is None:
-            from .astrbot_host.private_semantic_debounce import classifier_from_config
-            manager = PrivateDebounce(semantic=classifier_from_config(getattr(self, "config", None) or {}))
+            from .astrbot_host.private_semantic_debounce import (
+                LayaTurnCompleteness, classifier_from_config,
+            )
+            config = getattr(self, "config", None) or {}
+            manager = PrivateDebounce(
+                semantic=classifier_from_config(config),
+                laya_semantic=LayaTurnCompleteness(
+                    self._laya_debounce_service,
+                    options=config.get("private_debounce_semantic") if isinstance(config, dict) else None,
+                ),
+            )
             self._private_debounce = manager
         return manager
 
@@ -1287,6 +1309,21 @@ class PrivateCompanionV2StagingPlugin(Star):
                 else:
                     logger.info("[CompanionV2] 全部重置由专用流程处理 event_ref=%s", event_ref)
                 return
+            # 答疑确认/取消走确定性直发快路径，免去 LLM 与 TTS 往返。
+            try:
+                diagnostic_command = await receive_diagnostic_command(self.staging, event, target=target)
+            except Exception as error:
+                diagnostic_command = None
+                logger.warning("[CompanionV2] 答疑确认指令处理异常 event_ref=%s error_type=%s",
+                               event_ref, type(error).__name__)
+            if diagnostic_command is not None:
+                suppress_default_reply(event)
+                if diagnostic_command.failure is not None:
+                    self._record_no_reply(event, diagnostic_command.failure.code, origin_key=origin_key,
+                                          channel=channel, event_ref=event_ref, stage="command")
+                else:
+                    logger.info("[CompanionV2] 答疑确认/取消由专用快路径处理 event_ref=%s", event_ref)
+                return
         is_calendar_command = (channel == "private"
                                and parse_calendar_command(str(getattr(event, "message_str", "") or "")))
         debounce_input = (private_debounce_input(event)
@@ -1499,7 +1536,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                 )
                 effective_policy = forward_burst_debounce_policy(
                     policy, has_forwards=burst_has_forwards)
-                status = await debounce_manager.configure(debounce_pending, event, effective_policy)
+                status = await debounce_manager.configure(
+                    debounce_pending, event, effective_policy,
+                    context=getattr(core_reply_plan, "context", None),
+                    event_ref=event_ref,
+                )
                 if status == "configuring":
                     status = await debounce_manager.wait_for_resolution(debounce_pending, event)
                 if status == "active":
@@ -1738,6 +1779,13 @@ class PrivateCompanionV2StagingPlugin(Star):
             return
         event.is_wake = True
         event.is_at_or_wake_command = True
+        if application is not None:
+            try:
+                from .astrbot_host.core_reply_media import repair_quoted_bot_generated_images
+                await repair_quoted_bot_generated_images(event, prepared, application=application)
+            except Exception as error:
+                logger.debug("[CompanionV2] 引用自发图本地补齐跳过 event_ref=%s error_type=%s",
+                             event_ref, type(error).__name__)
         if (channel == "private" and not guard_outcome.get("had_active_turn")
                 and event_will_enter_astrbot_llm(event)
                 and (plain_text is not None or bool(str(prepared.get("text") or "").strip()))):
@@ -2313,9 +2361,12 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_agent_done()
     async def observe_companion_core_agent_done(self, event: AstrMessageEvent, run_context, response):
+        from .astrbot_host.core_reply_image_delivery import complete_generated_image_delivery
+        from .astrbot_host.core_reply_tool_dispatch import active_core_runner
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
+        await complete_generated_image_delivery(event, response, runner=active_core_runner(event, run_context))
         await close_core_reply_turn(event, response, release=True)
         close_core_reply_tool_guard(event, run_context)
         restore_core_tool_dispatch(event, run_context)
@@ -2490,7 +2541,9 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
-        prepare_core_result_decoration(event)
+        get_config = getattr(getattr(self, "context", None), "get_config", None)
+        astrbot_config = get_config(event.unified_msg_origin) if callable(get_config) else None
+        prepare_core_result_decoration(event, astrbot_config=astrbot_config)
 
     @filter.on_decorating_result(priority=-1000001)
     async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):

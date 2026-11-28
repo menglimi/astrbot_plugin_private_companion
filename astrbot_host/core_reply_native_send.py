@@ -19,6 +19,7 @@ except ModuleNotFoundError as error:
 
 from companion_v2.execution.models import TaskError, digest
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA, assert_core_reply_connection, sent_core_text
+from .core_reply_image_delivery import observe_generated_image_send
 from .core_reply_presentation import present_core_reply_message
 from .core_reply_media_delivery import native_reply_messages, native_wire_message
 
@@ -84,6 +85,7 @@ class _CurrentReplyContext:
             if isawaitable(message_chain):
                 message_chain = await message_chain
         from .core_reply_voice import commit_pending_voice_claim, release_pending_voice_claim
+        image_delivery = state.get("_generated_image_delivery")
         returned = 0
         # native_reply_messages can return an empty tuple now that a quote or @
         # with no body is dropped. This value is what AstrBot's tool turns into
@@ -103,6 +105,7 @@ class _CurrentReplyContext:
             attempts[key] = "started"
             state["send_attempts"] += 1
             tool.observe("started")
+            observe_generated_image_send(image_delivery, part, "started")
             from .core_reply_behavior import observe_core_behavior_delivery
             observe_core_behavior_delivery(tool._event, part, "started")
             try:
@@ -111,6 +114,7 @@ class _CurrentReplyContext:
                 attempts[key] = "unknown"
                 state["send_unknown"] += 1
                 tool.observe("unknown")
+                observe_generated_image_send(image_delivery, part, "unknown")
                 observe_core_behavior_delivery(tool._event, part, "unknown")
                 tool.observe("finished")
                 raise
@@ -119,6 +123,7 @@ class _CurrentReplyContext:
                 attempts[key] = "partial_returned" if returned else "failed"
                 state["send_failed"] += 1
                 tool.observe("failed")
+                observe_generated_image_send(image_delivery, part, "failed")
                 observe_core_behavior_delivery(tool._event, part, "failed")
                 tool.observe("finished")
                 raise TaskError("core_reply_platform_unavailable", "AstrBot did not find a platform for this session; nothing was sent")
@@ -128,6 +133,7 @@ class _CurrentReplyContext:
             if any(isinstance(component, Record) for component in getattr(part, "chain", ())):
                 commit_pending_voice_claim(tool._event)
             tool.observe("returned", result=result)
+            observe_generated_image_send(image_delivery, part, "returned")
             observe_core_behavior_delivery(tool._event, part, "returned")
             state["_notify_sent"](sent_core_text(part))
             _remember_sent_text(tool._event, part)

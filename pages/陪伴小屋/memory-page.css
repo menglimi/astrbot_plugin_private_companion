@@ -9,6 +9,40 @@
 
    版式：桌面 master-detail（左事实流 + 右详情），窄屏翻成列表→详情推入。 */
 
+/* ===== 顶部二级页签（事实与经历 | 整理策略 · 玉露柔边风格） ===== */
+.memory-route{min-width:0}
+.memory-route-tabs{
+  display:inline-flex;align-items:center;gap:var(--sp-1);max-width:100%;
+  overflow-x:auto;padding:var(--sp-1);margin-bottom:var(--sp-4);
+  background:color-mix(in srgb,var(--t-surface) 90%,var(--t-surface-soft));
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  box-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-surface-raised) 70%,transparent);
+  scrollbar-width:none;
+}
+.memory-route-tabs::-webkit-scrollbar{display:none}
+.memory-route-tab{
+  position:relative;display:inline-flex;align-items:center;justify-content:center;
+  flex:none;min-height:36px;padding:0 var(--sp-4);
+  border:1px solid transparent;border-radius:var(--r-sm);background:transparent;
+  color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:600;
+  white-space:nowrap;cursor:pointer;
+  transition:color var(--dur-fast) ease,border-color var(--dur-fast) ease,background var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
+}
+.memory-route-tab:hover:not(.is-active){
+  color:var(--t-text-strong);
+  background:color-mix(in srgb,var(--t-accent) 9%,transparent);
+}
+.memory-route-tab.is-active{
+  color:var(--t-accent-ink);
+  background:color-mix(in srgb,var(--t-accent) 14%,var(--t-surface-raised));
+  border-color:color-mix(in srgb,var(--t-accent) 36%,var(--t-line));
+  box-shadow:inset 0 1px 0 color-mix(in srgb,var(--t-surface-raised) 85%,transparent),
+    0 1px 3px color-mix(in srgb,var(--t-accent) 12%,transparent);
+}
+.memory-route-tab:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.memory-settings-workspace{min-width:0;padding-top:var(--sp-2)}
+:root[data-motion="off"] .memory-route-tab,:root[data-motion="low"] .memory-route-tab{transition-duration:0s}
+
 /* ===== 外壳 ===== */
 #memoryWorkspace{min-width:0}
 .mem-app{
@@ -17,9 +51,7 @@
   color:var(--t-text);font-size:var(--fs-body);line-height:1.7;
 }
 
-/* ===== 左侧视图轨道 =====
-   六个工作台不是平级页签：整理与修复是「在进行中」的、其余是「查看态」。
-   轨道用一条竖线把它们串起来，整理中那一项带脉冲点，读到待处理批次时亮起。 */
+/* ===== 左侧视图轨道 ===== */
 .mem-rail{display:flex;flex-direction:column;gap:2px;position:sticky;top:12px;min-width:0}
 .mem-rail::before{
   content:"";position:absolute;left:15px;top:22px;bottom:22px;width:1px;
@@ -27,21 +59,20 @@
 }
 .mem-rail button{
   position:relative;z-index:1;display:flex;align-items:center;gap:var(--sp-2);
-  padding:var(--sp-2) var(--sp-2);border:0;border-radius:var(--r-sm);background:transparent;
+  padding:var(--sp-2);border:1px solid transparent;border-radius:var(--r-sm);background:transparent;
   color:var(--t-text-soft);font:inherit;font-size:var(--fs-body);text-align:left;cursor:pointer;
-  transition:background .18s ease,color .18s ease;
+  transition:background var(--dur-fast) ease,color var(--dur-fast) ease,border-color var(--dur-fast) ease;
 }
 .mem-rail button:hover{background:var(--t-surface-soft);color:var(--t-text)}
 .mem-rail button[aria-pressed="true"]{
   background:var(--t-surface-raised);color:var(--t-text-strong);
-  font-weight:600;box-shadow:var(--t-shadow);
+  border-color:var(--t-line);font-weight:600;box-shadow:var(--t-shadow);
 }
-/* 图标容器：默认是个细描边的圈，被选中时填成色调 —— 是「节点」不是「徽章」 */
 .mem-rail-icon{
   flex:none;display:grid;place-items:center;width:31px;height:31px;
   border:1px solid var(--t-line);border-radius:50%;
   background:var(--t-surface);color:var(--t-text-faint);
-  transition:border-color .18s ease,color .18s ease,background .18s ease;
+  transition:border-color var(--dur-fast) ease,color var(--dur-fast) ease,background var(--dur-fast) ease;
 }
 .mem-rail button[aria-pressed="true"] .mem-rail-icon{
   border-color:transparent;background:var(--t-accent-quiet);color:var(--t-accent-ink);
@@ -50,11 +81,10 @@
 .mem-rail-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mem-rail-count{
   flex:none;font-size:var(--fs-micro);font-variant-numeric:tabular-nums;
-  padding:1px var(--sp-1);border-radius:var(--r-pill);
-  background:var(--t-warn-quiet);color:var(--t-warn-ink);
+  padding:1px var(--sp-2);border-radius:var(--r-pill);
+  background:var(--t-warn-quiet);color:var(--t-warn-ink);font-weight:600;
 }
 .mem-rail-count[hidden]{display:none}
-/* 整理中：脉冲点是唯一的「非用户触发」持续动效，只在真有待处理批次时出现 */
 .mem-rail button.is-working .mem-rail-icon::after{
   content:"";position:absolute;width:31px;height:31px;border-radius:50%;
   border:1px solid var(--t-warn);animation:mem-pulse 2.4s ease-out infinite;
@@ -65,33 +95,63 @@
 }
 
 /* ===== 主区 ===== */
-.mem-main{display:flex;flex-direction:column;gap:var(--sp-4);min-width:0}
-.mem-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-3);padding:0 var(--sp-4) var(--sp-4)}
-.mem-overview-grid>div{display:flex;flex-direction:column;gap:3px;min-width:0;padding:var(--sp-3);background:var(--t-surface-sunken);border-radius:var(--r-sm)}
-.mem-overview-grid span,.mem-overview-grid small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
-.mem-overview-grid strong{color:var(--t-text-strong);font-size:var(--fs-head);font-variant-numeric:tabular-nums}
-.mem-overview-grid small{overflow-wrap:anywhere}
-.mem-linkage{margin:0 var(--sp-4) var(--sp-4);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm)}
-.mem-linkage-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
-.mem-linkage-head h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-body)}
-.mem-linkage-head p{margin:3px 0 0;color:var(--t-text-faint);font-size:var(--fs-tiny)}
-.mem-linkage-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr));gap:var(--sp-2);margin:var(--sp-3) 0 0}
-.mem-linkage-counts>div{display:flex;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-2);background:var(--t-surface-soft);border-radius:var(--r-xs)}
-.mem-linkage-counts dt{color:var(--t-text-faint);font-size:var(--fs-micro)}
-.mem-linkage-counts dd{margin:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums}
-.mem-reflection-views{display:flex;gap:var(--sp-1);padding:0 var(--sp-4) var(--sp-3)}
-.mem-reflection-views button{display:flex;align-items:center;gap:var(--sp-2);min-height:36px;padding:0 var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
-.mem-reflection-views button[aria-pressed="true"]{border-color:var(--t-accent);background:var(--t-accent-quiet);color:var(--t-accent-ink)}
-.mem-reflection-views b{font-variant-numeric:tabular-nums}
+.mem-main{
+  display:flex;flex-direction:column;gap:var(--sp-4);min-width:0;
+  /* 预留底部安全呼吸空间，避免右下角常驻小屋浮窗遮挡详情底部动作与来源 */
+  padding-bottom:var(--sp-8);
+}
 
-/* 页头：对象/角色选择与一句话状态同排。选择器是「这一页在讲谁」，
-   不是筛选项，所以它永远在最上面，且不随视图切换而消失。 */
-/* 页头：标题 + 对象/角色选择器同排。
-   不写副标题——切到哪个视图，标题就是那件事，左侧轨道已经交代过它是干什么的；
-   再加一行「这里可以……每条都带……」是把导航重说一遍，白占第一屏。 */
+/* ===== 概况与外部记忆联动 ===== */
+.mem-overview-grid{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:var(--sp-3);padding:var(--sp-4) var(--sp-4) var(--sp-3);
+}
+.mem-overview-grid>div{
+  display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;
+  padding:var(--sp-3) var(--sp-4);
+  background:var(--t-surface);border:1px solid var(--t-line);border-radius:var(--r-md);
+}
+.mem-overview-grid span,.mem-overview-grid small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
+.mem-overview-grid strong{
+  color:var(--t-text-strong);font-size:var(--fs-head);line-height:1.25;
+  font-family:var(--numeric-font);font-variant-numeric:tabular-nums;
+}
+.mem-overview-grid small{overflow-wrap:anywhere}
+
+.mem-linkage{
+  margin:0 var(--sp-4) var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  background:var(--t-surface);border:1px solid var(--t-line);border-radius:var(--r-md);
+}
+.mem-linkage-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
+.mem-linkage-head h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600}
+.mem-linkage-head p{margin:var(--sp-1) 0 0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6}
+.mem-linkage-head p:empty{display:none}
+.mem-linkage-counts{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(min(112px,100%),1fr));
+  gap:var(--sp-2);margin:var(--sp-3) 0 0;
+}
+.mem-linkage-counts>div{
+  display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;
+  padding:var(--sp-2) var(--sp-3);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-sm);
+}
+.mem-linkage-counts dt{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mem-linkage-counts dd{
+  margin:0;color:var(--t-text-soft);font-size:var(--fs-lead);font-weight:600;line-height:1.3;
+  font-family:var(--numeric-font);font-variant-numeric:tabular-nums;
+}
+.mem-linkage-counts>div.is-nonzero dd{color:var(--t-text-strong)}
+.mem-linkage-counts>div.mem-linkage-total{
+  background:var(--t-accent-quiet);
+  border-color:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));
+}
+.mem-linkage-counts>div.mem-linkage-total dt{color:var(--t-accent-ink);font-weight:600}
+.mem-linkage-counts>div.mem-linkage-total dd{color:var(--t-accent-ink)}
+
+/* ===== 页头（内嵌细加载线，杜绝独立悬空绿横条） ===== */
 .mem-head{
-  display:flex;align-items:center;gap:var(--sp-4);flex-wrap:wrap;
-  padding-bottom:var(--sp-4);border-bottom:1px solid var(--t-line);
+  position:relative;display:flex;align-items:center;gap:var(--sp-4);flex-wrap:wrap;
+  padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line);
 }
 .mem-head-title{flex:1 1 200px;min-width:0}
 .mem-head-title h2{
@@ -99,110 +159,112 @@
   font-size:var(--fs-display);line-height:1.35;font-weight:600;color:var(--t-text-strong);margin:0;
   letter-spacing:.01em;
 }
-/* 副标题只在页面确实有话说时才出现（目前没有调用点），保留样式以防回归 */
 .mem-head-title p{margin:var(--sp-1) 0 0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7;max-width:58ch}
+.mem-progress{
+  position:absolute;left:0;right:0;bottom:-1px;height:2px;
+  border-radius:var(--r-pill);background:transparent;overflow:hidden;pointer-events:none;
+}
+.mem-progress[hidden]{display:none}
+.mem-progress i{
+  display:block;height:100%;width:32%;border-radius:var(--r-pill);
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--t-accent) 70%,transparent),transparent);
+  animation:mem-sweep 1.25s ease-in-out infinite;
+}
+@keyframes mem-sweep{
+  0%{transform:translateX(-110%)}
+  100%{transform:translateX(420%)}
+}
 .mem-scope{display:flex;gap:var(--sp-3);flex-wrap:wrap;min-width:0}
 .mem-scope label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-tiny);color:var(--t-text-faint);min-width:0}
 .mem-scope select{
   font:inherit;font-size:var(--fs-body);width:100%;min-width:150px;max-width:290px;min-height:38px;
-  padding:var(--sp-2) var(--sp-2);color:var(--t-text);
+  padding:var(--sp-2);color:var(--t-text);
   background:var(--t-surface);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
 }
 .mem-scope select:disabled{opacity:.5}
 
-/* ===== 徽章 =====
-   生命周期色由 .mem-state-* 给（见下），这里只管形状与「非生命周期」的三种语义色。
-   徽章的底色一律是当前色的一档淡版，所以它跟着主题走，不需要各写一套。 */
+/* ===== 徽章 ===== */
 .mem-badge{
   display:inline-flex;align-items:center;gap:var(--sp-1);flex:none;
   padding:2px var(--sp-2);border-radius:var(--r-xs);
-  font-size:var(--fs-micro);line-height:1.6;white-space:nowrap;
+  font-size:var(--fs-micro);line-height:1.6;font-weight:500;white-space:nowrap;
   background:var(--t-surface-sunken);color:var(--t-text-soft);
 }
 .mem-badge.is-ok{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
 .mem-badge.is-warn{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
 .mem-badge.is-risk{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
 .mem-badge.is-accent{background:var(--t-accent-quiet);color:var(--t-accent-ink)}
-/* 生命周期徽章：底色用 color-mix 从当前色兑出，一套规则覆盖全部状态 */
 .mem-badge.mem-state-active,
 .mem-badge.mem-state-superseded,
 .mem-badge.mem-state-invalidated,
 .mem-badge.mem-state-retracted,
 .mem-badge.mem-state-forgotten,
 .mem-badge.mem-state-archived{
-  background:color-mix(in srgb, currentColor 12%, transparent);
+  background:color-mix(in srgb,currentColor 13%,transparent);
 }
-@supports not (background:color-mix(in srgb, red 10%, transparent)){
-  /* 不支持 color-mix 时退回中性底：颜色信息仍由文字承担，不丢语义 */
+@supports not (background:color-mix(in srgb,red 10%,transparent)){
   .mem-badge[class*="mem-state-"]{background:var(--t-surface-sunken)}
 }
 
 /* ===== 通知 / 恢复条 ===== */
+.mem-notice-slot:empty,.mem-recovery-slot:empty{display:none}
+.mem-recovery-slot{display:flex;flex-direction:column;gap:var(--sp-2)}
 .mem-notice{
   display:flex;align-items:flex-start;gap:var(--sp-2);margin:0;
-  padding:var(--sp-3) var(--sp-3);border-radius:var(--r-sm);font-size:var(--fs-body);line-height:1.7;
+  padding:var(--sp-3);border-radius:var(--r-sm);font-size:var(--fs-body);line-height:1.7;
   background:var(--t-surface-soft);border:1px solid var(--t-line);
   color:var(--t-text-soft);overflow-wrap:anywhere;
-  animation:mem-slide-in .22s cubic-bezier(.16,1,.3,1);
 }
 .mem-notice[hidden]{display:none}
 .mem-notice svg{flex:none;width:15px;height:15px;margin-top:3px}
-.mem-notice.is-error{background:var(--t-risk-quiet);border-color:transparent;color:var(--t-risk-ink)}
-.mem-notice.is-ok{background:var(--t-ok-quiet);border-color:transparent;color:var(--t-ok-ink)}
+.mem-notice.is-error{background:var(--t-risk-quiet);border-color:color-mix(in srgb,var(--t-risk) 26%,var(--t-line));color:var(--t-risk-ink)}
+.mem-notice.is-ok{background:var(--t-ok-quiet);border-color:color-mix(in srgb,var(--t-ok) 26%,var(--t-line));color:var(--t-ok-ink)}
 .mem-recovery{
   display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
-  padding:var(--sp-3) var(--sp-3);border-radius:var(--r-sm);
+  padding:var(--sp-3);border-radius:var(--r-sm);
   background:var(--t-warn-quiet);color:var(--t-warn-ink);font-size:var(--fs-body);line-height:1.7;
 }
 .mem-recovery>span{flex:1 1 240px;min-width:0}
-/* 记忆归属：常驻的一行事实，不是可以关掉的提示。
-   它和 .mem-notice（一次操作的通知）刻意不同：没有底板、没有图标，
-   只占一行正文宽度——用户要能一眼看到「记忆现在由谁提供」，但不需要
-   它像报错那样抢注意力。 */
 .mem-ownership{
-  margin:0;font-size:var(--fs-body);line-height:1.8;color:var(--t-text-soft);
+  margin:0;font-size:var(--fs-tiny);line-height:1.6;color:var(--t-text-faint);
   overflow-wrap:anywhere;
 }
 
-/* ===== 按钮 ===== */
+/* ===== 按钮（全工作台统一 --r-sm 圆角与高度） ===== */
 .mem-btn{
   display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-1);
-  min-height:36px;padding:var(--sp-2) var(--sp-3);font:inherit;font-size:var(--fs-body);line-height:1.5;
-  color:var(--t-text);background:var(--t-surface);cursor:pointer;
+  min-height:36px;padding:var(--sp-1) var(--sp-3);font:inherit;font-size:var(--fs-tiny);line-height:1.5;font-weight:500;
+  color:var(--t-text);background:var(--t-surface);cursor:pointer;white-space:nowrap;
   border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
-  transition:background .16s ease,border-color .16s ease,color .16s ease,transform .12s ease;
+  transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease,transform var(--dur-fast) ease;
 }
-.mem-btn:hover:not(:disabled){background:var(--t-surface-soft);border-color:var(--t-text-faint)}
+.mem-btn:hover:not(:disabled){background:var(--t-surface-soft);border-color:var(--t-text-faint);color:var(--t-text-strong)}
 .mem-btn:active:not(:disabled){transform:translateY(1px)}
-.mem-btn:disabled{opacity:.42;cursor:default}
-.mem-btn svg{width:15px;height:15px}
+.mem-btn:disabled{opacity:.48;cursor:default}
+.mem-btn svg{flex:none;width:14px;height:14px}
 .mem-btn.is-primary{
-  background:var(--t-accent-solid);border-color:transparent;color:var(--t-on-solid);
+  background:var(--t-accent-solid);border-color:var(--t-accent-solid);color:var(--t-on-solid);font-weight:600;
 }
-.mem-btn.is-primary:hover:not(:disabled){background:var(--t-accent-solid-hover)}
-.mem-btn.is-danger{color:var(--t-risk-ink);background:var(--t-risk-quiet);border-color:transparent}
-.mem-btn.is-danger:hover:not(:disabled){background:var(--t-risk-quiet);border-color:var(--t-risk)}
+.mem-btn.is-primary:hover:not(:disabled){background:var(--t-accent-solid-hover);border-color:var(--t-accent-solid-hover);color:var(--t-on-solid)}
+.mem-btn.is-danger{
+  color:var(--t-risk-ink);background:var(--t-risk-quiet);
+  border-color:color-mix(in srgb,var(--t-risk) 26%,var(--t-line));
+}
+.mem-btn.is-danger:hover:not(:disabled){background:var(--t-risk-quiet);border-color:var(--t-risk);color:var(--t-risk-ink)}
 .mem-btn.is-quiet{border-color:transparent;background:transparent;color:var(--t-text-soft)}
 .mem-btn.is-quiet:hover:not(:disabled){background:var(--t-surface-soft);color:var(--t-text)}
+.mem-btn.is-refreshing{opacity:1;color:var(--t-accent-ink);border-color:color-mix(in srgb,var(--t-accent) 34%,var(--t-line));background:var(--t-accent-quiet)}
+.mem-btn.is-refreshing .mem-spin-icon{animation:mem-spin .85s linear infinite}
+@keyframes mem-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
-/* ===== 区块 =====
-   深度规则：**分组用背景，可交互对象用边框，两者不并用。**
-   这一页原来最乱的地方就在这里——.mem-block 同时带边框、背景和阴影，
-   而它内部又装着带底边框的 .mem-card 和带右边框的 .mem-corpus，
-   于是一屏里出现"框套框套框"，眼睛找不到哪一层才是边界。
-   现在区块退成一整块浅底，边框留给真正能点的东西（卡片、输入框、按钮），
-   分层靠背景深浅与间距，不再靠描边。 */
+/* ===== 区块 ===== */
 .mem-block{
-  background:var(--t-surface-soft);border:0;
-  border-radius:var(--r-lg);min-width:0;
-  animation:mem-rise .26s cubic-bezier(.16,1,.3,1) both;
+  background:var(--t-surface-soft);border:1px solid var(--t-line);
+  border-radius:var(--r-lg);min-width:0;overflow:clip;
 }
-/* 区块头：只有标题时不该撑出一个空行。
-   说明只在「不说就会做错」的地方出现（数据范围、不可逆后果），
-   且限宽 60ch —— 不限宽会拉成一整行，又变回一坨文字。 */
 .mem-block-head{
-  display:flex;align-items:baseline;justify-content:space-between;
-  gap:var(--sp-3);flex-wrap:wrap;padding:var(--sp-4) var(--sp-4);
+  display:flex;align-items:center;justify-content:space-between;
+  gap:var(--sp-3);flex-wrap:wrap;padding:var(--sp-3) var(--sp-4);
   border-bottom:1px solid var(--t-line);
 }
 .mem-block-head h3{margin:0;font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong)}
@@ -213,113 +275,164 @@
 .mem-block-body{padding:var(--sp-4);min-width:0}
 .mem-block-body:empty{display:none}
 
-/* ===== 事实总览条 =====
-   一条事实的四种归宿（有效/被取代/已撤回/已遗忘）在这里变成一条比例带。
-   比例带是这一页的「记忆心电图」——先用一眼看出语料健康度，再去读条目。 */
-.mem-vitals{display:flex;gap:var(--sp-4);align-items:flex-end;flex-wrap:wrap}
+/* ===== 事实总览条（修复「已遗忘」低对比度并增强呼吸感） ===== */
+.mem-vitals{display:flex;gap:var(--sp-5);align-items:center;flex-wrap:wrap}
 .mem-vitals-figure{display:flex;align-items:baseline;gap:var(--sp-2);flex:none}
 .mem-vitals-figure b{
-  font-family:var(--skin-heading-font,Georgia,"Times New Roman",serif);font-weight:400;
+  font-family:var(--skin-heading-font,Georgia,"Times New Roman",serif);font-weight:500;
   font-size:var(--fs-hero);line-height:1;color:var(--t-text-strong);
   font-variant-numeric:tabular-nums;
 }
-.mem-vitals-figure span{font-size:var(--fs-tiny);color:var(--t-text-faint);line-height:1.5}
+.mem-vitals-figure span{font-size:var(--fs-tiny);color:var(--t-text-soft);line-height:1.45}
 .mem-vitals-rest{flex:1 1 280px;min-width:0;display:flex;flex-direction:column;gap:var(--sp-2)}
 .mem-band{
-  display:flex;height:7px;border-radius:var(--r-pill);overflow:hidden;
+  display:flex;gap:2px;height:8px;border-radius:var(--r-pill);overflow:hidden;
   background:var(--t-surface-sunken);
 }
 .mem-band i{
-  display:block;height:100%;width:0;
+  display:block;height:100%;width:0;border-radius:var(--r-pill);
   transition:width .62s cubic-bezier(.16,1,.3,1);
 }
-.mem-band i:first-child{border-radius:var(--r-pill) 0 0 999px}
-.mem-band i:last-child{border-radius:0 999px 999px 0}
-.mem-legend{display:flex;gap:var(--sp-3);flex-wrap:wrap;font-size:var(--fs-tiny);color:var(--t-text-soft)}
-.mem-legend span{display:inline-flex;align-items:center;gap:var(--sp-1)}
+.mem-band i.mem-state-forgotten{opacity:.65}
+.mem-legend{display:flex;gap:var(--sp-2) var(--sp-4);flex-wrap:wrap;font-size:var(--fs-tiny);color:var(--t-text-soft)}
+.mem-legend>span{display:inline-flex;align-items:center;gap:var(--sp-1)}
 .mem-legend em{
   width:8px;height:8px;border-radius:var(--r-2xs);flex:none;font-style:normal;
-  background:currentColor;opacity:.85;
+  background:currentColor;
 }
-.mem-legend b{font-weight:600;font-variant-numeric:tabular-nums;color:var(--t-text)}
+.mem-legend .mem-legend-label{color:var(--t-text-soft)}
+.mem-legend .mem-state-forgotten em{background:var(--t-text-faint);opacity:.65}
+.mem-legend b{font-weight:600;font-variant-numeric:tabular-nums;color:var(--t-text-strong)}
 
-/* 生命周期色：四处共用（比例带、列表状态条、详情状态环、徽章） */
-.mem-state-active{color:var(--t-ok)}
-.mem-state-superseded{color:var(--t-text-faint)}
-.mem-state-invalidated{color:var(--t-warn)}
-.mem-state-retracted{color:var(--t-risk)}
-.mem-state-forgotten{color:var(--t-line-firm)}
-.mem-state-archived{color:var(--t-warn)}
+/* 生命周期色：确保 6 套主题全部满足高可读对比度（含「已遗忘」） */
+.mem-state-active{color:var(--t-ok-ink)}
+.mem-state-superseded{color:var(--t-text-soft)}
+.mem-state-invalidated{color:var(--t-warn-ink)}
+.mem-state-retracted{color:var(--t-risk-ink)}
+.mem-state-forgotten{color:var(--t-text-faint)}
+.mem-state-archived{color:var(--t-warn-ink)}
 
-/* ===== 筛选条 ===== */
+/* ===== 事实治理：统一顶栏工具条 + 左侧单层搜索条 ===== */
+.mem-workbench-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--t-line);
+  background:var(--t-surface-soft);
+}
+.mem-filter-chips{display:flex;align-items:center;gap:var(--sp-1);flex-wrap:wrap;flex:1 1 320px;min-width:0}
 .mem-filters{
   display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;
   padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--t-line);
 }
 .mem-chip{
   display:inline-flex;align-items:center;gap:var(--sp-1);
-  padding:var(--sp-1) var(--sp-3);font:inherit;font-size:var(--fs-tiny);cursor:pointer;
-  color:var(--t-text-soft);background:transparent;
+  padding:var(--sp-1) var(--sp-2);font:inherit;font-size:var(--fs-micro);line-height:1.5;cursor:pointer;
+  color:var(--t-text-soft);background:var(--t-surface);
   border:1px solid var(--t-line);border-radius:var(--r-pill);
-  transition:background .16s ease,border-color .16s ease,color .16s ease;
+  transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease;
 }
-.mem-chip:hover{border-color:var(--t-text-faint);color:var(--t-text)}
+.mem-chip:hover{border-color:var(--t-line-firm);color:var(--t-text-strong)}
 .mem-chip[aria-pressed="true"]{
-  background:var(--t-accent-quiet);border-color:transparent;
+  background:var(--t-accent-quiet);
+  border-color:color-mix(in srgb,var(--t-accent) 34%,var(--t-line));
   color:var(--t-accent-ink);font-weight:600;
 }
-.mem-chip b{font-weight:600;font-variant-numeric:tabular-nums;opacity:.75}
+.mem-chip b{font-weight:600;font-variant-numeric:tabular-nums;opacity:.82}
+
+.mem-list-pane{display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--t-line);background:var(--t-surface-soft)}
+.mem-list-toolbar{
+  padding:var(--sp-3);border-bottom:1px solid var(--t-line);
+  background:var(--t-surface-soft);
+}
 .mem-search{
-  flex:1 1 160px;min-width:0;display:flex;align-items:center;gap:var(--sp-2);
-  padding:var(--sp-1) var(--sp-3);background:var(--t-surface-soft);
-  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  display:flex;align-items:center;gap:var(--sp-2);width:100%;min-width:0;
+  padding:var(--sp-1) var(--sp-3);background:var(--t-surface);
+  border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
+  transition:border-color var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
+}
+.mem-search:focus-within{
+  border-color:var(--t-accent);
+  box-shadow:0 0 0 2px var(--t-accent-quiet);
 }
 .mem-search svg{flex:none;width:14px;height:14px;color:var(--t-text-faint)}
 .mem-search input{
   flex:1;min-width:0;border:0;outline:0;background:none;
-  font:inherit;font-size:var(--fs-body);color:var(--t-text);padding:3px 0;
+  font:inherit;font-size:var(--fs-tiny);color:var(--t-text);padding:3px 0;
 }
+.mem-search input::placeholder{color:var(--t-text-faint)}
 
-/* ===== 事实流（master-detail 的左半） ===== */
+/* ===== 整理与修复顶栏与分页条 ===== */
+.mem-refl-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--t-line);
+  background:var(--t-surface-soft);
+}
+.mem-reflection-views{
+  display:inline-flex;align-items:center;gap:var(--sp-1);padding:2px;
+  background:var(--t-surface);border:1px solid var(--t-line);border-radius:var(--r-sm);
+}
+.mem-reflection-views button{
+  display:inline-flex;align-items:center;gap:var(--sp-2);min-height:32px;padding:0 var(--sp-3);
+  border:1px solid transparent;border-radius:var(--r-xs);background:transparent;
+  color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:500;cursor:pointer;
+  transition:background var(--dur-fast) ease,color var(--dur-fast) ease,border-color var(--dur-fast) ease;
+}
+.mem-reflection-views button:hover:not([aria-pressed="true"]){color:var(--t-text-strong);background:var(--t-surface-soft)}
+.mem-reflection-views button[aria-pressed="true"]{
+  border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line));
+  background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600;
+}
+.mem-reflection-views b{font-variant-numeric:tabular-nums;font-family:var(--numeric-font)}
+.mem-refl-bar-right{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.mem-refl-hint{font-size:var(--fs-micro);color:var(--t-text-faint);line-height:1.5}
+
+.mem-refl-list-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;
+  padding:var(--sp-2) var(--sp-3);border-bottom:1px solid var(--t-line);
+  font-size:var(--fs-micro);color:var(--t-text-faint);
+}
+.mem-refl-pager{display:inline-flex;align-items:center;gap:var(--sp-2)}
+.mem-refl-pager .mem-btn{min-height:28px;padding:2px var(--sp-2);font-size:var(--fs-micro)}
+
+/* ===== 双栏主骨架（左流 + 右详情） ===== */
 .mem-split{
-  display:grid;grid-template-columns:minmax(260px,.86fr) minmax(0,1.14fr);
-  align-items:start;min-width:0;
+  display:grid;grid-template-columns:minmax(252px,.76fr) minmax(0,1.24fr);
+  align-items:stretch;min-width:0;
 }
 .mem-corpus{
-  border-right:1px solid var(--t-line);min-width:0;
-  max-height:min(68vh,720px);overflow-y:auto;overscroll-behavior:contain;
+  display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;
+  padding:var(--sp-2);max-height:min(68vh,700px);overflow-y:auto;overscroll-behavior:contain;
+  scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent;
 }
+.mem-corpus::-webkit-scrollbar{width:6px}
+.mem-corpus::-webkit-scrollbar-track{background:transparent}
+.mem-corpus::-webkit-scrollbar-thumb{background:var(--t-line-firm);border-radius:var(--r-pill)}
+
+/* 左侧事实卡片 */
 .mem-card{
   position:relative;display:block;width:100%;text-align:left;
-  /* 左边比右边多 3px，给 ::before 那条生命周期状态条留位置。
-     两侧压成同一个值会让状态条压住文字，所以这里必须是非对称的；
-     写成具名变量而不是裸数字，是为了让"这不是随手取的间距"有据可查。 */
-  --mem-card-gutter:18px;
-  padding:var(--sp-3) var(--sp-4) var(--sp-3) var(--mem-card-gutter);
+  padding:var(--sp-3) var(--sp-3) var(--sp-3) calc(var(--sp-4) + 2px);
   font:inherit;cursor:pointer;
-  background:transparent;border:0;border-bottom:1px solid var(--t-line);
-  transition:background .16s ease;
+  background:transparent;border:1px solid transparent;border-radius:var(--r-sm);
+  transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease;
 }
-.mem-card:last-child{border-bottom:0}
-.mem-card:hover{background:var(--t-surface-soft)}
-.mem-card[aria-current="true"]{background:var(--t-accent-quiet)}
-/* 左侧状态条：生命周期在列表里的第一眼表达。宽度变化 = 轻重之分：
-   有效最粗（它是在用的），遗忘最细（它是墓碑）。 */
+.mem-card:hover{background:var(--t-surface);border-color:var(--t-line)}
+.mem-card[aria-current="true"]{
+  background:color-mix(in srgb,var(--t-accent) 11%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line));
+}
 .mem-card::before{
-  content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
-  background:currentColor;opacity:.55;
-  transition:width .18s ease,opacity .18s ease;
+  content:"";position:absolute;left:6px;top:10px;bottom:10px;width:2px;border-radius:var(--r-pill);
+  background:currentColor;opacity:.45;
+  transition:width var(--dur-fast) ease,opacity var(--dur-fast) ease;
 }
 .mem-card[aria-current="true"]::before{width:3px;opacity:1}
-.mem-card-line{
-  display:flex;align-items:baseline;gap:var(--sp-2);margin-bottom:var(--sp-1);
-}
+.mem-card-line{display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-1)}
 .mem-card-line strong{
-  flex:1;min-width:0;font-size:var(--fs-body);font-weight:500;color:var(--t-text-strong);
+  flex:1;min-width:0;font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .mem-card-q{
-  font-size:var(--fs-body);line-height:1.65;color:var(--t-text-soft);
+  font-size:var(--fs-tiny);line-height:1.6;color:var(--t-text-soft);
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
 }
 .mem-card-meta{
@@ -327,58 +440,190 @@
   margin-top:var(--sp-2);font-size:var(--fs-micro);color:var(--t-text-faint);
 }
 .mem-card-meta time{font-variant-numeric:tabular-nums}
-/* 钉选：一枚小小的实心点，不是星标图标——它表达「这条被钉住了」而非「收藏」 */
-.mem-pin{
-  flex:none;width:7px;height:7px;border-radius:50%;
-  background:var(--t-accent-solid);
-}
+.mem-pin{flex:none;width:7px;height:7px;border-radius:50%;background:var(--t-accent-solid)}
 .mem-pin[hidden]{display:none}
 
-/* ===== 事实详情（右半） ===== */
-.mem-detail{min-width:0;padding:var(--sp-4);container-type:inline-size}
-.mem-detail-empty{padding:var(--sp-7) var(--sp-5);text-align:center;color:var(--t-text-faint);font-size:var(--fs-body);line-height:1.8}
-.mem-detail-top{display:flex;align-items:flex-start;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-4)}
-.mem-detail-top h3{
-  flex:1 1 auto;min-width:0;margin:0;
-  font-family:var(--skin-heading-font,"Noto Serif SC","Songti SC","SimSun",serif);
-  font-size:var(--fs-head);line-height:1.5;font-weight:600;color:var(--t-text-strong);
-  overflow-wrap:anywhere;
+/* 左侧整理批次卡片 */
+.mem-batch{
+  position:relative;display:grid;gap:var(--sp-1);width:100%;text-align:left;
+  padding:var(--sp-3) var(--sp-3) var(--sp-3) calc(var(--sp-4) + 2px);
+  background:transparent;border:1px solid transparent;border-radius:var(--r-sm);
+  font:inherit;cursor:pointer;
+  transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease;
 }
-/* 状态环：详情里「这条记忆现在怎么了」的落点。用 conic-gradient 表达置信度，
-   环的颜色表达生命周期——两个维度不互相占用。 */
-.mem-ring{flex:none;width:46px;height:46px;border-radius:50%;display:grid;place-items:center}
-.mem-ring i{
-  display:grid;place-items:center;width:36px;height:36px;border-radius:50%;
-  background:var(--t-surface-raised);font-size:var(--fs-tiny);font-weight:600;font-style:normal;
-  font-variant-numeric:tabular-nums;color:var(--t-text-soft);
+.mem-batch::before{
+  content:"";position:absolute;left:6px;top:10px;bottom:10px;width:2px;border-radius:var(--r-pill);
+  background:var(--t-line-firm);opacity:.5;transition:width var(--dur-fast) ease,opacity var(--dur-fast) ease,background var(--dur-fast) ease;
 }
-.mem-quote{
-  margin:0 0 var(--sp-4);padding:0 0 0 var(--sp-4);border-left:2px solid var(--t-line-firm);
-  font-size:var(--fs-lead);line-height:1.95;color:var(--t-text);white-space:pre-wrap;
-  overflow-wrap:anywhere;
+.mem-batch.is-risk-item::before{background:var(--t-risk)}
+.mem-batch.is-ok-item::before{background:var(--t-ok)}
+.mem-batch:hover{background:var(--t-surface);border-color:var(--t-line)}
+.mem-batch[aria-current="true"]{
+  background:color-mix(in srgb,var(--t-accent) 11%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line));
 }
-.mem-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:var(--sp-2) var(--sp-4);margin:0 0 var(--sp-4)}
-.mem-fields div{min-width:0}
-.mem-fields dt{font-size:var(--fs-micro);color:var(--t-text-faint);margin-bottom:3px}
-.mem-fields dd{
-  margin:0;font-size:var(--fs-body);color:var(--t-text);
-  overflow-wrap:anywhere;
+.mem-batch[aria-current="true"]::before{width:3px;opacity:1;background:var(--t-accent-solid)}
+.mem-batch.is-risk-item[aria-current="true"]::before{background:var(--t-risk)}
+.mem-batch-top{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.mem-batch-top strong{font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong)}
+.mem-batch-summary{
+  font-size:var(--fs-tiny);line-height:1.6;color:var(--t-text-soft);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
 }
-.mem-fields dd.is-mono,.mem-mono{
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  font-size:var(--fs-tiny);letter-spacing:-.01em;
-}
-.mem-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
-.mem-actions .mem-btn{min-height:33px;padding:var(--sp-1) var(--sp-3);font-size:var(--fs-tiny)}
+.mem-batch small{font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
 
-/* ===== 修订时间轴 =====
-   只有内容真的是一段序列时才配得上竖线+节点。修订历史正是序列，所以用。
-   最新的节点稍大、颜色更深，越往下越淡——时间的方向感由颜色承担。 */
-.mem-timeline{list-style:none;margin:var(--sp-4) 0 0;padding:0 0 0 var(--sp-4);position:relative}
+/* ===== 右侧详情面板（事实详情 & 整理详情统一视觉体系） ===== */
+.mem-detail{
+  min-width:0;padding:var(--sp-4) var(--sp-5) var(--sp-7);
+  background:var(--t-surface);container-type:inline-size;
+  transition:opacity var(--dur-fast) ease;
+}
+.mem-detail.is-updating{opacity:.72}
+.mem-detail-empty{padding:var(--sp-7) var(--sp-5);text-align:center;color:var(--t-text-faint);font-size:var(--fs-body);line-height:1.8}
+
+/* 详情单行顶栏 */
+.mem-detail-top{
+  display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
+  margin-bottom:var(--sp-4);padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line);
+}
+.mem-detail-title-group{display:flex;align-items:center;gap:var(--sp-2);flex:1 1 200px;min-width:0}
+.mem-detail-top h3{
+  margin:0;min-width:0;
+  font-family:var(--skin-heading-font,"Noto Serif SC","Songti SC","SimSun",serif);
+  font-size:var(--fs-head);line-height:1.35;font-weight:600;color:var(--t-text-strong);
+  overflow-wrap:anywhere;
+}
+.mem-detail-badges{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;margin-left:auto}
+.mem-status-dot{width:10px;height:10px;border-radius:50%;flex:none;background:var(--t-accent)}
+.mem-status-dot.is-risk{background:var(--t-risk);box-shadow:0 0 0 3px var(--t-risk-quiet)}
+.mem-status-dot.is-warn{background:var(--t-warn);box-shadow:0 0 0 3px var(--t-warn-quiet)}
+.mem-status-dot.is-ok{background:var(--t-ok);box-shadow:0 0 0 3px var(--t-ok-quiet)}
+.mem-status-dot.is-accent{background:var(--t-accent);box-shadow:0 0 0 3px var(--t-accent-quiet)}
+.mem-status-dot.is-neutral{background:var(--t-text-faint);box-shadow:0 0 0 3px var(--t-surface-sunken)}
+
+.mem-sync-meta{
+  display:inline-flex;align-items:center;gap:var(--sp-1);
+  font-size:var(--fs-micro);color:var(--t-text-faint);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+  padding:2px var(--sp-2);border-radius:var(--r-xs);
+}
+.mem-sync-meta.is-syncing{color:var(--t-accent-ink);background:var(--t-accent-quiet)}
+
+/* 置信度状态环 */
+.mem-ring{flex:none;width:44px;height:44px;border-radius:50%;display:grid;place-items:center}
+.mem-ring i{
+  display:grid;place-items:center;width:34px;height:34px;border-radius:50%;
+  background:var(--t-surface);font-size:var(--fs-micro);font-weight:600;font-style:normal;
+  font-family:var(--numeric-font);font-variant-numeric:tabular-nums;color:var(--t-text-strong);
+}
+
+/* 摘要卡（彻底替代悬空左竖线 | .mem-quote） */
+.mem-summary-card{
+  display:flex;flex-direction:column;gap:var(--sp-1);
+  margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-md);
+}
+.mem-summary-card.is-risk{
+  background:color-mix(in srgb,var(--t-risk-quiet) 68%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-risk) 26%,var(--t-line));
+}
+.mem-summary-card.is-warn{
+  background:color-mix(in srgb,var(--t-warn-quiet) 68%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-warn) 26%,var(--t-line));
+}
+.mem-summary-card.is-ok{
+  background:color-mix(in srgb,var(--t-ok-quiet) 68%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-ok) 26%,var(--t-line));
+}
+.mem-summary-label{
+  display:inline-flex;align-items:center;gap:var(--sp-1);
+  font-size:var(--fs-micro);font-weight:600;color:var(--t-text-faint);
+}
+.mem-summary-label svg{width:13px;height:13px;flex:none}
+.mem-summary-card.is-risk .mem-summary-label{color:var(--t-risk-ink)}
+.mem-summary-card.is-warn .mem-summary-label{color:var(--t-warn-ink)}
+.mem-summary-card.is-ok .mem-summary-label{color:var(--t-ok-ink)}
+.mem-summary-text{
+  margin:0;font-size:var(--fs-lead);line-height:1.75;color:var(--t-text-strong);
+  white-space:pre-wrap;overflow-wrap:anywhere;
+}
+.mem-summary-card.is-risk .mem-summary-text{font-size:var(--fs-body);color:var(--t-text)}
+
+/* 对称 4 列轻指标子卡（告别 3+1 孤儿折行，窄屏自动 2x2） */
+.mem-meta-grid{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:var(--sp-2);margin:0 0 var(--sp-4);
+}
+.mem-meta-grid>div{
+  display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;
+  padding:var(--sp-2) var(--sp-3);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-sm);
+}
+.mem-meta-grid dt{font-size:var(--fs-micro);color:var(--t-text-faint);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mem-meta-grid dd{
+  margin:0;font-size:var(--fs-tiny);font-weight:600;color:var(--t-text-strong);line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.mem-meta-grid.mem-refl-stats dd{
+  font-family:var(--numeric-font);font-size:var(--fs-title);font-variant-numeric:tabular-nums;
+}
+.mem-meta-grid>div.is-emphasis{
+  background:color-mix(in srgb,var(--t-warn-quiet) 58%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-warn) 26%,var(--t-line));
+}
+.mem-meta-grid>div.is-emphasis dd{color:var(--t-warn-ink)}
+.mem-meta-grid dd.is-mono,.mem-mono{
+  font-family:var(--numeric-font);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums;
+}
+@container (max-width:390px){
+  .mem-meta-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+/* 原地刷新变动微动效（受 reduced-motion / data-motion 约束） */
+.mem-just-updated{animation:mem-flash-update .85s ease-out}
+@keyframes mem-flash-update{
+  0%{background-color:var(--t-accent-quiet);box-shadow:0 0 0 2px color-mix(in srgb,var(--t-accent) 24%,transparent)}
+  100%{box-shadow:0 0 0 0 transparent}
+}
+
+/* 动作条 */
+.mem-actions{
+  display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;
+  padding-top:var(--sp-3);margin-top:var(--sp-3);border-top:1px solid var(--t-line);
+}
+.mem-actions .mem-btn{min-height:36px;padding:var(--sp-1) var(--sp-3);font-size:var(--fs-tiny);border-radius:var(--r-sm)}
+.mem-actions-end{margin-left:auto}
+.mem-action-hint{margin:var(--sp-2) 0 0;font-size:var(--fs-micro);line-height:1.65;color:var(--t-text-faint)}
+
+/* 独立编辑分组子卡（事实治理） */
+.mem-edit-card{
+  display:grid;gap:var(--sp-3);margin-top:var(--sp-4);padding:var(--sp-4);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-md);
+}
+.mem-card-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap}
+.mem-card-head h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong)}
+.mem-card-head small{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.mem-form{display:grid;gap:var(--sp-3)}
+.mem-form label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-tiny);font-weight:500;color:var(--t-text-soft)}
+.mem-form input,.mem-form textarea{
+  width:100%;min-width:0;box-sizing:border-box;font:inherit;font-size:var(--fs-body);
+  padding:var(--sp-2) var(--sp-3);line-height:1.6;
+  color:var(--t-text);background:var(--t-surface);
+  border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
+  transition:border-color var(--dur-fast) ease,box-shadow var(--dur-fast) ease;
+}
+.mem-form input:focus,.mem-form textarea:focus{
+  outline:none;border-color:var(--t-accent);box-shadow:0 0 0 2px var(--t-accent-quiet);
+}
+.mem-form textarea{resize:vertical;min-height:76px}
+.mem-form-actions{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+
+/* ===== 修订时间轴 ===== */
+.mem-timeline{list-style:none;margin:var(--sp-3) 0 0;padding:0 0 0 var(--sp-4);position:relative}
 .mem-timeline::before{
   content:"";position:absolute;left:3px;top:6px;bottom:6px;width:1px;background:var(--t-line);
 }
-.mem-timeline li{position:relative;padding:0 0 var(--sp-4)}
+.mem-timeline li{position:relative;padding:0 0 var(--sp-3)}
 .mem-timeline li:last-child{padding-bottom:0}
 .mem-timeline li::before{
   content:"";position:absolute;left:-17px;top:6px;
@@ -390,16 +635,19 @@
   box-shadow:0 0 0 3px var(--t-accent-quiet);
 }
 .mem-timeline time{display:block;font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
-.mem-timeline p{margin:var(--sp-1) 0 0;font-size:var(--fs-body);line-height:1.75;color:var(--t-text-soft);white-space:pre-wrap;overflow-wrap:anywhere}
+.mem-timeline p{margin:var(--sp-1) 0 0;font-size:var(--fs-body);line-height:1.7;color:var(--t-text-soft);white-space:pre-wrap;overflow-wrap:anywhere}
+.mem-timeline .mem-timeline-obj{color:var(--t-text-faint);font-size:var(--fs-micro)}
 .mem-timeline .mem-timeline-op{
   display:inline-block;margin-right:var(--sp-2);padding:1px var(--sp-1);border-radius:var(--r-2xs);
   font-size:var(--fs-micro);background:var(--t-surface-sunken);color:var(--t-text-soft);
 }
 
-/* ===== 整理批次（六阶段状态机） =====
-   后端 reflection 有六个阶段：准备材料 → 待整理 → 调用结果待核对 → 已收到待解析
-   → 待写入 → 完成/失败。以前是一个文字标签，现在画成一条推进的轨道。 */
-.mem-stages{display:flex;gap:0;margin:var(--sp-3) 0 0;list-style:none;padding:0}
+/* ===== 整理批次：六阶段线性轨道（仅线性流程渲染）与结构化诊断卡 ===== */
+.mem-stages-wrap{
+  margin:0 0 var(--sp-4);padding:var(--sp-3);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-md);
+}
+.mem-stages{display:flex;gap:0;margin:0;list-style:none;padding:0}
 .mem-stages li{
   flex:1;min-width:0;position:relative;padding-top:var(--sp-5);
   font-size:var(--fs-micro);color:var(--t-text-faint);text-align:center;
@@ -408,9 +656,8 @@
   content:"";position:absolute;left:50%;top:6px;transform:translateX(-50%);
   width:9px;height:9px;border-radius:50%;z-index:1;
   background:var(--t-surface-raised);border:1.5px solid var(--t-line-firm);
-  transition:background .3s ease,border-color .3s ease,box-shadow .3s ease;
+  transition:background var(--dur) ease,border-color var(--dur) ease,box-shadow var(--dur) ease;
 }
-/* 连线：除首项外每一项都画到自己中心的一半 */
 .mem-stages li:not(:first-child)::after{
   content:"";position:absolute;left:-50%;top:10px;width:100%;height:1px;
   background:var(--t-line);z-index:0;
@@ -422,91 +669,118 @@
   box-shadow:0 0 0 4px var(--t-accent-quiet);
 }
 .mem-stages li.is-now{color:var(--t-text-strong);font-weight:600}
-.mem-stages li.is-failed::before{background:var(--t-risk);border-color:var(--t-risk)}
-.mem-stages li.is-failed{color:var(--t-risk-ink);font-weight:600}
 @container (max-width:480px){
   .mem-stages{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));row-gap:var(--sp-3)}
   .mem-stages li:nth-child(3n + 1)::after{display:none}
 }
 
-.mem-batch{
-  display:grid;gap:var(--sp-1);width:100%;text-align:left;padding:var(--sp-3) var(--sp-4);
-  background:transparent;border:0;border-bottom:1px solid var(--t-line);
-  font:inherit;cursor:pointer;
-  transition:background .16s ease,box-shadow .16s ease;
+/* 诊断信息栈 */
+.mem-diag-stack{display:flex;flex-direction:column;gap:var(--sp-3);margin-bottom:var(--sp-3)}
+.mem-prep-strip{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;
+  padding:var(--sp-2) var(--sp-3);background:var(--t-surface-soft);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  font-size:var(--fs-tiny);color:var(--t-text-soft);
 }
-.mem-batch:last-child{border-bottom:0}
-.mem-batch:hover{background:var(--t-surface-soft)}
-.mem-batch[aria-current="true"]{
-  background:var(--t-accent-quiet);
-  box-shadow:inset 3px 0 var(--t-accent-solid);
-}
-.mem-batch-top{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
-.mem-batch-top strong{font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong)}
-.mem-batch>span:not(.mem-batch-top){
-  font-size:var(--fs-body);line-height:1.7;color:var(--t-text-soft);
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
-}
-.mem-batch small{font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.mem-prep-strip strong{color:var(--t-text-strong);font-weight:600}
 
+/* 后台任务状态卡（按语义着色：受阻为风险色、排队为强调色、完成为成功色） */
 .mem-job{
-  margin:var(--sp-3) 0 0;padding:var(--sp-3) var(--sp-3);border-radius:var(--r-sm);
-  background:var(--t-ok-quiet);color:var(--t-ok-ink);
-  font-size:var(--fs-body);line-height:1.75;border-left:3px solid var(--t-ok);
+  padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);
+  color:var(--t-text);font-size:var(--fs-tiny);line-height:1.65;
 }
-.mem-job strong{display:block;font-size:var(--fs-body);margin-bottom:3px}
+.mem-job.is-blocked{
+  background:color-mix(in srgb,var(--t-risk-quiet) 65%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-risk) 30%,var(--t-line));
+  color:var(--t-risk-ink);
+}
+.mem-job.is-queued{
+  background:color-mix(in srgb,var(--t-accent-quiet) 72%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));
+  color:var(--t-accent-ink);
+}
+.mem-job.is-complete{
+  background:color-mix(in srgb,var(--t-ok-quiet) 72%,var(--t-surface));
+  border-color:color-mix(in srgb,var(--t-ok) 30%,var(--t-line));
+  color:var(--t-ok-ink);
+}
+.mem-job-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-1)}
+.mem-job-head strong{font-size:var(--fs-body);font-weight:600}
+.mem-job-head time{font-size:var(--fs-micro);opacity:.85;font-variant-numeric:tabular-nums}
+.mem-job p{margin:var(--sp-1) 0 0;font-size:var(--fs-tiny);line-height:1.65}
 
-/* ===== 分隔小节（详情里的次级标题） ===== */
+.mem-issues-card{
+  padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);
+}
+.mem-issues-card .mem-card-head{margin-bottom:var(--sp-2)}
+.mem-issues-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--sp-2)}
+.mem-issues-list li{
+  display:flex;align-items:flex-start;gap:var(--sp-2);
+  font-size:var(--fs-tiny);line-height:1.65;color:var(--t-text-soft);
+}
+.mem-issue-index{
+  flex:none;display:inline-grid;place-items:center;min-width:20px;height:20px;
+  padding:0 var(--sp-1);border-radius:var(--r-xs);
+  background:var(--t-surface-sunken);color:var(--t-text-strong);
+  font-size:var(--fs-micro);font-family:var(--numeric-font);font-weight:600;
+}
+
+/* ===== 分隔小节 ===== */
 .mem-sub{
-  display:flex;align-items:baseline;gap:var(--sp-2);margin:var(--sp-5) 0 0;
+  display:flex;align-items:baseline;gap:var(--sp-2);margin:var(--sp-4) 0 0;
   font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong);
 }
 .mem-sub small{font-weight:400;font-size:var(--fs-micro);color:var(--t-text-faint)}
-.mem-plain{font-size:var(--fs-body);line-height:1.85;color:var(--t-text-soft);margin:var(--sp-3) 0 0}
-.mem-list{margin:var(--sp-2) 0 0;padding-left:19px;font-size:var(--fs-body);line-height:1.85;color:var(--t-text-soft)}
+.mem-plain{font-size:var(--fs-tiny);line-height:1.75;color:var(--t-text-soft);margin:var(--sp-2) 0 0}
+.mem-list{margin:var(--sp-2) 0 0;padding-left:19px;font-size:var(--fs-tiny);line-height:1.75;color:var(--t-text-soft)}
 .mem-list li{margin-bottom:3px}
 
 /* ===== 来源与经历 ===== */
 .mem-query-form{display:grid;grid-template-columns:minmax(0,1fr) 150px auto;gap:var(--sp-3);align-items:end}
 .mem-query-form label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-tiny);color:var(--t-text-faint);min-width:0}
 .mem-query-form input,.mem-query-form select{
-  width:100%;min-width:0;font:inherit;font-size:var(--fs-body);padding:var(--sp-2) var(--sp-2);
+  width:100%;min-width:0;font:inherit;font-size:var(--fs-body);padding:var(--sp-2);
   color:var(--t-text);background:var(--t-surface);
   border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
 }
-.mem-results{display:flex;flex-direction:column;gap:var(--sp-2);margin-top:var(--sp-4);list-style:none;padding:0}
+.mem-results{display:flex;flex-direction:column;gap:var(--sp-2);margin-top:var(--sp-3);list-style:none;padding:0}
 .mem-result{
   padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);
   background:var(--t-surface);min-width:0;
-  animation:mem-rise .26s cubic-bezier(.16,1,.3,1) both;
 }
 .mem-result-head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-1)}
 .mem-result h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong)}
 .mem-result p{margin:0;font-size:var(--fs-body);line-height:1.8;color:var(--t-text-soft);white-space:pre-wrap;overflow-wrap:anywhere}
+.mem-source-card{
+  margin-top:var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-md);
+}
+.mem-source-card .mem-results{margin-top:var(--sp-2)}
 .mem-source-link{
-  display:inline-flex;align-items:center;gap:var(--sp-1);max-width:100%;
-  margin-top:var(--sp-2);padding:var(--sp-1) var(--sp-2);font:inherit;font-size:var(--fs-tiny);cursor:pointer;
-  color:var(--t-text-soft);background:var(--t-surface-soft);
+  display:inline-flex;align-items:center;gap:var(--sp-2);max-width:100%;
+  padding:var(--sp-2) var(--sp-3);font:inherit;font-size:var(--fs-tiny);cursor:pointer;
+  color:var(--t-text-soft);background:var(--t-surface);
   border:1px solid var(--t-line);border-radius:var(--r-sm);
   overflow-wrap:anywhere;text-align:left;
-  transition:background .16s ease,color .16s ease,border-color .16s ease;
+  transition:background var(--dur-fast) ease,color var(--dur-fast) ease,border-color var(--dur-fast) ease;
 }
-.mem-source-link:hover{background:var(--t-accent-quiet);border-color:transparent;color:var(--t-accent-ink)}
+.mem-source-link svg{flex:none;width:14px;height:14px}
+.mem-source-link:hover{background:var(--t-accent-quiet);border-color:color-mix(in srgb,var(--t-accent) 32%,var(--t-line));color:var(--t-accent-ink)}
 .mem-source-text{
   margin:var(--sp-3) 0 0;padding:var(--sp-3) var(--sp-4);border-radius:var(--r-sm);
   background:var(--t-surface-sunken);color:var(--t-text);
-  font-size:var(--fs-body);line-height:1.95;white-space:pre-wrap;overflow-wrap:anywhere;
-  animation:mem-rise .26s cubic-bezier(.16,1,.3,1) both;
+  font-size:var(--fs-body);line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere;
 }
 .mem-source-text small{display:block;margin-bottom:var(--sp-2);font-size:var(--fs-micro);color:var(--t-text-faint)}
+.mem-source-more{margin-top:var(--sp-2)}
 
-/* ===== 预览→确认两段式（归档/清理/导入共用） =====
-   这三个动作都不可逆或代价高，共用同一套「先看后做」的形状：
-   预览摘要 → 显式确认 → 回执。形状一致是为了让人学会一次就到处认得。 */
+/* ===== 预览→确认两段式 ===== */
 .mem-preview{
   display:flex;flex-direction:column;gap:var(--sp-3);
-  padding:var(--sp-4) var(--sp-4);border-radius:var(--r-sm);
-  background:var(--t-surface-soft);border:1px solid var(--t-line);
+  padding:var(--sp-4);border-radius:var(--r-sm);
+  background:var(--t-surface);border:1px solid var(--t-line);
 }
 .mem-preview-facts{display:flex;gap:var(--sp-4);flex-wrap:wrap;margin:0}
 .mem-preview-facts div{min-width:0}
@@ -514,10 +788,9 @@
 .mem-preview-facts dd{margin:0;font-size:var(--fs-title);color:var(--t-text-strong);font-variant-numeric:tabular-nums}
 .mem-preview-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap}
 .mem-token{
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-family:var(--numeric-font);
   font-size:var(--fs-micro);color:var(--t-text-faint);overflow-wrap:anywhere;
 }
-/* 归档预览的条目：勾选项。被移出工作集是一个「位移」，所以用复选框而非开关。 */
 .mem-pick{display:flex;flex-direction:column;gap:0;margin:0;padding:0;list-style:none;max-height:290px;overflow-y:auto}
 .mem-pick li{border-bottom:1px solid var(--t-line)}
 .mem-pick li:last-child{border-bottom:0}
@@ -526,9 +799,7 @@
 .mem-pick strong{display:block;font-weight:500;color:var(--t-text)}
 .mem-pick small{display:block;margin-top:2px;font-size:var(--fs-micro);color:var(--t-text-faint)}
 
-/* ===== 删除/归档的「移出」动效 =====
-   条目真的从列表里消失时必须能被看见，否则用户不知道刚才那一下做了什么。
-   .is-leaving 让卡片向左塌陷并淡出，260ms 后才从 DOM 摘掉。 */
+/* ===== 删除/归档的「移出」动效 ===== */
 .mem-card.is-leaving,.mem-batch.is-leaving{
   animation:mem-leave .26s cubic-bezier(.55,0,.9,.4) forwards;
   pointer-events:none;
@@ -550,51 +821,34 @@
   background-size:200% 100%;animation:mem-shimmer 1.5s linear infinite;
 }
 @keyframes mem-shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
-/* 读取中：顶部一条进度带，是页面级唯一「无内容时的动效」，避免整页骨架闪烁 */
-.mem-progress{
-  height:2px;border-radius:var(--r-pill);background:var(--t-accent-quiet);overflow:hidden;
-}
-.mem-progress[hidden]{display:none}
-.mem-progress i{
-  display:block;height:100%;width:36%;border-radius:var(--r-pill);
-  background:var(--t-accent-solid);animation:mem-sweep 1.25s ease-in-out infinite;
-}
-@keyframes mem-sweep{
-  0%{transform:translateX(-100%)}
-  100%{transform:translateX(380%)}
-}
-
-/* ===== 表单（编辑事实） ===== */
-.mem-form{display:grid;gap:var(--sp-3);margin-top:var(--sp-4);padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
-.mem-form label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-tiny);color:var(--t-text-faint)}
-.mem-form input,.mem-form textarea{
-  width:100%;min-width:0;font:inherit;font-size:var(--fs-body);padding:var(--sp-2) var(--sp-3);line-height:1.6;
-  color:var(--t-text);background:var(--t-surface);
-  border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
-}
-.mem-form textarea{resize:vertical;min-height:74px}
-.mem-form-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap}
 
 /* ===== 可折叠的「标识符」 ===== */
 .mem-identifiers{margin-top:var(--sp-4);font-size:var(--fs-tiny);color:var(--t-text-faint)}
 .mem-identifiers summary{cursor:pointer;padding:var(--sp-2) 0;list-style:none}
 .mem-identifiers summary::-webkit-details-marker{display:none}
-.mem-identifiers summary::before{content:"› ";display:inline-block;transition:transform .18s ease}
+.mem-identifiers summary::before{content:"› ";display:inline-block;transition:transform var(--dur-fast) ease}
 .mem-identifiers[open] summary::before{transform:rotate(90deg)}
 .mem-identifiers p{margin:var(--sp-1) 0 0;line-height:1.75;overflow-wrap:anywhere}
 
-/* ===== 焦点 ===== */
-#memoryWorkspace :is(button,select,input,textarea,summary,[tabindex]):focus-visible{
-  outline:2px solid var(--t-accent-solid);outline-offset:2px;border-radius:var(--r-xs);
+/* ===== 手动新增记忆 ===== */
+.mem-add-form{
+  display:grid;gap:var(--sp-3);margin:var(--sp-3) var(--sp-4);padding:var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);
+}
+.mem-add-field{display:grid;gap:var(--sp-1)}
+.mem-add-field span{font-size:var(--fs-micro);font-weight:600;color:var(--t-text-soft)}
+.mem-add-field select,.mem-add-field textarea{
+  width:100%;box-sizing:border-box;font:inherit;font-size:var(--fs-body);
+  color:var(--t-text);background:var(--t-surface-raised);
+  border:1px solid var(--t-line-firm);border-radius:var(--r-sm);padding:var(--sp-2) var(--sp-3);
 }
 
-/* ===== 通用入场 ===== */
-@keyframes mem-rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
-@keyframes mem-slide-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+/* ===== 焦点 ===== */
+#memoryWorkspace :is(button,select,input,textarea,summary,[tabindex]):focus-visible{
+  outline:2px solid var(--t-focus);outline-offset:2px;border-radius:var(--r-xs);
+}
 
-/* ===== 响应式 =====
-   桌面三区（轨道 | 语料 + 详情）；≤1080 轨道收成横排；
-   ≤880 master-detail 翻成列表→详情推入（详情从右侧滑入，带返回）。 */
+/* ===== 响应式 ===== */
 @media(max-width:1080px){
   .mem-app{grid-template-columns:minmax(0,1fr)}
   .mem-rail{
@@ -610,9 +864,8 @@
 @media(max-width:880px){
   .mem-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .mem-split{grid-template-columns:minmax(0,1fr)}
-  .mem-corpus{border-right:0;max-height:none}
-  /* 详情推入：没有选中条目时整块隐藏（不占位、不可点），
-     选中后从右侧滑入覆盖列表，保留 transform 过渡。 */
+  .mem-list-pane{border-right:0}
+  .mem-corpus{max-height:none}
   .mem-detail{
     position:fixed;z-index:40;inset:0;max-height:100dvh;overflow-y:auto;
     background:var(--t-surface-raised);border-radius:0;border:0;
@@ -629,47 +882,39 @@
   :root[data-motion="off"] .mem-detail,body.reduce-motion .mem-detail{transition:none!important;transform:none}
   @media(prefers-reduced-motion:reduce){.mem-detail{transition:none!important;transform:none}}
   .mem-detail-close{display:inline-flex!important;margin-right:auto}
-  .mem-detail-top{flex-wrap:wrap}
   .mem-vitals-figure b{font-size:var(--fs-display)}
 }
 @media(min-width:881px){.mem-detail-close{display:none!important}}
 @media(max-width:650px){
+  .memory-route-tabs{display:flex;width:100%;margin-inline:0;padding:var(--sp-1)}
+  .memory-route-tab{flex:1 1 auto;min-height:40px;padding:0 var(--sp-3)}
   .mem-head-title h2{font-size:var(--fs-head)}
   .mem-query-form{grid-template-columns:minmax(0,1fr)}
   .mem-block-body,.mem-detail{padding:var(--sp-3)}
-  .mem-block-head,.mem-filters{padding:var(--sp-3) var(--sp-3)}
+  .mem-block-head,.mem-filters,.mem-workbench-bar,.mem-refl-bar{padding:var(--sp-3)}
   .mem-stages li{font-size:var(--fs-micro)}
   .mem-btn{min-height:40px}
-  .mem-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding-inline:var(--sp-3)}
-  .mem-linkage{margin-inline:var(--sp-3)}
+  .mem-actions .mem-btn{min-height:38px}
+  .mem-actions-end{margin-left:0}
+  .mem-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:var(--sp-3)}
+  .mem-linkage{margin:0 var(--sp-3) var(--sp-3);padding:var(--sp-3)}
   .mem-linkage-counts{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .mem-reflection-views{padding-inline:var(--sp-3)}
+  .mem-meta-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .mem-detail-badges{margin-left:0}
 }
 
-.memory-route{min-width:0}
-.memory-route-tabs{display:flex;gap:var(--sp-1);overflow-x:auto;padding:0 2px;border-bottom:1px solid var(--t-line);scrollbar-width:thin}
-.memory-route-tab{position:relative;flex:none;min-height:42px;padding:0 var(--sp-3);border-bottom:2px solid transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);font-weight:600;white-space:nowrap;transition:color var(--dur-fast) ease,border-color var(--dur-fast) ease,background var(--dur-fast) ease}
-.memory-route-tab:hover{color:var(--t-text-strong);background:var(--t-surface-soft)}
-.memory-route-tab.is-active{border-color:var(--t-accent);color:var(--t-accent-ink)}
-.memory-route-tab:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
-.memory-settings-workspace{min-width:0;padding-top:var(--sp-4)}
-:root[data-motion="off"] .memory-route-tab,:root[data-motion="low"] .memory-route-tab{transition-duration:0s}
-@media(max-width:650px){.memory-route-tabs{margin-inline:calc(-1 * var(--sp-2));padding-inline:var(--sp-2)}.memory-route-tab{min-height:44px;padding-inline:11px}}
-
-/* ===== 降级：减少动态 =====
-   一律压到近零时长而不是 none——CSS 过渡被删掉之后，依赖 transitionend
-   或时长等待的逻辑会永远等不到。压时长则终态照常到达，行为与视觉都不分叉。 */
+/* ===== 降级：减少动态 ===== */
+:root[data-motion="low"] .mem-just-updated,
+:root[data-motion="off"] .mem-just-updated,
+:root[data-motion="low"] .mem-btn.is-refreshing .mem-spin-icon,
+:root[data-motion="off"] .mem-btn.is-refreshing .mem-spin-icon{
+  animation:none!important;
+}
 @media(prefers-reduced-motion:reduce){
   .mem-app *,.mem-app *::before,.mem-app *::after{
     animation-duration:.001ms!important;animation-iteration-count:1!important;
     transition-duration:.001ms!important;scroll-behavior:auto!important;
   }
   .mem-card.is-leaving,.mem-batch.is-leaving{display:none}
+  .mem-just-updated{animation:none!important}
 }
-
-/* ===== 手动新增记忆 ===== */
-.mem-add-row{display:flex;justify-content:flex-end;padding:0 0 var(--sp-2)}
-.mem-add-form{display:grid;gap:var(--sp-3);margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
-.mem-add-field{display:grid;gap:var(--sp-1)}
-.mem-add-field span{font-size:var(--fs-micro);color:var(--t-text-faint)}
-.mem-add-field select,.mem-add-field textarea{width:100%;box-sizing:border-box;font:inherit;color:var(--t-text);background:var(--t-surface-raised);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);padding:var(--sp-2)}

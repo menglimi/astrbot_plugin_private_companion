@@ -49,5 +49,6 @@
   "page-motion.css",
   "screen-observation.css",
   "care.css",
-  "learning-policy.css"
+  "learning-policy.css",
+  "auto-scroll-loader.css"
 ]

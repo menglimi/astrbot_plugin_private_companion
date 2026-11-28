@@ -354,8 +354,13 @@ test("视觉打磨 P1 回归：模型页签不拆字、感知时钟单行不折�
   );
   assert.match(
     modelsCss,
-    /\.model-tabs-sep\s*\{[^}]*width:\s*1px/,
-    "models-page.css 应提供模型能力与计价/额度分组微分隔线 .model-tabs-sep",
+    /\.model-tabs-group\.is-ops\s*\{[^}]*margin-inline-start:\s*auto/,
+    "models-page.css 应在宽容器下用 .model-tabs-group.is-ops 均衡右对齐计价/额度分组",
+  );
+  assert.match(
+    modelsCss,
+    /\[data-quota-notice-host\]:empty\s*\{\s*display:\s*none\s*\}/,
+    "models-page.css 应隐藏空的 [data-quota-notice-host] 以避免双倍间距",
   );
   assert.match(
     modelsCss,
@@ -442,4 +447,88 @@ test("治理与维护页顶栏回归：「每日巡视设置」收纳进 .shell-
     /@media\s*\(\s*max-width:\s*740px\s*\)\s*\{[^@]*\.maintenance-page\s*\{[^}]*gap:\s*var\(--sp-[5678]\)/,
     "740px 以下移动端的 .maintenance-page 不得回退到 --sp-5/6 大间距",
   );
+});
+
+test("移动端防溢出基座：模型与额度看板消除裸 Grid 轨道膨胀与工具栏溢出", () => {
+  const modelsCss = stripComments(read("pages/陪伴小屋/models-page.css"));
+  const quotaCss = stripComments(read("pages/陪伴小屋/quota-workbench.css"));
+  const shellCss = stripComments(read("pages/陪伴小屋/shell.css"));
+
+  assert.match(modelsCss, /\.model-workspace-main\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
+  assert.match(modelsCss, /\[data-quota-tabs-host\][\s\S]*?\[data-quota-mount\][^{]*\{[^}]*min-width:\s*0/);
+  assert.match(modelsCss, /\.model-subpane\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
+  assert.match(modelsCss, /\.model-card\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
+
+  assert.match(quotaCss, /\.qw-main\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
+  assert.match(quotaCss, /\.qw-hero\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
+  assert.match(quotaCss, /\.qw-toolbar\s*\{[^}]*flex:\s*0\s+1\s+auto[^}]*min-width:\s*0/s);
+  assert.doesNotMatch(quotaCss, /\.qw-toolbar\s*\{[^}]*flex:\s*none\b/);
+
+  assert.match(shellCss, /#homeShell\[data-away="true"\]\s+\.shell-panel-body\s*\{[^}]*min-width:\s*0/);
+  assert.match(shellCss, /#homeShell\s+\.shell-panel-body\s*>\s*:where\(\*\)\s*\{[^}]*min-width:\s*0/);
+});
+
+test("移动端外壳与悬浮小屋：吸顶精简导航、44px 默认迷你胶囊、显式收起键与动态释放底部留白", () => {
+  const html = read("pages/陪伴小屋/index.html");
+  const shellCss = stripComments(read("pages/陪伴小屋/shell.css"));
+  const roleCardJs = read("pages/陪伴小屋/role-card.js");
+
+  assert.match(html, /data-role-card-pill/);
+  assert.match(html, /data-role-card-pill-initial/);
+  assert.match(html, /data-role-card-collapse/);
+  assert.match(html, /data-role-card-handle[\s\S]*?<svg\b/);
+
+  assert.match(shellCss, /@media\s*\(\s*max-width:\s*760px\s*\)\s*\{[\s\S]*?#homeShell\s+\.rail\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:\s*20/s);
+  assert.match(shellCss, /\.rail-foot\s+\.shell-nav-link\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/s);
+  assert.match(shellCss, /\[data-pip-collapsed="true"\][\s\S]*?--shell-pip-w:\s*0px[\s\S]*?--shell-pip-h:\s*0px/);
+  assert.match(shellCss, /\.stage-role-card-pill:not\(\[hidden\]\)\s*\{[^}]*min-height:\s*44px/);
+  assert.match(shellCss, /\.stage-role-card-collapse\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/s);
+
+  assert.match(roleCardJs, /try\s*\{[\s\S]*?sessionStorage/);
+  assert.match(roleCardJs, /homeShell\.dataset\.pipCollapsed\s*=/);
+});
+
+test("全站专题页与六大工作区：零未保护 auto-fit、零 320px 机身死宽、触屏可达且镜像同步", () => {
+  const cottageDir = path.join(ROOT, "pages", "陪伴小屋");
+  const cottageFiles = fs.readdirSync(cottageDir)
+    .filter(name => name.endsWith(".css") && name !== "bundle.css")
+    .map(name => `pages/陪伴小屋/${name}`);
+  const workspaceFiles = [
+    "pages/宿主管理/style.css",
+    "pages/人物设定工坊/style.css",
+    "pages/关系与记忆/style.css",
+    "pages/关系与权限/style.css",
+    "pages/新的她/style.css",
+    "pages/日记与生活/style.css",
+  ];
+
+  for (const rel of [...cottageFiles, ...workspaceFiles]) {
+    const clean = stripComments(read(rel));
+    assert.doesNotMatch(
+      clean,
+      /repeat\(\s*auto-(?:fit|fill)\s*,\s*minmax\(\s*\d+(?:\.\d+)?px\s*,/,
+      `${rel} 不得存在未用 min(..., 100%) 保护的 auto-fit/auto-fill 网格`,
+    );
+  }
+
+  const stylesCss = stripComments(read("pages/陪伴小屋/styles.css"));
+  const hostCss = stripComments(read("pages/宿主管理/style.css"));
+  const homeCss = stripComments(read("pages/陪伴小屋/home.css"));
+  const wbCss = stripComments(read("pages/陪伴小屋/workbench.css"));
+  const personaCss = stripComments(read("pages/人物设定工坊/style.css"));
+  const relMemCss = stripComments(read("pages/关系与记忆/style.css"));
+  const identityCss = stripComments(read("pages/关系与权限/style.css"));
+
+  assert.doesNotMatch(stylesCss, /body\s*\{\s*min-width:\s*320px/, "styles.css 移动端不得锁定 body min-width:320px");
+  assert.doesNotMatch(stylesCss, /\.room-stage\s*\{[^}]*width:\s*calc\(\s*100%\s*\+\s*12px\s*\)/, "styles.css 不得用 calc(100% + 12px) 造成横向微溢出");
+  assert.doesNotMatch(hostCss, /body\s*\{[^}]*min-width:\s*320px/, "宿主管理/style.css 不得锁定 body min-width:320px");
+
+  assert.match(homeCss, /\.home-state-point:focus-within\s+\.home-state-tooltip/, "home.css 状态提示应支持触屏/键盘聚焦");
+  assert.match(wbCss, /@media\s*\(\s*hover:\s*none\s*\)\s*,\s*\(\s*pointer:\s*coarse\s*\)\s*\{[^}]*\.wb-reset\s*\{[^}]*opacity:\s*1/s, "workbench.css 触屏设备应常显 .wb-reset");
+
+  assert.match(personaCss, /@media\s*\(\s*max-width:\s*650px\s*\)[\s\S]*?#review-metrics\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
+  assert.match(personaCss, /@media\s*\(\s*max-width:\s*650px\s*\)[\s\S]*?font-size:\s*16px/);
+  assert.match(relMemCss, /\.gm-tabs\s*\{[^}]*overflow-x:\s*auto/);
+  assert.doesNotMatch(identityCss, /\.scope-metric\s+span\s*\{[^}]*font-size:\s*9px/);
+  assert.match(identityCss, /\.refresh-button\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
 });

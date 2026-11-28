@@ -19,6 +19,7 @@ from .private_closing import Settings as PrivateClosingSettings
 from .private_debounce import DEFAULTS as PRIVATE_DEBOUNCE_DEFAULTS
 from .private_debounce import LIMITS as PRIVATE_DEBOUNCE_LIMITS
 from .private_debounce import Policy as PrivateDebounceSettings
+from .private_debounce import SEMANTIC_MODES as PRIVATE_DEBOUNCE_SEMANTIC_MODES
 from .text_processing import TEXT_DEFAULTS, text_policy
 from .voice_reply import VoiceReplyPolicy
 from .media.understanding import (
@@ -161,6 +162,8 @@ IMAGE_NARRATION_DEFAULTS = {"enable_private_image_self_recognition": False,
     "private_image_provider_failure_cooldown_seconds": 60,
     "private_image_self_recognition_hint": ""}
 DIAGNOSTIC_DEFAULTS = {"reply_diagnostic_limit": 80}
+T2I_SEGMENTATION_MODES = frozenset(("per_segment", "whole_reply", "off"))
+T2I_DEFAULTS = {"t2i_segmentation_mode": "per_segment"}
 ROLE_SHARED_FIELDS = (frozenset(asdict(SegmentationPolicy())) | SPACING_FIELDS
     | frozenset(("streaming", "part_gap_ms", "image_position", "rules_enabled"))
     | frozenset(("voice_enabled", *("voice_" + key for key in VOICE_FIELDS)))
@@ -171,7 +174,7 @@ ROLE_SHARED_FIELDS = (frozenset(asdict(SegmentationPolicy())) | SPACING_FIELDS
     | frozenset(GROUP_SAFETY_DEFAULTS) | frozenset(SILENCE_DEFAULTS) | frozenset(OUTBOUND_DEFAULTS) | frozenset(TEXT_DEFAULTS)
     | frozenset(FORWARD_DEFAULTS) | frozenset(CONTEXT_IMAGE_DEFAULTS)
     | frozenset(IMAGE_NARRATION_DEFAULTS) | frozenset(UNDERSTANDING_DEFAULTS)
-    | frozenset(DIAGNOSTIC_DEFAULTS) | frozenset(GROUP_TOOL_DEFAULTS)
+    | frozenset(DIAGNOSTIC_DEFAULTS) | frozenset(T2I_DEFAULTS) | frozenset(GROUP_TOOL_DEFAULTS)
     | frozenset(PRIVATE_TOOL_DEFAULTS) | ROLE_PROMPT_FIELDS)
 
 
@@ -277,6 +280,14 @@ def private_debounce_settings(values):
     if type(settings["private_debounce_enabled"]) is not bool:
         raise ConfigurationError("reply_configuration_invalid",
                                  "private debounce enabled must be boolean")
+    if type(settings["private_debounce_semantic_enabled"]) is not bool:
+        raise ConfigurationError("reply_configuration_invalid",
+                                 "private debounce semantic switch must be boolean")
+    has_mode = "private_debounce_semantic_mode" in values
+    semantic_mode = values["private_debounce_semantic_mode"] if has_mode else None
+    if has_mode and (type(semantic_mode) is not str or semantic_mode not in PRIVATE_DEBOUNCE_SEMANTIC_MODES):
+        raise ConfigurationError("reply_configuration_invalid",
+                                 "private debounce semantic mode is invalid")
     for key, (minimum, maximum) in PRIVATE_DEBOUNCE_LIMITS.items():
         if type(settings[key]) is not int or not minimum <= settings[key] <= maximum:
             raise ConfigurationError("reply_configuration_invalid",
@@ -285,7 +296,8 @@ def private_debounce_settings(values):
         return PrivateDebounceSettings.from_milliseconds(
             settings["private_debounce_enabled"], settings["private_debounce_min_ms"],
             settings["private_debounce_max_ms"], settings["private_debounce_total_ms"],
-            semantic_enabled=settings["private_debounce_semantic_enabled"])
+            semantic_enabled=settings["private_debounce_semantic_enabled"],
+            semantic_mode=semantic_mode)
     except ValueError as error:
         raise ConfigurationError("reply_configuration_invalid",
                                  "private debounce timing is invalid") from error
@@ -372,7 +384,10 @@ def validate(values):
     continuation = set(GROUP_CONTINUATION_DEFAULTS)
     private_closing = set(PRIVATE_CLOSING_DEFAULTS)
     private_debounce = set(PRIVATE_DEBOUNCE_DEFAULTS)
-    private_debounce_timing = private_debounce - {"private_debounce_semantic_enabled"}
+    private_debounce_timing = private_debounce - {
+        "private_debounce_semantic_enabled",
+        "private_debounce_semantic_mode",
+    }
     wakeup = set(GROUP_WAKEUP_DEFAULTS)
     safety = set(GROUP_SAFETY_DEFAULTS)
     silence = set(SILENCE_DEFAULTS)
@@ -384,11 +399,12 @@ def validate(values):
     understanding = set(UNDERSTANDING_DEFAULTS)
     spacing = set(SPACING_DEFAULTS)
     diagnostics = set(DIAGNOSTIC_DEFAULTS)
+    t2i = set(T2I_DEFAULTS)
     tool = set(GROUP_TOOL_DEFAULTS) | set(PRIVATE_TOOL_DEFAULTS)
     optional = set(values) - expected - {"image_position"}
     provided = set(values)
     if (not legacy_required <= provided
-            or optional - voice - air - continuation - private_closing - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - tool
+            or optional - voice - air - continuation - private_closing - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - t2i - tool
             or (optional & voice and not (voice - {"voice_conversion_scope"}) <= optional)
             or any(optional & block and not block <= optional for block in
                    (air, continuation, private_closing, private_debounce_timing, presentation))
@@ -404,6 +420,9 @@ def validate(values):
         diagnostic_limit = values.get("reply_diagnostic_limit", DIAGNOSTIC_DEFAULTS["reply_diagnostic_limit"])
         if type(diagnostic_limit) is not int or not 10 <= diagnostic_limit <= 300:
             raise ValueError("invalid reply diagnostic limit")
+        t2i_mode = values.get("t2i_segmentation_mode", T2I_DEFAULTS["t2i_segmentation_mode"])
+        if t2i_mode not in T2I_SEGMENTATION_MODES:
+            raise ValueError("invalid t2i segmentation mode")
         policy = SegmentationPolicy(**{key: values.get(key, default)
                                        for key, default in segmentation_defaults.items()})
         if type(values["streaming"]) is not bool or type(values["part_gap_ms"]) is not int or not 0 <= values["part_gap_ms"] <= 60000:
@@ -486,6 +505,7 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
     defaults.update(IMAGE_NARRATION_DEFAULTS)
     defaults.update(UNDERSTANDING_DEFAULTS)
     defaults.update(DIAGNOSTIC_DEFAULTS)
+    defaults.update(T2I_DEFAULTS)
     defaults.update(GROUP_TOOL_DEFAULTS)
     defaults.update(PRIVATE_TOOL_DEFAULTS)
     validate(defaults)
@@ -493,7 +513,7 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
               "part_gap_ms": (0, 60000), "voice_cooldown_seconds": (0, 86400),
               "part_gap_min_ms": (100, 60000), "part_gap_max_ms": (100, 60000),
               "part_gap_log_base": (1.1, 5.0),
-              "voice_max_speech_chars": (1, 10000), "voice_timeout_seconds": (1, 120),
+              "voice_max_speech_chars": (1, 10000), "voice_timeout_seconds": (1, 300),
               "reply_diagnostic_limit": (10, 300),
               **GROUP_AIR_LIMITS, **GROUP_CONTINUATION_LIMITS, **PRIVATE_CLOSING_LIMITS,
               **PRIVATE_DEBOUNCE_LIMITS, **GROUP_WAKEUP_LIMITS, **OUTBOUND_LIMITS}
@@ -658,12 +678,40 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
                     groups_key: replace(groups, value="\n".join(selected),
                         source=legacy.source, explicit=legacy.explicit,
                         source_revision=legacy.source_revision)})
+        debounce_legacy_key = GROUP + ".private_debounce_semantic_enabled"
+        debounce_mode_key = GROUP + ".private_debounce_semantic_mode"
+        debounce_legacy = snapshot.fields.get(debounce_legacy_key)
+        debounce_mode = snapshot.fields.get(debounce_mode_key)
+        if (debounce_legacy is not None and debounce_mode is not None
+                and debounce_legacy.source is not None
+                and (debounce_mode.source is None
+                     or (debounce_legacy.explicit and not debounce_mode.explicit))):
+            derived_mode = "onnx" if debounce_legacy.value else "off"
+            snapshot = replace(snapshot, fields={**snapshot.fields,
+                debounce_mode_key: replace(debounce_mode, value=derived_mode,
+                    source=debounce_legacy.source, explicit=debounce_legacy.explicit,
+                    source_revision=debounce_legacy.source_revision)})
         from companion_v2.relationships.account_link_settings import overlay_snapshot
         return overlay_snapshot(self.runtime, target, fields, snapshot)
 
+    @staticmethod
+    def _normalize_semantic_debounce_changes(normalized):
+        debounce_legacy_key = GROUP + ".private_debounce_semantic_enabled"
+        debounce_mode_key = GROUP + ".private_debounce_semantic_mode"
+        if debounce_mode_key in normalized:
+            mode_value = normalized[debounce_mode_key]
+            if (debounce_legacy_key not in normalized
+                    and type(mode_value) is str and mode_value in PRIVATE_DEBOUNCE_SEMANTIC_MODES):
+                normalized[debounce_legacy_key] = mode_value == "onnx"
+        elif debounce_legacy_key in normalized:
+            legacy_value = normalized[debounce_legacy_key]
+            if type(legacy_value) is bool:
+                normalized[debounce_mode_key] = "onnx" if legacy_value else "off"
+        return normalized
+
     def preview_set(self, target, fields, *, changes):
         target = self._stable_group_target(target)
-        normalized = dict(changes)
+        normalized = self._normalize_semantic_debounce_changes(dict(changes))
         if RULES_FIELD in normalized:
             normalized[RULES_FIELD] = True
         result = super().preview_set(target, fields, changes=normalized)
@@ -672,13 +720,20 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
         target = self._stable_group_target(target)
-        normalized = dict(changes)
+        normalized = self._normalize_semantic_debounce_changes(dict(changes))
         if RULES_FIELD in normalized:
             normalized[RULES_FIELD] = True
+        reset_fields = list(reset)
+        debounce_legacy_key = GROUP + ".private_debounce_semantic_enabled"
+        debounce_mode_key = GROUP + ".private_debounce_semantic_mode"
+        if debounce_mode_key in reset_fields and debounce_legacy_key not in reset_fields:
+            reset_fields.append(debounce_legacy_key)
+        elif debounce_legacy_key in reset_fields and debounce_mode_key not in reset_fields:
+            reset_fields.append(debounce_mode_key)
         with self.store.transaction():
-            result = super().write(target, fields, changes=normalized, reset=reset,
+            result = super().write(target, fields, changes=normalized, reset=reset_fields,
                 expected_revision=expected_revision, observed_at=observed_at)
-            self._clear_legacy_group_values(target, reset)
+            self._clear_legacy_group_values(target, reset_fields)
             validate({key.removeprefix(GROUP + "."): item.value for key, item in self.read(target, fields).fields.items()})
             return result
 

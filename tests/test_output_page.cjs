@@ -380,6 +380,24 @@ test("open-folder notice reports existing count without sync noise and maps albu
         if (mode === "already-synced") {
           return {path: "C:\\data\\media\\generated-album\\role-a", opened: true, synced_count: 0, total_count: 3};
         }
+        if (mode === "headless") {
+          return {
+            path: "/srv/astrbot/media/generated-album/role-a",
+            opened: false,
+            reason: "headless_environment",
+            synced_count: 2,
+            total_count: 5,
+          };
+        }
+        if (mode === "non-interactive") {
+          return {
+            path: "C:\\data\\media\\generated-album\\role-a",
+            opened: false,
+            reason: "non_interactive_desktop",
+            synced_count: 0,
+            total_count: 5,
+          };
+        }
         throw Object.assign(new Error("failed"), {code: "generated_album_open_failed"});
       }
       throw new Error(`unexpected ${method} ${endpoint}`);
@@ -392,6 +410,20 @@ test("open-folder notice reports existing count without sync noise and maps albu
   await new Promise(resolve => setImmediate(resolve));
   const gallery = state.single.get("#outputAlbumWorkspace");
   assert.match(gallery.innerHTML, /已打开产出图库目录（共 3 张）：C:\\data\\media\\generated-album\\role-a/);
+
+  mode = "headless";
+  state.clickAction("album-open-folder");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(gallery.innerHTML, /无桌面\/服务器环境/);
+  assert.match(gallery.innerHTML, /已同步 2 张，共 5 张/);
+  assert.match(gallery.innerHTML, /\/srv\/astrbot\/media\/generated-album\/role-a/);
+  assert.match(gallery.innerHTML, /导出选中/);
+
+  mode = "non-interactive";
+  state.clickAction("album-open-folder");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(gallery.innerHTML, /非交互桌面\/后台服务/);
+  assert.match(gallery.innerHTML, /C:\\data\\media\\generated-album\\role-a/);
 
   mode = "error";
   state.clickAction("album-open-folder");

@@ -40,12 +40,13 @@ window.CompanionOutputPage=(()=>{
     nai_generation_failed:"NAI 调用未取得可确认结果，未重复生成",
     nai_generation_unconfirmed:"NAI 未返回可确认的图片，未重复生成",
     nai_request_rejected:"NAI 拒绝了本次生图参数或参考图模式（未扣费），请检查 NAI 插件模型与参考图设置",
+    nai_upstream_unavailable:"NAI 生图上游服务暂时不可用（如网关 502/503/504 故障），未生成图片，可稍后重试",
     nai_generation_interrupted:"NAI 调用已中断，结果未知，未重复生成",
     nai_output_unavailable:"NAI 返回的图片暂不可读取"};
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",observationSeq=0,observationRefreshedAt="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
   const formatClock=(date=new Date())=>`${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}:${String(date.getSeconds()).padStart(2,"0")}`;
   let albumSources=[],albumItems=[],albumCursor=null,albumTotal=null,albumLoaded=false,albumLoading=false,albumBatchLoading=false,albumBatchStep=0,albumBatchTotal=0,albumError="",albumSelected=-1,albumSelectedId="",albumSelectedIds=new Set(),albumNotice="",albumBusy="";
-  let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null,albumStandaloneItem=null;
+  let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumAutoLoader=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null,albumStandaloneItem=null;
   const fullImageCache=new Map(),fullImagePending=new Map(),albumFullError=new Map();
   let albumReferenceOpen=false,albumReferenceImageId="",albumReferenceLabel="",albumReferenceRoles=new Set(["identity"]),albumReferenceError="";
   let naiStatus=null;
@@ -240,6 +241,52 @@ window.CompanionOutputPage=(()=>{
     try{albumObserver?.disconnect?.();}catch{}
     albumObserver=null;
   }
+  function destroyAlbumAutoLoader(){
+    try{albumAutoLoader?.destroy?.();}catch{}
+    albumAutoLoader=null;
+  }
+  function syncAlbumAutoLoader(){
+    const loaderHost=root?.querySelector?.("[data-output-album-loader]");
+    if(!window.CompanionAutoScroll){destroyAlbumAutoLoader();bindAlbumSentinel();return;}
+    if(!loaderHost){
+      if(albumAutoLoader)albumAutoLoader.refresh(null);
+      return;
+    }
+    if(!albumAutoLoader){
+      albumAutoLoader=window.CompanionAutoScroll.mount({
+        host:loaderHost,
+        rootMargin:"300px 0px",
+        sentinelAttr:"data-output-album-sentinel",
+        hasMore:()=>Boolean(albumCursor),
+        isLoading:()=>Boolean(albumLoading||albumBatchLoading),
+        hasError:()=>Boolean(albumError),
+        errorMessage:()=>albumError,
+        loadedCount:()=>albumItems.length,
+        totalCount:()=>albumTotal!==null?albumTotal:albumItems.length,
+        cursor:()=>albumSources.map(source=>`${source.endpoint}:${source.done?"done":(source.cursor||"")}`),
+        itemLabel:"张",
+        showToggle:false,
+        manualButtonAttrs:()=>({"data-output-native-action":"album-more",...(albumLoading||albumBatchLoading?{disabled:""}:{})}),
+        manualButtonLabel:()=>albumLoading&&!albumBatchLoading?"正在读取…":`再加载 ${albumPageSize} 张`,
+        extraActionsHtml:()=>{
+          const batchLabel=albumBatchLoading?`正在连续加载（${albumBatchStep}/${albumBatchTotal}）…`:"连续加载多批";
+          const batchBtn=albumCursor?`<button type="button" class="button small" data-output-native-action="album-load-batch"${albumLoading||albumBatchLoading?" disabled":""}>${batchLabel}</button>`:"";
+          const topBtn=albumCursor&&albumItems.length>=16?`<button type="button" class="button small output-album-top" data-output-native-action="album-top">${icon("arrow-up")}<span>回到顶部</span></button>`:"";
+          return batchBtn+topBtn;
+        },
+        scrollTopTarget:()=>root?.querySelector?.("#outputAlbumWorkspace"),
+        onLoadMore:()=>loadAlbum(true),
+        onRetry:()=>{albumError="";albumNotice="";return loadAlbum(true);},
+        onToggle:next=>{
+          albumAutoLoad=Boolean(next);
+          const checkbox=root?.querySelector?.("[data-output-album-autoload]");
+          if(checkbox)checkbox.checked=albumAutoLoad;
+        },
+      });
+    }else{
+      albumAutoLoader.refresh(loaderHost);
+    }
+  }
   function bindAlbumSentinel(){
     disconnectAlbumObserver();
     if(!albumAutoLoad||!albumCursor||albumLoading||albumBatchLoading||albumError)return;
@@ -349,7 +396,11 @@ window.CompanionOutputPage=(()=>{
       if(visible.length)body+='<div class="output-album-grid">'+visible.map(albumCard).join('')+'</div>';
       else body+='<div class="output-album-state"><strong>当前筛选条件下暂无已加载图片</strong><span>可切换回「全部」，或继续加载更早的产出。</span><button type="button" class="button small" data-output-native-action="album-filter" data-output-album-filter="all">显示全部</button></div>';
     }
-    if(albumCursor||albumItems.length>=16){
+    if(window.CompanionAutoScroll){
+      if(albumItems.length||albumCursor){
+        body+='<div class="output-album-more" data-output-album-loader></div>';
+      }
+    }else if(albumCursor||albumItems.length>=16){
       const batchLabel=albumBatchLoading?`正在连续加载（${albumBatchStep}/${albumBatchTotal}）…`:`连续加载多批`;
       const moreLabel=albumLoading&&!albumBatchLoading?"正在读取…":`再加载 ${albumPageSize} 张`;
       body+='<div class="output-album-more">'
@@ -359,7 +410,7 @@ window.CompanionOutputPage=(()=>{
         +'</div>';
     }
     host.innerHTML=body;
-    bindAlbumSentinel();
+    syncAlbumAutoLoader();
     renderAlbumLightbox();
     window.lucide?.createIcons?.({attrs:{'aria-hidden':'true'}});
   }
@@ -367,7 +418,7 @@ window.CompanionOutputPage=(()=>{
     if(albumLoading||(append&&!albumCursor))return;
     const id=ticket;
     albumLoading=true;
-    if(!append){albumError="";albumNotice="";albumTotal=null;}
+    if(!append){albumError="";albumNotice="";albumTotal=null;albumAutoLoader?.reset?.();}
     renderAlbum();
     try{
       const sources=append?albumSources:roleAlbumSources();
@@ -757,7 +808,16 @@ window.CompanionOutputPage=(()=>{
       const total=typeof data?.total_count==="number"&&Number.isFinite(data.total_count)&&data.total_count>=0?data.total_count:NaN;
       const synced=typeof data?.synced_count==="number"&&Number.isFinite(data.synced_count)&&data.synced_count>0?data.synced_count:0;
       const summary=Number.isFinite(total)?(synced?`（已同步 ${synced} 张，共 ${total} 张）`:`（共 ${total} 张）`):"";
-      albumNotice=`已打开产出图库目录${summary}：${data?.path||"产出图库目录"}`;
+      const folderPath=data?.path||"产出图库目录";
+      if(data?.opened===false){
+        if(data?.reason==="non_interactive_desktop"){
+          albumNotice=`图库已同步${summary}，但后端运行在非交互桌面/后台服务中，无法直接弹出资源管理器。目录路径：${folderPath}（也可使用「导出选中」下载）`;
+        }else{
+          albumNotice=`当前为无桌面/服务器环境，无法自动弹出文件管理器；图库已同步至服务端目录${summary}：${folderPath}（可直接查看路径，或使用「导出选中」下载）`;
+        }
+      }else{
+        albumNotice=`已打开产出图库目录${summary}：${folderPath}`;
+      }
     }catch(error){if(live(id)){albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"无法打开产出图库目录";albumNotice=albumError;}}
     finally{if(live(id)){albumBusy="";renderAlbum();}}
   }
@@ -1147,7 +1207,10 @@ window.CompanionOutputPage=(()=>{
     }
     if(target.matches("[data-output-album-autoload]")){
       albumAutoLoad=Boolean(target.checked);
-      if(albumAutoLoad)bindAlbumSentinel();else disconnectAlbumObserver();
+      if(window.CompanionAutoScroll){
+        window.CompanionAutoScroll.setEnabled(albumAutoLoad);
+        syncAlbumAutoLoader();
+      }else if(albumAutoLoad)bindAlbumSentinel();else disconnectAlbumObserver();
       return;
     }
     if(target.matches("[data-output-album-select-all]")){selectAllAlbums(target.checked);return;}
@@ -1232,7 +1295,7 @@ window.CompanionOutputPage=(()=>{
     if(action==="album-load-batch"){void loadAlbumBatch(ALBUM_BATCH_PAGES);return;}
     if(action==="album-filter"){
       const next=target.dataset.outputAlbumFilter||"all";
-      if(ALBUM_FILTERS.some(([id])=>id===next)&&next!==albumFilter){albumFilter=next;albumSelectedIds.clear();renderAlbum();}
+      if(ALBUM_FILTERS.some(([id])=>id===next)&&next!==albumFilter){albumFilter=next;albumSelectedIds.clear();albumAutoLoader?.reset?.();renderAlbum();}
       return;
     }
     if(action==="album-page-size"){
@@ -1305,14 +1368,14 @@ window.CompanionOutputPage=(()=>{
     if(event.key==="ArrowRight"){event.preventDefault?.();stepAlbum(1);}
   }
   function unmount(){
-    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();destroyAlbumAutoLoader();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
     root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;observationSeq++;observationRefreshedAt="";sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
     albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumStandaloneItem=null;albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
     albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";
     authoringStatus=null;
   }
   function mount(node){
-    unmount();root=node;scope=product()?.scopeKey?.()||"";works=[];worksLoaded=false;worksBusy=false;workSelection=null;authoringStatus=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
+    unmount();root=node;scope=product()?.scopeKey?.()||"";albumAutoLoad=window.CompanionAutoScroll?window.CompanionAutoScroll.isEnabled():true;works=[];worksLoaded=false;worksBusy=false;workSelection=null;authoringStatus=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
     if(!root)return;
     abort=new AbortController();
     root.addEventListener("input",input,{signal:abort.signal});

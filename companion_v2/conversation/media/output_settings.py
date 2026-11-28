@@ -18,6 +18,26 @@ CHOICES = {
     "negative_mode": {"safe_default", "merge", "replace"},
     "request_permission": {"core_only", "everyone"},
 }
+SUBJECT_MODES = ("character", "scene_only", "edit_preserve")
+DEFAULT_MAX_CALLS_PER_TURN = 3
+_CHARACTER_REFERENCE_ROLES = frozenset({"identity", "outfit", "pose"})
+_EDIT_ONLY_REFERENCE_ROLES = frozenset({"edit_source", "edit_mask"})
+_SELFIE_OR_ROLE_RE = re.compile(
+    r"自拍|selfie|self[\s._-]*portrait|合照|同框",
+    re.IGNORECASE,
+)
+_NON_CHARACTER_PROMPT_RE = re.compile(
+    r"\bno[\s_-]*humans?\b|\bno[\s_-]*people\b|\bno[\s_-]*person\b"
+    r"|\b(?:scenery|landscape|still[\s_-]*life|object|background)[\s_-]*only\b"
+    r"|无人物|没有人物|没有人|不含人物|不含角色|纯风景|纯景物|纯静物|纯物件|纯背景"
+    r"|不要人物|不要角色|别画人|别画角色|不要画人|不要画角色",
+    re.IGNORECASE,
+)
+_EXCLUDE_CHARACTER_NEGATIVE_RE = re.compile(
+    r"\b(?:1girl|1boy|human|humans|people|person|persons|character|characters|girl|girls|boy|boys|portrait)\b"
+    r"|人物|角色|人像",
+    re.IGNORECASE,
+)
 DEFAULT_SCENE_PRESETS = (
     {"id": "home-night", "name": "睡前居家", "prompt": "cozy bedroom, warm bedside light, relaxed home clothing"},
     {"id": "campus-day", "name": "校园日常", "prompt": "natural campus daytime, candid everyday atmosphere"},
@@ -81,6 +101,8 @@ DEFAULTS = {
     # 默认走规则引导：明确的图片请求会追加直接调用提示，工具目录保持稳定。
     "allow_user_requests": True, "trigger_mode": "rules",
     "group_enabled": True, "request_permission": "everyone",
+    "max_calls_per_turn": DEFAULT_MAX_CALLS_PER_TURN,
+    "apply_fixed_prompt_only_for_character": True,
     "proactive_enabled": False, "proactive_probability": 0.35, "proactive_max_daily": 1,
     "prompt_format": "traditional", "style": "realistic", "style_prompt": "",
     "negative_mode": "safe_default", "negative_prompt": "",
@@ -114,12 +136,17 @@ def negative_prompt_defaults(values):
 
 
 def configuration_fields():
+    def _bounds(key, value):
+        if type(value) is float:
+            return {"minimum": 0, "maximum": 1}
+        if type(value) is int:
+            return {"minimum": -1, "maximum": 20} if key == "max_calls_per_turn" else {"minimum": -1, "maximum": 100}
+        return {}
+
     return tuple(FieldDefinition(GROUP + "." + key, GROUP, GROUP,
         ValueKind.BOOLEAN if type(value) is bool else ValueKind.INTEGER if type(value) is int
         else ValueKind.PROBABILITY if type(value) is float else ValueKind.TEXT, value,
-        layers=LAYERS, owner_id=OWNER,
-        **({"minimum": 0, "maximum": 1} if type(value) is float else
-           {"minimum": -1, "maximum": 100} if type(value) is int else {}))
+        layers=LAYERS, owner_id=OWNER, **_bounds(key, value))
         for key, value in DEFAULTS.items())
 
 
@@ -133,6 +160,10 @@ class ImageOutputConfigurationOwner(SparseConfigurationOwner):
         for key, choices in CHOICES.items():
             if values.get(key) not in choices:
                 raise TaskError("image_output_configuration_invalid", "invalid image preference")
+        turn_limit = values.get("max_calls_per_turn", DEFAULT_MAX_CALLS_PER_TURN)
+        if type(turn_limit) is not int or (turn_limit != -1 and not 1 <= turn_limit <= 20):
+            raise TaskError("image_output_configuration_invalid",
+                            "max_calls_per_turn must be -1 (unlimited) or between 1 and 20")
         if any(type(value) is str and len(value) > 4000 for value in values.values()):
             raise TaskError("image_output_configuration_invalid", "image prompt exceeds 4000 characters")
         parse_scene_presets(values.get("scene_presets_json", DEFAULTS["scene_presets_json"]))
@@ -235,6 +266,8 @@ def prompt_instruction(values):
         "没有身份参考图时，将人设中已经明确的种族、发型发色、瞳色和外貌识别点写入画面提示词，"
         "人设提供了专属角色词条和所属作品词时原样保留这些核心词，不用普通外貌描述替换；"
         "不要只写一个普通女孩或随机补成另一个角色；用户明确要求其他人物或纯风景时不套用角色外貌。"
+        "调用生图或改图工具时可通过 subject_mode 明确画面主体：角色本人入镜传 character；"
+        "纯风景、纯物件、海报或不含角色传 scene_only；忠实保留原图主体与风格做局部编辑（不额外画入角色）传 edit_preserve。"
         "近期明确换装或换景优先，缺少的细节可自然创作，不把生成画面说成现实观测。"
         "自拍画面在 prompt 中写明 selfie，以便应用角色的自拍提示词。"
         "图片请求以实际图片工具结果接续，不用反复确认、只说稍等或改邀其他活动代替。"
@@ -249,7 +282,56 @@ def prompt_instruction(values):
     return "图片调用偏好：" + trigger + "\n图片 prompt 应" + formats[values["prompt_format"]] + "。" + backend + scene
 
 
-def apply_prompts(arguments, action, values):
+def resolve_image_subject_intent(arguments, action, values=None, *, reference_roles=()):
+    """Resolve subject mode and prompt/backend guardrails for one image call.
+
+    Explicit ``subject_mode`` always wins. When omitted, clear non-human /
+    character-exclusion signals or pure ``edit_source`` edits without character
+    references automatically fall back to ``scene_only`` / ``edit_preserve`` so
+    character-appearance fixed prompts are never forced into landscapes or
+    source-preserving edits.
+    """
+    settings = DEFAULTS if values is None else values
+    original = SCENE_MARKER.sub("", str(arguments.get("prompt") or "")).strip()
+    negative = str(arguments.get("negative_prompt") or "").strip()
+    explicit = arguments.get("subject_mode")
+    if isinstance(explicit, str) and explicit in SUBJECT_MODES:
+        subject_mode = explicit
+    else:
+        explicit_selfie = bool(_SELFIE_OR_ROLE_RE.search(original))
+        excluded_character = (not explicit_selfie) and (
+            bool(_NON_CHARACTER_PROMPT_RE.search(original))
+            or bool(_EXCLUDE_CHARACTER_NEGATIVE_RE.search(negative))
+        )
+        raw_roles = reference_roles if reference_roles else arguments.get("reference_roles") or ()
+        roles = tuple(role for role in raw_roles if isinstance(role, str) and role)
+        has_character_ref = bool(set(roles) & _CHARACTER_REFERENCE_ROLES)
+        pure_edit_ref = bool(roles) and set(roles).issubset(_EDIT_ONLY_REFERENCE_ROLES)
+        if action != "image.generate":
+            if has_character_ref:
+                subject_mode = "character"
+            elif (excluded_character
+                  or (pure_edit_ref and not explicit_selfie)
+                  or (bool(str(arguments.get("artifact_id") or "").strip()) and not explicit_selfie)):
+                subject_mode = "edit_preserve"
+            else:
+                subject_mode = "character"
+        else:
+            subject_mode = "scene_only" if excluded_character else "character"
+
+    only_for_character = bool(settings.get("apply_fixed_prompt_only_for_character", True))
+    inject_fixed_prompt = (subject_mode == "character") or (not only_for_character)
+    preserve_source_style = (subject_mode == "edit_preserve")
+    allow_fallback_references = (subject_mode == "character")
+    return {
+        "subject_mode": subject_mode,
+        "inject_fixed_prompt": inject_fixed_prompt,
+        "preserve_source_style": preserve_source_style,
+        "allow_fallback_references": allow_fallback_references,
+    }
+
+
+def apply_prompts(arguments, action, values, *, reference_roles=()):
     result = dict(arguments)
     original = result.get("prompt", "")
     presets = parse_scene_presets(values.get("scene_presets_json", DEFAULTS["scene_presets_json"]))
@@ -262,8 +344,14 @@ def apply_prompts(arguments, action, values):
     scene_prompts = [item["prompt"] for name in selected_names for item in presets if item["name"] == name]
     kind = "edit" if action != "image.generate" else (
         "selfie" if re.search(r"自拍|selfie|self.portrait", original, re.I) else "text2img")
-    style = {"realistic": "photorealistic", "anime": "anime illustration", "custom": ""}[values["style"]]
-    blocks = [values[kind + "_fixed_prompt"], style, values["style_prompt"], *scene_prompts, original]
+    intent = resolve_image_subject_intent(arguments, action, values, reference_roles=reference_roles)
+    fixed_block = values[kind + "_fixed_prompt"] if intent["inject_fixed_prompt"] else ""
+    if intent["preserve_source_style"]:
+        style, style_prompt = "", ""
+    else:
+        style = {"realistic": "photorealistic", "anime": "anime illustration", "custom": ""}[values["style"]]
+        style_prompt = values["style_prompt"]
+    blocks = [fixed_block, style, style_prompt, *scene_prompts, original]
     delimiter = "\n" if values["prompt_format"] == "natural" else ", "
     result["prompt"] = delimiter.join(block.strip() for block in blocks if block.strip())
     defaults = negative_prompt_default(values, kind)

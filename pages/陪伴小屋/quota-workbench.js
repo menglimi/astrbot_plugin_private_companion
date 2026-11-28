@@ -42,6 +42,16 @@ window.CompanionQuotaWorkbench = (() => {
     any_low: "任一偏低触发",
   };
 
+  const WALLET_ONLY_ADAPTER_IDS = new Set([
+    "newapi",
+    "newapi_user_id",
+    "deepseek",
+    "siliconflow",
+    "moonshot",
+  ]);
+  const CAPPED_ONLY_ADAPTER_IDS = new Set(["openai_billing"]);
+  const SUBSCRIPTION_SCROLL_THRESHOLD = 3;
+
   const DEFAULT_SCRIPT_TEMPLATE =
     '({\n' +
     '  request: {\n' +
@@ -67,7 +77,109 @@ window.CompanionQuotaWorkbench = (() => {
 
   const SAFE_ICON_DATA_URL_RE = /^data:image\/(png|jpeg|webp|x-icon|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/i;
   const isSafeIconDataUrl = url => typeof url === "string" && SAFE_ICON_DATA_URL_RE.test(url);
-  const iconCache = new Map(); // `${id}:${version}` -> verified raster or sanitized static-SVG data_url
+  const iconCache = new Map(); // `${id}:${version}` -> verified raster or sanitized static-SVG data_url (NEVER stores empty/false!)
+  const iconBackoff = new Map(); // stationId -> retryAfterTimestampMs (short cooldown on transient miss)
+  const iconInflight = new Map(); // `${id}:${version}` -> Promise<string>
+  const ICON_BACKOFF_MS = 30_000;
+  const BG_SYNC_DELAY_MS = 2500;
+  const LOGO_STORE_PREFIX = "companion-qw-logo.v1:";
+  const LOGO_STORE_INDEX_KEY = "companion-qw-logo.v1:index";
+  const LOGO_STORE_MAX_ENTRIES = 32;
+  const LOGO_STORE_MAX_BYTES = 2 * 1024 * 1024;
+  const LOGO_STORE_SINGLE_MAX_BYTES = 1_536 * 1024;
+
+  function safeStorage() {
+    try {
+      if (typeof localStorage !== "undefined" && localStorage && typeof localStorage.getItem === "function") {
+        return localStorage;
+      }
+    } catch {}
+    return null;
+  }
+
+  function readLogoIndex(storage) {
+    try {
+      const raw = storage.getItem(LOGO_STORE_INDEX_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter(item => item && typeof item.id === "string" && item.id)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeLogoIndex(storage, entries) {
+    try {
+      storage.setItem(LOGO_STORE_INDEX_KEY, JSON.stringify(entries));
+    } catch {}
+  }
+
+  function readStoredLogo(stationId, version) {
+    if (!stationId || !version) return "";
+    const storage = safeStorage();
+    if (!storage) return "";
+    try {
+      const raw = storage.getItem(LOGO_STORE_PREFIX + stationId);
+      if (!raw) return "";
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== version || !isSafeIconDataUrl(parsed.dataUrl)) return "";
+      return parsed.dataUrl;
+    } catch {
+      return "";
+    }
+  }
+
+  function writeStoredLogo(stationId, version, dataUrl) {
+    if (!stationId || !version || !isSafeIconDataUrl(dataUrl)) return;
+    const storage = safeStorage();
+    if (!storage) return;
+    const payload = JSON.stringify({ v: version, dataUrl, ts: Date.now() });
+    if (payload.length > LOGO_STORE_SINGLE_MAX_BYTES) return;
+    try {
+      let index = readLogoIndex(storage).filter(item => item.id !== stationId);
+      const entry = { id: stationId, bytes: payload.length, ts: Date.now() };
+      index.push(entry);
+      index.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+      let totalBytes = index.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0);
+      while (index.length > 1 && (index.length > LOGO_STORE_MAX_ENTRIES || totalBytes > LOGO_STORE_MAX_BYTES)) {
+        const evicted = index.shift();
+        if (evicted && evicted.id !== stationId) {
+          totalBytes -= Number(evicted.bytes) || 0;
+          try { storage.removeItem(LOGO_STORE_PREFIX + evicted.id); } catch {}
+        }
+      }
+      storage.setItem(LOGO_STORE_PREFIX + stationId, payload);
+      writeLogoIndex(storage, index);
+    } catch {
+      // QuotaExceededError or sandbox restriction: silently degrade to in-memory cache.
+    }
+  }
+
+  function removeStoredLogo(stationId) {
+    if (!stationId) return;
+    const storage = safeStorage();
+    if (!storage) return;
+    try {
+      storage.removeItem(LOGO_STORE_PREFIX + stationId);
+      const index = readLogoIndex(storage).filter(item => item.id !== stationId);
+      writeLogoIndex(storage, index);
+    } catch {}
+  }
+
+  function resolveCachedLogo(stationId, version) {
+    if (!stationId || !version) return "";
+    const cacheKey = `${stationId}:${version}`;
+    const mem = iconCache.get(cacheKey);
+    if (isSafeIconDataUrl(mem)) return mem;
+    const persisted = readStoredLogo(stationId, version);
+    if (persisted) {
+      iconCache.set(cacheKey, persisted);
+      return persisted;
+    }
+    return "";
+  }
 
   /* Theme-adapted monochrome vector emblems (100% currentColor, zero hardcoded colors)
    * used as graceful fallbacks when an official station's remote icon is offline/unavailable. */
@@ -224,16 +336,22 @@ window.CompanionQuotaWorkbench = (() => {
       refreshingId: "",
       autoRefresh: true,
       autoTimer: null,
+      bgSyncTimer: null,
       data: null,
+      heroCurrency: "",
+      heroUnitAnim: false,
       notice: "",
       noticeTone: "", // ok | warn | error | ""
       deleteConfirmId: "",
       awarenessOpen: false,
       awarenessDraft: null,
       awarenessSaving: false,
+      expandedSubsIds: new Set(),
+      thresholdEdit: null,
       pendingFocus: "",
       wizard: null,
       _dom: null,
+      _unitSyncHandler: null,
     };
   }
 
@@ -251,11 +369,19 @@ window.CompanionQuotaWorkbench = (() => {
     return list.find(item => item.id === id) || list[0] || null;
   }
 
+  function clearBgSyncTimer(q) {
+    if (q?.bgSyncTimer) {
+      clearTimeout(q.bgSyncTimer);
+      q.bgSyncTimer = null;
+    }
+  }
+
   function clearAutoTimer(q) {
     if (q?.autoTimer) {
       clearTimeout(q.autoTimer);
       q.autoTimer = null;
     }
+    clearBgSyncTimer(q);
   }
 
   function clearDomTimers(dom) {
@@ -356,31 +482,645 @@ window.CompanionQuotaWorkbench = (() => {
     return { station: autoMatch, explicit: false };
   }
 
-  function formatCompactRate(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) return "";
-    return Math.abs(n - Math.round(n)) < 1e-6 ? String(Math.round(n)) : String(Number(n.toFixed(3)));
+  function currencyHelper() {
+    return typeof window !== "undefined" ? window.CompanionQuotaCurrency || null : null;
   }
 
-  function resolveDualUnitContext(station, snap) {
-    if (!snap || !snap.ok || snap.display_type !== "CREDIT") {
-      return { canToggle: false, mode: "native", fiatCurrency: "", fiatSymbol: "", nativeSymbol: snap?.symbol || "credit", rateCaption: "" };
-    }
-    const fiatCurrency = String(station?.fiat_currency || snap.inferred_fiat_currency || "").toUpperCase();
-    const validFiat = fiatCurrency === "CNY" || fiatCurrency === "USD";
-    const canToggle = Boolean(validFiat && snap.fiat_remaining != null);
-    const fiatSymbol = fiatCurrency === "USD" ? "$" : "¥";
-    const nativeSymbol = snap.symbol || "credit";
-    const mode = canToggle && station?.display_unit_mode === "fiat" ? "fiat" : "native";
+  function convertFiatFallback(amount, fromCur, toCur, rate) {
+    const n = Number(amount);
+    if (!Number.isFinite(n)) return null;
+    const src = String(fromCur || "").toUpperCase();
+    const dst = String(toCur || "").toUpperCase();
+    if ((src !== "CNY" && src !== "USD") || (dst !== "CNY" && dst !== "USD")) return null;
+    if (src === dst) return n;
+    const r = Number.isFinite(Number(rate)) && Number(rate) >= 1 && Number(rate) <= 30 ? Number(rate) : 7.2;
+    return src === "USD" ? n * r : n / r;
+  }
 
-    let rateCaption = "";
-    const customRate = Number(snap.custom_exchange_rate);
-    const pbu = Number(station?.fiat_per_base_unit || snap.site_recharge_price);
-    if (validFiat && Number.isFinite(customRate) && customRate > 0 && Number.isFinite(pbu) && pbu > 0) {
-      const perFiat = formatCompactRate(customRate / pbu);
-      if (perFiat) rateCaption = `${perFiat} ${nativeSymbol} = ${fiatSymbol}1`;
+  function resolveStationCurrency(station, snap, summary) {
+    const rate = Number(summary?.usd_cny_rate || 7.2);
+    const helper = currencyHelper();
+    if (helper) {
+      const views = helper.buildStationViews(station, snap, rate);
+      if (!views) return null;
+      const activeUnit = helper.normalizeUnit(
+        station?.display_unit_mode || views.preferred_unit,
+        views.available_units,
+        views.inferred_fiat_currency,
+        views.display_type
+      );
+      return { views, activeUnit, helper };
     }
-    return { canToggle, mode, fiatCurrency, fiatSymbol, nativeSymbol, rateCaption };
+    if (!snap || !snap.ok) return null;
+    const dtype = String(snap.display_type || "CREDIT").toUpperCase();
+    const inferred = dtype === "CNY" || dtype === "USD"
+      ? dtype
+      : String(station?.fiat_currency || snap.inferred_fiat_currency || snap.fiat_currency || "").toUpperCase();
+    const validFiat = inferred === "CNY" || inferred === "USD";
+    const nativeSymbol = snap.symbol || (dtype === "USD" ? "$" : dtype === "CNY" ? "¥" : dtype === "TOKENS" ? "tokens" : "credit");
+    const rem = snap.remaining != null ? Number(snap.remaining) : null;
+    const fiatRem = snap.fiat_remaining != null ? Number(snap.fiat_remaining) : null;
+    let cnyAmount = null;
+    let usdAmount = null;
+    let availableUnits = ["native"];
+    if (dtype === "CNY" && rem != null) {
+      cnyAmount = rem;
+      usdAmount = convertFiatFallback(rem, "CNY", "USD", rate);
+      availableUnits = ["cny", "usd"];
+    } else if (dtype === "USD" && rem != null) {
+      usdAmount = rem;
+      cnyAmount = convertFiatFallback(rem, "USD", "CNY", rate);
+      availableUnits = ["cny", "usd"];
+    } else if (dtype === "CREDIT" && validFiat && fiatRem != null) {
+      cnyAmount = inferred === "CNY" ? fiatRem : convertFiatFallback(fiatRem, "USD", "CNY", rate);
+      usdAmount = inferred === "USD" ? fiatRem : convertFiatFallback(fiatRem, "CNY", "USD", rate);
+      availableUnits = ["native", "cny", "usd"];
+    }
+    const rawMode = String(station?.display_unit_mode || "native").toLowerCase();
+    let activeUnit = availableUnits[0];
+    if (rawMode === "fiat") activeUnit = inferred === "USD" ? "usd" : "cny";
+    else if (availableUnits.includes(rawMode)) activeUnit = rawMode;
+    else if (dtype === "CNY") activeUnit = "cny";
+    else if (dtype === "USD") activeUnit = "usd";
+    const views = {
+      scope_key: station?.id ? `station:${station.id}` : "",
+      station_id: String(station?.id || ""),
+      display_type: dtype,
+      native_symbol: nativeSymbol,
+      native_label: "站内原值",
+      native_amount: rem,
+      cny_amount: cnyAmount,
+      usd_amount: usdAmount,
+      usd_cny_rate: rate,
+      inferred_fiat_currency: validFiat ? inferred : "",
+      rate_caption: "",
+      preferred_unit: activeUnit,
+      available_units: availableUnits,
+    };
+    return { views, activeUnit, helper: null };
+  }
+
+  function formatStationValueForUnit(amount, unit, views, { small = false } = {}) {
+    const helper = currencyHelper();
+    if (helper) return helper.formatAmount(amount, unit, views, { small });
+    const dt = unit === "usd" ? "USD" : unit === "cny" ? "CNY" : (views?.display_type || "CREDIT");
+    const sym = unit === "usd" ? "$" : unit === "cny" ? "¥" : (views?.native_symbol || "");
+    if (small) {
+      const txt = formatSmallCost(amount, dt, sym);
+      return { text: txt, num: txt, symbol: sym, prefix: sym === "¥" || sym === "$", unit };
+    }
+    const m = formatMoney(amount, dt, sym);
+    const prefix = m.unit === "¥" || m.unit === "$";
+    return { text: prefix ? m.unit + m.num : (m.unit ? `${m.num} ${m.unit}` : m.num), num: m.num, symbol: m.unit, prefix, unit };
+  }
+
+  function convertStationSecondary(nativeVal, fiatVal, views, activeUnit) {
+    const helper = currencyHelper();
+    if (helper) return helper.convertSecondaryAmount(nativeVal, fiatVal, views, activeUnit);
+    if (!views || activeUnit === "native") return nativeVal;
+    const targetCur = activeUnit === "usd" ? "USD" : "CNY";
+    if (views.display_type === "CNY" || views.display_type === "USD") {
+      return convertFiatFallback(nativeVal, views.display_type, targetCur, views.usd_cny_rate);
+    }
+    if (views.display_type === "CREDIT" && fiatVal != null && (views.inferred_fiat_currency === "CNY" || views.inferred_fiat_currency === "USD")) {
+      return convertFiatFallback(fiatVal, views.inferred_fiat_currency, targetCur, views.usd_cny_rate);
+    }
+    return nativeVal;
+  }
+
+  function unitButtonMetaFor(unit, views) {
+    const helper = currencyHelper();
+    if (helper) return helper.unitButtonMeta(unit, views);
+    if (unit === "cny") return { unit: "cny", label: "¥", title: "人民币 (CNY)", ariaLabel: "人民币 CNY" };
+    if (unit === "usd") return { unit: "usd", label: "$", title: "美元 (USD)", ariaLabel: "美元 USD" };
+    const sym = views?.native_symbol || "原值";
+    return { unit: "native", label: sym, title: `站内原值 (${sym})`, ariaLabel: `站内原值 (${sym})` };
+  }
+
+  function buildStationSubline(views, activeUnit) {
+    const helper = currencyHelper();
+    if (helper) return helper.buildSubline(views, activeUnit);
+    return { text: "", title: "" };
+  }
+
+  function resolveStationQuotaModel(station, snap, summary) {
+    const fromSummary = summary?.quota_model_by_id?.[station?.id];
+    if (fromSummary === "wallet" || fromSummary === "capped") return fromSummary;
+    if (snap?.quota_model === "wallet" || snap?.quota_model === "capped") return snap.quota_model;
+    if (WALLET_ONLY_ADAPTER_IDS.has(station?.adapter_id) && !snap?.is_key_scoped) return "wallet";
+    if (snap?.is_key_scoped || CAPPED_ONLY_ADAPTER_IDS.has(station?.adapter_id)) return "capped";
+    if (snap && snap.total != null && Number(snap.total) > 0) return "capped";
+    return "wallet";
+  }
+
+  function isWalletDraft(q, draft) {
+    if (!draft) return true;
+    const summaryModel = draft.id ? q?.data?.summary?.quota_model_by_id?.[draft.id] : "";
+    if (summaryModel === "wallet" || summaryModel === "capped") return summaryModel === "wallet";
+    const snap = draft.id ? q?.data?.snapshots?.[draft.id] : null;
+    if (snap?.quota_model === "wallet" || snap?.quota_model === "capped") return snap.quota_model === "wallet";
+    if (WALLET_ONLY_ADAPTER_IDS.has(draft.adapter_id)) return true;
+    if (CAPPED_ONLY_ADAPTER_IDS.has(draft.adapter_id) || snap?.is_key_scoped) return false;
+    if (snap && snap.total != null && Number(snap.total) > 0) return false;
+    return draft.adapter_id !== "sub2api";
+  }
+
+  function formatCompactMoneyValue(value, displayType, symbol) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "";
+    const dt = String(displayType || "CREDIT").toUpperCase();
+    const isWhole = Math.abs(n - Math.round(n)) < 1e-6;
+    if (dt === "TOKENS") return `${Math.round(n).toLocaleString("zh-CN")} tokens`;
+    if (dt === "CNY" || dt === "USD") {
+      const sym = symbol || (dt === "USD" ? "$" : "¥");
+      const num = isWhole
+        ? Math.round(n).toLocaleString("zh-CN")
+        : n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return `${sym}${num}`;
+    }
+    const num = isWhole
+      ? Math.round(n).toLocaleString("zh-CN")
+      : n.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+    return `${num}${symbol ? " " + symbol : ""}`.trim();
+  }
+
+  function formatMoneyText(value, displayType, symbol) {
+    const m = formatMoney(value, displayType, symbol);
+    if (m.num === "—") return "—";
+    return m.unit === "¥" || m.unit === "$" ? `${m.unit}${m.num}` : `${m.num}${m.unit ? " " + m.unit : ""}`.trim();
+  }
+
+  function convertFiatValue(value, fromCur, toCur, rate) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    const src = String(fromCur || "").toUpperCase();
+    const dst = String(toCur || "").toUpperCase();
+    if (src === dst) return n;
+    const fx = Number(rate) > 0 ? Number(rate) : 7.2;
+    if (src === "USD" && dst === "CNY") return n * fx;
+    if (src === "CNY" && dst === "USD") return n / fx;
+    return null;
+  }
+
+  function thresholdPresetsFor(unit, symbol, fiatPerNative = null) {
+    const dt = String(unit || "").toUpperCase();
+    if (dt === "CNY") {
+      return [
+        { label: "关闭", low: 0, critical: 0 },
+        { label: "¥5", low: 5, critical: 1.5 },
+        { label: "¥10", low: 10, critical: 3 },
+        { label: "¥20", low: 20, critical: 5 },
+        { label: "¥50", low: 50, critical: 10 },
+      ];
+    }
+    if (dt === "USD") {
+      return [
+        { label: "关闭", low: 0, critical: 0 },
+        { label: "$1", low: 1, critical: 0.3 },
+        { label: "$2", low: 2, critical: 0.5 },
+        { label: "$5", low: 5, critical: 1.5 },
+        { label: "$10", low: 10, critical: 3 },
+      ];
+    }
+    const sym = symbol || "credit";
+    const scale = Number(fiatPerNative) > 0 ? (1 / Number(fiatPerNative)) : 10;
+    const base = [5, 10, 20, 50].map(v => Math.round(v * scale));
+    return [
+      { label: "关闭", low: 0, critical: 0 },
+      ...base.map(v => ({ label: `${v.toLocaleString("zh-CN")} ${sym}`, low: v, critical: Math.round(v * 0.3) })),
+    ];
+  }
+
+  function resolveEffectiveThresholdView(station, snap, summary, currency) {
+    const rate = Number(summary?.usd_cny_rate) || 7.2;
+    const serverEff = summary?.effective_thresholds_by_id?.[station?.id] || null;
+    const quotaModel = serverEff?.quota_model || resolveStationQuotaModel(station, snap, summary);
+    const nativeUnit = serverEff?.unit
+      || snap?.display_type
+      || station?.display_type
+      || (station?.adapter_id === "deepseek" || station?.adapter_id === "siliconflow" || station?.adapter_id === "moonshot" ? "CNY" : "USD");
+    const nativeSymbol = serverEff?.symbol || snap?.symbol || (nativeUnit === "CNY" ? "¥" : nativeUnit === "USD" ? "$" : "");
+    const fiatCur = serverEff?.fiat_currency
+      || (nativeUnit === "CNY" || nativeUnit === "USD" ? nativeUnit : String(station?.fiat_currency || snap?.inferred_fiat_currency || "").toUpperCase());
+    const fiatPerNative = serverEff?.fiat_per_native != null
+      ? Number(serverEff.fiat_per_native)
+      : (nativeUnit === "CNY" || nativeUnit === "USD"
+          ? 1
+          : (snap?.remaining > 0 && snap?.fiat_remaining != null ? snap.fiat_remaining / snap.remaining : null));
+
+    let source = serverEff?.source || "none";
+    let nativeLow = serverEff ? serverEff.low : null;
+    let nativeCrit = serverEff ? serverEff.critical : null;
+
+    if (!serverEff) {
+      if (station?.low_threshold != null || station?.critical_threshold != null) {
+        const l = station.low_threshold != null ? Number(station.low_threshold) : null;
+        const c = station.critical_threshold != null ? Number(station.critical_threshold) : null;
+        if (l === 0 && (c == null || c === 0)) {
+          source = "disabled";
+          nativeLow = 0;
+          nativeCrit = 0;
+        } else {
+          source = "custom";
+          nativeLow = l;
+          nativeCrit = c;
+        }
+      } else if (quotaModel === "wallet" && (fiatCur === "CNY" || fiatCur === "USD") && fiatPerNative > 0) {
+        source = "default";
+        const defLow = fiatCur === "CNY" ? 10 : 2;
+        const defCrit = fiatCur === "CNY" ? 3 : 0.5;
+        nativeLow = defLow / fiatPerNative;
+        nativeCrit = defCrit / fiatPerNative;
+      }
+    }
+
+    const activeMode = currency?.activeUnit || "native";
+    let displayUnit = nativeUnit;
+    let displaySymbol = nativeSymbol;
+    let editCurrency = ""; // "" means native unit; "CNY"/"USD" when editing in converted fiat
+    let dispLow = nativeLow;
+    let dispCrit = nativeCrit;
+
+    if (activeMode === "cny") {
+      const convertedLow = serverEff?.cny_low != null
+        ? serverEff.cny_low
+        : (nativeLow != null && fiatPerNative > 0 ? convertFiatValue(nativeLow * fiatPerNative, fiatCur, "CNY", rate) : null);
+      const convertedCrit = serverEff?.cny_critical != null
+        ? serverEff.cny_critical
+        : (nativeCrit != null && fiatPerNative > 0 ? convertFiatValue(nativeCrit * fiatPerNative, fiatCur, "CNY", rate) : null);
+      if (convertedLow != null || nativeLow == null || source === "disabled") {
+        displayUnit = "CNY";
+        displaySymbol = "¥";
+        editCurrency = "CNY";
+        dispLow = source === "disabled" ? 0 : convertedLow;
+        dispCrit = source === "disabled" ? 0 : convertedCrit;
+      }
+    } else if (activeMode === "usd") {
+      const convertedLow = serverEff?.usd_low != null
+        ? serverEff.usd_low
+        : (nativeLow != null && fiatPerNative > 0 ? convertFiatValue(nativeLow * fiatPerNative, fiatCur, "USD", rate) : null);
+      const convertedCrit = serverEff?.usd_critical != null
+        ? serverEff.usd_critical
+        : (nativeCrit != null && fiatPerNative > 0 ? convertFiatValue(nativeCrit * fiatPerNative, fiatCur, "USD", rate) : null);
+      if (convertedLow != null || nativeLow == null || source === "disabled") {
+        displayUnit = "USD";
+        displaySymbol = "$";
+        editCurrency = "USD";
+        dispLow = source === "disabled" ? 0 : convertedLow;
+        dispCrit = source === "disabled" ? 0 : convertedCrit;
+      }
+    }
+
+    let label = "设置预警线";
+    let title = "点击按站自定义偏低与告急预警金额（填 0 关闭告警）";
+    if (source === "disabled") {
+      label = "预警线已关闭";
+      title = "已关闭此站余额告警 · 点击重新设置";
+    } else if (dispLow != null && dispLow > 0) {
+      const lowTxt = formatCompactMoneyValue(dispLow, displayUnit, displaySymbol);
+      const critTxt = dispCrit != null && dispCrit > 0 ? formatCompactMoneyValue(dispCrit, displayUnit, displaySymbol) : "";
+      label = `预警线 ${lowTxt}`;
+      const srcNote = source === "default" ? "默认预警线" : "自定义预警线";
+      title = `${srcNote}：偏低 ${lowTxt}${critTxt ? ` · 告急 ${critTxt}` : ""}（点击调整）`;
+    }
+
+    return {
+      quotaModel,
+      source,
+      nativeUnit,
+      nativeSymbol,
+      fiatCurrency: fiatCur,
+      fiatPerNative,
+      displayUnit,
+      displaySymbol,
+      editCurrency,
+      low: dispLow,
+      critical: dispCrit,
+      label,
+      title,
+      presets: thresholdPresetsFor(displayUnit, displaySymbol, fiatPerNative),
+    };
+  }
+
+  function formatExpiryCountdown(iso) {
+    if (!iso || typeof iso !== "string") return null;
+    const ms = new Date(iso).getTime();
+    if (!Number.isFinite(ms)) return null;
+    const diffMs = ms - Date.now();
+    const dt = new Date(ms);
+    const dateTitle = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")} ${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+    if (diffMs <= 0) return { text: "已到期", cls: "is-risk", title: `到期时间：${dateTitle}` };
+    const totalHours = Math.floor(diffMs / 3_600_000);
+    const days = Math.floor(totalHours / 24);
+    if (days === 0 && totalHours < 1) return { text: "即将到期", cls: "is-risk", title: `到期时间：${dateTitle}` };
+    if (days === 0) return { text: `剩 ${totalHours} 小时`, cls: "is-warn", title: `到期时间：${dateTitle}` };
+    if (days <= 3) return { text: `剩 ${days} 天`, cls: "is-warn", title: `到期时间：${dateTitle}` };
+    return { text: `剩 ${days} 天`, cls: "", title: `到期时间：${dateTitle}` };
+  }
+
+  function formatSubscriptionItem(sub, snap, summary, currency) {
+    const rate = Number(summary?.usd_cny_rate) || 7.2;
+    const subDt = String(sub.display_type || sub.currency || snap?.display_type || "CREDIT").toUpperCase();
+    const subSym = sub.symbol || (subDt === snap?.display_type ? snap?.symbol : "") || (subDt === "CNY" ? "¥" : subDt === "USD" ? "$" : "");
+    const fiatCur = String(
+      sub.fiat_currency
+      || (subDt === "CNY" || subDt === "USD" ? subDt : "")
+      || currency?.views.inferred_fiat_currency
+      || ""
+    ).toUpperCase();
+    const fiatSym = fiatCur === "USD" ? "$" : fiatCur === "CNY" ? "¥" : "";
+    const activeMode = currency?.activeUnit || "native";
+
+    const rawRem = sub.remaining != null ? Number(sub.remaining) : null;
+    const rawTotal = sub.total != null ? Number(sub.total) : null;
+    const rawUsed = sub.used != null
+      ? Number(sub.used)
+      : (rawTotal != null && rawRem != null ? Math.max(0, rawTotal - rawRem) : null);
+
+    let pct = sub.remaining_percent != null && Number.isFinite(Number(sub.remaining_percent))
+      ? Math.max(0, Math.min(100, Number(sub.remaining_percent)))
+      : (rawRem != null && rawTotal != null && rawTotal > 0
+          ? Math.max(0, Math.min(100, (rawRem / rawTotal) * 100))
+          : null);
+
+    const resolveMetric = (nativeVal, fiatVal) => {
+      if (nativeVal == null && fiatVal == null) return "";
+      const baseFiat = fiatVal != null ? Number(fiatVal) : (subDt === "CNY" || subDt === "USD" ? Number(nativeVal) : null);
+      if (activeMode === "cny" && baseFiat != null && (fiatCur === "CNY" || fiatCur === "USD")) {
+        const v = convertFiatValue(baseFiat, fiatCur, "CNY", rate);
+        if (v != null) return formatMoneyText(v, "CNY", "¥");
+      }
+      if (activeMode === "usd" && baseFiat != null && (fiatCur === "CNY" || fiatCur === "USD")) {
+        const v = convertFiatValue(baseFiat, fiatCur, "USD", rate);
+        if (v != null) return formatMoneyText(v, "USD", "$");
+      }
+      return formatMoneyText(nativeVal, subDt, subSym);
+    };
+
+    const fiatUsed = sub.fiat_used != null
+      ? Number(sub.fiat_used)
+      : (sub.fiat_total != null && sub.fiat_remaining != null ? Math.max(0, Number(sub.fiat_total) - Number(sub.fiat_remaining)) : null);
+
+    const remText = resolveMetric(rawRem, sub.fiat_remaining);
+    const totalText = resolveMetric(rawTotal, sub.fiat_total);
+    const usedText = resolveMetric(rawUsed, fiatUsed);
+
+    let altHint = "";
+    if (subDt === "CREDIT" && sub.fiat_remaining != null && (fiatCur === "CNY" || fiatCur === "USD")) {
+      if (activeMode === "native") {
+        altHint = `≈ ${formatMoneyText(sub.fiat_remaining, fiatCur, fiatSym)}`;
+      } else if (rawRem != null) {
+        altHint = formatMoneyText(rawRem, "CREDIT", subSym);
+      }
+    }
+
+    const status = String(sub.status || "").toLowerCase();
+    let barCls = "";
+    if (status === "exhausted" || status === "expired" || status === "critical" || (pct != null && pct <= 5)) {
+      barCls = "is-critical";
+    } else if (status === "low" || (pct != null && pct <= 20)) {
+      barCls = "is-low";
+    }
+
+    const expiry = formatExpiryCountdown(sub.expires_at);
+    return {
+      name: String(sub.name || sub.title || "订阅套餐").trim() || "订阅套餐",
+      pct,
+      barCls,
+      remText,
+      totalText,
+      usedText,
+      altHint,
+      expiry,
+    };
+  }
+
+  function formatSummaryExpiry(subs) {
+    let minMs = Infinity;
+    for (const item of subs) {
+      const iso = item?.expires_at;
+      if (!iso || typeof iso !== "string") continue;
+      const ms = new Date(iso).getTime();
+      if (Number.isFinite(ms) && ms < minMs) minMs = ms;
+    }
+    if (!Number.isFinite(minMs)) return null;
+    const diffMs = minMs - Date.now();
+    const dt = new Date(minMs);
+    const dateTitle = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")} ${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+    const multi = subs.length > 1;
+    if (diffMs <= 0) {
+      return { text: multi ? "有套餐已到期" : "已到期", cls: "is-risk", title: `最早到期：${dateTitle}` };
+    }
+    const totalHours = Math.floor(diffMs / 3_600_000);
+    const days = Math.floor(totalHours / 24);
+    if (days === 0 && totalHours < 1) {
+      return { text: multi ? "最早即将到期" : "即将到期", cls: "is-risk", title: `最早到期：${dateTitle}` };
+    }
+    if (days === 0) {
+      return { text: `${multi ? "最早 " : ""}${totalHours} 小时后到期`, cls: "is-warn", title: `最早到期：${dateTitle}` };
+    }
+    if (days <= 3) {
+      return { text: `${multi ? "最早 " : ""}${days} 天后到期`, cls: "is-warn", title: `最早到期：${dateTitle}` };
+    }
+    return { text: `${multi ? "最早 " : ""}${days} 天后到期`, cls: "", title: `最早到期：${dateTitle}` };
+  }
+
+  function formatSubscriptionSummary(subs, snap, summary, currency) {
+    const rate = Number(summary?.usd_cny_rate) || 7.2;
+    const activeMode = currency?.activeUnit || "native";
+    const targetFiat = activeMode === "native" ? "" : activeMode.toUpperCase();
+
+    const metas = subs.map(item => {
+      const dt = String(item.display_type || item.currency || snap?.display_type || "CREDIT").toUpperCase();
+      const sym = item.symbol || (dt === snap?.display_type ? snap?.symbol : "") || (dt === "CNY" ? "¥" : dt === "USD" ? "$" : "");
+      const fiatCur = String(
+        item.fiat_currency
+        || (dt === "CNY" || dt === "USD" ? dt : "")
+        || currency?.views.inferred_fiat_currency
+        || ""
+      ).toUpperCase();
+      const rawTotal = item.total != null && Number.isFinite(Number(item.total)) && Number(item.total) > 0
+        ? Number(item.total)
+        : null;
+      const rawUsed = item.used != null && Number.isFinite(Number(item.used)) ? Number(item.used) : null;
+      const rem = item.remaining != null && Number.isFinite(Number(item.remaining))
+        ? Number(item.remaining)
+        : (rawTotal != null && rawUsed != null ? Math.max(0, rawTotal - rawUsed) : null);
+      const baseFiatRem = item.fiat_remaining != null && Number.isFinite(Number(item.fiat_remaining))
+        ? Number(item.fiat_remaining)
+        : ((dt === "CNY" || dt === "USD") && rem != null ? rem : null);
+      const baseFiatTotal = item.fiat_total != null && Number.isFinite(Number(item.fiat_total)) && Number(item.fiat_total) > 0
+        ? Number(item.fiat_total)
+        : ((dt === "CNY" || dt === "USD") && rawTotal != null ? rawTotal : null);
+      const status = String(item.status || "").toLowerCase();
+      return { dt, sym, fiatCur, rem, total: rawTotal, baseFiatRem, baseFiatTotal, status };
+    }).filter(m => m.rem != null || m.baseFiatRem != null || m.total != null);
+
+    const singleName = subs.length === 1 ? String(subs[0]?.name || subs[0]?.title || "").trim() : "";
+    const countBadge = subs.length === 1
+      ? (singleName && singleName !== "订阅套餐" ? singleName : "1 个套餐")
+      : `${subs.length} 个套餐`;
+    const earliestExpiry = formatSummaryExpiry(subs);
+
+    if (!metas.length) {
+      return {
+        mainText: "—",
+        weightedPct: null,
+        barCls: earliestExpiry?.cls === "is-risk" ? "is-critical" : earliestExpiry?.cls === "is-warn" ? "is-low" : "",
+        earliestExpiry,
+        countBadge,
+        sublineParts: earliestExpiry ? [{ text: earliestExpiry.text, cls: earliestExpiry.cls }] : [],
+      };
+    }
+
+    const toFiatVal = (val, fiatCur, dstCur) => {
+      if (val == null || (fiatCur !== "CNY" && fiatCur !== "USD")) return null;
+      return convertFiatValue(val, fiatCur, dstCur, rate);
+    };
+    const remMetas = metas.filter(m => m.rem != null || m.baseFiatRem != null);
+    const firstDt = remMetas[0]?.dt || metas[0].dt;
+    const firstSym = remMetas[0]?.sym || metas[0].sym;
+    const sameNative = remMetas.length > 0 && remMetas.every(m => m.dt === firstDt && m.sym === firstSym && m.rem != null);
+    const nativeRemSum = sameNative ? remMetas.reduce((acc, m) => acc + m.rem, 0) : null;
+    const nativeSumStr = sameNative ? formatMoneyText(nativeRemSum, firstDt, firstSym) : "";
+    const summaryCur = String(summary?.display_currency || "CNY").toUpperCase();
+
+    let mainText = "—";
+    let displayCurrency = "";
+    if (remMetas.length) {
+      if (targetFiat && remMetas.every(m => toFiatVal(m.baseFiatRem, m.fiatCur, targetFiat) != null)) {
+        const convSum = remMetas.reduce((acc, m) => acc + toFiatVal(m.baseFiatRem, m.fiatCur, targetFiat), 0);
+        const dstSym = targetFiat === "USD" ? "$" : "¥";
+        const dstText = `${dstSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        mainText = sameNative ? (firstDt === "CREDIT" ? `${dstText}（${nativeSumStr}）` : dstText) : `折合 ${dstText}`;
+        displayCurrency = targetFiat;
+      } else if (sameNative) {
+        if (firstDt === "CREDIT") {
+          const sharedFiatCur = remMetas[0].fiatCur;
+          if ((sharedFiatCur === "CNY" || sharedFiatCur === "USD")
+            && remMetas.every(m => m.baseFiatRem != null && m.fiatCur === sharedFiatCur)) {
+            const fiatSum = remMetas.reduce((acc, m) => acc + m.baseFiatRem, 0);
+            const fiatSym = sharedFiatCur === "USD" ? "$" : "¥";
+            mainText = `${nativeSumStr} ≈ ${formatMoneyText(fiatSum, sharedFiatCur, fiatSym)}`;
+          } else {
+            mainText = nativeSumStr;
+          }
+        } else {
+          mainText = nativeSumStr;
+        }
+      } else if ((summaryCur === "CNY" || summaryCur === "USD")
+        && remMetas.every(m => toFiatVal(m.baseFiatRem, m.fiatCur, summaryCur) != null)) {
+        const convSum = remMetas.reduce((acc, m) => acc + toFiatVal(m.baseFiatRem, m.fiatCur, summaryCur), 0);
+        const sSym = summaryCur === "USD" ? "$" : "¥";
+        mainText = `折合 ${sSym}${convSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        displayCurrency = summaryCur;
+      } else {
+        mainText = "多币种";
+      }
+    }
+
+    // Weighted remaining ratio + paired remaining/total across capped plans
+    const capped = metas.filter(m => m.total != null && m.total > 0 && (m.rem != null || m.baseFiatRem != null));
+    let weightedPct = null;
+    let ratioText = "";
+    if (capped.length) {
+      const capDt = capped[0].dt;
+      const capSym = capped[0].sym;
+      const sameCapNative = capped.every(m => m.dt === capDt && m.sym === capSym && m.rem != null && m.total != null);
+      const fiatGoal = displayCurrency || targetFiat || (summaryCur === "CNY" || summaryCur === "USD" ? summaryCur : "");
+      const allCapFiat = Boolean(
+        fiatGoal
+        && capped.every(m => toFiatVal(m.baseFiatRem, m.fiatCur, fiatGoal) != null && toFiatVal(m.baseFiatTotal, m.fiatCur, fiatGoal) != null)
+      );
+
+      if (allCapFiat && (displayCurrency || targetFiat || !sameCapNative)) {
+        const fRem = capped.reduce((acc, m) => acc + toFiatVal(m.baseFiatRem, m.fiatCur, fiatGoal), 0);
+        const fTot = capped.reduce((acc, m) => acc + toFiatVal(m.baseFiatTotal, m.fiatCur, fiatGoal), 0);
+        if (fTot > 0) {
+          weightedPct = Math.max(0, Math.min(100, (fRem / fTot) * 100));
+          const sym = fiatGoal === "USD" ? "$" : "¥";
+          if (capped.length === subs.length) {
+            ratioText = `${formatMoneyText(fRem, fiatGoal, sym)} / ${formatMoneyText(fTot, fiatGoal, sym)}`;
+          }
+        }
+      } else if (sameCapNative) {
+        const nRem = capped.reduce((acc, m) => acc + m.rem, 0);
+        const nTot = capped.reduce((acc, m) => acc + m.total, 0);
+        if (nTot > 0) {
+          weightedPct = Math.max(0, Math.min(100, (nRem / nTot) * 100));
+          if (capped.length === subs.length) {
+            ratioText = `${formatMoneyText(nRem, capDt, capSym)} / ${formatMoneyText(nTot, capDt, capSym)}`;
+          }
+        }
+      }
+    }
+
+    const allCritical = metas.every(m => m.status === "exhausted" || m.status === "expired" || m.status === "critical");
+    const anyWarn = metas.some(m => m.status === "low" || m.status === "critical" || m.status === "exhausted" || m.status === "expired");
+    let barCls = "";
+    if (allCritical || (weightedPct != null && weightedPct <= 5) || earliestExpiry?.cls === "is-risk") {
+      barCls = "is-critical";
+    } else if (anyWarn || (weightedPct != null && weightedPct <= 20) || earliestExpiry?.cls === "is-warn") {
+      barCls = "is-low";
+    }
+
+    const sublineParts = [];
+    if (ratioText) {
+      sublineParts.push({ text: ratioText, cls: "" });
+    } else if (capped.length > 0 && capped.length < subs.length) {
+      sublineParts.push({ text: `含 ${capped.length} 个定额套餐`, cls: "" });
+    } else if (capped.length === 0) {
+      sublineParts.push({ text: earliestExpiry ? "不限上限" : "不限上限套餐", cls: "" });
+    }
+    if (earliestExpiry) {
+      sublineParts.push({ text: earliestExpiry.text, cls: earliestExpiry.cls });
+    }
+
+    return {
+      mainText,
+      weightedPct,
+      barCls,
+      earliestExpiry,
+      countBadge,
+      sublineParts,
+    };
+  }
+
+  function renderInlineThresholdEditor(station, thView, editState) {
+    if (!editState || editState.stationId !== station.id) return "";
+    const unitTag = editState.symbol || editState.unit || "额度";
+    return `
+      <div class="qw-threshold-editor" data-qw-threshold-editor="${esc(station.id)}">
+        <div class="qw-threshold-editor-head">
+          <strong>调整预警线（${esc(unitTag)}）</strong>
+          <button type="button" class="qw-threshold-close" data-qw-th-cancel aria-label="关闭预警线调整">✕</button>
+        </div>
+        <div class="qw-threshold-presets" role="group" aria-label="预警线快捷预设">
+          ${thView.presets.map(p => {
+            const isMatch = String(editState.low).trim() === String(p.low);
+            return `<button type="button" class="qw-preset-chip qw-th-preset${isMatch ? " is-active" : ""}" data-qw-th-preset-low="${esc(p.low)}" data-qw-th-preset-crit="${esc(p.critical)}">${esc(p.label)}</button>`;
+          }).join("")}
+        </div>
+        <div class="qw-threshold-inputs">
+          <label class="qw-field">
+            <span>偏低预警线（${esc(unitTag)}）</span>
+            <input type="number" min="0" step="any" data-qw-th-input="low" placeholder="留空恢复默认 · 0 关闭" value="${esc(editState.low)}">
+          </label>
+          <label class="qw-field">
+            <span>告急预警线（${esc(unitTag)}）</span>
+            <input type="number" min="0" step="any" data-qw-th-input="critical" placeholder="低于此值标红告急" value="${esc(editState.critical)}">
+          </label>
+        </div>
+        ${editState.error ? `<div class="qw-threshold-err" role="alert">${esc(editState.error)}</div>` : ""}
+        <div class="qw-threshold-actions">
+          <button type="button" class="qw-btn small" data-qw-th-reset ${editState.saving ? "disabled" : ""}>恢复默认</button>
+          <div class="qw-threshold-actions-right">
+            <button type="button" class="qw-btn small" data-qw-th-cancel ${editState.saving ? "disabled" : ""}>取消</button>
+            <button type="button" class="qw-btn small primary" data-qw-th-save ${editState.saving ? "disabled" : ""}>${editState.saving ? "保存中…" : "保存预警线"}</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   function renderHeroCore(ctx) {
@@ -409,17 +1149,40 @@ window.CompanionQuotaWorkbench = (() => {
     const totalCalls = usageValues.reduce((acc, row) => acc + (Number(row?.calls) || 0), 0);
     const totalTokens = usageValues.reduce((acc, row) => acc + (Number(row?.total_tokens) || 0), 0);
 
+    const baseCur = String(summary.display_currency || "CNY").toUpperCase() === "USD" ? "USD" : "CNY";
+    const heroCur = (q.heroCurrency === "CNY" || q.heroCurrency === "USD") ? q.heroCurrency : baseCur;
+    const heroSym = heroCur === "USD" ? "$" : "¥";
+    const fxRate = Number(summary.usd_cny_rate || 7.2);
+    const convertHero = val => {
+      const n = Number(val);
+      if (!Number.isFinite(n)) return 0;
+      const helper = currencyHelper();
+      const conv = helper ? helper.convertFiat(n, baseCur, heroCur, fxRate) : convertFiatFallback(n, baseCur, heroCur, fxRate);
+      return conv != null ? conv : n;
+    };
+    const heroFiatRem = convertHero(summary.fiat_remaining);
+    const heroInclCustom = summary.fiat_remaining_including_custom != null
+      ? convertHero(summary.fiat_remaining_including_custom)
+      : null;
+
     const fiatParts = [];
     if (summary.cny_station_count > 0) fiatParts.push(`CNY ¥${Number(summary.cny_remaining).toFixed(2)}`);
     if (summary.usd_station_count > 0) fiatParts.push(`USD $${Number(summary.usd_remaining).toFixed(2)}`);
     if (summary.non_fiat_station_count > 0) {
-      const inclNote = summary.custom_converted_count > 0 && summary.fiat_remaining_including_custom != null
-        ? `（含折合共 ${summary.display_symbol}${Number(summary.fiat_remaining_including_custom).toFixed(2)}）`
+      const inclNote = summary.custom_converted_count > 0 && heroInclCustom != null
+        ? `（含折合共 ${heroSym}${Number(heroInclCustom).toFixed(2)}）`
         : "";
       fiatParts.push(`另含 ${summary.non_fiat_station_count} 站非现金积分${inclNote}`);
     }
-    const rateNote = `汇率 1 USD ≈ ¥${Number(summary.usd_cny_rate || 7.2).toFixed(2)}`;
-    const totalMoney = formatMoney(summary.fiat_remaining, summary.display_currency, summary.display_symbol);
+    const rateNote = `汇率 1 USD ≈ ¥${fxRate.toFixed(2)}`;
+    const totalMoney = formatMoney(heroFiatRem, heroCur, heroSym);
+    const altHeroCur = heroCur === "CNY" ? "USD" : "CNY";
+    const altHeroSym = altHeroCur === "USD" ? "$" : "¥";
+    const altHeroVal = convertHero(summary.fiat_remaining);
+    const altHeroConverted = (currencyHelper()?.convertFiat || convertFiatFallback)(altHeroVal, heroCur, altHeroCur, fxRate);
+    const heroSubline = altHeroConverted != null && Number.isFinite(altHeroConverted)
+      ? `≈ ${altHeroSym}${altHeroConverted.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : "";
 
     const healthDetails = [];
     if (summary.low_count > 0) healthDetails.push(`${summary.low_count} 偏低`);
@@ -434,6 +1197,7 @@ window.CompanionQuotaWorkbench = (() => {
     const awMetaText = aw.mode === "primary" && effPrimary.station
       ? `${effPrimary.explicit ? "已手动指定主站" : "未手动指定，自动取首个启用感知站"}${participatingCount ? ` · 已接入 ${participatingCount} 站` : ""}`
       : (participatingCount ? `已接入 ${participatingCount} 个启用站点` : "尚未勾选参与感知的站点");
+    const heroAnimCls = q.heroUnitAnim ? " is-unit-updated" : "";
 
     return `
       <div class="qw-hero-head">
@@ -462,8 +1226,15 @@ window.CompanionQuotaWorkbench = (() => {
 
       <div class="qw-kpis">
         <article class="qw-kpi is-accent">
-          <span class="qw-kpi-label"><span>折合总余额（${esc(summary.display_currency)}）</span></span>
-          <strong class="qw-kpi-value qw-num">${esc(totalMoney.unit)}${esc(totalMoney.num)}</strong>
+          <span class="qw-kpi-label">
+            <span>折合总余额（${esc(heroCur)}）</span>
+            <span class="qw-unit-switch qw-kpi-unit-switch" role="radiogroup" aria-label="折合总余额显示币种">
+              <button type="button" role="radio" aria-checked="${heroCur === "CNY"}" class="${heroCur === "CNY" ? "is-active" : ""}" data-qw-hero-currency="CNY" title="人民币 (CNY)" aria-label="人民币 CNY">¥</button>
+              <button type="button" role="radio" aria-checked="${heroCur === "USD"}" class="${heroCur === "USD" ? "is-active" : ""}" data-qw-hero-currency="USD" title="美元 (USD)" aria-label="美元 USD">$</button>
+            </span>
+          </span>
+          <strong class="qw-kpi-value qw-num${heroAnimCls}">${esc(totalMoney.unit)}${esc(totalMoney.num)}</strong>
+          ${heroSubline ? `<span class="qw-kpi-subline qw-num">${esc(heroSubline)}</span>` : ""}
           <span class="qw-kpi-meta">${esc(fiatParts.length ? `${fiatParts.join(" · ")} · ${rateNote}` : rateNote)}</span>
         </article>
         <article class="qw-kpi">
@@ -574,9 +1345,7 @@ window.CompanionQuotaWorkbench = (() => {
   }
 
   function avatarMarkupFor(station, snap) {
-    const logoKey = snap?.logo_version ? `${station.id}:${snap.logo_version}` : "";
-    const cachedLogo = logoKey ? iconCache.get(logoKey) : "";
-    const logoUrl = isSafeIconDataUrl(cachedLogo) ? cachedLogo : "";
+    const logoUrl = snap?.logo_version ? resolveCachedLogo(station.id, snap.logo_version) : "";
     if (logoUrl) {
       return { hasLogo: true, isBrand: false, title: station.name, html: `<img src="${esc(logoUrl)}" alt="" loading="lazy" decoding="async">` };
     }
@@ -597,7 +1366,7 @@ window.CompanionQuotaWorkbench = (() => {
     };
   }
 
-  function renderStationCardParts(ctx, station) {
+  function renderStationCardParts(ctx, station, { animateUnit = false } = {}) {
     const q = ctx.q;
     const data = q.data || {};
     const snap = data.snapshots?.[station.id] || null;
@@ -605,7 +1374,6 @@ window.CompanionQuotaWorkbench = (() => {
     const health = summary.health_by_id?.[station.id] || (station.enabled ? "pending" : "disabled");
     const hMeta = HEALTH_META[health] || HEALTH_META.pending;
     const adapter = adapterById(q, station.adapter_id);
-    const converted = summary.converted_remaining_by_id?.[station.id];
     const providerInfo = station.astrbot_provider_id
       ? (data.astrbot_providers || []).find(p => p.id === station.astrbot_provider_id)
       : null;
@@ -624,57 +1392,90 @@ window.CompanionQuotaWorkbench = (() => {
     const avatarCls = `qw-avatar${avatar.hasLogo ? " has-logo" : ""}${avatar.isBrand ? " is-brand" : ""}`;
     const avatarHtml = `<div class="${avatarCls}" data-qw-avatar="${esc(station.id)}" title="${esc(avatar.title)}">${avatar.html}</div>`;
 
-    const dual = resolveDualUnitContext(station, snap);
-    const activeDisplayType = dual.mode === "fiat" ? dual.fiatCurrency : (snap?.display_type || "CREDIT");
-    const activeSymbol = dual.mode === "fiat" ? dual.fiatSymbol : (snap?.symbol || "");
+    const cur = resolveStationCurrency(station, snap, summary);
+    const views = cur?.views || null;
+    const activeUnit = cur?.activeUnit || "native";
+    const unitAnimCls = animateUnit ? " is-unit-updated" : "";
+    const quotaModel = resolveStationQuotaModel(station, snap, summary);
+    const thView = resolveEffectiveThresholdView(station, snap, summary, cur);
 
     let balanceHtml = "";
     if (snap && snap.ok) {
-      if (snap.remaining != null) {
-        const displayRem = dual.mode === "fiat" && snap.fiat_remaining != null ? snap.fiat_remaining : snap.remaining;
-        const displayUsed = dual.mode === "fiat" && snap.fiat_used != null ? snap.fiat_used : snap.used;
-        const displayTotal = dual.mode === "fiat" && snap.fiat_total != null ? snap.fiat_total : snap.total;
-        const m = formatMoney(displayRem, activeDisplayType, activeSymbol);
-        const showConv = !dual.canToggle && converted != null && snap.display_type !== summary.display_currency;
+      if (snap.remaining != null && views) {
+        const mainVal = activeUnit === "cny"
+          ? views.cny_amount
+          : activeUnit === "usd"
+            ? views.usd_amount
+            : views.native_amount;
+        const m = formatStationValueForUnit(mainVal, activeUnit, views, { small: false });
         const valCls = health === "critical" ? "is-critical" : health === "low" ? "is-low" : "";
-        const pct = snap.remaining_percent != null
-          ? Math.max(0, Math.min(100, Number(snap.remaining_percent)))
-          : (snap.total > 0 ? Math.max(0, Math.min(100, (snap.remaining / snap.total) * 100)) : null);
-        const usedM = displayUsed != null ? formatMoney(displayUsed, activeDisplayType, activeSymbol) : null;
-        const totalM = displayTotal != null ? formatMoney(displayTotal, activeDisplayType, activeSymbol) : null;
+        const displayUsed = snap.used != null ? convertStationSecondary(snap.used, snap.fiat_used, views, activeUnit) : null;
+        const displayTotal = snap.total != null ? convertStationSecondary(snap.total, snap.fiat_total, views, activeUnit) : null;
+        const usedM = displayUsed != null ? formatStationValueForUnit(displayUsed, activeUnit, views, { small: false }) : null;
+        const totalM = displayTotal != null ? formatStationValueForUnit(displayTotal, activeUnit, views, { small: false }) : null;
 
-        let dualSubHtml = "";
-        if (dual.canToggle) {
-          const altText = dual.mode === "fiat"
-            ? `${formatMoney(snap.remaining, "CREDIT", dual.nativeSymbol).num} ${dual.nativeSymbol}`
-            : `≈ ${dual.fiatSymbol}${Number(snap.fiat_remaining).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          dualSubHtml = `<span class="qw-balance-conv qw-num">${esc(altText)}</span>` +
-            `<button type="button" class="qw-unit-toggle${dual.mode === "fiat" ? " is-fiat" : ""}" data-qw-toggle-unit="${esc(station.id)}" aria-pressed="${dual.mode === "fiat"}" title="切换原币与折合法币显示">${esc(dual.nativeSymbol)} ↔ ${esc(dual.fiatSymbol)}</button>`;
+        let unitSwitchHtml = "";
+        if (views.available_units.length > 1) {
+          const btns = views.available_units.map(u => {
+            const meta = unitButtonMetaFor(u, views);
+            const active = u === activeUnit;
+            return `<button type="button" role="radio" aria-checked="${active}" class="${active ? "is-active" : ""}" data-qw-set-unit="${esc(station.id)}" data-qw-unit="${esc(u)}" title="${esc(meta.title)}" aria-label="${esc(meta.ariaLabel)}">${esc(meta.label)}</button>`;
+          }).join("");
+          unitSwitchHtml = `<div class="qw-unit-switch" role="radiogroup" aria-label="${esc(station.name)} 显示单位">${btns}</div>`;
         }
 
-        const extraText = dual.canToggle && dual.rateCaption
-          ? `${dual.mode === "fiat" ? `${formatMoney(snap.remaining, "CREDIT", dual.nativeSymbol).num} ${dual.nativeSymbol}` : `≈ ${dual.fiatSymbol}${Number(snap.fiat_remaining).toFixed(2)}`} · ${dual.rateCaption}`
-          : snap.extra;
+        const subline = buildStationSubline(views, activeUnit);
+        const rateCaption = views.available_units.length > 1 ? views.rate_caption : "";
+        const rateHtml = rateCaption
+          ? ` <span class="qw-balance-rate qw-num">${subline.text ? "· " : ""}${esc(rateCaption)}</span>`
+          : "";
+        const sublineHtml = subline.text || rateHtml
+          ? `<div class="qw-balance-subline qw-num${unitAnimCls}"${subline.title ? ` title="${esc(subline.title)}"` : ""}>${esc(subline.text)}${rateHtml}</div>`
+          : "";
+        const extraText = rateCaption ? "" : snap.extra;
+
+        let meterOrLedgerHtml = "";
+        if (quotaModel === "wallet") {
+          // Pay-as-you-go wallet omits misleading progress bar & fabricated total/%;
+          // renders a crisp ledger reference row with lifetime cumulative spend + 1-click threshold trigger.
+          const thBtnCls = `qw-threshold-trigger${thView.source === "disabled" ? " is-muted" : ""}${health === "low" ? " is-warn" : health === "critical" ? " is-risk" : ""}`;
+          meterOrLedgerHtml = `
+            <div class="qw-ledger-row" data-qw-ledger-row="${esc(station.id)}">
+              ${usedM?.text
+                ? `<span class="qw-ledger-spent qw-num" title="历史累计消费，仅作账本参考，不参与健康度告警">累计消费 ${esc(usedM.text)}</span>`
+                : `<span class="qw-ledger-spent">按量计费钱包</span>`}
+              <button type="button" class="${thBtnCls}" data-qw-threshold-open="${esc(station.id)}" aria-expanded="${q.thresholdEdit?.stationId === station.id}" title="${esc(thView.title)}">${esc(thView.label)}</button>
+            </div>
+            ${renderInlineThresholdEditor(station, thView, q.thresholdEdit)}
+          `;
+        } else {
+          const pct = snap.remaining_percent != null
+            ? Math.max(0, Math.min(100, Number(snap.remaining_percent)))
+            : (snap.total > 0 ? Math.max(0, Math.min(100, (snap.remaining / snap.total) * 100)) : null);
+          const usedLabel = snap.is_key_scoped ? "Key 已用" : "已用";
+          const totalLabel = snap.is_key_scoped ? "限额" : "总额";
+          meterOrLedgerHtml = pct !== null ? `
+            <div class="qw-progress-wrap">
+              <div class="qw-progress-track" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+                <div class="qw-progress-fill ${valCls}" style="width:${pct.toFixed(1)}%"></div>
+              </div>
+              <div class="qw-progress-meta qw-num">
+                <span>${usedM?.text ? `${usedLabel} ${esc(usedM.text)}` : ""}</span>
+                <span>${totalM?.text ? `${totalLabel} ${esc(totalM.text)} · ` : ""}剩 ${pct.toFixed(1)}%</span>
+              </div>
+            </div>
+          ` : "";
+        }
 
         balanceHtml = `
           <div class="qw-balance-block">
             <div class="qw-balance-row">
-              <span class="qw-balance-value qw-num ${valCls}">${esc(m.unit === "¥" || m.unit === "$" ? m.unit + m.num : m.num)}</span>
-              ${m.unit !== "¥" && m.unit !== "$" ? `<span class="qw-balance-unit">${esc(m.unit)}</span>` : ""}
-              ${dualSubHtml}
-              ${showConv ? `<span class="qw-balance-conv qw-num">≈ ${esc(summary.display_symbol)}${Number(converted).toFixed(2)}</span>` : ""}
+              <span class="qw-balance-value qw-num ${valCls}${unitAnimCls}">${esc(m.prefix ? m.symbol + m.num : m.num)}</span>
+              ${!m.prefix && m.symbol ? `<span class="qw-balance-unit">${esc(m.symbol)}</span>` : ""}
+              ${unitSwitchHtml}
             </div>
-            ${pct !== null ? `
-              <div class="qw-progress-wrap">
-                <div class="qw-progress-track" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
-                  <div class="qw-progress-fill ${valCls}" style="width:${pct.toFixed(1)}%"></div>
-                </div>
-                <div class="qw-progress-meta qw-num">
-                  <span>${usedM ? `已用 ${esc(usedM.unit === "¥" || usedM.unit === "$" ? usedM.unit + usedM.num : usedM.num)}` : ""}</span>
-                  <span>${totalM ? `总额 ${esc(totalM.unit === "¥" || totalM.unit === "$" ? totalM.unit + totalM.num : totalM.num)} · ` : ""}剩 ${pct.toFixed(1)}%</span>
-                </div>
-              </div>
-            ` : ""}
+            ${sublineHtml}
+            ${meterOrLedgerHtml}
             ${extraText ? `<div class="qw-extra-line">${esc(extraText)}</div>` : ""}
           </div>
         `;
@@ -699,33 +1500,82 @@ window.CompanionQuotaWorkbench = (() => {
       balanceHtml = `<div class="qw-balance-block"><span class="qw-balance-value is-error qw-num">—</span></div>`;
     }
 
-    const subs = Array.isArray(snap?.subscriptions) ? snap.subscriptions.filter(item => item && item.remaining != null) : [];
+    const subs = Array.isArray(snap?.subscriptions)
+      ? snap.subscriptions.filter(item => item && (item.remaining != null || item.total != null))
+      : [];
     let subscriptionHtml = "";
     if (subs.length) {
-      const subRemSum = subs.reduce((acc, item) => acc + (Number(item.remaining) || 0), 0);
-      const hasSubFiat = subs.every(item => item.fiat_remaining != null);
-      const subFiatSum = hasSubFiat ? subs.reduce((acc, item) => acc + (Number(item.fiat_remaining) || 0), 0) : null;
-      const subNames = subs.map(item => item.name).filter(Boolean).join(" / ");
-      const subNativeM = formatMoney(subRemSum, snap.display_type, snap.symbol);
-      const subNativeStr = subNativeM.unit === "¥" || subNativeM.unit === "$"
-        ? `${subNativeM.unit}${subNativeM.num}`
-        : `${subNativeM.num} ${subNativeM.unit}`.trim();
-      const subFiatSym = dual.fiatSymbol || (snap.inferred_fiat_currency === "USD" ? "$" : "¥");
-      const subMainText = dual.canToggle && subFiatSum != null
-        ? (dual.mode === "fiat"
-            ? `${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}（${subNativeStr}）`
-            : `${subNativeStr} ≈ ${subFiatSym}${subFiatSum.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`)
-        : subNativeStr;
+      const subNames = subs.map(item => item.name || item.title).filter(Boolean).join(" / ");
+      const subSummary = formatSubscriptionSummary(subs, snap, summary, cur);
+      const isExpanded = Boolean(q.expandedSubsIds?.has?.(station.id));
+      const drawerId = `qw-subs-drawer-${String(station.id).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const itemsHtml = subs.map(item => {
+        const view = formatSubscriptionItem(item, snap, summary, cur);
+        const pctLabel = view.pct != null ? `剩 ${view.pct.toFixed(1)}%` : "";
+        return `
+          <div class="qw-sub-item" data-qw-sub-item>
+            <div class="qw-sub-item-head">
+              <span class="qw-sub-item-name" title="${esc(view.name)}">${esc(view.name)}</span>
+              <span class="qw-sub-item-tags">
+                ${view.expiry ? `<span class="qw-sub-expiry ${view.expiry.cls}" title="${esc(view.expiry.title)}">${esc(view.expiry.text)}</span>` : ""}
+                ${pctLabel ? `<span class="qw-sub-pct qw-num ${view.barCls}">${esc(pctLabel)}</span>` : ""}
+              </span>
+            </div>
+            ${view.pct != null ? `
+              <div class="qw-sub-bar-track" role="progressbar" aria-label="${esc(view.name)} 剩余额度比例" aria-valuenow="${view.pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+                <div class="qw-sub-bar-fill ${view.barCls}" style="width:${view.pct.toFixed(1)}%"></div>
+              </div>
+            ` : ""}
+            <div class="qw-sub-item-foot qw-num">
+              <span>${view.remText ? `剩余 ${esc(view.remText)}` : ""}${view.totalText ? ` / ${esc(view.totalText)}` : ""}${view.altHint ? ` · ${esc(view.altHint)}` : ""}</span>
+              ${view.usedText ? `<span>已用 ${esc(view.usedText)}</span>` : ""}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      const summaryMetaHtml = subSummary.sublineParts.length
+        ? `<span class="qw-subs-summary-meta qw-num">${subSummary.sublineParts.map(part =>
+            `<span${part.cls ? ` class="${part.cls}"` : ""}>${esc(part.text)}</span>`
+          ).join('<span class="qw-subs-dot" aria-hidden="true">·</span>')}</span>`
+        : "";
+
       subscriptionHtml = `
-        <div class="qw-sub-strip" data-qw-subscriptions title="${esc(subNames ? "活跃订阅套餐：" + subNames : "站点活跃订阅套餐余量")}">
-          <span class="qw-sub-label">订阅余量</span>
-          <strong class="qw-num">${esc(subMainText)}</strong>
-          <span class="qw-sub-meta">· ${subs.length} 个套餐${subNames ? `（${esc(subNames)}）` : ""}</span>
+        <div class="qw-sub-strip qw-subs-panel${isExpanded ? " is-expanded" : ""}" data-qw-subscriptions="${esc(station.id)}" title="${esc(subNames ? "活跃订阅套餐：" + subNames : "站点活跃订阅套餐余量")}">
+          <button type="button" class="qw-subs-head qw-subs-summary-btn" data-qw-subs-toggle="${esc(station.id)}" aria-expanded="${isExpanded}" aria-controls="${esc(drawerId)}">
+            <span class="qw-subs-head-top">
+              <span class="qw-subs-head-left">
+                <span class="qw-sub-label">订阅余量</span>
+                <span class="qw-sub-count-pill">${esc(subSummary.countBadge)}</span>
+              </span>
+              <span class="qw-subs-head-right">
+                <strong class="qw-num">${esc(subSummary.mainText)}</strong>
+                ${subSummary.weightedPct != null ? `<span class="qw-sub-pct qw-num ${subSummary.barCls}">剩 ${subSummary.weightedPct.toFixed(1)}%</span>` : ""}
+                <span class="qw-subs-chevron" aria-hidden="true"><span data-qw-subs-chevron-text>${isExpanded ? "收起" : "明细"}</span><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></span>
+              </span>
+            </span>
+            ${subSummary.weightedPct != null ? `
+              <span class="qw-sub-bar-track qw-subs-summary-bar" role="progressbar" aria-label="订阅套餐综合剩余额度比例" aria-valuenow="${subSummary.weightedPct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+                <span class="qw-sub-bar-fill ${subSummary.barCls}" style="width:${subSummary.weightedPct.toFixed(1)}%"></span>
+              </span>
+            ` : ""}
+            ${summaryMetaHtml}
+          </button>
+          <div id="${esc(drawerId)}" class="qw-subs-drawer" data-qw-subs-drawer="${esc(station.id)}"${isExpanded ? "" : " inert"}>
+            <div class="qw-subs-drawer-inner">
+              <div class="qw-subs-list${subs.length >= SUBSCRIPTION_SCROLL_THRESHOLD ? " is-scrollable" : ""}">${itemsHtml}</div>
+            </div>
+          </div>
         </div>
       `;
     }
 
-    const lastCostVal = dual.mode === "fiat" && snap?.fiat_last_used_cost != null ? snap.fiat_last_used_cost : snap?.last_used_cost;
+    const lastCostVal = snap && views && (snap.last_used_cost != null || snap.fiat_last_used_cost != null)
+      ? convertStationSecondary(snap.last_used_cost, snap.fiat_last_used_cost, views, activeUnit)
+      : snap?.last_used_cost;
+    const lastCostText = lastCostVal != null
+      ? (views ? formatStationValueForUnit(lastCostVal, activeUnit, views, { small: true }).text : formatSmallCost(lastCostVal, snap?.display_type, snap?.symbol))
+      : "";
     const lastUseHtml = snap && (snap.last_used_at || snap.last_used_error)
       ? `<div class="qw-lastuse" title="${esc(snap.last_used_error ? "日志接口：" + snap.last_used_error : "来自站点自身消费日志")}">
           <span class="qw-lastuse-label">最近消费</span>
@@ -733,7 +1583,7 @@ window.CompanionQuotaWorkbench = (() => {
             ? `<span class="qw-num">${esc(formatShortTime(snap.last_used_at))}</span>
                <span>· ${esc(formatAgo(snap.last_used_at))}</span>
                ${snap.last_used_model ? `<span>·</span><span class="qw-lastuse-model" title="${esc(snap.last_used_model)}">${esc(snap.last_used_model)}</span>` : ""}
-               ${lastCostVal != null ? `<span>·</span><span class="qw-lastuse-cost qw-num">${esc(formatSmallCost(lastCostVal, activeDisplayType, activeSymbol))}</span>` : ""}`
+               ${lastCostText ? `<span>·</span><span class="qw-lastuse-cost qw-num">${esc(lastCostText)}</span>` : ""}`
             : `<span>读取失败（${esc(String(snap.last_used_error).slice(0, 42))}）</span>`}
         </div>`
       : "";
@@ -1056,8 +1906,41 @@ window.CompanionQuotaWorkbench = (() => {
       ` : ""}
       <div class="qw-login-slot" data-qw-login-slot>${renderLoginNoticeMarkup(w)}</div>
 
+      ${(() => {
+        const walletMode = isWalletDraft(q, d);
+        const snap = d.id ? q.data?.snapshots?.[d.id] : null;
+        const eff = d.id ? q.data?.summary?.effective_thresholds_by_id?.[d.id] : null;
+        const draftUnit = eff?.unit || snap?.display_type || d.display_type || (d.adapter_id === "deepseek" || d.adapter_id === "siliconflow" || d.adapter_id === "moonshot" ? "CNY" : (d.adapter_id === "openrouter" || d.adapter_id === "sub2api" || d.adapter_id === "openai_billing" ? "USD" : "CNY"));
+        const draftSym = eff?.symbol || snap?.symbol || (draftUnit === "CNY" ? "¥" : draftUnit === "USD" ? "$" : "");
+        const unitLabel = draftSym && draftSym !== draftUnit ? `${draftSym} ${draftUnit}` : (draftUnit || "站内单位");
+        const presets = thresholdPresetsFor(draftUnit, draftSym, eff?.fiat_per_native || null);
+        if (!walletMode) return "";
+        const defHint = draftUnit === "USD" ? "留空默认 $2 / $0.5" : draftUnit === "CNY" ? "留空默认 ¥10 / ¥3" : "留空按折合法币默认预警";
+        return `
+          <section class="qw-threshold-card" data-qw-wallet-thresholds aria-label="余额预警线设置">
+            <div class="qw-threshold-card-head">
+              <strong>余额预警线（${esc(unitLabel)}）</strong>
+              <span class="qw-field-hint">按量钱包按绝对余额告警 · 填 0 关闭</span>
+            </div>
+            <div class="qw-threshold-presets" role="group" aria-label="预警线快捷预设">
+              ${presets.map(p => `<button type="button" class="qw-preset-chip qw-th-preset${String(d.low_threshold).trim() === String(p.low) ? " is-active" : ""}" data-qw-draft-th-low="${esc(p.low)}" data-qw-draft-th-crit="${esc(p.critical)}">${esc(p.label)}</button>`).join("")}
+            </div>
+            <div class="qw-field-grid">
+              <label class="qw-field">
+                <span>偏低预警金额（${esc(unitLabel)}）</span>
+                <input type="number" min="0" step="any" data-qw-field="low_threshold" placeholder="${esc(defHint)}" value="${esc(d.low_threshold)}">
+              </label>
+              <label class="qw-field">
+                <span>告急预警金额（${esc(unitLabel)}）</span>
+                <input type="number" min="0" step="any" data-qw-field="critical_threshold" placeholder="低于此值标红告急（可选）" value="${esc(d.critical_threshold)}">
+              </label>
+            </div>
+          </section>
+        `;
+      })()}
+
       <details class="qw-details" data-qw-advanced-details ${w.advancedOpen ? "open" : ""}>
-        <summary data-qw-toggle-advanced>高级与告警设置（换算覆盖 / 刷新间隔 / 告警阈值 / 代理 / 余额感知）</summary>
+        <summary data-qw-toggle-advanced>高级与告警设置（换算覆盖 / 刷新间隔 / 代理 / 余额感知）</summary>
         <div class="qw-details-body">
           <div data-qw-advanced-fields>${advancedFields.map(f => renderDynamicField(f, d, w)).join("")}</div>
           ${(d.adapter_id === "newapi" || d.adapter_id === "newapi_user_id") ? `
@@ -1082,18 +1965,20 @@ window.CompanionQuotaWorkbench = (() => {
               <span>自动刷新间隔（秒）</span>
               <input type="number" min="60" max="86400" step="30" data-qw-field="interval_sec" value="${esc(d.interval_sec)}">
             </label>
-            <label class="qw-field">
-              <span>偏低比例阈值（%）</span>
-              <input type="number" min="0" max="100" step="1" data-qw-field="low_percent" value="${esc(d.low_percent)}">
-            </label>
-            <label class="qw-field">
-              <span>偏低金额阈值（可选）</span>
-              <input type="number" min="0" step="any" data-qw-field="low_threshold" placeholder="留空按比例判定" value="${esc(d.low_threshold)}">
-            </label>
-            <label class="qw-field">
-              <span>告急金额阈值（可选）</span>
-              <input type="number" min="0" step="any" data-qw-field="critical_threshold" placeholder="低于此值标红告急" value="${esc(d.critical_threshold)}">
-            </label>
+            ${isWalletDraft(q, d) ? "" : `
+              <label class="qw-field">
+                <span>偏低比例阈值（%）</span>
+                <input type="number" min="0" max="100" step="1" data-qw-field="low_percent" value="${esc(d.low_percent)}">
+              </label>
+              <label class="qw-field">
+                <span>偏低金额阈值（可选）</span>
+                <input type="number" min="0" step="any" data-qw-field="low_threshold" placeholder="留空按比例判定" value="${esc(d.low_threshold)}">
+              </label>
+              <label class="qw-field">
+                <span>告急金额阈值（可选）</span>
+                <input type="number" min="0" step="any" data-qw-field="critical_threshold" placeholder="低于此值标红告急" value="${esc(d.critical_threshold)}">
+              </label>
+            `}
           </div>
           <label class="qw-field">
             <span>站点专用代理（可选）</span>
@@ -1281,7 +2166,7 @@ window.CompanionQuotaWorkbench = (() => {
     }
   }
 
-  function patchSingleCardDom(ctx, stationId) {
+  function patchSingleCardDom(ctx, stationId, { animateUnit = false } = {}) {
     const dom = getLiveDom(ctx);
     if (!dom) {
       ctx.render();
@@ -1293,7 +2178,7 @@ window.CompanionQuotaWorkbench = (() => {
       syncMainDom(ctx, { includeAwareness: false });
       return;
     }
-    const parts = renderStationCardParts(ctx, st);
+    const parts = renderStationCardParts(ctx, st, { animateUnit });
     cardEl.className = parts.className;
     cardEl.innerHTML = parts.innerHtml;
   }
@@ -1310,9 +2195,11 @@ window.CompanionQuotaWorkbench = (() => {
       const st = (q.data?.stations || []).find(item => item.id === sid);
       const avatarEl = dom.gridEl.querySelector?.(`[data-qw-avatar="${sid}"]`);
       if (!st || !avatarEl) continue;
+      const hadLogo = Boolean(avatarEl.classList?.contains?.("has-logo"));
       const av = avatarMarkupFor(st, snaps[sid]);
       avatarEl.classList?.toggle?.("has-logo", av.hasLogo);
       avatarEl.classList?.toggle?.("is-brand", av.isBrand);
+      avatarEl.classList?.toggle?.("is-hydrated", Boolean(av.hasLogo && !hadLogo));
       avatarEl.title = av.title;
       avatarEl.innerHTML = av.html;
     }
@@ -1706,7 +2593,36 @@ window.CompanionQuotaWorkbench = (() => {
     }
   }
 
+  function bindUnitSyncListener(ctx) {
+    const q = ctx.q;
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    if (q._unitSyncHandler) return;
+    const handler = ev => {
+      const detail = ev?.detail;
+      if (!detail || detail.source === "quota-workbench" || !q.data) return;
+      const sid = String(detail.stationId || "").trim();
+      if (!sid) return;
+      const st = (q.data.stations || []).find(item => item.id === sid);
+      if (!st) return;
+      const nextUnit = String(detail.unit || "").trim().toLowerCase();
+      if (!["native", "fiat", "cny", "usd"].includes(nextUnit) || st.display_unit_mode === nextUnit) return;
+      st.display_unit_mode = nextUnit;
+      patchSingleCardDom(ctx, sid, { animateUnit: true });
+    };
+    q._unitSyncHandler = handler;
+    window.addEventListener("companion:balance-unit-change", handler);
+  }
+
+  function unbindUnitSyncListener(q) {
+    if (!q?._unitSyncHandler) return;
+    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+      window.removeEventListener("companion:balance-unit-change", q._unitSyncHandler);
+    }
+    q._unitSyncHandler = null;
+  }
+
   function syncDom(ctx, mountEl, externalModalHost = null) {
+    bindUnitSyncListener(ctx);
     ensureLiveShell(ctx, mountEl, externalModalHost);
     syncMainDom(ctx, { includeAwareness: true });
     syncModalDom(ctx);
@@ -1732,30 +2648,86 @@ window.CompanionQuotaWorkbench = (() => {
     }, minSec * 1000);
   }
 
-  async function hydrateLogos(ctx) {
+  function scheduleBgSync(ctx) {
+    const q = ctx.q;
+    clearBgSyncTimer(q);
+    const ticket = ctx.ticket();
+    q.bgSyncTimer = setTimeout(async () => {
+      q.bgSyncTimer = null;
+      if (!ctx.isCurrent(ticket)) return;
+      if (ctx.state?.tab !== "quota" || q.loading || q.refreshingAll) return;
+      try {
+        const fresh = await ctx.api("GET", `${ctx.path}/quota`, undefined, 15000);
+        if (!ctx.isCurrent(ticket) || !fresh) return;
+        q.data = fresh;
+        q.loaded = true;
+        scheduleAutoRefresh(ctx);
+        syncMainDom(ctx, { includeAwareness: false });
+        void hydrateLogos(ctx);
+      } catch {}
+    }, BG_SYNC_DELAY_MS);
+  }
+
+  async function hydrateLogos(ctx, { ignoreBackoff = false } = {}) {
     const q = ctx.q;
     const snaps = q.data?.snapshots || {};
     const ticket = ctx.ticket();
+    const now = Date.now();
     const pending = [];
-    const updatedIds = [];
     for (const st of q.data?.stations || []) {
       const snap = snaps[st.id];
-      if (!snap?.logo_version) continue;
-      const cacheKey = `${st.id}:${snap.logo_version}`;
-      if (iconCache.has(cacheKey)) continue;
-      pending.push(
-        ctx.api("GET", `${ctx.path}/quota/icon`, { id: st.id, v: snap.logo_version }, 8000)
+      if (!snap) continue;
+      const declaredVer = String(snap.logo_version || "").trim();
+      if (!declaredVer) {
+        if (!snap.ok || st.enabled === false) continue;
+        const adapter = adapterById(q, st.adapter_id);
+        if (adapter?.capabilities && adapter.capabilities.supports_logo === false) continue;
+      }
+      const cacheKey = `${st.id}:${declaredVer || "_ondemand"}`;
+      if (declaredVer && resolveCachedLogo(st.id, declaredVer)) continue;
+      if (!ignoreBackoff) {
+        const retryAfter = iconBackoff.get(st.id) || 0;
+        if (retryAfter > now) continue;
+      }
+      let req = iconInflight.get(cacheKey);
+      if (!req) {
+        const query = declaredVer ? { id: st.id, v: declaredVer } : { id: st.id };
+        req = ctx.api("GET", `${ctx.path}/quota/icon`, query, 8000)
           .then(res => {
-            if (res?.available && isSafeIconDataUrl(res?.data_url)) iconCache.set(cacheKey, res.data_url);
-            else iconCache.set(cacheKey, "");
-            updatedIds.push(st.id);
+            if (res?.available && isSafeIconDataUrl(res?.data_url)) {
+              const actualVer = String(res.version || declaredVer || "v1");
+              iconCache.set(cacheKey, res.data_url);
+              if (actualVer !== declaredVer) {
+                iconCache.set(`${st.id}:${actualVer}`, res.data_url);
+                snap.logo_version = actualVer;
+              }
+              snap.logo_error = "";
+              // Write ONLY once under actualVer so single-key localStorage is never overwritten back to stale version.
+              writeStoredLogo(st.id, actualVer, res.data_url);
+              iconBackoff.delete(st.id);
+              return res.data_url;
+            }
+            // NEVER poison iconCache with empty strings on transient misses; use short backoff instead.
+            iconBackoff.set(st.id, Date.now() + ICON_BACKOFF_MS);
+            return "";
           })
-          .catch(() => {})
+          .catch(() => {
+            iconBackoff.set(st.id, Date.now() + ICON_BACKOFF_MS);
+            return "";
+          })
+          .finally(() => {
+            if (iconInflight.get(cacheKey) === req) iconInflight.delete(cacheKey);
+          });
+        iconInflight.set(cacheKey, req);
+      }
+      pending.push(
+        req.then(url => {
+          if (url && ctx.isCurrent(ticket)) patchHydratedLogos(ctx, [st.id]);
+        })
       );
     }
     if (pending.length) {
       await Promise.all(pending);
-      if (ctx.isCurrent(ticket) && updatedIds.length) patchHydratedLogos(ctx, updatedIds);
     }
   }
 
@@ -1763,6 +2735,7 @@ window.CompanionQuotaWorkbench = (() => {
     const q = ctx.q;
     if (q.loading) return;
     const ticket = ctx.ticket();
+    clearBgSyncTimer(q);
     q.loading = true;
     q.notice = "";
     q.noticeTone = "";
@@ -1773,12 +2746,14 @@ window.CompanionQuotaWorkbench = (() => {
       q.data = data;
       q.loaded = true;
       q.loading = false;
+      bindUnitSyncListener(ctx);
       syncAwarenessDraft(q);
       if (q.pendingFocus === "awareness") {
         q.awarenessOpen = true;
         q.pendingFocus = "";
       }
       scheduleAutoRefresh(ctx);
+      if (data?.background_refresh_scheduled) scheduleBgSync(ctx);
       syncMainDom(ctx, { includeAwareness: true });
       void hydrateLogos(ctx);
     } catch (err) {
@@ -1794,6 +2769,11 @@ window.CompanionQuotaWorkbench = (() => {
     const q = ctx.q;
     if (stationId ? q.refreshingId === stationId : q.refreshingAll) return;
     const ticket = ctx.ticket();
+    clearBgSyncTimer(q);
+    if (force) {
+      if (stationId) iconBackoff.delete(stationId);
+      else iconBackoff.clear();
+    }
     if (stationId) q.refreshingId = stationId;
     else q.refreshingAll = true;
     // Patch ONLY refresh button states — never rebuild cards or touch open modal!
@@ -1808,7 +2788,7 @@ window.CompanionQuotaWorkbench = (() => {
         q.noticeTone = "ok";
       }
       scheduleAutoRefresh(ctx);
-      void hydrateLogos(ctx);
+      void hydrateLogos(ctx, { ignoreBackoff: Boolean(force) });
     } catch (err) {
       if (!ctx.isCurrent(ticket)) return;
       if (force) {
@@ -1929,17 +2909,75 @@ window.CompanionQuotaWorkbench = (() => {
     }
   }
 
-  async function toggleUnitMode(ctx, stationId) {
+  async function switchHeroCurrency(ctx, nextCurrency) {
+    const q = ctx.q;
+    if (!q.data) return;
+    const cur = String(nextCurrency || "").toUpperCase();
+    if (cur !== "CNY" && cur !== "USD") return;
+    const currentHero = (q.heroCurrency === "CNY" || q.heroCurrency === "USD")
+      ? q.heroCurrency
+      : (String(q.data.summary?.display_currency || "CNY").toUpperCase() === "USD" ? "USD" : "CNY");
+    if (cur === currentHero) return;
+    q.heroCurrency = cur;
+    q.heroUnitAnim = true;
+    const dom = getLiveDom(ctx);
+    if (dom) {
+      const coreEl = dom.heroSlot.querySelector?.("[data-qw-hero-core]");
+      if (coreEl) coreEl.innerHTML = renderHeroCore(ctx);
+      else syncMainDom(ctx, { includeAwareness: false });
+    } else {
+      ctx.render();
+    }
+    q.heroUnitAnim = false;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("companion-pricing-display.v1", JSON.stringify({
+          currency: cur,
+          usd_cny_rate: Number(q.data.summary?.usd_cny_rate || 7.2),
+        }));
+      }
+    } catch {}
+    const ticket = ctx.ticket();
+    try {
+      const pricingDoc = await ctx.api("GET", `${ctx.path}/pricing`, undefined, 8000);
+      if (!ctx.isCurrent(ticket) || !pricingDoc?.revision) return;
+      await ctx.api("POST", `${ctx.path}/pricing`, {
+        revision: pricingDoc.revision,
+        changes: { display_currency: cur },
+      }, 10000);
+    } catch {
+      /* Local Hero currency remains active even if global pricing persistence is unavailable. */
+    }
+  }
+
+  async function setStationUnitMode(ctx, stationId, targetUnit) {
     const q = ctx.q;
     if (!q.data) return;
     const st = (q.data.stations || []).find(item => item.id === stationId);
     if (!st) return;
+    const snap = q.data.snapshots?.[stationId] || null;
+    const cur = resolveStationCurrency(st, snap, q.data.summary);
+    const desired = String(targetUnit || "").trim().toLowerCase();
+    const nextMode = cur
+      ? (cur.helper
+          ? cur.helper.normalizeUnit(desired, cur.views.available_units, cur.views.inferred_fiat_currency, cur.views.display_type)
+          : (cur.views.available_units.includes(desired) ? desired : cur.activeUnit))
+      : desired;
+    if (!["native", "fiat", "cny", "usd"].includes(nextMode)) return;
+    const prevMode = cur ? cur.activeUnit : (st.display_unit_mode || "native");
+    if (nextMode === prevMode && st.display_unit_mode === nextMode) return;
+
     q.unitSavingIds ||= new Set();
     q.unitPendingModes ||= new Map();
-    const prevMode = st.display_unit_mode === "fiat" ? "fiat" : "native";
-    const nextMode = prevMode === "fiat" ? "native" : "fiat";
     st.display_unit_mode = nextMode;
-    patchSingleCardDom(ctx, stationId);
+    patchSingleCardDom(ctx, stationId, { animateUnit: true });
+    currencyHelper()?.broadcastUnitChange({
+      scopeKey: `station:${stationId}`,
+      stationId,
+      unit: nextMode,
+      source: "quota-workbench",
+    });
+
     q.unitPendingModes.set(stationId, nextMode);
     if (q.unitSavingIds.has(stationId)) return;
 
@@ -1948,42 +2986,118 @@ window.CompanionQuotaWorkbench = (() => {
     q.unitSavingIds.add(stationId);
     try {
       while (q.unitPendingModes.has(stationId)) {
-        const desiredMode = q.unitPendingModes.get(stationId);
+        const modeToSave = q.unitPendingModes.get(stationId);
         q.unitPendingModes.delete(stationId);
-        const curSt = (q.data?.stations || []).find(item => item.id === stationId);
-        if (!curSt) break;
-        const payload = {
-          ...curSt,
-          auth_token: "",
-          proxy_url: "",
-          display_unit_mode: desiredMode,
-        };
-        delete payload.has_token;
-        delete payload.has_proxy;
-        const data = await ctx.api("POST", `${ctx.path}/quota/stations`, {
-          edit_token: q.data.edit_token,
-          station: payload,
-          probe_after_save: false,
-        }, 15000);
+        const data = await ctx.api(
+          "POST",
+          `${ctx.path}/quota/stations/${encodeURIComponent(stationId)}/display-unit`,
+          { display_unit_mode: modeToSave },
+          10000
+        );
         if (!ctx.isCurrent(ticket)) return;
-        committedMode = desiredMode;
-        if (data?.edit_token) q.data.edit_token = data.edit_token;
-        if (Array.isArray(data?.stations)) q.data.stations = data.stations;
-        if (data?.summary) q.data.summary = data.summary;
-        if (q.unitPendingModes.has(stationId)) {
-          const queuedMode = q.unitPendingModes.get(stationId);
-          const refreshedSt = (q.data?.stations || []).find(item => item.id === stationId);
-          if (refreshedSt) refreshedSt.display_unit_mode = queuedMode;
-        }
+        committedMode = modeToSave;
+        if (data?.edit_token && q.data) q.data.edit_token = data.edit_token;
       }
     } catch {
       q.unitPendingModes.delete(stationId);
       if (!ctx.isCurrent(ticket)) return;
       const curSt = (q.data?.stations || []).find(item => item.id === stationId);
       if (curSt) curSt.display_unit_mode = committedMode;
-      patchSingleCardDom(ctx, stationId);
+      patchSingleCardDom(ctx, stationId, { animateUnit: false });
+      currencyHelper()?.broadcastUnitChange({
+        scopeKey: `station:${stationId}`,
+        stationId,
+        unit: committedMode,
+        source: "quota-workbench",
+      });
     } finally {
       q.unitSavingIds.delete(stationId);
+    }
+  }
+
+  function openThresholdEditor(ctx, stationId) {
+    const q = ctx.q;
+    const prevId = q.thresholdEdit?.stationId || "";
+    if (prevId === stationId) {
+      q.thresholdEdit = null;
+      patchSingleCardDom(ctx, stationId);
+      return;
+    }
+    const st = (q.data?.stations || []).find(item => item.id === stationId);
+    if (!st) return;
+    const snap = q.data?.snapshots?.[stationId] || null;
+    const summary = q.data?.summary || {};
+    const currency = resolveStationCurrency(st, snap, summary);
+    const thView = resolveEffectiveThresholdView(st, snap, summary, currency);
+    const fmtInput = val => {
+      if (val == null || !Number.isFinite(Number(val))) return "";
+      const n = Number(val);
+      return Math.abs(n - Math.round(n)) < 1e-6 ? String(Math.round(n)) : String(Number(n.toFixed(2)));
+    };
+    q.thresholdEdit = {
+      stationId,
+      low: thView.source === "disabled" ? "0" : (st.low_threshold != null || thView.source === "default" ? fmtInput(thView.low) : ""),
+      critical: thView.source === "disabled" ? "0" : (st.critical_threshold != null || thView.source === "default" ? fmtInput(thView.critical) : ""),
+      unit: thView.displayUnit,
+      symbol: thView.displaySymbol,
+      currency: thView.editCurrency,
+      saving: false,
+      error: "",
+    };
+    if (prevId && prevId !== stationId) patchSingleCardDom(ctx, prevId);
+    patchSingleCardDom(ctx, stationId);
+  }
+
+  async function saveInlineThresholds(ctx, { resetToDefault = false } = {}) {
+    const q = ctx.q;
+    const ed = q.thresholdEdit;
+    if (!ed || ed.saving || !q.data) return;
+    const stationId = ed.stationId;
+    const parseOpt = raw => {
+      const s = String(raw ?? "").trim();
+      if (!s) return null;
+      const n = Number(s);
+      if (!Number.isFinite(n) || n < 0) return NaN;
+      return n;
+    };
+    const lowVal = resetToDefault ? null : parseOpt(ed.low);
+    const critVal = resetToDefault ? null : parseOpt(ed.critical);
+    if (Number.isNaN(lowVal) || Number.isNaN(critVal)) {
+      ed.error = "预警金额必须为非负数字。";
+      patchSingleCardDom(ctx, stationId);
+      return;
+    }
+    if (lowVal != null && critVal != null && critVal > lowVal) {
+      ed.error = "告急预警线不能高于偏低预警线。";
+      patchSingleCardDom(ctx, stationId);
+      return;
+    }
+    const ticket = ctx.ticket();
+    ed.saving = true;
+    ed.error = "";
+    patchSingleCardDom(ctx, stationId);
+    try {
+      const data = await ctx.api(
+        "POST",
+        `${ctx.path}/quota/stations/${encodeURIComponent(stationId)}/thresholds`,
+        {
+          low_threshold: lowVal,
+          critical_threshold: critVal,
+          threshold_currency: resetToDefault ? "" : (ed.currency || ""),
+        },
+        15000
+      );
+      if (!ctx.isCurrent(ticket)) return;
+      q.data = data;
+      q.thresholdEdit = null;
+      q.notice = resetToDefault ? "已恢复该站点默认预警线。" : (lowVal === 0 ? "已关闭该站点余额告警。" : "已更新站点预警线。");
+      q.noticeTone = "ok";
+      syncMainDom(ctx, { includeAwareness: false });
+    } catch (err) {
+      if (!ctx.isCurrent(ticket)) return;
+      ed.saving = false;
+      ed.error = ctx.fail(err, "保存预警线失败，请检查输入。");
+      patchSingleCardDom(ctx, stationId);
     }
   }
 
@@ -2324,6 +3438,8 @@ window.CompanionQuotaWorkbench = (() => {
       if (!ctx.isCurrent(ticket)) return;
       q.data = data;
       q.deleteConfirmId = "";
+      iconBackoff.delete(stationId);
+      removeStoredLogo(stationId);
       syncAwarenessDraft(q);
       q.notice = "已删除该站点。";
       q.noticeTone = "ok";
@@ -2368,6 +3484,12 @@ window.CompanionQuotaWorkbench = (() => {
       const chip = t.closest?.(".qw-chip-check");
       if (chip) chip.classList?.toggle?.("is-checked", Boolean(t.checked));
       else if (!getLiveDom(ctx)) ctx.render();
+      return;
+    }
+    if (t.matches("[data-qw-th-input]") && q.thresholdEdit) {
+      const key = t.dataset.qwThInput;
+      q.thresholdEdit[key] = t.value;
+      q.thresholdEdit.error = "";
       return;
     }
 
@@ -2430,9 +3552,73 @@ window.CompanionQuotaWorkbench = (() => {
       void setPrimaryStation(ctx, setPrimaryBtn.dataset.qwSetPrimary);
       return;
     }
-    const toggleUnitBtn = t.closest("[data-qw-toggle-unit]");
-    if (toggleUnitBtn) {
-      void toggleUnitMode(ctx, toggleUnitBtn.dataset.qwToggleUnit);
+    const heroCurBtn = t.closest("[data-qw-hero-currency]");
+    if (heroCurBtn) {
+      event.stopPropagation?.();
+      void switchHeroCurrency(ctx, heroCurBtn.dataset.qwHeroCurrency);
+      return;
+    }
+    const setUnitBtn = t.closest("[data-qw-set-unit]");
+    if (setUnitBtn) {
+      event.stopPropagation?.();
+      void setStationUnitMode(ctx, setUnitBtn.dataset.qwSetUnit, setUnitBtn.dataset.qwUnit);
+      return;
+    }
+    const subsToggleBtn = t.closest("[data-qw-subs-toggle]");
+    if (subsToggleBtn) {
+      const sid = subsToggleBtn.dataset.qwSubsToggle;
+      q.expandedSubsIds ||= new Set();
+      const willExpand = !q.expandedSubsIds.has(sid);
+      if (willExpand) q.expandedSubsIds.add(sid);
+      else q.expandedSubsIds.delete(sid);
+      const dom = getLiveDom(ctx);
+      const panelEl = dom?.gridEl?.querySelector?.(`[data-qw-subscriptions="${sid}"]`);
+      if (panelEl) {
+        panelEl.classList?.toggle?.("is-expanded", willExpand);
+        const btnEl = panelEl.querySelector?.(`[data-qw-subs-toggle="${sid}"]`);
+        if (btnEl) btnEl.setAttribute?.("aria-expanded", String(willExpand));
+        const chevronTxt = panelEl.querySelector?.("[data-qw-subs-chevron-text]");
+        if (chevronTxt) chevronTxt.textContent = willExpand ? "收起" : "明细";
+        const drawerEl = panelEl.querySelector?.(`[data-qw-subs-drawer="${sid}"]`);
+        if (drawerEl) {
+          if (willExpand) {
+            drawerEl.inert = false;
+            drawerEl.removeAttribute?.("inert");
+          } else {
+            drawerEl.inert = true;
+            drawerEl.setAttribute?.("inert", "");
+          }
+        }
+      } else {
+        patchSingleCardDom(ctx, sid);
+      }
+      return;
+    }
+    const thOpenBtn = t.closest("[data-qw-threshold-open]");
+    if (thOpenBtn) {
+      openThresholdEditor(ctx, thOpenBtn.dataset.qwThresholdOpen);
+      return;
+    }
+    const thPresetBtn = t.closest("[data-qw-th-preset-low]");
+    if (thPresetBtn && q.thresholdEdit) {
+      q.thresholdEdit.low = String(thPresetBtn.dataset.qwThPresetLow ?? "");
+      q.thresholdEdit.critical = String(thPresetBtn.dataset.qwThPresetCrit ?? "");
+      q.thresholdEdit.error = "";
+      patchSingleCardDom(ctx, q.thresholdEdit.stationId);
+      return;
+    }
+    if (t.closest("[data-qw-th-cancel]") && q.thresholdEdit) {
+      const sid = q.thresholdEdit.stationId;
+      q.thresholdEdit = null;
+      patchSingleCardDom(ctx, sid);
+      return;
+    }
+    if (t.closest("[data-qw-th-reset]") && q.thresholdEdit) {
+      void saveInlineThresholds(ctx, { resetToDefault: true });
+      return;
+    }
+    if (t.closest("[data-qw-th-save]") && q.thresholdEdit) {
+      void saveInlineThresholds(ctx, { resetToDefault: false });
       return;
     }
     const editBtn = t.closest("[data-qw-edit]");
@@ -2557,6 +3743,24 @@ window.CompanionQuotaWorkbench = (() => {
       patchModalStep(ctx);
       return;
     }
+    const draftThPreset = t.closest("[data-qw-draft-th-low]");
+    if (draftThPreset) {
+      w.draft.low_threshold = String(draftThPreset.dataset.qwDraftThLow ?? "");
+      w.draft.critical_threshold = String(draftThPreset.dataset.qwDraftThCrit ?? "");
+      const dom = getLiveDom(ctx);
+      if (dom?.modal) {
+        const lowEl = dom.modal.stepContent.querySelector?.('[data-qw-field="low_threshold"]');
+        const critEl = dom.modal.stepContent.querySelector?.('[data-qw-field="critical_threshold"]');
+        if (lowEl) lowEl.value = w.draft.low_threshold;
+        if (critEl) critEl.value = w.draft.critical_threshold;
+        dom.modal.stepContent.querySelectorAll?.("[data-qw-draft-th-low]").forEach(btn => {
+          btn.classList.toggle("is-active", String(btn.dataset.qwDraftThLow) === w.draft.low_threshold);
+        });
+      } else {
+        ctx.render();
+      }
+      return;
+    }
     if (t.closest("[data-qw-toggle-login]")) {
       w.loginOpen = !w.loginOpen;
       return;
@@ -2583,11 +3787,18 @@ window.CompanionQuotaWorkbench = (() => {
       closeModalDom(ctx);
       return true;
     }
+    if (event.key === "Escape" && ctx.q.thresholdEdit) {
+      const sid = ctx.q.thresholdEdit.stationId;
+      ctx.q.thresholdEdit = null;
+      patchSingleCardDom(ctx, sid);
+      return true;
+    }
     return false;
   }
 
   function unmount(q) {
     clearAutoTimer(q);
+    unbindUnitSyncListener(q);
     detachDom(q);
   }
 

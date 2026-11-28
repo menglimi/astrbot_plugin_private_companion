@@ -6,6 +6,8 @@ _INPUT_CODES = frozenset({
     "qzone_scene_invalid", "qzone_topic_confidence_invalid", "qzone_request_invalid",
     "qzone_image_invalid",
     "missing_edit_source", "native_reference_missing", "invalid_image_arguments",
+    "invalid_aspect_ratio",
+    "invalid_subject_mode", "invalid_image_intent",
     "invalid_prompt", "invalid_negative_prompt", "invalid_reference_ids",
     "invalid_reference_indices", "invalid_reference_roles", "invalid_mask_reference_indices",
     "native_reference_index_unavailable", "native_reference_id_unavailable",
@@ -69,8 +71,23 @@ def failure_guidance(error_code, state, *, action):
             }
         if disposition == "external_effect_unknown":
             return {
-                "reason": "本次图片请求结果尚未确认。",
-                "next_step": "请保留原操作状态，不要换参数盲目重复提交。",
+                "reason": "本次图片请求超时或结果尚未确认，且同步生图接口不会自动补发或异步推送后续结果。",
+                "next_step": "请如实告知用户本次生图超时未拿到结果（同步接口不会自动补发，无需继续干等），由用户确认后再按需重试；不要在本轮私自换参数盲目重复提交。",
+            }
+        if error_code == "image_turn_limit_reached":
+            return {
+                "reason": "本轮生图或改图调用次数已达到单轮上限，已阻止继续重复生成。",
+                "next_step": "请直接基于本轮已经成功生成的图片发送或回复用户，不要继续重复调用生图或改图工具。",
+            }
+        if error_code == "nai_upstream_unavailable":
+            return {
+                "reason": "NAI 生图上游服务当前暂时不可用（如网关 502/503/504 故障），本次请求未生成图片。",
+                "next_step": "请如实告知用户生图服务暂时波动未出图，不要声称已生成或仍在等待确认；如用户需要可稍后重试。",
+            }
+        if error_code == "nai_request_rejected":
+            return {
+                "reason": "NAI 生图插件拒绝了本次参数或参考图模式，尚未生成图片。",
+                "next_step": "请核对当前参数与参考图设置后再试，必要时提示用户在 NAI 插件面板检查模型与参考图配置。",
             }
         if error_code in _IMAGE_UNCONFIGURED_CODES:
             return {

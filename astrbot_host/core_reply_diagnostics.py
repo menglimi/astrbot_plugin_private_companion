@@ -46,10 +46,12 @@ async def execute_core_diagnostic(session, call_id, action, arguments):
                 changes=arguments["changes"], rationale=arguments["rationale"]))
             return {"state": "succeeded", "effect": "committed", "proposal": proposal_document(proposal)}
         if action == "diagnostics.proposal.read":
-            proposal = require(repairs.read(original, proposal_id=arguments["proposal_id"]))
+            resolved_id = require(repairs.resolve_proposal_id(original, arguments["proposal_id"]))
+            proposal = require(repairs.read(original, proposal_id=resolved_id))
             return {"state": "succeeded", "effect": "none", "proposal": proposal_document(proposal)}
         if action in ("diagnostics.proposal.confirm", "diagnostics.proposal.cancel"):
-            proposal = require(repairs.read(original, proposal_id=arguments["proposal_id"]))
+            resolved_id = require(repairs.resolve_proposal_id(original, arguments["proposal_id"]))
+            proposal = require(repairs.read(original, proposal_id=resolved_id))
             finish = repairs.confirm if action.endswith("confirm") else repairs.cancel
             result = require(finish(original, proposal_id=proposal.proposal_id,
                 expected_revision=proposal.revision, review_token=proposal.review_token))

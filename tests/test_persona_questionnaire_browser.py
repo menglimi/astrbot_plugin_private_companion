@@ -81,10 +81,21 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
 
     def test_original_questionnaire_full_workflow_and_old_version_restore(self):
         self.assertEqual(self.page.locator('[data-persona-recreation="questionnaire"]').get_attribute("aria-selected"), "true")
+        # Slim outer hub bar has no redundant mode cards or 3-step guide bar; embedded iframe hides duplicate .pw-head
+        self.assertEqual(self.page.locator(".persona-mode-grid").count(), 0)
+        self.assertEqual(self.page.locator(".persona-guide").count(), 0)
+        self.assertFalse(self.frame.locator(".pw-head").is_visible())
+        self.assertTrue(self.frame.locator(".pw-context-bar").is_visible())
+        # Step 1 optional clues start collapsed at 0/10
+        self.assertFalse(self.frame.locator('[data-answer="identity"]').is_visible())
+        self.assertEqual(self.frame.locator("#clues-count").inner_text().strip(), "0/10")
+
         self.frame.locator("#load-version").click()
         self.assertEqual(self.frame.locator('[data-review-raw="right"]').input_value(), "原问卷已保存的旧稿")
         self.frame.locator('[data-prev="1"]').click()
+        self.frame.locator("#optional-clues > summary").click()
         self.frame.locator('[data-answer="identity"]').fill("用户填写的职业")
+        self.assertEqual(self.frame.locator("#clues-count").inner_text().strip(), "1/10")
         self.frame.locator('[data-strength="light"]').click()
         self.frame.locator("#generate-draft").click()
         self.frame.locator("#notice").filter(has_text="基础稿已生成").wait_for()
@@ -105,10 +116,14 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertIn("审核后手改的身份", selected["draft_text"])
         self.assertEqual(self.frame.locator("#style-text").input_value(), "短句，保留自然的停顿。")
         self.frame.locator('[data-next="5"]').click()
-        self.frame.locator('[data-replace="identity"]').click()
+        # Step 5 auto-fills timestamped note and supports one-click adopt all
+        self.assertTrue(self.frame.locator("#note").input_value().startswith("规范化整理 · "))
+        self.frame.locator("#adopt-all-right").click()
         self.frame.locator("#note").fill("问卷完整流程保存")
         self.frame.locator("#save").click()
         self.frame.locator("#notice").filter(has_text="已保存为第 2 版").wait_for()
+        self.assertTrue(self.frame.locator("#save-success-guide").is_visible())
+        self.assertTrue(self.frame.locator("#copy-saved-full").is_visible())
         saved = self.page.evaluate("questionnaire.history.original[1]")
         self.assertIn("审核后手改的身份", saved["draft_text"])
         self.assertEqual(saved["original_text"], "原人格 A，保留空白。  \n\n")
@@ -124,14 +139,15 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
     def test_designer_failure_then_questionnaire_persona_selection_and_paste_generation(self):
         self.page.locator('[data-persona-recreation="create"]').click()
         designer = self.page.frame_locator('[data-workspace="designer"] iframe')
-        designer.locator("#choose-model").click()
-        designer.locator("#model-select").select_option("design-model")
-        designer.locator("#confirm-model").click()
+        # Auto-preselected default model enables sending immediately without opening model dialog
+        designer.locator("#send-turn:not([disabled])").wait_for()
         self.page.evaluate("mock.fail=true")
         designer.locator("#send-turn").click()
         designer.locator("#retry-turn").wait_for(state="visible")
         self.page.locator('[data-persona-recreation="questionnaire"]').click()
-        self.frame.locator("#source-persona").select_option("second")
+        # Use modern searchable persona card picker
+        self.frame.locator("#persona-search").fill("second")
+        self.frame.locator('[data-persona-card="second"]').click()
         self.frame.locator("#persona-name").filter(has_text="second").wait_for()
         self.frame.locator('input[name="source-mode"][value="paste"]').check()
         self.frame.locator("#source-text").fill("列表以外的粘贴人设")
@@ -142,6 +158,101 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.assertEqual(sent["source_mode"], "paste")
         self.assertEqual(sent["source_text"], "列表以外的粘贴人设")
         self.assertEqual(self.page.evaluate("questionnaire.history.original.length"), 1)
+        # Verify 360px mobile viewport has zero horizontal overflow in persona workshop
+        self.page.set_viewport_size({"width": 360, "height": 840})
+        frame = self.page.frames[1]
+        self.assertLessEqual(frame.evaluate("document.documentElement.scrollWidth"), 360)
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
+    def test_designer_handoff_sends_draft_into_workshop_paste_mode(self):
+        self.page.locator('[data-persona-recreation="create"]').click()
+        designer = self.page.frame_locator('[data-workspace="designer"] iframe')
+        designer.locator("#draft-text").wait_for()
+        designer.locator("#draft-text").fill("从新的她共创出来的角色设定初稿")
+        designer.locator("#send-to-workshop").click()
+        # Switches back to questionnaire tab and pre-fills paste mode automatically
+        self.page.locator('[data-persona-recreation="questionnaire"][aria-selected="true"]').wait_for()
+        self.frame.locator("#source-text").wait_for(state="visible")
+        self.assertEqual(self.frame.locator("#source-text").input_value(), "从新的她共创出来的角色设定初稿")
+        self.frame.locator("#notice").filter(has_text="新的她").wait_for()
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
+    def test_workshop_card_picker_keyboard_and_structured_draft_clears_stale_raw_block(self):
+        # 1. Hidden select excluded from tab order; roving tabindex + ArrowDown + Enter keeps focus after async load
+        self.assertEqual(self.frame.locator("#source-persona").get_attribute("tabindex"), "-1")
+        self.assertEqual(self.frame.locator("#source-persona").get_attribute("aria-hidden"), "true")
+        first_card = self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="original"]')
+        first_card.focus()
+        self.assertEqual(first_card.get_attribute("tabindex"), "0")
+        self.page.keyboard.press("ArrowDown")
+        second_card = self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="second"]')
+        self.assertEqual(second_card.get_attribute("tabindex"), "0")
+        self.assertTrue(second_card.evaluate("el => el === document.activeElement"))
+        self.page.keyboard.press("Enter")
+        self.frame.locator("#persona-name").filter(has_text="second").wait_for()
+        self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="second"]:not([disabled])').wait_for()
+        selected_second = self.frame.locator('#persona-picker-grid .persona-pick-card[data-persona-card="second"]')
+        self.assertEqual(selected_second.get_attribute("aria-selected"), "true")
+        self.assertTrue(selected_second.evaluate("el => el === document.activeElement"),
+                        "focus must be restored to the selected persona card after load completes")
+
+        # 2. Switch back to original (which has unstructured saved draft v1), load it into rightRaw,
+        #    then re-run standardize returning structured draft.sections -> ghost rightRaw must disappear
+        self.frame.locator('[data-persona-card="original"]').click()
+        self.frame.locator("#persona-name").filter(has_text="original").wait_for()
+        self.frame.locator("#load-version").click()
+        self.frame.locator("[data-review-raw]").wait_for(state="visible")
+        self.frame.locator('[data-flow-btn="1"]').click()
+        self.frame.locator("#generate-draft").click()
+        self.frame.locator("#notice").filter(has_text="基础稿已生成").wait_for()
+        self.assertEqual(self.frame.locator("[data-review-raw]").count(), 0)
+        self.frame.locator('[data-flow-btn="5"]').click()
+        self.assertEqual(self.frame.locator('[data-pair="raw"] [data-side="right"]').input_value(), "")
+        self.assertFalse(self.browser_errors, self.browser_errors)
+
+    def test_persona_hub_guide_strip_locks_topbar_height_and_switches_mode_on_card_click(self):
+        topbar = self.page.locator(".persona-hub-bar")
+        toggle = self.page.locator("#persona-guide-toggle")
+        strip = self.page.locator("#persona-helper-strip")
+        topbar.wait_for(state="visible")
+        before_height = topbar.bounding_box()["height"]
+        self.assertFalse(strip.is_visible())
+
+        # Clicking "怎么选" opens the full-width 3-column guide strip BELOW the topbar without stretching the topbar.
+        toggle.click()
+        strip.wait_for(state="visible")
+        after_height = topbar.bounding_box()["height"]
+        self.assertLessEqual(abs(after_height - before_height), 2,
+                             f"topbar height must stay locked when guide opens: before={before_height}, after={after_height}")
+        self.assertEqual(toggle.get_attribute("aria-expanded"), "true")
+        self.assertEqual(strip.locator(".persona-helper-card").count(), 3)
+        self.assertIn("绝不会直接覆盖正在使用的线上人设", strip.inner_text())
+        # Verify active mode card highlights current mode with badge.
+        q_card = strip.locator('[data-persona-guide-pick="questionnaire"]')
+        self.assertEqual(q_card.get_attribute("aria-pressed"), "true")
+        self.assertTrue(q_card.locator(".persona-helper-current").is_visible())
+
+        # When a top-level modal (#searchDialog) is open above the guide strip, Escape closes the modal first.
+        self.page.evaluate("document.getElementById('searchDialog')?.showModal()")
+        self.page.locator("#searchDialog").wait_for(state="visible")
+        self.page.keyboard.press("Escape")
+        self.page.locator("#searchDialog").wait_for(state="hidden")
+        self.assertTrue(strip.is_visible(), "guide strip must stay open while Escape closes the foreground modal")
+
+        # Pressing Escape again closes the guide strip without exiting the persona workspace.
+        self.page.keyboard.press("Escape")
+        strip.wait_for(state="hidden")
+        self.assertEqual(toggle.get_attribute("aria-expanded"), "false")
+        self.assertTrue(topbar.is_visible())
+
+        # Re-open and click the "拟人优化" guide card -> switches mode cleanly and auto-closes strip.
+        toggle.click()
+        strip.wait_for(state="visible")
+        strip.locator('[data-persona-guide-pick="optimize"]').click()
+        strip.wait_for(state="hidden")
+        self.page.locator('[data-persona-recreation="optimize"][aria-selected="true"]').wait_for()
+        designer = self.page.frame_locator('[data-workspace="designer"] iframe')
+        designer.locator("#source-summary-bar").wait_for(state="visible")
         self.assertFalse(self.browser_errors, self.browser_errors)
 
 

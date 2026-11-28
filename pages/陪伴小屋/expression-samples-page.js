@@ -31,6 +31,43 @@ window.CompanionExpressionSamplesPage = (() => {
   let items = [], counts = {}, runtime = {}, filter = "all", reviewEnabled = false;
   let busy = false, refreshing = false, refreshedAt = "", writing = false, loaded = false, available = false, notice = "", error = false;
   let readIssues = [];
+  let autoLoader = null, appendError = false;
+  function destroyAutoLoader() {
+    try { autoLoader?.destroy?.(); } catch (_) {}
+    autoLoader = null;
+  }
+  function hasMoreSamples() {
+    return Object.values(rowsBySource).some(row => Boolean(row.cursor));
+  }
+  function totalSampleCount() {
+    const sum = filter === "all"
+      ? Object.values(counts).reduce((a, b) => a + Number(b || 0), 0)
+      : Number(counts[filter] || 0);
+    return Math.max(items.length, sum);
+  }
+  function syncAutoLoader() {
+    const host = root?.querySelector?.("[data-sample-autoscroll]");
+    if (!host || !window.CompanionAutoScroll) { destroyAutoLoader(); return; }
+    if (!autoLoader) {
+      autoLoader = window.CompanionAutoScroll.mount({
+        host,
+        hasMore: hasMoreSamples,
+        isLoading: () => Boolean(busy || writing),
+        hasError: () => appendError,
+        errorMessage: () => appendError ? (notice || "加载更多失败，已保留当前列表。") : "",
+        loadedCount: () => items.length,
+        totalCount: totalSampleCount,
+        cursor: () => Object.entries(rowsBySource).map(([k, r]) => `${k}:${r.cursor || ""}`).sort(),
+        itemLabel: "条素材",
+        manualButtonAttrs: () => ({"data-sample-more": "", ...(busy || writing ? {disabled: ""} : {})}),
+        manualButtonLabel: "加载更多",
+        onLoadMore: () => read(ticket, {mode: "append"}),
+        onRetry: () => { appendError = false; return read(ticket, {mode: "append"}); },
+      });
+    } else {
+      autoLoader.refresh(host);
+    }
+  }
   function normalizeSources(candidates) {
     if (!Array.isArray(candidates)) return [];
     return candidates.map((source, index) => {
@@ -207,7 +244,10 @@ window.CompanionExpressionSamplesPage = (() => {
         <details><summary><span class="lh-sample-sender">${e(item.sender_id || "消息来源")}</span><time>${e(time(item.received_at))}</time><span class="lh-sample-state">${STATES[item.state] || "不可用"}${item.eligible ? " · 可学习" : ""}</span><span class="lh-sample-preview">${e(item.text)}</span></summary><p>${e(item.text)}</p><small class="lh-sample-scope">记录来源 · ${e(sourceLabel(item._source))}</small></details>
         <footer>${(item.actions || []).filter(action => ["approve", "reject"].includes(action)).map(action => `<button type="button" class="lh-command${action === "approve" ? " is-primary" : ""}" data-sample-action="${action}" data-row-key="${e(item._key)}"${!item.view_token ? " disabled" : disabled}>${action === "approve" ? item.state === "rejected" ? "重新允许" : "允许学习" : "排除素材"}</button>`).join("")}</footer></article>`).join("")
         : `<div class="lh-review-empty">${busy ? "正在读取素材…" : loaded ? "当前筛选下暂无素材" : "尚未读取素材"}</div>`}</div>
-      ${Object.values(rowsBySource).some(row=>row.cursor) ? `<button type="button" class="lh-command" data-sample-more${disabled}>加载更多</button>` : ""}</div>`;
+      ${window.CompanionAutoScroll
+        ? (hasMoreSamples() || items.length ? `<div data-sample-autoscroll></div>` : "")
+        : (hasMoreSamples() ? `<button type="button" class="lh-command" data-sample-more${disabled}>加载更多</button>` : "")}</div>`;
+    syncAutoLoader();
     restoreView(view);
   }
   function updated(current, source) {
@@ -242,7 +282,8 @@ window.CompanionExpressionSamplesPage = (() => {
     const pending=sources.filter(source=>!append||rowsBySource[source.key]?.cursor)
       .map(source=>({source,after_id:append?rowsBySource[source.key]?.cursor:null,
         pages:Math.max(1,Number(rowsBySource[source.key]?.pages||1))}));
-    if (manual) { notice = ""; error = false; }
+    if (manual) { notice = ""; error = false; appendError = false; }
+    else if (append || mode === "refresh") { appendError = false; }
     busy = true; refreshing = mode === "refresh"; render();
     const results=await Promise.allSettled(pending.map(async ({source,after_id,pages})=>{
       const rounds = append || merge ? 1 : pages;
@@ -339,11 +380,13 @@ window.CompanionExpressionSamplesPage = (() => {
       notice=append?"加载更多失败，已保留当前列表。":failedCount>=sources.length&&!unavailableCount?"全部来源读取失败，请检查来源配置后重新读取。"
         :`${failedCount} 个来源读取失败${empty}，已显示其余来源。`;
       error=true;
+      if (append) appendError = true;
     }
     /* An empty source is a state, not a failure: keep the page neutral so it
        does not read like a broken source. */
-    else if(unavailableCount){notice=`${unavailableCount} 个来源还没有可读取的素材。`;error=false;}
-    else if(error&&!keepNotice){notice="";error=false;}
+    else if(unavailableCount){notice=`${unavailableCount} 个来源还没有可读取的素材。`;error=false;appendError=false;}
+    else if(error&&!keepNotice){notice="";error=false;appendError=false;}
+    else { appendError = false; }
     if (manual && failedCount === 0) refreshedAt = formatClock();
     if(finishedRunning)sources.forEach(source=>updated(current,source));
     if (!mounted(current) || request !== readTicket) return;
@@ -405,7 +448,7 @@ window.CompanionExpressionSamplesPage = (() => {
     if (action) {void command(action.dataset.rowKey, action.dataset.sampleAction); return;}
     const choice = event.target.closest("[data-sample-filter]");
     if (choice && FILTERS.some(([key]) => key === choice.dataset.sampleFilter)) {
-      filter = choice.dataset.sampleFilter; items = []; Object.values(rowsBySource).forEach(row=>{row.items=[];row.cursor=null;row.pages=0;row.loaded=false;}); void read(); return;
+      filter = choice.dataset.sampleFilter; items = []; appendError = false; autoLoader?.reset?.(); Object.values(rowsBySource).forEach(row=>{row.items=[];row.cursor=null;row.pages=0;row.loaded=false;}); void read(); return;
     }
     if (event.target.closest("[data-sample-refresh]")) { void read(ticket, {mode:"refresh", manual:true}); }
     if (event.target.closest("[data-sample-more]")) void read(ticket, {mode:"append"});
@@ -428,6 +471,7 @@ window.CompanionExpressionSamplesPage = (() => {
     if (sources.length) void read(current); else {notice = "没有可读取的表达素材。"; error = true; render();}
   }
   function unmount() {
+    destroyAutoLoader(); appendError = false;
     ticket++; readTicket++; clearTimeout(timer); root?.removeEventListener("click", click);
     window.removeEventListener?.("companion-workbench-saved", saved);
     root = null; apiBase = ""; scopeKey = ""; sources = []; getSourcesFn = null; rowsBySource = {}; busy = false; refreshing = false; refreshedAt = ""; writing = false;

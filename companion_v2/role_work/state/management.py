@@ -35,6 +35,18 @@ class StateManagement:
             basis.append(digest(original))
         return digest(basis)
 
+    def maintain_token(self, operator, revision):
+        """Role-scoped token for manual maintenance triggers, immune to unrelated policy churn."""
+        return digest([
+            "state-maintain.v1",
+            operator.subject,
+            operator.binding_id,
+            operator.binding_revision,
+            self.context.key,
+            self.context.role_binding.revision,
+            revision,
+        ])
+
     @staticmethod
     def key(value):
         if type(value) is not str or not value.strip() or len(value) > 128:
@@ -83,6 +95,7 @@ class StateManagement:
             original = self.app.role_state.records.get(self.context, "current")
             state = {"state": "unavailable", "revision": original["revision"] if original else 0, "code": error.code}
         state["view_token"] = self.token(operator, access, "current", state["revision"])
+        state["maintain_token"] = self.maintain_token(operator, state["revision"])
         calendar = self.app.calendar.inventory(self.context, after_id=after_id, limit=limit,
                                                operator=operator)
         for item in calendar["items"]:
@@ -218,25 +231,30 @@ class StateManagement:
         self.app.require_running()
         service = self.app.state_maintenance
         settings, _ = self.app.role_state.settings(self.context)
-        if not settings["enabled"] or self.context.key not in service.bindings:
+        binding = service._current_role_binding(self.context)
+        if not settings["enabled"] or binding is None:
             raise TaskError("state_not_enabled", "enable state and bind the current host persona first")
-        self.app.role_state.access.check(self.context, "role.state.maintain")
+        active_context = binding[0]
+        self.app.role_state.access.check(active_context, "role.state.maintain")
         op_id = "state-request:" + digest([operator.subject, self.context.key, data["operation_key"]])
         operations = OperationRepository(self.app.runtime)
+        now = self.app.now()
         reserved = require(operations.reserve(OperationRef(op_id, GROUP, self.context.scope, VersionRef(op_id, 1), op_id),
-            parameter_hash=digest(data), observed_at=self.app.now()))
+            parameter_hash=digest(data), observed_at=now))
         if not reserved.replayed:
             current = self.app.role_state.records.get(self.context, "current")
             if (current["revision"] if current else 0) != data["expected_revision"]:
                 raise TaskError("record_revision_conflict", "read the current state first")
+            queued_result = {"state": "queued", "operation_id": op_id, "requested_at": stamp(now)}
             with self.app.runtime.transaction() as connection:
                 schedule_key = role_schedule_key(self.context)
-                connection.execute("UPDATE role_state_schedules SET next_at = ?, revision = revision + 1 WHERE context_key = ?",
-                                   (stamp(self.app.now()), schedule_key))
+                connection.execute(
+                    "UPDATE role_state_schedules SET next_at = ?, revision = revision + 1, result_json = ? WHERE context_key = ?",
+                    (stamp(now), json.dumps(queued_result, sort_keys=True, separators=(",", ":"), ensure_ascii=False), schedule_key))
                 connection.execute("DELETE FROM runtime_metadata WHERE key = ?",
                                    (service._idle_fingerprint_key(self.context),))
             require(operations.transition(op_id, expected_state=OperationState.ACCEPTED,
-                next_state=OperationState.COMPLETED, observed_at=self.app.now()))
+                next_state=OperationState.COMPLETED, observed_at=now))
             self.app.notify()
         return {"operation_id": op_id, "replayed": reserved.replayed, "state": "scheduled"}
 
@@ -269,7 +287,14 @@ class StateManagement:
                 identifier = "current" if action in ("state.write", "cycle.align", "maintain") else data["id"]
                 token_id = "calendar:new" if action == "calendar.create" else identifier
                 calendar_request = self._calendar_request(operator, data) if action.startswith("calendar.") else None
-                if not (calendar_request and calendar_request.replayed) and data["view_token"] != self.token(operator, access, token_id, revision):
+                if action == "maintain":
+                    valid_tokens = (
+                        self.maintain_token(operator, revision),
+                        self.token(operator, access, token_id, revision),
+                    )
+                    if data["view_token"] not in valid_tokens:
+                        raise TaskError("state_view_stale", "refresh the view before applying this change")
+                elif not (calendar_request and calendar_request.replayed) and data["view_token"] != self.token(operator, access, token_id, revision):
                     raise TaskError("state_view_stale", "refresh the view before applying this change")
                 key = digest([operator.subject, data["operation_key"]])
                 if action == "state.write":

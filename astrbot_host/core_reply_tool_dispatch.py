@@ -107,7 +107,9 @@ def observe_core_tool_dispatch_begin(event, run_context):
                     blocks = item.tool_call_result_blocks
                 try:
                     if getattr(item, "kind", None) == "cached_image" and item.cached_image is not None:
+                        from .core_reply_image_delivery import observe_generated_image_cache
                         from .core_reply_reactions import observe_core_cached_image
+                        observe_generated_image_cache(event, item.cached_image)
                         observe_core_cached_image(event, item.cached_image)
                 except Exception:
                     pass

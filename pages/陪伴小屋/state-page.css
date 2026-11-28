@@ -8,6 +8,9 @@ body.state-connected{min-width:320px}
 .state-page-actions .memory-button{white-space:nowrap}
 .state-maintain-button{display:inline-flex;align-items:center;gap:var(--sp-2)}
 .state-maintain-button svg{width:15px;height:15px;flex:none}
+#roleStateWorkspace .memory-notice,#state-notice{display:block;margin:0 0 var(--sp-3);padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line-firm);border-left:3px solid var(--t-accent);border-radius:var(--r-xs);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-tiny);line-height:1.6;overflow-wrap:anywhere}
+#roleStateWorkspace .memory-notice.error,#state-notice.error{border-color:var(--t-risk);border-left-color:var(--t-risk);background:var(--t-risk-quiet);color:var(--t-risk-ink)}
+#roleStateWorkspace .memory-notice[hidden],#state-notice[hidden]{display:none}
 .state-page-heading h2{font:600 23px/1.5 "Noto Serif SC","SimSun",serif;color:var(--t-accent-ink);margin:3px 0}
 .state-page-heading p{font-size:var(--fs-body);color:var(--t-accent-ink);line-height:1.8;margin:3px 0}
 .state-eyebrow{font-size:var(--fs-micro);letter-spacing:0;color:var(--t-accent-ink)}

@@ -236,12 +236,12 @@ def normalize_applicability(raw=None, *, default_channels=None):
     if raw is None:
         raw = {}
     if not isinstance(raw, Mapping) or set(raw) - APPLICABILITY_FIELDS:
-        raise ValueError("invalid_applicability")
+        raise ExpressionOutputParseError("invalid_applicability", field_path="applicability")
 
     channels_default = CHANNELS if default_channels is None else tuple(default_channels)
     if (not channels_default or any(type(value) is not str or value not in CHANNELS
                                     for value in channels_default)):
-        raise ValueError("invalid_applicability")
+        raise ExpressionOutputParseError("invalid_applicability", field_path="applicability.channels")
 
     def values(field, choices, fallback, *, maximum):
         value = raw.get(field)
@@ -250,7 +250,7 @@ def normalize_applicability(raw=None, *, default_channels=None):
         if (type(value) is not list or not value or len(value) > maximum
                 or any(type(item) is not str or item not in choices for item in value)
                 or len(set(value)) != len(value)):
-            raise ValueError("invalid_applicability")
+            raise ExpressionOutputParseError("invalid_applicability", field_path=f"applicability.{field}")
         # ``any`` is the widest sentinel.  Models naturally write
         # ``["close", "any"]`` to mean "close or anyone"; collapsing it to the
         # sentinel keeps the same meaning without failing the whole extraction.
@@ -263,12 +263,12 @@ def normalize_applicability(raw=None, *, default_channels=None):
     emotions = values("emotion_gates", EMOTION_GATES, ("any",), maximum=len(EMOTION_GATES))
     intent = raw.get("intent", "any")
     if type(intent) is not str or intent not in INTENTS:
-        raise ValueError("invalid_applicability")
+        raise ExpressionOutputParseError("invalid_applicability", field_path="applicability.intent")
 
     keywords = raw.get("keywords", [])
     if (type(keywords) is not list or len(keywords) > MAX_KEYWORDS
             or any(type(value) is not str for value in keywords)):
-        raise ValueError("invalid_applicability")
+        raise ExpressionOutputParseError("invalid_applicability", field_path="applicability.keywords")
     accepted, seen = [], set()
     unsafe_markers = ("ignore previous", "system prompt", "developer message", "忽略之前", "系统提示词", "调用工具")
     for value in keywords:
@@ -276,7 +276,7 @@ def normalize_applicability(raw=None, *, default_channels=None):
         key = keyword.casefold()
         if (not keyword or len(keyword) > MAX_KEYWORD_CHARS or key in seen
                 or any(marker in key for marker in unsafe_markers)):
-            raise ValueError("invalid_applicability")
+            raise ExpressionOutputParseError("invalid_applicability", field_path="applicability.keywords")
         seen.add(key)
         accepted.append(keyword)
     return {"channels": channels, "relationship_stages": stages, "emotion_gates": emotions,
@@ -389,6 +389,23 @@ def schema(limit=MAX_SIGNALS_PER_RUN):
 SCHEMA = schema()
 
 
+class ExpressionOutputParseError(ValueError):
+    """Structured parse ``ValueError`` carrying exact sub-reason and field path."""
+
+    def __init__(self, reason: str, *, field_path: str = "", rejected_count: int = 0) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.field_path = field_path
+        self.rejected_count = rejected_count
+
+
+@dataclass(frozen=True)
+class RejectedStyleSignal:
+    index: int
+    reason: str
+    field_path: str
+
+
 @dataclass(frozen=True)
 class StyleSignal:
     dimension: str
@@ -404,10 +421,59 @@ class StyleSignal:
 class ExpressionLearningOutput:
     summary: str
     signals: tuple[StyleSignal, ...]
+    rejected_signals: tuple[RejectedStyleSignal, ...] = ()
+
+
+def _validate_signal(item: object, index: int, *, allowed_evidence: set[str] | frozenset[str],
+                     default_channels=None) -> StyleSignal:
+    prefix = f"signals[{index}]"
+    required = {"dimension", "observation", "proposal", "confidence", "evidence_handles", "expression"}
+    if not isinstance(item, Mapping):
+        raise ExpressionOutputParseError("invalid_signal", field_path=prefix)
+    keys = set(item)
+    missing = required - keys
+    if missing:
+        raise ExpressionOutputParseError("invalid_signal", field_path=f"{prefix}.{sorted(missing)[0]}")
+    extra = keys - required - {"applicability"}
+    if extra:
+        raise ExpressionOutputParseError("invalid_signal", field_path=f"{prefix}.{sorted(extra)[0]}")
+    dimension = item["dimension"]
+    observation, proposal = item["observation"], item["proposal"]
+    confidence, references = item["confidence"], item["evidence_handles"]
+    if dimension not in DIMENSIONS:
+        raise ExpressionOutputParseError("invalid_signal", field_path=f"{prefix}.dimension")
+    if type(observation) is not str or not observation.strip() or len(observation) > MAX_OBSERVATION_CHARS:
+        raise ExpressionOutputParseError("invalid_signal", field_path=f"{prefix}.observation")
+    if type(proposal) is not str or not proposal.strip() or len(proposal) > MAX_PROPOSAL_CHARS:
+        raise ExpressionOutputParseError("invalid_signal", field_path=f"{prefix}.proposal")
+    try:
+        applicability = normalize_applicability(item.get("applicability"), default_channels=default_channels)
+    except ExpressionOutputParseError as error:
+        sub = error.field_path or "applicability"
+        raise ExpressionOutputParseError("invalid_applicability", field_path=f"{prefix}.{sub}") from None
+    except (TypeError, ValueError):
+        raise ExpressionOutputParseError("invalid_applicability", field_path=f"{prefix}.applicability") from None
+    if default_channels is not None:
+        source_channels = set(default_channels)
+        applicability["channels"] = sorted(set(applicability["channels"]) | source_channels,
+                                           key=CHANNELS.index)
+    if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        raise ExpressionOutputParseError("invalid_confidence", field_path=f"{prefix}.confidence")
+    if (not isinstance(references, list) or not references or
+            any(type(reference) is not str or reference not in allowed_evidence for reference in references) or
+            len(set(references)) != len(references)):
+        raise ExpressionOutputParseError("invalid_evidence", field_path=f"{prefix}.evidence_handles")
+    try:
+        expression = normalize_form(item["expression"])
+    except (TypeError, ValueError):
+        raise ExpressionOutputParseError("invalid_expression_form", field_path=f"{prefix}.expression") from None
+    return StyleSignal(dimension, observation.strip(), proposal.strip(), applicability, float(confidence),
+                       tuple(references), expression)
 
 
 def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], default_channels=None,
-                 limit: int = MAX_SIGNALS_PER_RUN) -> ExpressionLearningOutput:
+                 limit: int = MAX_SIGNALS_PER_RUN,
+                 tolerate_invalid_signals: bool = False) -> ExpressionLearningOutput:
     """Validate a model-authored candidate; never persists or activates the result.
 
     ``limit`` is the candidate count the dispatched request actually declared
@@ -416,6 +482,12 @@ def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], de
     broke the contract its own run sent, so it is refused instead of accepted
     beyond what was paid for, while a caller asking for more than the maximum
     still gets the maximum.
+
+    When ``tolerate_invalid_signals`` is ``True`` (used during live learning
+    runs), each candidate is validated independently so valid signals in the
+    same batch are preserved while invalid ones are recorded in
+    ``rejected_signals``; if a non-empty batch produces zero valid signals,
+    the first concrete parse failure is raised with its exact field path.
     """
     if type(raw) is str:
         value = raw.strip()
@@ -426,45 +498,26 @@ def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], de
         try:
             raw = json.loads(value)
         except json.JSONDecodeError as error:
-            raise ValueError("invalid_json") from error
+            raise ExpressionOutputParseError("invalid_json", field_path="$") from error
     if not isinstance(raw, Mapping) or set(raw) != {"summary", "signals"}:
-        raise ValueError("invalid_shape")
+        raise ExpressionOutputParseError("invalid_shape", field_path="$")
     summary, signals = raw["summary"], raw["signals"]
     ceiling = MAX_SIGNALS_PER_RUN if type(limit) is not int else min(limit, MAX_SIGNALS_PER_RUN)
-    if (type(summary) is not str or len(summary) > MAX_SUMMARY_CHARS
-            or not isinstance(signals, list) or len(signals) > ceiling):
-        raise ValueError("invalid_shape")
+    if type(summary) is not str or len(summary) > MAX_SUMMARY_CHARS:
+        raise ExpressionOutputParseError("invalid_shape", field_path="summary")
+    if not isinstance(signals, list) or len(signals) > ceiling:
+        raise ExpressionOutputParseError("invalid_shape", field_path="signals")
     accepted = []
-    for item in signals:
-        required = {"dimension", "observation", "proposal", "confidence", "evidence_handles", "expression"}
-        if not isinstance(item, Mapping) or not required <= set(item) or set(item) - required - {"applicability"}:
-            raise ValueError("invalid_signal")
-        dimension = item["dimension"]
-        observation, proposal = item["observation"], item["proposal"]
-        confidence, references = item["confidence"], item["evidence_handles"]
-        if (dimension not in DIMENSIONS or type(observation) is not str or not observation.strip()
-                or len(observation) > MAX_OBSERVATION_CHARS):
-            raise ValueError("invalid_signal")
-        if type(proposal) is not str or not proposal.strip() or len(proposal) > MAX_PROPOSAL_CHARS:
-            raise ValueError("invalid_signal")
+    rejected = []
+    for index, item in enumerate(signals):
         try:
-            applicability = normalize_applicability(item.get("applicability"), default_channels=default_channels)
-        except (TypeError, ValueError):
-            raise ValueError("invalid_applicability") from None
-        if default_channels is not None:
-            source_channels = set(default_channels)
-            applicability["channels"] = sorted(set(applicability["channels"]) | source_channels,
-                                               key=CHANNELS.index)
-        if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
-            raise ValueError("invalid_confidence")
-        if (not isinstance(references, list) or not references or
-                any(type(reference) is not str or reference not in allowed_evidence for reference in references) or
-                len(set(references)) != len(references)):
-            raise ValueError("invalid_evidence")
-        try:
-            expression = normalize_form(item["expression"])
-        except (TypeError, ValueError):
-            raise ValueError("invalid_expression_form") from None
-        accepted.append(StyleSignal(dimension, observation.strip(), proposal.strip(), applicability, float(confidence),
-                                    tuple(references), expression))
-    return ExpressionLearningOutput(summary.strip(), tuple(accepted))
+            accepted.append(_validate_signal(item, index, allowed_evidence=allowed_evidence,
+                                             default_channels=default_channels))
+        except ExpressionOutputParseError as error:
+            if not tolerate_invalid_signals:
+                raise
+            rejected.append(RejectedStyleSignal(index, error.reason, error.field_path))
+    if signals and not accepted and rejected:
+        first = rejected[0]
+        raise ExpressionOutputParseError(first.reason, field_path=first.field_path, rejected_count=len(rejected))
+    return ExpressionLearningOutput(summary.strip(), tuple(accepted), rejected_signals=tuple(rejected))

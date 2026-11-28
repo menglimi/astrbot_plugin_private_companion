@@ -17,6 +17,8 @@ _NAI_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _NAI_NOTE_PREFIXES = ("🚫", "❌", "⏱", "📭", "🖼", "💥", "🔥", "⚠️", "❓", "NAI ", "提示词为空", "图片已生成但保存失败")
+_MAYBE_BILLED_MARKERS = ("可能计费", "可能已计费", "可能已扣费")
+_SUBJECT_MODES = frozenset(("character", "scene_only", "edit_preserve"))
 
 
 class NAIImageBackend:
@@ -101,21 +103,45 @@ class NAIImageBackend:
         api = self._api()
         if api is None or invocation.operation not in self.operations:
             raise NativeImageError("nai_plugin_unavailable", unconfirmed=False)
-        if invocation.parameters.keys() - {"width", "height", "denoising_strength"}:
+        if invocation.parameters.keys() - {"width", "height", "aspect_ratio", "denoising_strength"}:
             raise NativeImageError("unsupported_image_parameter", unconfirmed=False)
         prepared = invocation.envelope.get("nai_prompt") or {}
         prompt = prepared.get("positive", invocation.prompt)
         negative = prepared.get("negative", invocation.negative_prompt)
         roles = [reference.role for reference in references]
+        image_intent = invocation.envelope.get("image_intent")
+        if not isinstance(image_intent, dict):
+            image_intent = {}
+        arguments = invocation.envelope.get("arguments")
+        raw_subject_mode = image_intent.get("subject_mode")
+        if not raw_subject_mode and isinstance(arguments, dict):
+            raw_subject_mode = arguments.get("subject_mode")
+        if isinstance(raw_subject_mode, str) and raw_subject_mode in _SUBJECT_MODES:
+            subject_mode = raw_subject_mode
+        elif invocation.operation in {"edit", "mask_edit"} and "identity" not in roles and "character" not in roles:
+            subject_mode = "edit_preserve"
+        else:
+            subject_mode = "character"
+        preserve_source_style = image_intent.get("preserve_source_style")
+        if type(preserve_source_style) is not bool:
+            preserve_source_style = subject_mode == "edit_preserve"
+        allow_fallback_references = image_intent.get("allow_fallback_references")
+        if type(allow_fallback_references) is not bool:
+            allow_fallback_references = subject_mode == "character"
         request = {"prompt_text": prompt, "negative": negative,
                    "workflow_kind": invocation.operation,
                    "session_key": invocation.scope_key, "reference_roles": roles,
-                   "character_source": "companion"}
+                   "character_source": "companion",
+                   "subject_mode": subject_mode,
+                   "preserve_source_style": preserve_source_style,
+                   "allow_fallback_references": allow_fallback_references}
         parameters = invocation.parameters
         if "width" in parameters or "height" in parameters:
             if "width" not in parameters or "height" not in parameters:
                 raise NativeImageError("invalid_image_parameter", unconfirmed=False)
             request["size"] = f"{parameters['width']}x{parameters['height']}"
+        elif "aspect_ratio" in parameters:
+            request["ratio"] = parameters["aspect_ratio"]
         if "denoising_strength" in parameters:
             if not 0 < parameters["denoising_strength"] <= 1:
                 raise NativeImageError("invalid_image_parameter", unconfirmed=False)
@@ -148,11 +174,13 @@ class NAIImageBackend:
             raise NativeImageError("nai_plugin_unavailable", unconfirmed=False,
                                    diagnostics=self._diagnostic("nai_plugin_unavailable", confirmed=True))
         if not isinstance(result, dict) or result.get("handled") is not True or not result.get("image_path"):
-            code, status, detail, confirmed = self._classify_failure(result)
+            code, status, detail, confirmed, retryable = self._classify_failure(result)
             raise NativeImageError(
                 code,
                 unconfirmed=not confirmed,
-                diagnostics=self._diagnostic(code, confirmed=confirmed, status=status, detail=detail),
+                diagnostics=self._diagnostic(
+                    code, confirmed=confirmed, status=status, detail=detail, retryable=retryable,
+                ),
             )
         path = Path(result["image_path"])
         if not path.is_file() or not 0 < path.stat().st_size <= 50 * 1024 * 1024:
@@ -172,25 +200,51 @@ class NAIImageBackend:
 
     @classmethod
     def _classify_failure(cls, result):
-        """Map structured NAI refusal notes while keeping opaque plugin text sealed."""
+        """Map structured NAI failure fields and recognized notes while keeping opaque text sealed."""
         if not isinstance(result, dict):
-            return "nai_generation_unconfirmed", 0, "", False
+            return "nai_generation_unconfirmed", 0, "", False, None
         raw_reason = str(result.get("reason") or "").strip()
         raw_note = str(result.get("note") or "").strip()
-        recognized = bool(raw_reason) or raw_note.startswith(_NAI_NOTE_PREFIXES)
+        raw_status = result.get("http_status")
+        explicit_status = raw_status if type(raw_status) is int and 100 <= raw_status <= 599 else 0
+        raw_retryable = result.get("retryable")
+        explicit_retryable = raw_retryable if type(raw_retryable) is bool else None
+
+        recognized = (
+            bool(raw_reason)
+            or explicit_status > 0
+            or explicit_retryable is not None
+            or raw_note.startswith(_NAI_NOTE_PREFIXES)
+        )
         if not recognized:
-            return "nai_generation_unconfirmed", 0, "", False
+            return "nai_generation_unconfirmed", 0, "", False, None
         detail = cls._sanitize_note(raw_note)
         status_match = _NAI_HTTP_STATUS_RE.search(f"{raw_reason} {raw_note}")
-        status = int(status_match.group(1) or status_match.group(2)) if status_match else 0
+        status = explicit_status or (
+            int(status_match.group(1) or status_match.group(2)) if status_match else 0
+        )
 
-        if raw_reason in {"no_token", "no_session", "openai_not_configured"} or (
-            raw_note.startswith("❌") and any(k in raw_note for k in ("未配置", "未初始化"))
+        if (
+            raw_reason in {"no_token", "no_session", "openai_not_configured", "openai_key_missing"}
+            or (raw_note.startswith("❌") and any(k in raw_note for k in ("未配置", "未初始化")))
+            or explicit_status in (401, 403)
+            or raw_reason.startswith(("http_401", "http_403"))
         ):
-            return "nai_plugin_unavailable", 0, detail, True
+            return "nai_plugin_unavailable", status, detail, True, False
 
         if raw_reason == "timeout" or raw_note.startswith("⏱"):
-            return "nai_generation_timed_out", status, detail, False
+            return "nai_generation_timed_out", status, detail, False, explicit_retryable
+
+        # Partial-billing guard (e.g., multi-reference Vibe encoding that may
+        # already have billed earlier steps before a 429/503 failure): never
+        # classify as confirmed-unbilled or retryable.
+        if any(marker in raw_note for marker in _MAYBE_BILLED_MARKERS):
+            return "nai_generation_unconfirmed", status, detail, False, False
+
+        if explicit_retryable is not False and (
+            status == 429 or raw_reason in {"rate_limited", "http_429"} or raw_reason.startswith("http_429")
+        ):
+            return "backend_rate_limited", 429, detail, True, True
 
         # Definitive pre-billing rejections: empty prompt, missing reference,
         # unsupported reference/director mode, or confirmed HTTP 400/422 refusal.
@@ -201,13 +255,34 @@ class NAIImageBackend:
             or "需要输入一张源图片" in raw_note
             or "精准参考（director）被上游拒绝" in raw_note
             or ("参考" in raw_note and "不支持" in raw_note and raw_note.startswith("🚫"))
-            or (status in (400, 422) and raw_note.startswith("🚫"))
+            or (status in (400, 422) and (raw_note.startswith("🚫") or explicit_status in (400, 422)))
         ):
-            return "nai_request_rejected", status or 400, detail, True
+            return "nai_request_rejected", status or 400, detail, True, False
 
-        return "nai_generation_unconfirmed", status, detail, False
+        # Confirmed transient upstream errors (HTTP 502/503/504, gateway/network
+        # failures, or explicit retryable=True non-timeout errors): NAI finished
+        # a synchronous exchange with a definite failure rather than timing out,
+        # so nothing was committed and the turn can end cleanly instead of
+        # locking in an unconfirmed wait state.  Respect explicit retryable=False
+        # (for example partially-billed failures) by leaving them unconfirmed.
+        if explicit_retryable is not False and (
+            status in (502, 503, 504)
+            or raw_reason in {
+                "upstream_unavailable", "bad_gateway", "service_unavailable",
+                "gateway_timeout", "network_error", "connection_error",
+                "http_502", "http_503", "http_504",
+            }
+            or raw_reason.startswith(("http_502", "http_503", "http_504"))
+            or explicit_retryable is True
+        ):
+            return "nai_upstream_unavailable", status, detail, True, True
+
+        return "nai_generation_unconfirmed", status, detail, False, explicit_retryable
 
     @staticmethod
-    def _diagnostic(code, *, confirmed=False, status=0, detail=""):
-        return ({"endpoint_id": "nai", "status": status, "reason": code, "detail": detail,
-                 "scope": "endpoint" if confirmed else "unconfirmed", "retry_after": ""},)
+    def _diagnostic(code, *, confirmed=False, status=0, detail="", retryable=None):
+        entry = {"endpoint_id": "nai", "status": status, "reason": code, "detail": detail,
+                 "scope": "endpoint" if confirmed else "unconfirmed", "retry_after": ""}
+        if type(retryable) is bool:
+            entry["retryable"] = retryable
+        return (entry,)

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 import json
 import logging
+import math
 import time
 
 from companion_v2.execution.models import encode_prompt
@@ -12,7 +13,7 @@ from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind
 from companion_v2.model_gateway.embedding import EmbeddingGateway, shared_query_embedding_cache
 from companion_v2.model_gateway.semantic_search import CatalogSearch
 from companion_v2.model_gateway.models import ToolSpec
-from companion_v2.storage.semantic import SemanticStore
+from companion_v2.storage.semantic import SemanticStore, sanitize_collection_detail
 from companion_v2.memory.semantic import MemorySemanticRecall
 from companion_v2.memory.group.slang import GroupSlang, INSTRUCTION as SLANG_INSTRUCTION
 from companion_v2.proactive.news_context import (INSTRUCTION as NEWS_INSTRUCTION,
@@ -31,6 +32,38 @@ FIELDS = {"reaction.search": (("intent",), ()), "slang.search": (("query",), ())
 # a namespaced key so ``prepare_memory`` still finds the memory job by owner.
 REACTION_BACKFILL_KEY = "reaction-backfill:"
 REACTION_CAPTURE_KEY = "reaction-capture:"
+REACTION_COLLECTION_CIRCUIT_THRESHOLD = 5
+REACTION_COLLECTION_BASE_COOLDOWN_SECONDS = 300.0
+REACTION_COLLECTION_MAX_COOLDOWN_SECONDS = 1800.0
+
+
+def _classify_reaction_error(error, *, timeout_seconds=None):
+    """Return a bounded (code, safe_detail) pair without leaking provider secrets or user text."""
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        detail = f"视觉分析超时（>{timeout_seconds}s）" if timeout_seconds else "视觉分析超时"
+        return "TimeoutError", detail
+    if isinstance(error, json.JSONDecodeError):
+        return "JSONDecodeError", "模型未返回有效 JSON 格式"
+    if isinstance(error, TaskError):
+        detail_map = {
+            "semantic_vision_provider_unavailable": "未配置支持识图的视觉模型",
+            "semantic_provider_unavailable": "语义分析模型暂不可用",
+            "reaction_capture_review_invalid": "视觉审核未返回有效结论",
+        }
+        return error.code, detail_map.get(error.code, f"处理失败（{error.code}）")
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+    if type(status_code) is int and 400 <= status_code <= 599:
+        if status_code == 429:
+            return "http_429", "上游模型触发限流（HTTP 429）"
+        return f"http_{status_code}", f"上游模型服务返回 HTTP {status_code}"
+    if isinstance(error, ValueError):
+        return "ValueError", "模型返回内容不符合预期格式"
+    code = getattr(error, "code", None)
+    if type(code) is not str or not code.strip():
+        code = type(error).__name__
+    return code[:80], sanitize_collection_detail(f"处理异常（{code}）") or "处理异常"
 
 
 class SemanticService:
@@ -57,6 +90,10 @@ class SemanticService:
         self.locks, self.background, self.errors = {}, {}, {}
         self.backfill_runs = {}
         self.reaction_capture_runs = {}
+        self._reaction_collection_failures = 0
+        self._reaction_collection_cooldown_until = 0.0
+        self._reaction_collection_last_error_code = ""
+        self._reaction_collection_last_error_detail = ""
         self._reaction_catalog_ready = set()
         self._reaction_promoted_windows = set()
         self.prepared = set()
@@ -535,10 +572,67 @@ class SemanticService:
             return "reactions_collection_group_enabled", "reactions_collection_group_probability", "group_capture"
         return None
 
+    def reaction_collection_circuit_state(self, now_ts=None):
+        """Return current exponential-backoff circuit-breaker state for automatic collection."""
+        now = self.app.now().timestamp() if now_ts is None else float(now_ts)
+        remaining = max(0.0, self._reaction_collection_cooldown_until - now)
+        is_open = remaining > 0.0
+        return {
+            "open": is_open,
+            "consecutive_failures": self._reaction_collection_failures,
+            "threshold": REACTION_COLLECTION_CIRCUIT_THRESHOLD,
+            "cooldown_remaining_seconds": int(math.ceil(remaining)) if is_open else 0,
+            "cooldown_until": self._reaction_collection_cooldown_until if is_open else None,
+            "reason": self._reaction_collection_last_error_code if is_open else "",
+            "detail": self._reaction_collection_last_error_detail if is_open else "",
+        }
+
+    def _record_reaction_collection_success(self):
+        self._reaction_collection_failures = 0
+        self._reaction_collection_cooldown_until = 0.0
+        self._reaction_collection_last_error_code = ""
+        self._reaction_collection_last_error_detail = ""
+        self.errors.pop("reaction_collection", None)
+
+    def _record_reaction_collection_failure(self, code, detail="", *, provider="", timeout_seconds=None):
+        self._reaction_collection_failures += 1
+        self._reaction_collection_last_error_code = str(code or "unknown")[:80]
+        self._reaction_collection_last_error_detail = sanitize_collection_detail(detail) or ""
+        tripped = self._reaction_collection_failures >= REACTION_COLLECTION_CIRCUIT_THRESHOLD
+        if tripped:
+            exponent = self._reaction_collection_failures - REACTION_COLLECTION_CIRCUIT_THRESHOLD
+            cooldown = min(
+                REACTION_COLLECTION_MAX_COOLDOWN_SECONDS,
+                REACTION_COLLECTION_BASE_COOLDOWN_SECONDS * (2 ** exponent),
+            )
+            self._reaction_collection_cooldown_until = self.app.now().timestamp() + cooldown
+            self.errors["reaction_collection"] = "reaction_collection_circuit_open"
+        else:
+            self.errors["reaction_collection"] = self._reaction_collection_last_error_code
+        logger.warning(
+            "[CompanionV2] 表情自动收录失败 code=%s provider=%s analysis_timeout_seconds=%s consecutive_failures=%d circuit_open=%s detail=%s",
+            self._reaction_collection_last_error_code,
+            provider or "<default>",
+            timeout_seconds,
+            self._reaction_collection_failures,
+            tripped,
+            self._reaction_collection_last_error_detail or "<none>",
+        )
+
+    def reset_collection_failures(self, owner=None):
+        """Clear in-memory circuit breaker and optionally reset persisted failed statistics."""
+        self._record_reaction_collection_success()
+        cleared = {"cleared_totals": 0, "cleared_runs": 0}
+        if owner is not None:
+            cleared = self.store.reset_reaction_collection_failures(owner)
+        return {"reset": True, "circuit": self.reaction_collection_circuit_state(), **cleared}
+
     def reaction_collection_allowed(self, context, turn_id):
         fields = self._reaction_collection_fields(context)
         settings = self.store.settings()
         if fields is None or self.closed or not settings["enabled"] or not settings[fields[0]]:
+            return False
+        if self.reaction_collection_circuit_state()["open"]:
             return False
         sample = int(digest(["reaction-capture-sample.v1", self.reaction_owner(context), turn_id])[:16], 16) / 2**64
         return sample < settings[fields[1]]
@@ -622,31 +716,39 @@ class SemanticService:
                 native_input_images(self.app.messages, context, batch_id)
 
         async def collect():
+            cfg_snapshot = self.store.settings()
+            provider_id = str(cfg_snapshot.get("analysis_provider") or "").strip()
+            timeout_seconds = cfg_snapshot.get("analysis_timeout_seconds", cfg_snapshot["timeout_seconds"])
             try:
                 status, item = await self.reactions.collect_candidate(owner, candidate, source, validate_capture)
                 self._record_reaction_collection(owner, run_key, source, status,
                                                  item_id=item["id"] if item else None)
-                self.errors.pop("reaction_collection", None)
+                self._record_reaction_collection_success()
             except TaskError as error:
                 if error.code == "reaction_capture_disabled" or self.closed:
                     self._record_reaction_collection(owner, run_key, source, "cancelled", code=error.code)
                 else:
-                    self.errors["reaction_collection"] = error.code
-                    self._record_reaction_collection(owner, run_key, source, "failed", code=error.code)
+                    code, detail = _classify_reaction_error(error, timeout_seconds=timeout_seconds)
+                    self._record_reaction_collection_failure(
+                        code, detail, provider=provider_id, timeout_seconds=timeout_seconds)
+                    self._record_reaction_collection(owner, run_key, source, "failed",
+                                                     code=code, detail=detail)
             except Exception as error:
                 if not self.closed:
-                    code = getattr(error, "code", type(error).__name__)
-                    self.errors["reaction_collection"] = code
-                    self._record_reaction_collection(owner, run_key, source, "failed", code=code)
+                    code, detail = _classify_reaction_error(error, timeout_seconds=timeout_seconds)
+                    self._record_reaction_collection_failure(
+                        code, detail, provider=provider_id, timeout_seconds=timeout_seconds)
+                    self._record_reaction_collection(owner, run_key, source, "failed",
+                                                     code=code, detail=detail)
             finally:
                 self.background.pop(key, None)
 
         self.background[key] = asyncio.create_task(collect(), name="v2-reaction-collection")
 
-    def _record_reaction_collection(self, owner, run_key, scope, status, *, code=None, item_id=None):
+    def _record_reaction_collection(self, owner, run_key, scope, status, *, code=None, item_id=None, detail=None):
         try:
             self.store.record_reaction_collection(owner, run_key, scope, status,
-                at=self.app.now().timestamp(), code=code, item_id=item_id)
+                at=self.app.now().timestamp(), code=code, item_id=item_id, detail=detail)
         except Exception as error:
             self.errors["reaction_collection_log"] = getattr(error, "code", type(error).__name__)
 
@@ -679,6 +781,7 @@ class SemanticService:
         # results and the backfill throttle so the new interval applies at once.
         self.reactions.clear_lookups()
         self.backfill_runs.clear()
+        self._record_reaction_collection_success()
         return result
 
     def status(self):
@@ -690,4 +793,5 @@ class SemanticService:
             binding, state = None, "lexical_fallback" if cfg["enabled"] else "disabled"
         return {"state": state, "settings": cfg, "model_binding": binding,
                 "metrics": dict(self.gateway.metrics), "errors": dict(self.errors),
+                "reaction_collection_circuit": self.reaction_collection_circuit_state(),
                 "background_jobs": len(self.active_handles), "providers": self.gateway.port.inventory()}

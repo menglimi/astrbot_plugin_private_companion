@@ -43,7 +43,7 @@
 .reply-preview-status{margin:0;padding:var(--sp-2) var(--sp-3);border-inline-start:3px solid var(--t-accent);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.65;overflow-wrap:anywhere}
 .reply-preview-result{min-height:12rem;min-width:0;contain:layout paint;transition:opacity 140ms ease}
 .reply-preview.is-refreshing .reply-preview-result{opacity:.72}
-.reply-preview-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:var(--sp-2) var(--sp-4);margin:0}
+.reply-preview-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));gap:var(--sp-2) var(--sp-4);margin:0}
 .reply-preview-summary>div{min-width:0;padding:var(--sp-2) 0;border-top:1px solid var(--t-line)}
 .reply-preview-summary dt{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
 .reply-preview-summary dd{margin:var(--sp-1) 0 0;color:var(--t-text);font-size:var(--fs-tiny);line-height:1.65;overflow-wrap:anywhere}
@@ -70,3 +70,15 @@
 .reply-preview-chat>header{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);
   color:var(--t-text-faint);font-size:var(--fs-micro)}
 .reply-preview-chat>header strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
+
+/* 私聊语义补话判断实时就绪徽标：全量走主题语义令牌，窄屏平滑折行零溢出。 */
+.wb-field-note{margin-top:var(--sp-2);min-width:0;max-width:100%}
+.wb-field-note:empty{display:none}
+.reply-debounce-badge{display:inline-flex;align-items:flex-start;gap:var(--sp-1);max-width:100%;min-width:0;
+  padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);
+  background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.5;
+  overflow-wrap:anywhere}
+.reply-debounce-badge svg{flex:none;width:1em;height:1em;margin-top:.2em}
+.reply-debounce-badge.is-ok{border-color:var(--t-ok-quiet);background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.reply-debounce-badge.is-warn{border-color:var(--t-warn-quiet);background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.reply-debounce-badge.is-muted{border-color:var(--t-line);background:var(--t-surface-soft);color:var(--t-text-soft)}

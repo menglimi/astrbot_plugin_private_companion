@@ -1,8 +1,9 @@
 """Small, consent-first HTTP bridge for the Android companion app.
 
 The gateway intentionally lives beside Reality Companion.  It exposes only
-device-facing operations and keeps location/session state in memory so a
-restart drops the most sensitive context automatically.
+device-facing operations, persists only hashed session metadata and TTL-bounded
+location snapshots bound to the active pairing token (never raw bearer tokens),
+and scrubs expired or revoked state automatically.
 """
 from __future__ import annotations
 import asyncio
@@ -12,7 +13,10 @@ import hashlib
 import hmac
 import inspect
 import ipaddress
+import json
 import math
+import os
+from pathlib import Path
 import posixpath
 import secrets
 import threading
@@ -40,6 +44,8 @@ MOBILE_MAX_BODY_BYTES = 256 * 1024
 MOBILE_STATUS_DISCOVERY_TIMEOUT_SECONDS = 4.0
 MOBILE_AMAP_NOTIFY_WAIT_SECONDS = 5.0
 MOBILE_MAX_SESSIONS_PER_USER = 8
+MOBILE_STATE_FILENAME = 'mobile_gateway_state.json'
+MOBILE_STATE_SCHEMA_VERSION = 1
 MOBILE_PROXY_MAX_WS_BYTES = 16 * 1024 * 1024
 MOBILE_PROXY_ALLOWED_EXACT: dict[str, tuple[str, ...]] = {
     'together': ('/avatar',),
@@ -496,18 +502,282 @@ class MobileGatewayMixin:
     def _mobile_token_key(token: str) -> str:
         return hashlib.sha256(token.encode('utf-8', errors='ignore')).hexdigest()
 
+    def _mobile_state_file(self) -> Path | None:
+        directory = getattr(self, 'data_dir', None)
+        if not directory:
+            return None
+        return Path(directory) / MOBILE_STATE_FILENAME
+
+    def _mobile_pairing_scope_hash(self) -> str:
+        token = self._mobile_pairing_token()
+        if not token:
+            return ''
+        return hashlib.sha256(f'mobile-state-v1:{token}'.encode('utf-8', errors='ignore')).hexdigest()
+
+    @staticmethod
+    def _mobile_remove_persisted_state(state_path: Path | None) -> None:
+        if state_path is None:
+            return
+        try:
+            state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _mobile_session_matches_pairing(session: dict[str, Any], current_hash: str) -> bool:
+        session_hash = session.get('pairing_hash')
+        has_session_hash = isinstance(session_hash, str) and bool(session_hash)
+        if has_session_hash:
+            return bool(current_hash) and hmac.compare_digest(session_hash, current_hash)
+        # Sessions without a pairing_hash only arise in synthetic unit tests where
+        # pairing_token is unconfigured; if a real pairing_token is configured, require a match.
+        return not current_hash
+
+    def _mobile_serialize_state_locked(self, now: float, current_hash: str) -> dict[str, Any]:
+        """Serialize only hashed session keys and TTL-valid locations (never raw tokens)."""
+        sessions_out: dict[str, dict[str, Any]] = {}
+        active_session_refs_by_user: dict[str, set[str]] = {}
+        for token_hash, item in self._mobile_sessions.items():
+            if not isinstance(token_hash, str) or len(token_hash) != 64 or not isinstance(item, dict):
+                continue
+            if not self._mobile_session_matches_pairing(item, current_hash):
+                continue
+            expires_at = _number(item.get('expires_at'))
+            user_id = _clean(item.get('user_id'), 120)
+            if not user_id or expires_at <= now:
+                continue
+            session_ref = _clean(item.get('snapshot_session_ref'), 120)
+            sessions_out[token_hash] = {
+                'user_id': user_id,
+                'device_name': _clean(item.get('device_name'), 120),
+                'created_at': _number(item.get('created_at'), now),
+                'last_seen_at': _number(item.get('last_seen_at'), now),
+                'expires_at': expires_at,
+                'pairing_hash': current_hash,
+                'snapshot_subject_ref': _clean(item.get('snapshot_subject_ref'), 160),
+                'snapshot_context_key': _clean(item.get('snapshot_context_key'), 160),
+                'snapshot_session_ref': session_ref,
+            }
+            if session_ref:
+                active_session_refs_by_user.setdefault(user_id, set()).add(session_ref)
+
+        location_ttl = self._mobile_location_ttl()
+        locations_out: dict[str, dict[str, Any]] = {}
+        for user_id, loc in self._mobile_locations.items():
+            uid = _clean(user_id, 120)
+            if not uid or not isinstance(loc, dict):
+                continue
+            received_at = _number(loc.get('received_at') or loc.get('captured_at'))
+            if not received_at or now - received_at > location_ttl:
+                continue
+            source_ref = _clean(loc.get('_source_session_ref'), 120)
+            if not source_ref:
+                rv1 = loc.get('_rv1') if isinstance(loc.get('_rv1'), dict) else {}
+                refs = rv1.get('session_refs') if isinstance(rv1.get('session_refs'), list) else []
+                source_ref = _clean(refs[0], 120) if refs else ''
+            active_refs = active_session_refs_by_user.get(uid) or set()
+            if active_refs and source_ref and source_ref not in active_refs:
+                continue
+            if not any(s.get('user_id') == uid for s in sessions_out.values()):
+                continue
+            entry: dict[str, Any] = {
+                'latitude': _number(loc.get('latitude')),
+                'longitude': _number(loc.get('longitude')),
+                'accuracy_m': _number(loc.get('accuracy_m')),
+                'altitude_m': _number(loc.get('altitude_m')) if loc.get('altitude_m') is not None else None,
+                'speed_mps': _number(loc.get('speed_mps')),
+                'bearing': _number(loc.get('bearing')) if loc.get('bearing') is not None else None,
+                'label': _clean(loc.get('label'), 40),
+                'place': dict(loc.get('place')) if isinstance(loc.get('place'), dict) else {},
+                'captured_at': _number(loc.get('captured_at'), received_at),
+                'received_at': received_at,
+                'arrived_at': _number(loc.get('arrived_at') or loc.get('captured_at'), received_at),
+                '_source_session_ref': source_ref,
+            }
+            if isinstance(loc.get('amap'), dict):
+                entry['amap'] = dict(loc['amap'])
+            locations_out[uid] = entry
+
+        return {
+            'version': MOBILE_STATE_SCHEMA_VERSION,
+            'pairing_hash': current_hash,
+            'saved_at': now,
+            'sessions': sessions_out,
+            'locations': locations_out,
+        }
+
+    def _mobile_save_persisted_state(self) -> None:
+        state_path = self._mobile_state_file()
+        if state_path is None:
+            return
+        pairing_hash = self._mobile_pairing_scope_hash()
+        if not pairing_hash:
+            self._mobile_remove_persisted_state(state_path)
+            return
+        now = time.time()
+        with self._mobile_state_lock:
+            payload = self._mobile_serialize_state_locked(now, pairing_hash)
+        if not payload['sessions'] and not payload['locations']:
+            self._mobile_remove_persisted_state(state_path)
+            return
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = state_path.with_name(f'{state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+            tmp_path.write_text(encoded, encoding='utf-8')
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp_path, state_path)
+        except OSError as exc:
+            logger.debug('[RealityCompanion] 移动端网关状态写入失败: %s', _clean(exc, 160))
+
+    def _mobile_load_persisted_state(self) -> tuple[int, int]:
+        """Restore unexpired hashed sessions and TTL-valid locations bound to current pairing token."""
+        state_path = self._mobile_state_file()
+        if state_path is None or not state_path.is_file():
+            return (0, 0)
+        expected_hash = self._mobile_pairing_scope_hash()
+        if not expected_hash:
+            self._mobile_remove_persisted_state(state_path)
+            return (0, 0)
+        try:
+            raw = json.loads(state_path.read_text(encoding='utf-8'))
+        except (OSError, TypeError, ValueError):
+            return (0, 0)
+        if not isinstance(raw, dict) or raw.get('version') != MOBILE_STATE_SCHEMA_VERSION:
+            return (0, 0)
+        saved_hash = raw.get('pairing_hash')
+        if not isinstance(saved_hash, str) or not hmac.compare_digest(saved_hash, expected_hash):
+            self._mobile_remove_persisted_state(state_path)
+            return (0, 0)
+
+        now = time.time()
+        allowed_uid = self._mobile_allowed_user_id()
+        restored_sessions = 0
+        restored_locations = 0
+        restored_users: set[str] = set()
+        raw_sessions = raw.get('sessions') if isinstance(raw.get('sessions'), dict) else {}
+        raw_locations = raw.get('locations') if isinstance(raw.get('locations'), dict) else {}
+
+        with self._mobile_state_lock:
+            by_user_count: dict[str, int] = {}
+            for existing in self._mobile_sessions.values():
+                if isinstance(existing, dict) and existing.get('user_id'):
+                    uid = _clean(existing['user_id'], 120)
+                    by_user_count[uid] = by_user_count.get(uid, 0) + 1
+
+            for token_hash, entry in raw_sessions.items():
+                if not isinstance(token_hash, str) or len(token_hash) != 64 or not isinstance(entry, dict):
+                    continue
+                if token_hash in self._mobile_sessions:
+                    continue
+                entry_hash = entry.get('pairing_hash')
+                if isinstance(entry_hash, str) and entry_hash and not hmac.compare_digest(entry_hash, expected_hash):
+                    continue
+                user_id = _clean(entry.get('user_id'), 120)
+                expires_at = _number(entry.get('expires_at'))
+                if not user_id or expires_at <= now:
+                    continue
+                if allowed_uid and user_id != allowed_uid:
+                    continue
+                if by_user_count.get(user_id, 0) >= MOBILE_MAX_SESSIONS_PER_USER:
+                    continue
+                session = {
+                    'user_id': user_id,
+                    'device_name': _clean(entry.get('device_name'), 120),
+                    'created_at': _number(entry.get('created_at'), now),
+                    'last_seen_at': _number(entry.get('last_seen_at'), now),
+                    'expires_at': expires_at,
+                    'pairing_hash': expected_hash,
+                    'snapshot_subject_ref': _clean(entry.get('snapshot_subject_ref'), 160),
+                    'snapshot_context_key': _clean(entry.get('snapshot_context_key'), 160),
+                    'snapshot_session_ref': _clean(entry.get('snapshot_session_ref'), 120),
+                }
+                if not self._mobile_snapshot_owner.session_authorized(session):
+                    continue
+                self._mobile_sessions[token_hash] = session
+                by_user_count[user_id] = by_user_count.get(user_id, 0) + 1
+                restored_users.add(user_id)
+                restored_sessions += 1
+
+            for user_id in restored_users:
+                restore_fn = getattr(self._mobile_snapshot_owner, 'restore_sessions', None)
+                if callable(restore_fn):
+                    restore_fn(user_id)
+
+            location_ttl = self._mobile_location_ttl()
+            for raw_uid, entry in raw_locations.items():
+                user_id = _clean(raw_uid, 120)
+                if not user_id or user_id in self._mobile_locations or not isinstance(entry, dict):
+                    continue
+                if allowed_uid and user_id != allowed_uid:
+                    continue
+                received_at = _number(entry.get('received_at') or entry.get('captured_at'))
+                captured_at = _number(entry.get('captured_at'), received_at)
+                if not received_at or now - received_at > location_ttl:
+                    continue
+                source_ref = _clean(entry.get('_source_session_ref'), 120)
+                matching_sessions = [
+                    s for s in self._mobile_sessions.values()
+                    if isinstance(s, dict) and s.get('user_id') == user_id and _number(s.get('expires_at')) > now
+                ]
+                if not matching_sessions:
+                    continue
+                origin_session = (
+                    next((s for s in matching_sessions if s.get('snapshot_session_ref') == source_ref), None)
+                    if source_ref else matching_sessions[0]
+                )
+                if origin_session is None:
+                    continue
+                lat = _number(entry.get('latitude'), 999.0)
+                lon = _number(entry.get('longitude'), 999.0)
+                if not (math.isfinite(lat) and math.isfinite(lon) and (-90.0 <= lat <= 90.0) and (-180.0 <= lon <= 180.0)):
+                    continue
+                loc_item: dict[str, Any] = {
+                    'latitude': lat,
+                    'longitude': lon,
+                    'accuracy_m': max(0.0, min(100000.0, _number(entry.get('accuracy_m')))),
+                    'altitude_m': _number(entry.get('altitude_m')) if entry.get('altitude_m') is not None else None,
+                    'speed_mps': max(0.0, min(1000.0, _number(entry.get('speed_mps')))),
+                    'bearing': _number(entry.get('bearing')) % 360.0 if entry.get('bearing') is not None else None,
+                    'label': _clean(entry.get('label'), 40),
+                    'place': dict(entry.get('place')) if isinstance(entry.get('place'), dict) else {},
+                    'captured_at': captured_at,
+                    'received_at': received_at,
+                    'arrived_at': _number(entry.get('arrived_at'), captured_at),
+                    '_source_session_ref': origin_session.get('snapshot_session_ref') or source_ref,
+                }
+                if isinstance(entry.get('amap'), dict):
+                    loc_item['amap'] = dict(entry['amap'])
+                self._mobile_snapshot_owner.stamp(user_id, 'location', loc_item, session=origin_session)
+                self._mobile_locations[user_id] = loc_item
+                restored_locations += 1
+
+        if restored_sessions or restored_locations:
+            logger.info(
+                '[RealityCompanion] 移动端网关已恢复重启前有效会话 sessions=%d locations=%d',
+                restored_sessions,
+                restored_locations,
+            )
+        return (restored_sessions, restored_locations)
+
     def _mobile_cleanup_sessions(self) -> None:
         now = time.time()
+        persisted_dirty = False
         with self._mobile_state_lock:
             expired = [key for key, item in self._mobile_sessions.items() if not isinstance(item, dict) or _number(item.get('expires_at')) <= now]
             for key in expired:
                 removed = self._mobile_sessions.pop(key, None)
                 if isinstance(removed, dict) and removed.get('user_id'):
                     self._mobile_snapshot_owner.session_changed(removed['user_id'])
+                persisted_dirty = True
             stale_locations = [user_id for user_id, item in self._mobile_locations.items() if not isinstance(item, dict) or now - _number(item.get('received_at') or item.get('captured_at')) > self._mobile_location_ttl()]
             for user_id in stale_locations:
                 self._mobile_locations.pop(user_id, None)
                 self._mobile_snapshot_owner.invalidate(user_id, ('location',))
+                persisted_dirty = True
             stale_devices = [user_id for user_id, item in self._mobile_device_status.items() if not isinstance(item, dict) or now - _number(item.get('received_at')) > 24 * 60 * 60]
             for user_id in stale_devices:
                 self._mobile_device_status.pop(user_id, None)
@@ -523,6 +793,8 @@ class MobileGatewayMixin:
             stale_screen_clients = [user_id for user_id, item in self._mobile_screen_clients.items() if not isinstance(item, dict) or now - _number(item.get('last_seen_at')) > 5 * 60]
             for user_id in stale_screen_clients:
                 self._mobile_screen_clients.pop(user_id, None)
+        if persisted_dirty:
+            self._mobile_save_persisted_state()
 
     def _mobile_authorize(self, *, allow_pairing: bool=False) -> dict[str, Any] | None:
         if self._mobile_runtime_stopped or not self._mobile_enabled():
@@ -535,16 +807,24 @@ class MobileGatewayMixin:
             if configured and hmac.compare_digest(token, configured):
                 return {'user_id': self._mobile_allowed_user_id(), 'pairing': True}
         self._mobile_cleanup_sessions()
+        current_pairing_hash = self._mobile_pairing_scope_hash()
         with self._mobile_state_lock:
             session = self._mobile_sessions.get(self._mobile_token_key(token))
             if not isinstance(session, dict):
                 return None
-            if not self._mobile_snapshot_owner.session_authorized(session):
+            if (not self._mobile_session_matches_pairing(session, current_pairing_hash)
+                    or not self._mobile_snapshot_owner.session_authorized(session)):
                 self._mobile_sessions.pop(self._mobile_token_key(token), None)
                 self._mobile_snapshot_owner.session_changed(_clean(session.get('user_id'), 120))
-                return None
-            session['last_seen_at'] = time.time()
-            return dict(session)
+                evicted = True
+            else:
+                evicted = False
+                session['last_seen_at'] = time.time()
+                result = dict(session)
+        if evicted:
+            self._mobile_save_persisted_state()
+            return None
+        return result
 
     def _mobile_session_user_for_v2(self, token: str) -> str:
         """Attest an active paired session to the local V2 host without returning its token."""
@@ -552,15 +832,24 @@ class MobileGatewayMixin:
             return ''
         self._mobile_cleanup_sessions()
         key = self._mobile_token_key(token)
+        current_pairing_hash = self._mobile_pairing_scope_hash()
+        evicted = False
         with self._mobile_state_lock:
             session = self._mobile_sessions.get(key)
-            if not isinstance(session, dict) or not self._mobile_snapshot_owner.session_authorized(session):
+            if (not isinstance(session, dict)
+                    or not self._mobile_session_matches_pairing(session, current_pairing_hash)
+                    or not self._mobile_snapshot_owner.session_authorized(session)):
                 if isinstance(session, dict):
                     self._mobile_sessions.pop(key, None)
                     self._mobile_snapshot_owner.session_changed(_clean(session.get('user_id'), 120))
-                return ''
-            session['last_seen_at'] = time.time()
-            return _clean(session.get('user_id'), 120)
+                    evicted = True
+                user_id = ''
+            else:
+                session['last_seen_at'] = time.time()
+                user_id = _clean(session.get('user_id'), 120)
+        if evicted:
+            self._mobile_save_persisted_state()
+        return user_id
 
     def _mobile_pair_rate_limited(self, *, succeeded: bool=False) -> bool:
         key = self._mobile_request_remote_addr() or 'unknown'
@@ -579,13 +868,17 @@ class MobileGatewayMixin:
 
     def _mobile_store_session(self, token: str, session: dict[str, Any]) -> None:
         user_id = _clean(session.get('user_id'), 120)
+        pairing_hash = self._mobile_pairing_scope_hash()
         with self._mobile_state_lock:
             existing = [(key, item) for key, item in self._mobile_sessions.items() if isinstance(item, dict) and _clean(item.get('user_id'), 120) == user_id]
             if len(existing) >= MOBILE_MAX_SESSIONS_PER_USER:
                 oldest_key, _ = min(existing, key=lambda pair: _number(pair[1].get('created_at')))
                 self._mobile_sessions.pop(oldest_key, None)
+            if pairing_hash:
+                session['pairing_hash'] = pairing_hash
             self._mobile_sessions[self._mobile_token_key(token)] = session
             self._mobile_snapshot_owner.session_changed(user_id, session)
+        self._mobile_save_persisted_state()
 
     @staticmethod
     def _mobile_json_error(message: str, status: int=400) -> tuple[dict[str, Any], int]:
@@ -1777,8 +2070,10 @@ class MobileGatewayMixin:
                 cached_amap = self._mobile_amap_cached(amap_cache_key(latitude, longitude), now=now)
                 if cached_amap is not None:
                     item['amap'] = cached_amap
+            item['_source_session_ref'] = _clean(auth.get('snapshot_session_ref'), 120)
             self._mobile_snapshot_owner.stamp(user_id, 'location', item, session=auth)
             self._mobile_locations[user_id] = item
+        self._mobile_save_persisted_state()
         self._schedule_v2_location_notification(user_id)
         return ({'ok': True, 'data': self._mobile_location_snapshot(user_id)}, 200)
 
@@ -2113,8 +2408,18 @@ class MobileGatewayMixin:
         with self._mobile_state_lock:
             item = self._mobile_locations.get(user_id)
             if not item:
-                return self._mobile_json_error('当前没有可保活的位置，请重新获取定位', 409)
-            item['received_at'] = time.time()
+                return ({
+                    'ok': False,
+                    'code': 'mobile_location_reacquire_required',
+                    'reacquire_location': True,
+                    'message': '当前没有可保活的位置，请重新获取定位',
+                }, 409)
+            now = time.time()
+            item['received_at'] = now
+            rv1 = item.get('_rv1')
+            if isinstance(rv1, dict):
+                expires_at = _number(auth.get('expires_at'), now + self._mobile_location_ttl())
+                rv1['retain_until'] = min(now + self._mobile_location_ttl(), expires_at)
         return ({'ok': True, 'data': self._mobile_location_snapshot(user_id)}, 200)
 
     async def mobile_revoke_location(self) -> tuple[dict[str, Any], int]:
@@ -2130,6 +2435,7 @@ class MobileGatewayMixin:
             if event is not None:
                 event.set()
             self._mobile_snapshot_owner.invalidate(user_id, ('location',))
+        self._mobile_save_persisted_state()
         return ({'ok': True, 'data': {'revoked': True}}, 200)
 
     async def mobile_close_session(self) -> tuple[dict[str, Any], int]:
@@ -2140,6 +2446,7 @@ class MobileGatewayMixin:
         with self._mobile_state_lock:
             self._mobile_sessions.pop(self._mobile_token_key(token), None)
             self._mobile_snapshot_owner.session_changed(_clean(auth.get('user_id'), 120))
+        self._mobile_save_persisted_state()
         return ({'ok': True, 'data': {'closed': True}}, 200)
 
     @staticmethod
@@ -2195,7 +2502,13 @@ class MobileGatewayMixin:
         if operation in report_handlers and isinstance(result, tuple):
             body, status = result
             accepted = isinstance(body, dict) and body.get('ok') is True and status == 200
-            log = logger.info if accepted else logger.warning
+            expected_reacquire = (
+                operation == 'mobile_location_heartbeat'
+                and status == 409
+                and isinstance(body, dict)
+                and body.get('code') == 'mobile_location_reacquire_required'
+            )
+            log = logger.info if (accepted or expected_reacquire) else logger.warning
             log('[CompanionV2] 手机上报 operation=%s status=%s accepted=%s', operation, status, accepted)
         return self._mobile_aiohttp_response(result)
 
@@ -2215,6 +2528,7 @@ class MobileGatewayMixin:
             return False
         if len(self._mobile_pairing_token()) < 24:
             logger.warning('[RealityCompanion] mobile.pairing_token 较短，建议改用至少 24 位随机令牌')
+        self._mobile_load_persisted_state()
         prefix = f'/{PLUGIN_NAME}/mobile'
         app = web.Application(client_max_size=MOBILE_MAX_BODY_BYTES)
         canonical_routes = (('GET', '/health', self.mobile_health), ('POST', '/pair', self.mobile_pair), ('GET', '/status', self.mobile_status), ('GET', '/persona', self.mobile_get_persona), ('POST', '/persona', self.mobile_set_persona), ('POST', '/room/create', self.mobile_create_room), ('POST', '/room/invite', self.mobile_invite_room), ('POST', '/room/join', self.mobile_join_room), ('POST', '/game/room/create', self.mobile_create_game_room), ('POST', '/room/prepare', self.mobile_prepare_rooms), ('POST', '/location', self.mobile_location), ('POST', '/location/heartbeat', self.mobile_location_heartbeat), ('POST', '/location/revoke', self.mobile_revoke_location), ('POST', '/device/status', self.mobile_device_status), ('POST', '/device/activity', self.mobile_device_activity), ('POST', '/telemetry', self.mobile_telemetry), ('POST', '/screen/heartbeat', self.mobile_screen_heartbeat), ('POST', '/session/close', self.mobile_close_session))
@@ -2268,6 +2582,7 @@ class MobileGatewayMixin:
         return True
 
     async def _stop_mobile_server(self) -> None:
+        self._mobile_save_persisted_state()
         site = self._mobile_server_site
         runner = self._mobile_server_runner
         self._mobile_server_site = None

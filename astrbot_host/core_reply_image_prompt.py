@@ -44,7 +44,10 @@ _DELIVERY = (
     "图片符合请求时，把工具结果实际提供的缓存原路径交给 send_message_to_user，"
     "使用 messages=[{\"type\":\"image\",\"path\":\"工具返回的原路径\"}] 投递当前会话，session 留空；图片投递只包含图片。"
     "不要把 plain.text 或语音放进图片投递；需要说的话由本轮正常回复发送一次。图片投递成功后自然收住，避免重复发送同一张图。"
-    "根据工具结果说明实际进展：没有成功结果时不声称已生成或送达，unknown 时保留原操作，不换编号重做。"
+    "收到 ok=true 或 state=succeeded 的生图/改图回执即表示该张图已生成完成，禁止重复调用生图工具再画一遍；"
+    "若返回 image_turn_limit_reached 表示本轮生图次数已达上限，请直接结束生图并基于已有结果回复。"
+    "根据工具结果说明实际进展：没有成功结果时不声称已生成或送达；unknown 时（如接口超时）不会自动补推延迟结果，"
+    "应直接告知用户本次调用结果未确认且不再等待，并询问是否需要重新发起，不要承诺“还在等那边确认”或私自换编号重做。"
     "图片错误码 host_image_limit 表示宿主本地图片处理预算超限（字节数、尺寸或张数），"
     "reference_image_limit 表示已保存参考素材超出原生图像输入上限；两者都不是服务商日额度错误。"
     "没有明确的服务商额度回执时，不要声称今天的生图额度已用完。"
@@ -83,6 +86,18 @@ def core_image_tool_contract(action, description, parameters, *, reference_limit
     if action == "image.edit" and isinstance(properties.get("artifact_id"), dict):
         properties["artifact_id"]["description"] = (
             "仅编辑已保存生成产物时填写真实的非空 ID；使用本轮附图、最近生成图或 reference_ids 时省略此字段，不要传空字符串。")
+    if isinstance(properties.get("aspect_ratio"), dict):
+        properties["aspect_ratio"]["description"] = (
+            "可选：画面宽高比（留空使用默认画布；改图留空时默认保持原图比例）。"
+            "横版/宽屏选 3:2 或 16:9，竖版选 2:3 或 9:16，方图选 1:1。"
+        )
+    if isinstance(properties.get("subject_mode"), dict):
+        properties["subject_mode"]["description"] = (
+            "可选：明确画面主体模式。"
+            "角色本人入镜/自拍/合照传 character；"
+            "纯风景、纯物品、海报等不含角色传 scene_only（跳过角色固定提示词与自动角色参考）；"
+            "基于已有图片做局部修改/换风格且保持原图主体传 edit_preserve。"
+        )
     return description, parameters
 
 
