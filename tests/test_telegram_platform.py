@@ -659,16 +659,18 @@ class TelegramQuotedImageTests(TelegramFixture, unittest.IsolatedAsyncioTestCase
             with self.subTest(sender=sender), TemporaryDirectory(dir=get_astrbot_temp_path()) as temp:
                 path = Path(temp, "photo.png")
                 path.write_bytes(source)
-                images, attribution = await self.resolve(self.quoting(sender, [Image(file=str(path))]))
+                images, attribution, fallback_md5s = await self.resolve(
+                    self.quoting(sender, [Image(file=str(path))]))
                 self.assertEqual((await load_native_image(images[0])).content, source)
                 self.assertEqual(attribution["original_sender"], recorded)
                 self.assertIsNone(attribution["sent_at_unix"])
+                self.assertEqual(fallback_md5s, ())
 
     async def test_quoted_file_outside_the_host_cache_is_not_read(self):
         with TemporaryDirectory() as temp:
             path = Path(temp, "photo.png")
             path.write_bytes(image_bytes())
-            images, _ = await self.resolve(self.quoting(USER_ID, [Image(file=str(path))]))
+            images, _, _ = await self.resolve(self.quoting(USER_ID, [Image(file=str(path))]))
             with self.assertRaises(TaskError):
                 await load_native_image(images[0])
 
