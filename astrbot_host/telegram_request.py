@@ -1,6 +1,7 @@
 """Remove the Telegram Bot API token from a private provider request before it is sent."""
 
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart, ThinkPart
+from pydantic import BaseModel, ValidationError
 
 from .telegram_private_media import UNAVAILABLE, private_token
 
@@ -23,7 +24,7 @@ def protect_telegram_request(event, request):
                 if isinstance(url, str) and token in url:
                     # A URL fetched with the token is not a usable attachment once redacted.
                     return {"type": "text", "text": UNAVAILABLE}
-            return {key: clean(item) for key, item in value.items()}
+            return {clean(key): clean(item) for key, item in value.items()}
         if isinstance(value, (ImageURLPart, AudioURLPart)):
             target = getattr(value, value.type)
             if token in target.url:
@@ -36,6 +37,13 @@ def protect_telegram_request(event, request):
         if isinstance(value, ContentPart) and token in value.model_dump_json():
             # Any other field still naming the token (a signature, a new field) makes the part unusable.
             return TextPart(text=UNAVAILABLE)
+        if isinstance(value, BaseModel) and not isinstance(value, ContentPart) and token in value.model_dump_json():
+            # Other typed history entries, such as tool calls: clean every field and rebuild.
+            data = clean(value.model_dump())
+            try:
+                return type(value).model_validate(data)
+            except ValidationError:
+                return data
         return value
 
     for name in ("prompt", "system_prompt", "contexts", "extra_user_content_parts"):

@@ -101,9 +101,29 @@ def metered():
         _meter.reset(token)
 
 
+_trusted_endpoint = ContextVar("companion_v2_trusted_endpoint", default=None)
+
+
+@contextmanager
+def trusted_endpoint(prefix):
+    """Fetch URLs under ``prefix`` from wherever it points, private hosts included.
+
+    For an endpoint the operator configured, such as a self-hosted Telegram Bot
+    API server; AstrBot fetched from it before. Byte limits and the meter still
+    apply, and such a fetch follows no redirect.
+    """
+    token = _trusted_endpoint.set(prefix if isinstance(prefix, str) and prefix else None)
+    try:
+        yield
+    finally:
+        _trusted_endpoint.reset(token)
+
+
 async def fetch_attachment(value, *, maximum_bytes):
-    current = public_url(value)
-    resolver = PublicImageResolver()
+    prefix = _trusted_endpoint.get()
+    trusted = prefix is not None and isinstance(value, str) and value.startswith(prefix)
+    current = value if trusted else public_url(value)
+    resolver = aiohttp.ThreadedResolver() if trusted else PublicImageResolver()
     try:
         connector = aiohttp.TCPConnector(resolver=resolver, limit=1)
         async with aiohttp.ClientSession(connector=connector, trust_env=False,
@@ -111,7 +131,7 @@ async def fetch_attachment(value, *, maximum_bytes):
             for redirect in range(4):
                 async with session.get(current, allow_redirects=False) as response:
                     if response.status in (301, 302, 303, 307, 308):
-                        if redirect == 3 or "Location" not in response.headers:
+                        if trusted or redirect == 3 or "Location" not in response.headers:
                             raise TaskError("host_image_fetch_failed", "image redirect could not be resolved")
                         current = public_url(urljoin(current, response.headers["Location"]))
                         continue

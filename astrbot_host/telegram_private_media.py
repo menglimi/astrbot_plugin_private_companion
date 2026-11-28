@@ -10,6 +10,7 @@ import asyncio
 from collections import Counter
 from contextlib import ExitStack
 import logging
+import mimetypes
 import os
 from pathlib import Path
 import stat
@@ -30,7 +31,7 @@ from companion_v2.conversation.media import models as image_models
 from companion_v2.execution.models import TaskError
 
 from .core_reply_video_sources import file_is_video
-from .media import fetch_attachment, load_native_image, metered
+from .media import fetch_attachment, load_native_image, metered, trusted_endpoint
 from .video.loader import fetch_native_video_bytes
 
 
@@ -43,6 +44,7 @@ QUOTED_VIDEO_OFF = "[引用视频理解未启用，本轮未读取]"
 _MEDIA = (Image, Record, Video, File)
 _LIMITS = {Image: MAX_INPUT_IMAGES, Record: MAX_INPUT_AUDIOS, Video: MAX_VIDEOS, File: MAX_FILES}
 _PREPARED = "_companion_v2_telegram_media_prepared"
+_PUBLIC_FILE_ENDPOINT = "https://api.telegram.org/"
 
 
 def _private(event):
@@ -106,6 +108,17 @@ def _unbounded_voice(raw, part):
     quoted recordings are still read within the turn limits.
     """
     return type(part) is Record and getattr(raw, "voice", None) is not None
+
+
+def _custom_file_endpoint(event):
+    """The bot's file URL prefix when the operator set ``telegram_file_base_url`` to their own server.
+
+    Telegram's public endpoint goes through the usual public-address checks.
+    """
+    base = getattr(getattr(event, "client", None), "base_file_url", None)
+    if not isinstance(base, str) or not base or private_token(event) is None:
+        return None
+    return None if base.startswith(_PUBLIC_FILE_ENDPOINT) else base
 
 
 def needs_preparation(event):
@@ -228,7 +241,13 @@ class _TurnReader:
             self.remaining = max(0, self.remaining - meter.bytes)
             raise TaskError("host_image_limit", "photo exceeds the turn image limits")
         self.photos.append(image.descriptor)
-        return Image.fromBytes(image.content), size
+        if locator.host_resolved:
+            # AstrBot's preprocessing already saved this photo; keep its file rather than a second copy.
+            return part, size
+        # Shaped like AstrBot's localized photos. Request collection adopts image files and keeps
+        # them past event cleanup for later turns, as it does for its own.
+        path = _temporary_path(self.event, mimetypes.guess_extension(image.descriptor.mime_type) or "", image.content)
+        return Image(file=path, url=path, path=path), size
 
     async def _video(self, part, meter):
         if isinstance(part, File):
@@ -388,7 +407,8 @@ async def prepare_private_media(event, scope, settings):
     """
     event.set_extra(_PREPARED, True)
     try:
-        await _prepare(event, scope, settings)
+        with trusted_endpoint(_custom_file_endpoint(event)):
+            await _prepare(event, scope, settings)
     except Exception as error:
         logger.warning("[CompanionV2] Telegram 附件准备失败，本轮不读取附件 error_type=%s", type(error).__name__)
         message = event.message_obj
