@@ -47,10 +47,7 @@ from companion_v2.host.background import BackgroundCoordinator
 from companion_v2.memory.checkpoints import MemoryCheckpointRecovery
 from companion_v2.memory.reflection_jobs import MemoryReflectionJobs
 from companion_v2.memory.scheduling import MemorySchedule, next_due as memory_next_due
-from companion_v2.references.daily_outfit import (
-    DailyOutfitPhotos,
-    KIND as DAILY_OUTFIT_KIND,
-)
+from companion_v2.references.daily_outfit import DailyOutfitPhotos
 from companion_v2.role_work.growth.progress import (
     GrowthProgressService,
     KIND as GROWTH_PROGRESS_KIND,
@@ -1465,30 +1462,9 @@ def stage_daily_outfit(do: DailyOutfitPhotos) -> StagedOffload | None:
                         continue
                 if do.app.state_maintenance.foreground_busy(context):
                     continue
-                now = do.app.now()
-                do._allowed(context, now)
-                if do.port is None or not do.port.outfit_image_route(context, do._identity(context, now)):
-                    raise TaskError("daily_outfit_image_unavailable", "the role has no active Image route")
-                req_day, _, _ = do._day(context, now)
-                req_key = do._key(context, req_day)
-                task_id = "outfit-" + digest([req_key, "automatic"])
-                with do.runtime.transaction() as connection:
-                    doc = do._read(req_key)
-                    active = do._task(doc.get("task_id"))
-                    existing = do._task(task_id)
-                    if active and active.state not in TERMINAL:
-                        task = active
-                    elif existing or doc:
-                        continue
-                    else:
-                        spec = TaskSpec(
-                            task_id, context, DAILY_OUTFIT_KIND, task_id, task_id,
-                            now, now + timedelta(minutes=15),
-                        )
-                        do._write(connection, req_key, {"task_id": task_id, "photo": doc.get("photo")})
-                        task = require(do.app.tasks.submit(spec))
-                if task.state in ("created", "retry_scheduled"):
-                    return req_key, task
+                prepared = do.prepare_request(context, at=do.app.now())
+                if prepared is not None and prepared[1].state in ("created", "retry_scheduled"):
+                    return prepared
             except TaskError:
                 continue
         return None

@@ -62,8 +62,10 @@ print("upload route contract passed")
 
     def test_host_routes_persist_usage_gallery_and_daily_outfit_for_one_role(self):
         source = r'''
-import base64, json, unittest
+import asyncio, base64, json, unittest
+from datetime import timedelta
 from io import BytesIO
+from threading import get_ident
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 from PIL import Image
@@ -78,6 +80,7 @@ from companion_v2.storage.runtime import StorageRuntime
 class MaterialRoutes(MultiFixture, unittest.IsolatedAsyncioTestCase):
     async def test_materials(self):
         app = await self.start_host()
+        app.daily_outfit.next_check = app.now() + timedelta(days=1)
         self.controller.register_routes()
         handlers = {route: handler for route, handler, _, _ in self.native.registered_web_apis}
         paths = [route for route in handlers if route.endswith('/image-materials')]
@@ -138,6 +141,24 @@ class MaterialRoutes(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(inventory['references'][1]['usage'], usage)
             self.assertEqual(inventory['daily_outfit']['item_id'], wardrobe['item_id'])
             self.assertEqual(data(await call(other))['references'], [])
+            loop = asyncio.get_running_loop()
+            main_thread = get_ident()
+            launched = loop.create_future()
+            prepare_request = app.daily_outfit.prepare_request
+
+            def prepare_outfit(context, **kwargs):
+                self.assertNotEqual(get_ident(), main_thread)
+                return prepare_request(context, **kwargs)
+
+            async def run_outfit(key, spec):
+                launched.set_result(asyncio.get_running_loop())
+
+            with patch.object(app.daily_outfit, 'port', NS(outfit_image_route=lambda *_: True)), patch.object(
+                app.daily_outfit, 'prepare_request', side_effect=prepare_outfit
+            ), patch.object(app.daily_outfit, '_run', side_effect=run_outfit):
+                queued = data(await call(first+'/daily-outfit/generate', {'operation_key': 'manual-regenerate'}))
+                self.assertEqual(queued['state'], 'created')
+                self.assertIs(await asyncio.wait_for(launched, timeout=2), loop)
             reopened = StorageRuntime.open(data_root=app.runtime.data_root, installation_id=app.runtime.installation_id)
             try:
                 repo = ReferenceAssetRepository(reopened)

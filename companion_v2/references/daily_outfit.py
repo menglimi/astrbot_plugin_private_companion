@@ -299,6 +299,13 @@ class DailyOutfitPhotos:
 
     def request(self, context, *, operation_key=None):
         at = self.app.now()
+        prepared = self.prepare_request(context, at=at, operation_key=operation_key)
+        if prepared is not None:
+            self._launch(*prepared)
+        return self.status(context, at=at)
+
+    def prepare_request(self, context, *, at, operation_key=None):
+        """Submit the task to storage before starting its worker on the host loop."""
         self._allowed(context, at)
         if self.port is None or not self.port.outfit_image_route(context, self._identity(context, at)):
             raise TaskError("daily_outfit_image_unavailable", "the role has no active Image route")
@@ -312,16 +319,15 @@ class DailyOutfitPhotos:
             if active and active.state not in TERMINAL:
                 task = active
             elif existing or (operation_key is None and document):
-                return self.status(context, at=at)
+                return None
             else:
                 spec = TaskSpec(task_id, context, KIND, task_id, task_id, at, at + timedelta(minutes=15))
                 self._write(connection, key, {"task_id": task_id, "photo": document.get("photo")})
                 task = require(self.app.tasks.submit(spec))
-        self._launch(key, task)
-        return self.status(context, at=at)
+        return key, task
 
     def _launch(self, key, task):
-        if task.state not in ("created", "retry_scheduled") or key in self.workers:
+        if self.closed or task.state not in ("created", "retry_scheduled") or key in self.workers:
             return
         worker = asyncio.create_task(self._run(key, task.spec), name=KIND)
         self.workers[key] = worker

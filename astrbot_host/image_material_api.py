@@ -154,10 +154,14 @@ class ImageMaterialsWebAPI:
                 if action == "daily_outfit_photo":
                     return manager.daily_outfit_photo(operator, ctx, at=observed_at)
                 if action == "generate_daily_outfit_photo":
-                    return manager.generate_daily_outfit_photo(operator, ctx, at=observed_at, **body)
+                    return manager.prepare_daily_outfit_photo(operator, ctx, at=observed_at, **body)
                 return manager.select_daily_outfit(operator, ctx, body["item_id"], at=observed_at)
 
             value = await asyncio.to_thread(execute)
+            if action == "generate_daily_outfit_photo":
+                prepared, value = value
+                if prepared is not None:
+                    session.application.daily_outfit._launch(*prepared)
             return outcome_response(Outcome.success(value))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))

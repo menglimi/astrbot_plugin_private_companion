@@ -1085,3 +1085,11 @@ class ReferenceMaterialManagement:
     def generate_daily_outfit_photo(self, operator, context, *, at, operation_key):
         self._admit(operator, context, at)
         return self.application.daily_outfit.request(context, operation_key=self._operation_key(operation_key))
+
+    def prepare_daily_outfit_photo(self, operator, context, *, at, operation_key):
+        self._admit(operator, context, at)
+        operation_key = self._operation_key(operation_key)
+        outfit = self.application.daily_outfit
+        requested_at = self.application.now()
+        prepared = outfit.prepare_request(context, at=requested_at, operation_key=operation_key)
+        return prepared, outfit.status(context, at=requested_at)

@@ -103,6 +103,7 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
     async def test_daily_outfit_generates_from_persona_agenda_and_weather_with_an_empty_wardrobe(self):
         from companion_v2.agenda.planning import planning_profile
         from companion_v2.configuration.registry import FieldRegistry
+        from companion_v2.host.tick_offload import advance_daily_outfit_async
         from companion_v2.model_gateway.routing import configuration_fields
         from companion_v2.proactive.configuration import target_for as contact_target
         from companion_v2.proactive.external_materials import WeatherSnapshot
@@ -169,14 +170,14 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         try:
             await asyncio.wait_for(planner_started.wait(), timeout=self.wait_seconds)
             app.daily_outfit.next_check = None
-            app.daily_outfit.advance()
+            await advance_daily_outfit_async(app.daily_outfit)
             self.assertEqual(manager.daily_outfit_photo(self.core, context, at=NOW)["state"], "empty")
         finally:
             plan_can_finish.set()
             plan_result = await planning_task
         self.assertEqual(plan_result["state"], "succeeded", plan_result)
         app.daily_outfit.next_check = None
-        app.daily_outfit.advance()
+        await advance_daily_outfit_async(app.daily_outfit)
         await self.until(lambda: not app.daily_outfit.workers)
         result = manager.daily_outfit_photo(self.core, context, at=NOW)
         self.assertEqual(result["state"], "succeeded", result)
