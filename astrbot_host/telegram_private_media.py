@@ -110,15 +110,17 @@ def _unbounded_voice(raw, part):
     return type(part) is Record and getattr(raw, "voice", None) is not None
 
 
-def _custom_file_endpoint(event):
-    """The bot's file URL prefix when the operator set ``telegram_file_base_url`` to their own server.
+def _file_endpoint(event):
+    """The bot's own file URL prefix (it ends in the token), and whether the operator runs that server.
 
-    Telegram's public endpoint goes through the usual public-address checks.
+    AstrBot downloads these through its proxy setting, including from a
+    ``telegram_file_base_url`` the operator pointed at a self-hosted Bot API
+    server; a local-mode server hands over paths on a shared disk instead.
     """
     base = getattr(getattr(event, "client", None), "base_file_url", None)
     if not isinstance(base, str) or not base or private_token(event) is None:
-        return None
-    return None if base.startswith(_PUBLIC_FILE_ENDPOINT) else base
+        return None, False
+    return base, not base.startswith(_PUBLIC_FILE_ENDPOINT)
 
 
 def needs_preparation(event):
@@ -407,7 +409,8 @@ async def prepare_private_media(event, scope, settings):
     """
     event.set_extra(_PREPARED, True)
     try:
-        with trusted_endpoint(_custom_file_endpoint(event)):
+        prefix, self_hosted = _file_endpoint(event)
+        with trusted_endpoint(prefix, local_files=self_hosted):
             await _prepare(event, scope, settings)
     except Exception as error:
         logger.warning("[CompanionV2] Telegram 附件准备失败，本轮不读取附件 error_type=%s", type(error).__name__)

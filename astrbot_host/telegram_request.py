@@ -15,7 +15,7 @@ def protect_telegram_request(event, request):
     def clean(value):
         if isinstance(value, str):
             return value.replace(token, "[redacted]")
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return [clean(item) for item in value]
         if isinstance(value, dict):
             for kind in ("audio_url", "image_url"):
@@ -39,11 +39,12 @@ def protect_telegram_request(event, request):
             return TextPart(text=UNAVAILABLE)
         if isinstance(value, BaseModel) and not isinstance(value, ContentPart) and token in value.model_dump_json():
             # Other typed history entries, such as tool calls: clean every field and rebuild.
-            data = clean(value.model_dump())
+            data = clean(value.model_dump(mode="json"))
             try:
-                return type(value).model_validate(data)
+                rebuilt = type(value).model_validate(data)
             except ValidationError:
                 return data
+            return data if token in rebuilt.model_dump_json() else rebuilt
         return value
 
     for name in ("prompt", "system_prompt", "contexts", "extra_user_content_parts"):

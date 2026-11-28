@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 from types import SimpleNamespace as NS
 import unittest
@@ -41,9 +42,10 @@ class FileServer:
     """Telegram's file endpoint for aiohttp: one body per file ID, named by the last path segment."""
 
     def __init__(self, bodies):
-        self.bodies, self.requests = bodies, []
+        self.bodies, self.requests, self.sessions, self.headers = bodies, [], [], []
 
     def __call__(self, *args, **kwargs):
+        self.sessions.append(kwargs)
         return self
 
     async def __aenter__(self):
@@ -54,6 +56,7 @@ class FileServer:
 
     def get(self, url, **kwargs):
         self.requests.append(url.rsplit("/", 1)[-1])
+        self.headers.append(kwargs.get("headers"))
         return _Response(self.bodies[url.rsplit("/", 1)[-1]])
 
     def serving(self):
@@ -205,6 +208,39 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
                 self.assertNotIn("附件不可用", text(payload))
                 self.assertNotIn("文件读取失败", text(payload))
                 self.assert_no_token(json.dumps(payload, ensure_ascii=False))
+
+    async def test_telegram_downloads_use_the_host_proxy_and_ask_for_identity(self):
+        # AstrBot puts its http_proxy setting in the environment; its own Telegram downloads honor it.
+        clip = dict(file_id="v1", file_unique_id="v1", width=64, height=48, duration=1)
+        event = self.event(await self.convert(video=clip, caption="watch this"))
+        server = FileServer({"v1": b"movie"})
+        await self.collect(event, server)
+        self.assertEqual(server.requests, ["v1"])
+        self.assertEqual([session["trust_env"] for session in server.sessions], [True])
+        self.assertEqual(server.headers, [{"Accept-Encoding": "identity"}])
+
+    async def test_local_mode_bot_api_server_files_are_read_from_disk(self):
+        # A local-mode Bot API server hands over absolute paths on a disk it shares with AstrBot.
+        bot = self.platform.client
+        bot.base_file_url = f"http://127.0.0.1:8081/file/bot{bot.token}"
+        with TemporaryDirectory() as shared:
+            files = {"p1": image_bytes("red"), "v1": b"movie", "d1": b"body"}
+            for name, body in files.items():
+                Path(shared, name).write_bytes(body)
+            bot.get_file = AsyncMock(side_effect=lambda file_id, **_: NS(file_path=str(Path(shared, file_id))))
+            clip = dict(file_id="v1", file_unique_id="v1", width=64, height=48, duration=1)
+            document = dict(document=dict(file_id="d1", file_unique_id="d1", file_name="notes.txt"))
+            for kind, fields in (("photo", dict(photo=photo("p1"))), ("video", dict(video=clip)), ("document", document)):
+                with self.subTest(kind=kind):
+                    event = self.event(await self.convert(**fields, caption="look"))
+                    server = FileServer({})
+                    with self.settings(file_understanding_enabled=True):
+                        request, payload = await self.collect(event, server)
+                    self.assertEqual(server.requests, [])
+                    self.assertNotIn("附件不可用", text(payload))
+                    self.assertNotIn("文件读取失败", text(payload))
+                    if kind == "photo":
+                        self.assertEqual(images(payload), [image_bytes("red")])
 
     async def test_album_beyond_the_turn_limit_keeps_the_caption_and_admitted_photo(self):
         red, blue = image_bytes("red"), image_bytes("blue")
@@ -417,7 +453,8 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         url = f"{self.platform.client.base_file_url}/media/v1"
         inline = ImageURLPart(image_url=ImageURLPart.ImageURL(url="data:image/png;base64,AAAA", id=url))
         signed = ThinkPart(think="thinking", encrypted=url)
-        call = ToolCall(id="c1", function=ToolCall.FunctionBody(name="look", arguments=json.dumps({"url": url})))
+        call = ToolCall(id="c1", function=ToolCall.FunctionBody(name="look", arguments=json.dumps({"url": url})),
+                        extra_content={"refs": (url,)})
         history = [{"role": "user", "content": url},
                    {"role": "assistant", "content": "", "tool_calls": [call, {
                        "id": "c2", "type": "function", "function": {"name": "look", "arguments": "{}"},
@@ -434,6 +471,7 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         self.assertEqual(request.image_urls, [])
         self.assertIn(inline, request.extra_user_content_parts)
         self.assertIsInstance(request.contexts[1]["tool_calls"][0], ToolCall)
+        self.assertNotIn(self.token, request.contexts[1]["tool_calls"][0].model_dump_json())
         self.assert_no_token(request.prompt, request.contexts, request.extra_user_content_parts,
                              (await request.assemble_context())["content"])
 
