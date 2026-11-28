@@ -439,27 +439,13 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         from companion_v2.agenda.planning_config import configured_annual_calendars
         from companion_v2.conversation.date_context import (
             ALMANAC_INSTRUCTION, CALENDAR_INSTRUCTION, PERSONAL_DATE_INSTRUCTION,
-            project_interaction_gap, project_local_date, project_personal_dates,
+            project_local_date, project_personal_dates,
         )
 
         settings = perception_settings()
         clock = project_local_date(at, settings["calendar_timezone"], holiday_enabled=False,
             lunar_enabled=False, automatic_solar_terms_enabled=False, almanac_enabled=False)
         perception_data = {"current_local_time": clock}
-        owner = getattr(application, "background_history", None)
-        if owner is not None and hasattr(context, "key"):
-            try:
-                received_at = _input_received_at(native_input, at)
-                interaction = owner.interaction(context, min(received_at, at), action="conversation.reply")
-                if isinstance(interaction, dict):
-                    last_at = max((value for value in (interaction.get("last_user_at"),
-                                                       interaction.get("last_assistant_at"))
-                                   if isinstance(value, str) and value), default=None)
-                    gap = project_interaction_gap(at, last_at, settings["calendar_timezone"])
-                    if gap is not None:
-                        perception_data["interaction_gap"] = gap
-            except Exception:
-                pass
         time_style = prompt_overrides.get("reply_time_style", CORE_REPLY_TIME_STYLE)
         instructions = ["\n".join(filter(None, (CURRENT_TIME_MEANING, time_style)))]
         if settings["calendar_enabled"]:
