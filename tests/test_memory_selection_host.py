@@ -196,7 +196,7 @@ class MemorySelectionHostTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "complete")
         self.assertTrue(result["continuation_needed"])
         self.assertEqual(self.schedule(app)["covered_until"], before)
-        self.assertEqual(self.schedule(app)["next_at"], stamp(self.clock.now() + timedelta(minutes=1)))
+        self.assertEqual(self.schedule(app)["next_at"], stamp(self.clock.now() + timedelta(seconds=5)))
 
     async def test_repair_with_unknown_source_coverage_keeps_daily_window_open(self):
         app, context = await self.cold()
@@ -216,4 +216,4 @@ class MemorySelectionHostTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "complete")
         app.memory_schedule._settle(self.schedule(app), first["batch_id"], result, self.clock.now())
         self.assertEqual(self.schedule(app)["covered_until"], before)
-        self.assertEqual(self.schedule(app)["next_at"], stamp(self.clock.now() + timedelta(minutes=1)))
+        self.assertEqual(self.schedule(app)["next_at"], stamp(self.clock.now() + timedelta(seconds=5)))

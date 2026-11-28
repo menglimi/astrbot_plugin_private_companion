@@ -361,7 +361,7 @@ class CompanionApplication:
         self.relationship_memories = RelationshipMemoryService(runtime, now=self.now)
         self.role_journal = RoleJournalService(runtime, now=self.now)
         self.journal_writer = RoleJournalWriter(self.role_journal, memory_push=memory_push)
-        self.memory_reflection = MemoryReflection(runtime)
+        self.memory_reflection = MemoryReflection(runtime, notify=self.notify)
         self.role_reader = RoleReader(self.role_life)
         self.state_maintenance = StateMaintenance(runtime)
         self.calendar_planning = CalendarPlanning(runtime, weather_port=weather_port)

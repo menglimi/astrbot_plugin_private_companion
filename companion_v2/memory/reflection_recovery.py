@@ -187,21 +187,39 @@ def finish_parent(reflection, context, batch_id):
     parent_id = manifest.get("retry_of")
     if not parent_id:
         return
+    wake_schedule = False
     with reflection.runtime.transaction() as connection:
         parent = reflection._row(context, parent_id)
         receipts = json.loads(parent["receipts_json"])
         if receipts.get("repair_batch") != batch_id:
             raise TaskError("memory_repair_conflict", "the parent owns another repair attempt")
-        receipts["items"].update(json.loads(row["receipts_json"])["items"])
-        receipts["sequence"] = reflection._sequence(context)
-        result = json.loads(parent["result_json"] or "{}")
-        result["resolved_by"] = batch_id
-        result["summary"] = json.loads(row["result_json"] or "{}").get("summary", result.get("summary"))
-        connection.execute("UPDATE memory_reflections SET state = 'complete', result_json = ?, receipts_json = ?, updated_at = ? WHERE batch_id = ?",
-                           (encode(result), encode(receipts), stamp(reflection.tasks.now()), parent_id))
-        if connection.execute("SELECT 1 FROM operations WHERE operation_id = ?", (parent_id,)).fetchone():
-            reflection.memory.writer._complete(parent_id)
+        if parent["state"] != "complete":
+            receipts["items"].update(json.loads(row["receipts_json"])["items"])
+            receipts["sequence"] = reflection._sequence(context)
+            result = json.loads(parent["result_json"] or "{}")
+            result["resolved_by"] = batch_id
+            result["summary"] = json.loads(row["result_json"] or "{}").get("summary", result.get("summary"))
+            now = reflection.tasks.now()
+            connection.execute("UPDATE memory_reflections SET state = 'complete', result_json = ?, receipts_json = ?, updated_at = ? WHERE batch_id = ?",
+                               (encode(result), encode(receipts), stamp(now), parent_id))
+            connection.execute("""UPDATE memory_reflection_jobs SET state = 'complete', result_code = NULL, updated_at = ?
+                WHERE batch_id = ? AND owner_key = ? AND state = 'blocked' AND result_code = 'memory_reflection_failed'""",
+                (stamp(now), parent_id, owner_key(context)))
+            if connection.execute("SELECT 1 FROM operations WHERE operation_id = ?", (parent_id,)).fetchone():
+                reflection.memory.writer._complete(parent_id)
+            # A previous wake can have detached this failed window. Check its
+            # coverage again soon now that the old reservations are resolved.
+            schedule = manifest.get("schedule_ref")
+            if schedule:
+                soon = stamp(now + timedelta(seconds=5))
+                wake_schedule = connection.execute("""UPDATE memory_schedules SET next_at = ?
+                    WHERE schedule_id = ? AND owner_key = ? AND revision = ? AND enabled = 1
+                    AND pending_batch IS NULL AND covered_until < ? AND next_at > ?""",
+                    (soon, schedule["schedule_id"], owner_key(context), schedule["revision"], manifest["end"], soon)
+                ).rowcount > 0
     finish_parent(reflection, context, parent_id)
+    if wake_schedule and reflection.notify is not None:
+        reflection.notify()
 
 
 def current_schedule(reflection, context, reference, *, exact=True):

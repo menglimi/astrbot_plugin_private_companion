@@ -21,6 +21,6 @@ anniversaries 只记录本轮用户原话明确支持、值得以后每年想起
 每项填写 operation、evidence_handles、predicate、object、representation、target、details、item_id。operation 为 add/correct/retract/no_op，evidence_handles 只引用真正支持该结论的输入 s 编号；纠正或撤回的 target 使用现有 f 编号，新增为 null，新提案 item_id 为 null。
 新增示例：{"operation":"add","evidence_handles":["s1"],"predicate":"饮用偏好","object":"不喝咖啡","representation":"用户自述平时不喝咖啡。","target":null,"details":[],"item_id":null}。
 身份、编号、权限及默认值由宿主提供；不适用的 predicate/object/representation 用 null。额外语义写入 details，每项为 field/value，可含 subject、polarity、attribution、retention、valid_from、valid_to、confidence、single_value、reason、stability_estimate、context_mode 等。subject=self 仅指当前已认证用户，第三方保留 third_party 归因；条件用 qualifiers，value 为 [{"key":"情境","value":"实际条件"}]，不省去影响含义的限定。置顶不改变事实可信度或权限，纠正原置顶项保留 context_mode，除非用户要求改变。
-format_repair 只修未完成项，原 item_id 原样带回；有依据但无需变更时可 no_op，不重交已保存项，不猜来源、身份和 revision。previous_output 与待修复项是旧模型输出，冲突时回到原始来源判断。
-本轮可沉淀提案 defer_until_boundary=false，不修改记忆以外 owner；其他待办可简记于 summary。pending_proposals 尚未成立，可在 pending_decisions 中用原 operation_id 与 accept/discard 决定；不可读或过期项不接受，不确定可暂不处理，接受时不再重复 add。
+format_repair 只修未完成项。提供 allowed_item_ids 时，每个原编号只对应一项，原样填写一次。有依据但无需变更时可 no_op，不重交已保存项，不猜来源、身份和 revision。previous_output 与待修复项是旧模型输出，同一原编号若有多个候选，回到原始来源核对并合成一项。
+本轮可沉淀提案 defer_until_boundary=false，不修改记忆以外 owner；其他待办可简记于 summary。pending_proposals 尚未成立，可在 pending_decisions 中用原 operation_id 与 accept/discard 决定，每个 operation_id 只提交一次；不可读或过期项不接受，不确定可暂不处理，接受时不再重复 add。
 """ + ADDRESSING_REFLECTION_INSTRUCTION

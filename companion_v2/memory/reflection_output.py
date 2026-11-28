@@ -2,6 +2,7 @@
 
 import json
 import re
+from itertools import count
 
 from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.relationships import anniversaries
@@ -322,7 +323,7 @@ def validate_output(reflection, context, manifest, output):
                 raw = {k: v for k, v in entry.items() if k != "item_id"}
                 identifier = entry.get("item_id") or identifier
             text(identifier, "item_id", 128)
-            if identifier.startswith("pending:"):
+            if identifier.startswith(("pending:", "anniversary:")) or identifier == "anniversary-1":
                 raise OutputProblem("invalid_item_id")
             if allowed is not None and identifier not in allowed:
                 raise OutputProblem("unexpected_repair_item")
@@ -340,7 +341,8 @@ def validate_output(reflection, context, manifest, output):
             problem = {"code": error.code, "path": "proposal"}
         except (ValueError, TypeError, KeyError):
             problem = {"code": "invalid_proposal", "path": "proposal"}
-        if type(identifier) is not str or not identifier.strip() or len(identifier) > 128:
+        if (type(identifier) is not str or not identifier.strip() or len(identifier) > 128
+                or problem and problem["code"] == "invalid_item_id"):
             identifier = "item-" + str(index + 1).zfill(4)
         candidate = {"item_id": identifier, "raw": raw, "groups": _groups(normalized, manifest),
                      "proposal": json.loads(encode(proposal)) if proposal else None, "problem": problem, "kind": "proposal"}
@@ -380,10 +382,29 @@ def validate_output(reflection, context, manifest, output):
                      "problem": problem, "kind": "decision"}
         candidates.append(candidate)
         identifiers.setdefault(identifier, []).append(candidate)
+    reserved_ids = set(identifiers)
+    generated_ids = (f"item-{number:04d}" for number in count(1))
+    duplicates = set()
     for shared in identifiers.values():
-        if len(shared) > 1:
-            # There is no trustworthy per-item receipt identity to salvage here.
-            raise OutputProblem("duplicate_item_id", "proposals")
+        if len(shared) < 2:
+            continue
+        first, *others = shared
+        if allowed is None and first["kind"] == "proposal":
+            # Fresh proposals have no earlier receipts to bind. Give each its own ID.
+            for candidate in others:
+                identifier = next(value for value in generated_ids if value not in reserved_ids)
+                reserved_ids.add(identifier)
+                candidate["item_id"] = identifier
+            continue
+        # Repair IDs and pending decisions identify existing work. Identical
+        # repeats count once. Competing versions of an item need resolution.
+        duplicates.update(id(candidate) for candidate in others)
+        if any(candidate["raw"] != first["raw"] for candidate in others):
+            first["raw"] = [candidate["raw"] for candidate in shared]
+            first["groups"].update(*(candidate["groups"] for candidate in others))
+            path = "proposals" if first["kind"] == "proposal" else "pending_decisions"
+            first["problem"] = {"code": "duplicate_item_id", "path": path}
+    candidates = [candidate for candidate in candidates if id(candidate) not in duplicates]
     targets = {}
     for candidate in candidates:
         for group in candidate["groups"]:
@@ -395,7 +416,7 @@ def validate_output(reflection, context, manifest, output):
                 candidate["problem"] = {"code": "conflicting_target", "path": "target"}
     decision_groups = set().union(*(c["groups"] for c in candidates if c["kind"] == "decision"))
     for candidate in candidates:
-        if candidate["kind"] == "proposal" and candidate["groups"] & decision_groups:
+        if candidate["kind"] == "proposal" and not candidate["problem"] and candidate["groups"] & decision_groups:
             candidate["problem"] = {"code": "overlapping_pending_decision", "path": "proposal"}
     # Do not split a change with an unresolved dependent/conflicting member.
     # An unidentifiable bad item may affect any fact, so keep that batch together.

@@ -12,7 +12,7 @@ from companion_v2.execution.service import outcome
 from .models import owner_key, text, timestamp
 from .configuration import validate_schedule
 from .checkpoints import MemoryCheckpointRecovery
-from .reflection_jobs import MemoryReflectionJobs
+from .reflection_jobs import MemoryReflectionJobs, RETRYABLE
 
 
 logger = logging.getLogger(__name__)
@@ -246,14 +246,19 @@ class MemorySchedule:
                                        (batch_id, row["schedule_id"], row["revision"]))
             outcome = await self.reflection.run(context, batch_id)
             if not outcome.is_success:
-                # Unknown calls stay in the durable queue and are never replayed.
-                # Detach their window so tomorrow's new sources can still run.
-                current = self.reflection._row(context, batch_id)
-                if current["state"] in ("running", "failed", "partial"):
+                code = outcome.failure.code
+                if code in RETRYABLE:
                     with self.runtime.transaction() as connection:
-                        connection.execute("UPDATE memory_schedules SET pending_batch = NULL WHERE schedule_id = ? AND revision = ? AND pending_batch = ?",
-                                           (row["schedule_id"], row["revision"], batch_id))
-                return {"state": "blocked", "code": outcome.failure.code, "batch_id": batch_id}
+                        connection.execute("""UPDATE memory_schedules SET next_at = ?
+                            WHERE schedule_id = ? AND revision = ? AND pending_batch = ? AND enabled = 1""",
+                            (stamp(now + timedelta(seconds=5)), row["schedule_id"], row["revision"], batch_id))
+                else:
+                    # Unresolved batches keep their reservations. Let a new
+                    # batch work through any independent sources in the window.
+                    result = require(self.reflection.status(context, batch_id))
+                    if result["state"] in ("running", "failed", "partial"):
+                        self._detach_failed_window(row, batch_id, now)
+                return {"state": "blocked", "code": code, "batch_id": batch_id}
             result = outcome.unwrap()
             self._settle(row, batch_id, result, now)
             return result
@@ -265,7 +270,8 @@ class MemorySchedule:
         preparing = result["state"] == "selecting"
         if result["state"] in ("failed", "partial") and result.get("repair_batch"):
             child_id = self.reflection._repair_chain(context, batch_id)[-1]
-            preparing = self.reflection._row(context, child_id)["state"] == "selecting"
+            preparing = self.reflection._row(context, child_id)["state"] in (
+                "selecting", "prepared", "received", "modelled")
         if preparing:
             with self.runtime.transaction() as connection:
                 connection.execute("UPDATE memory_schedules SET next_at = ? WHERE schedule_id = ? AND revision = ? AND pending_batch = ? AND enabled = 1",
@@ -284,13 +290,13 @@ class MemorySchedule:
                     connection.execute("UPDATE memory_schedules SET next_at = ? WHERE schedule_id = ? AND revision = ? AND enabled = 1",
                                        (stamp(now + timedelta(seconds=5)), row["schedule_id"], row["revision"]))
         elif result["state"] in ("failed", "partial", "running"):
-            with self.runtime.transaction() as connection:
-                connection.execute("UPDATE memory_schedules SET pending_batch = NULL WHERE schedule_id = ? AND revision = ? AND pending_batch = ?",
-                                   (row["schedule_id"], row["revision"], batch_id))
-                # A partial/failed batch must not leave next_at at tomorrow's
-                # normal slot: the remaining sources would wait a whole day.
-                connection.execute("UPDATE memory_schedules SET next_at = ? WHERE schedule_id = ? AND revision = ? AND enabled = 1",
-                                   (stamp(now + timedelta(seconds=5)), row["schedule_id"], row["revision"]))
+            self._detach_failed_window(row, batch_id, now)
+
+    def _detach_failed_window(self, row, batch_id, now):
+        with self.runtime.transaction() as connection:
+            connection.execute("""UPDATE memory_schedules SET pending_batch = NULL, next_at = ?
+                WHERE schedule_id = ? AND revision = ? AND pending_batch = ? AND enabled = 1""",
+                (stamp(now + timedelta(seconds=5)), row["schedule_id"], row["revision"], batch_id))
 
     def next_wake(self):
         if self.closed:

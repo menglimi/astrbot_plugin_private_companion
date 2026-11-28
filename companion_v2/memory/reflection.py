@@ -38,6 +38,7 @@ KIND = "memory.reflect"
 # cap (often 2048) truncates that JSON, and the repair path then resends the
 # same material and truncates again. Extraction must not inherit the reply cap.
 REFLECTION_MIN_OUTPUT_TOKENS = 8192
+MAX_AUTO_REPAIRS = 2
 
 
 def reflection_output_tokens(configured):
@@ -55,8 +56,9 @@ def reflection_profile(provider, *, max_output_tokens=4096):
 
 
 class MemoryReflection:
-    def __init__(self, runtime):
+    def __init__(self, runtime, *, notify=None):
         self.runtime = runtime
+        self.notify = notify
         self.memory = self.gateway = self.runner = None
         self._require_running = None
         self._closed, self._invocations = False, set()
@@ -163,10 +165,12 @@ class MemoryReflection:
                 manifest["inherited_fact_handles"] = original.get("fact_handles", {})
                 manifest["inherited_fact_records"] = original.get("fact_records", {})
                 rejected = json.loads(parent["result_json"] or "{}").get("rejected", [])
-                if rejected:
-                    allowed = original.get("repair_item_ids")
-                    manifest["repair_item_ids"] = sorted({v["item_id"] for v in rejected
-                        if allowed is None or v["item_id"] in allowed})
+                allowed = original.get("repair_item_ids")
+                if rejected or allowed is not None:
+                    remaining = {item["item_id"] for item in rejected} if rejected else set(allowed)
+                    if allowed is not None and rejected:
+                        remaining.intersection_update(allowed)
+                    manifest["repair_item_ids"] = sorted(remaining)
                     manifest["repair_material"]["allowed_item_ids"] = manifest["repair_item_ids"]
                     # Keep only pending decisions from this repair's input set.
                     pending_ids = {identifier[8:] for identifier in manifest["repair_item_ids"] if identifier.startswith("pending:")}
@@ -261,15 +265,14 @@ class MemoryReflection:
                 result = self.apply(context, batch_id)
                 if not result.is_success:
                     recovery.quarantine_stale(self, context, batch_id, result.failure.code)
-                return result
+                    return result
+                return await self._after_run(context, batch_id)
             if row["state"] == "running":
                 return Outcome.failed("memory_reflection_uncertain", "the original model attempt must be reconciled; it is not replayed")
             if row["state"] in ("failed", "partial"):
-                chain = self._repair_chain(context, batch_id)
-                linked = chain[-1] if len(chain) > 1 else None
-                if linked and self._row(context, linked)["state"] in ("selecting", "prepared", "received", "modelled", "complete", "empty"):
-                    await self.run(context, linked)
-                    return self.status(context, batch_id)
+                continuation = await self._continue_repair(context, batch_id)
+                if continuation is not None:
+                    return self.status(context, batch_id) if continuation.is_success else continuation
                 return Outcome.failed("memory_reflection_failed", "the known failed attempt needs an explicit retry request")
             if KIND not in self.gateway.router.profiles:
                 raise TaskError("model_task_unregistered", "host has not configured memory reflection")
@@ -432,21 +435,31 @@ class MemoryReflection:
 
     async def _after_run(self, context, batch_id):
         row = recovery.reconcile_prepared(self, context, batch_id)
-        manifest = json.loads(row["manifest_json"])
-        enabled = self.memory.settings.read(context)[0]["memory.reflection_auto_repair"] if self.memory.settings else True
-        if enabled and manifest.get("repair_depth", 0) == 0 and recovery.repair_allowed(row):
-            receipts = json.loads(row["receipts_json"])
-            child_id = receipts.get("repair_batch")
-            if child_id is None:
-                prepared = self.retry(context, batch_id, request_id="auto-repair:" + batch_id)
-                if prepared.is_success:
-                    child_id = prepared.unwrap()["batch_id"]
-            if child_id is not None:
-                child = self._row(context, child_id)
-                if child["state"] in ("selecting", "prepared", "received", "modelled"):
-                    await self.run(context, child_id)
+        if row["state"] in ("failed", "partial"):
+            continuation = await self._continue_repair(context, batch_id)
+            if continuation is not None and not continuation.is_success:
+                return continuation
         recovery.finish_parent(self, context, batch_id)
         return self.status(context, batch_id)
+
+    async def _continue_repair(self, context, batch_id):
+        leaf_id = self._repair_chain(context, batch_id)[-1]
+        leaf = self._row(context, leaf_id)
+        if leaf["state"] == "running":
+            return Outcome.failed("memory_reflection_uncertain", "the linked model attempt still needs reconciliation")
+        if leaf["state"] in ("failed", "partial"):
+            depth = json.loads(leaf["manifest_json"]).get("repair_depth", 0)
+            if depth >= MAX_AUTO_REPAIRS or not recovery.repair_allowed(leaf):
+                return None
+            if self.memory.settings and not self.memory.settings.read(context)[0]["memory.reflection_auto_repair"]:
+                return None
+            prepared = self.retry(context, leaf_id, request_id="auto-repair:" + leaf_id)
+            if not prepared.is_success:
+                return prepared
+            leaf_id = prepared.unwrap()["batch_id"]
+        elif leaf["state"] not in ("selecting", "prepared", "received", "modelled", "complete", "empty"):
+            return None
+        return await self.run(context, leaf_id)
 
     @outcome
     def retry(self, context, batch_id, *, request_id):

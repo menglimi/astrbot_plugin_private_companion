@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from companion_v2.execution.models import encode
+from companion_v2.execution.models import encode, stamp
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.identity_policy.models import AuthorizationTier
@@ -246,11 +246,22 @@ class MemoryRecoveryQueueTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         app.memory_schedule.configure(context, schedule_id="auto-repair-day", expected_revision=0,
             role_instruction="原角色人格提示").unwrap()
         original, count = self.model_behavior, 0
-        async def once(envelope):
+        async def repair(envelope):
             nonlocal count
             count += 1
-            return answered("{invalid") if count == 1 else await original(envelope)
-        self.model_behavior = once
+            output = json.loads((await original(envelope)).draft.text)
+            proposal = {**output["proposals"][0]["proposal"], "predicate": "早餐习惯"}
+            if count == 1:
+                output["proposals"].append({"item_id": "breakfast", "proposal": {**proposal, "confidence": "bad"}})
+            else:
+                material = next(m for m in envelope.original.context.materials if m.purpose == "format_repair")
+                self.assertEqual(json.loads(material.payload)["allowed_item_ids"], ["breakfast"])
+                if count == 2:
+                    return answered("{invalid")
+                output["proposals"] = [{"item_id": "breakfast", "proposal": proposal}]
+            return answered(encode(output))
+
+        self.model_behavior = repair
         schedule = dict(app.runtime.read_one("SELECT * FROM memory_schedules WHERE schedule_id = 'auto-repair-day'", ()))
         result = await app.memory_schedule._run(schedule, self.clock.now())
         self.assertEqual(result["state"], "complete")
@@ -261,7 +272,39 @@ class MemoryRecoveryQueueTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         current = app.runtime.read_one("SELECT * FROM memory_schedules WHERE schedule_id = 'auto-repair-day'", ())
         self.assertEqual(current["covered_until"], self.manifest(app, context, result["batch_id"])["end"])
         self.assertIsNone(current["pending_batch"])
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 3)
+        self.assertEqual(set(result["receipts"]), {"preference", "breakfast"})
+
+    async def test_repair_of_a_detached_window_rechecks_coverage(self):
+        host, context, prepared = await self.failed_schedule()
+        app = host.application
+        batch_id = prepared["batch_id"]
+        schedule = app.runtime.read_one("SELECT * FROM memory_schedules WHERE schedule_id = 'repair-day'", ())
+        self.assertIsNone(schedule["pending_batch"])
+        original_due = schedule["next_at"]
+        repair = ReflectionManagement(app, self.core).prepare_retry(
+            context, batch_id=batch_id, operation_key="repair-detached").unwrap()
+        calls = len(self.called)
+        self.assertEqual((await app.memory_reflection.run(context, repair["batch_id"])).unwrap()["state"], "complete")
+
+        schedule = dict(app.runtime.read_one("SELECT * FROM memory_schedules WHERE schedule_id = 'repair-day'", ()))
+        self.assertLess(schedule["next_at"], original_due)
+        self.assertEqual(schedule["next_at"], stamp(self.clock.now() + timedelta(seconds=5)))
+        original_evidence = {encode(item) for item in self.manifest(app, context, batch_id)["evidence"]}
+
+        async def no_new_facts(envelope):
+            return answered(encode({"summary": "暂无新的习惯需要记录。", "proposals": []}))
+
+        self.model_behavior = no_new_facts
+        self.clock.advance(timedelta(seconds=5))
+        result = await app.memory_schedule._run(schedule, self.clock.now())
+        self.assertIn(result["state"], ("complete", "empty"))
+        current_evidence = self.manifest(app, context, result["batch_id"])["evidence"]
+        self.assertTrue(original_evidence.isdisjoint(map(encode, current_evidence)))
+        self.assertEqual(result["deferred_sources"], 0)
+        covered = app.runtime.read_one("SELECT covered_until FROM memory_schedules WHERE schedule_id = 'repair-day'", ())
+        self.assertEqual(covered["covered_until"], stamp(self.clock.now()))
+        self.assertEqual(len(self.called), calls + 1 + (result["state"] == "complete"))
 
     async def test_reauthentication_does_not_restore_a_removed_reflection_permission(self):
         host, context, prepared = await self.setup_manual()

@@ -65,8 +65,11 @@ class ReflectionManagement:
         repair_id = "memory-reflection-" + digest([owner_key(context), request_id])
         existing = self.reflection.runtime.read_one("SELECT 1 FROM memory_reflections WHERE batch_id = ? AND owner_key = ?",
                                                    (repair_id, owner_key(context)))
-        if not existing and row["state"] in ("selecting", "prepared", "received", "modelled", "complete", "empty"):
-            return {"batch_id": row["batch_id"], "state": row["state"]}
+        if not existing:
+            leaf_id = self.reflection._repair_chain(context, row["batch_id"])[-1]
+            leaf = row if leaf_id == row["batch_id"] else self._row(context, leaf_id)
+            if leaf["state"] in ("selecting", "prepared", "received", "modelled", "complete", "empty"):
+                return {"batch_id": leaf_id, "state": leaf["state"]}
         prepared = require(self.reflection.retry(context, row["batch_id"], request_id=request_id))
         return prepared
 

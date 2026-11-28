@@ -166,9 +166,13 @@ class MemoryReflectionJobsTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.model_behavior = original
         newer = self.enqueue(app, context, prepared["batch_id"], "explicit-new-repair").unwrap()
         self.assertNotEqual(newer["batch_id"], job["batch_id"])
+        from_root = ReflectionManagement(app, self.core).prepare_retry(
+            context, batch_id=prepared["batch_id"], operation_key="continue-linked").unwrap()
+        self.assertEqual(from_root["batch_id"], newer["batch_id"])
         self.assertEqual((await self.settle(app, newer["job_id"]))["state"], "complete")
         self.assertEqual(len(self.called), calls + 1)
-        self.assertEqual(self.enqueue(app, context, prepared["batch_id"]).unwrap()["job_id"], job["job_id"])
+        receipt = self.enqueue(app, context, prepared["batch_id"]).unwrap()
+        self.assertEqual((receipt["job_id"], receipt["state"]), (job["job_id"], "complete"))
 
     async def test_stopped_host_and_foreign_context_cannot_register_work(self):
         host, context, prepared = await self.setup_reflection()

@@ -178,10 +178,10 @@ class MemoryRecoveryTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         result = (await reflection.run(context, prepared["batch_id"])).unwrap()
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["issues"][0]["code"], "duplicate_json_field")
-        self.assertEqual(len(self.called), count + 2)
+        self.assertEqual(len(self.called), count + 3)
         self.assertEqual(self.atoms(host.application), ())
         self.assertFalse((await reflection.run(context, prepared["batch_id"])).is_success)
-        self.assertEqual(len(self.called), count + 2)
+        self.assertEqual(len(self.called), count + 3)
 
     async def test_restart_after_capture_reuses_output_after_query_session_expiry(self):
         host, context, prepared = await self.setup_reflection()
@@ -243,6 +243,57 @@ class MemoryRecoveryTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["unresolved_items"]), 2)
         self.assertEqual(self.atoms(host.application), ())
 
+    async def test_fresh_duplicate_ids_have_independent_receipts(self):
+        host, context, prepared = await self.setup_manual()
+        original = self.model_behavior
+
+        async def duplicated(envelope):
+            output = json.loads((await original(envelope)).draft.text)
+            first = output["proposals"][0]
+            output["proposals"].append({"item_id": first["item_id"], "proposal": {
+                **first["proposal"], "predicate": "早餐习惯"}})
+            return answered(encode(output))
+
+        self.model_behavior = duplicated
+        result = (await host.application.memory_reflection.run(context, prepared["batch_id"])).unwrap()
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(set(result["receipts"]), {"preference", "item-0001"})
+        self.assertEqual(len(self.atoms(host.application)), 2)
+
+    async def test_conflicting_repair_id_does_not_block_an_independent_repair(self):
+        host, context, prepared = await self.setup_manual()
+        app, original = host.application, self.model_behavior
+
+        async def mixed(envelope):
+            output = json.loads((await original(envelope)).draft.text)
+            base = output["proposals"][0]["proposal"]
+            breakfast = {**base, "predicate": "早餐习惯"}
+            travel = {**base, "predicate": "旅行习惯"}
+            if any(material.purpose == "format_repair" for material in envelope.original.context.materials):
+                output["proposals"] = [
+                    {"item_id": "breakfast", "proposal": breakfast},
+                    {"item_id": "breakfast", "proposal": {**breakfast, "object": "只喝茶"}},
+                    {"item_id": "travel", "proposal": travel},
+                ]
+            else:
+                output["proposals"].extend([
+                    {"item_id": "breakfast", "proposal": {**breakfast, "confidence": "bad"}},
+                    {"item_id": "travel", "proposal": {**travel, "confidence": "bad"}},
+                ])
+            return answered(encode(output))
+
+        self.model_behavior = mixed
+        reflection = app.memory_reflection
+        first = (await reflection.run(context, prepared["batch_id"])).unwrap()
+        self.assertEqual(set(first["receipts"]), {"preference"})
+        repair = reflection.retry(context, first["batch_id"], request_id="repair-duplicate").unwrap()
+        result = (await reflection.run(context, repair["batch_id"])).unwrap()
+        self.assertEqual(result["state"], "partial")
+        self.assertEqual(set(result["receipts"]), {"travel"})
+        self.assertEqual([(item["item_id"], item["code"]) for item in result["unresolved_items"]],
+                         [("breakfast", "duplicate_item_id")])
+        self.assertEqual(len(self.atoms(app)), 2)
+
     async def test_truncated_even_valid_json_is_captured_but_never_applied(self):
         host, context, prepared = await self.setup_reflection()
         original = self.model_behavior
@@ -255,7 +306,7 @@ class MemoryRecoveryTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         result = (await host.application.memory_reflection.run(context, prepared["batch_id"])).unwrap()
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["finish_reason"], "length")
-        self.assertEqual(len(self.called), count + 2)
+        self.assertEqual(len(self.called), count + 3)
         self.assertEqual(self.atoms(host.application), ())
 
     async def test_unknown_transport_is_not_repaired_or_replayed(self):
