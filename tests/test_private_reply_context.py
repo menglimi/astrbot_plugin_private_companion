@@ -137,11 +137,11 @@ class PrivateReplyContextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         _, old = await self.prepare("下次聊", "before-contact")
         self.clock.advance(timedelta(seconds=1))
         await self.sent(old, "先去上课吧。")
-        self.clock.advance(timedelta(seconds=1))
+        self.clock.advance(timedelta(hours=6))
         first_at = stamp(self.clock.now())
         self.clock.advance(timedelta(seconds=1))
         second_at = stamp(self.clock.now())
-        self.clock.advance(timedelta(seconds=1))
+        self.clock.advance(timedelta(minutes=2))
         event, current = await self.prepare("这让我有点担心。", "after-contact")
         bubbles = [(first_at, "看到窗台上的杯子了。"), (second_at, "它快被风吹落了。")]
         materials = [{"kind": "confirmed_background_message", "content": {
@@ -153,10 +153,14 @@ class PrivateReplyContextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": current})
         request = NS(prompt="这让我有点担心。", extra_user_content_parts=[],
                      contexts=[{"role": "assistant", "content": "先去上课吧。"}])
+        self.clock.advance(timedelta(minutes=5))
         await inject_core_reply_perception_context(event, request, application=self.app)
 
         payload = json.loads(request.extra_user_content_parts[-1].text.split("\n", 1)[1]
                              .removesuffix("\n</companion_v2_context>"))
+        self.assertEqual(payload["conversation"]["interaction_gap"], {
+            "band": "in_flow", "elapsed_minutes": 2, "days_apart": 0,
+        })
         timeline = payload["private_reply_context"]
         native, first, second = [item for item in timeline["before_input"] if item["speaker"] == "assistant"]
         self.assertTrue(native["text_in_host_history"])

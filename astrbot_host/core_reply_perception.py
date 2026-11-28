@@ -8,6 +8,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Mapping
+from datetime import datetime
 from inspect import isawaitable
 from pathlib import Path
 from urllib.parse import urlparse
@@ -22,6 +23,7 @@ from companion_v2.conversation.date_context import (
     ALMANAC_INSTRUCTION,
     CALENDAR_INSTRUCTION,
     PERSONAL_DATE_INSTRUCTION,
+    project_interaction_gap,
 )
 from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
 from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
@@ -984,6 +986,17 @@ async def inject_core_reply_perception_context(event, request, *, native_context
             decoded = None
         if isinstance(decoded, Mapping):
             details["conversation"] = decoded
+            timeline = details.get("private_reply_context")
+            clock = decoded.get("current_local_time")
+            if timeline and timeline["before_input"] and isinstance(clock, Mapping) and clock.get("timezone"):
+                # Preserve the gap at message arrival for queued replies.
+                gap = project_interaction_gap(
+                    datetime.fromisoformat(timeline["input_received_at"]),
+                    timeline["before_input"][-1]["at"],
+                    clock["timezone"],
+                )
+                if gap is not None:
+                    decoded["interaction_gap"] = gap
 
     stt_transcribed = _apply_external_stt_to_request(event, request, parts, details)
 

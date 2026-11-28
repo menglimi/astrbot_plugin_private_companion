@@ -60,13 +60,11 @@ class CoreReplyTimeContextTests(unittest.TestCase):
         # after another reply part has been sent, so its wall time is too late.
         native_input.at = at.replace(minute=54)
         capture = Mock(return_value={})
-        interaction = Mock(return_value={})
-        application.background_history = NS(capture=capture, interaction=interaction,
+        application.background_history = NS(capture=capture,
                                             read=lambda *_args, **_kwargs: ())
         context.key = "private-time-test"
         build_core_reply_prompt(application, context, native_input, at=at)
         self.assertEqual(capture.call_args.args[1], native_input.at)
-        self.assertEqual(interaction.call_args.args[1], native_input.at)
 
         context.scope.kind = ScopeKind.GROUP
         group_prompt = build_core_reply_prompt(application, context, native_input, at=at)
