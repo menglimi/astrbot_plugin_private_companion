@@ -565,21 +565,31 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         url = f"{self.platform.client.base_file_url}/media/v1"
         inline = ImageURLPart(image_url=ImageURLPart.ImageURL(url="data:image/png;base64,AAAA", id=url))
         signed = ThinkPart(think="thinking", encrypted=url)
+        # A signed block whose reasoning text names the token: editing it would break the signature.
+        reasoned = ThinkPart(think=f"detail {url}", encrypted="sig")
         call = ToolCall(id="c1", function=ToolCall.FunctionBody(name="look", arguments=json.dumps({"url": url})),
                         extra_content={"refs": (url,)})
         history = [{"role": "user", "content": url},
                    {"role": "assistant", "content": "", "tool_calls": [call, {
                        "id": "c2", "type": "function", "function": {"name": "look", "arguments": "{}"},
-                       "extra_content": {url: True}}]}]
+                       "extra_content": {url: True}}]},
+                   # Serialized parts: a turn-only image and a signed thinking block.
+                   {"role": "user", "content": [
+                       {"type": "text", "text": "hi"},
+                       {"type": "image_url", "image_url": {"url": url}, "_no_save": True},
+                       {"type": "think", "think": f"detail {url}", "encrypted": "sig"}]}]
         request = ProviderRequest(prompt=url, contexts=history, image_urls=[url],
                                   extra_user_content_parts=[TextPart(text=url), ImageURLPart(
-                                      image_url=ImageURLPart.ImageURL(url=url)), inline, signed])
+                                      image_url=ImageURLPart.ImageURL(url=url)), inline, signed, reasoned])
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         for _ in range(2):
             await plugin.protect_companion_telegram_request(event, request)
         texts = [part.text for part in request.extra_user_content_parts if isinstance(part, TextPart)]
-        # The image fetched by URL and the signed thinking part are each replaced once.
-        self.assertEqual(texts.count("[附件不可用]"), 2)
+        # The image fetched by URL and both signed thinking parts are each replaced once, whole.
+        self.assertEqual(texts.count("[附件不可用]"), 3)
+        self.assertFalse(any(isinstance(part, ThinkPart) for part in request.extra_user_content_parts))
+        self.assertEqual(request.contexts[2]["content"][1:], [
+            {"type": "text", "text": "[附件不可用]", "_no_save": True}, {"type": "text", "text": "[附件不可用]"}])
         self.assertEqual(request.image_urls, [])
         self.assertIn(inline, request.extra_user_content_parts)
         self.assertIsInstance(request.contexts[1]["tool_calls"][0], ToolCall)

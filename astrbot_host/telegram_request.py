@@ -1,5 +1,7 @@
 """Remove the Telegram Bot API token from a private provider request before it is sent."""
 
+import json
+
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart, ThinkPart
 from pydantic import BaseModel, ValidationError
 
@@ -20,12 +22,17 @@ def _cleaner(token):
         if isinstance(value, (list, tuple)):
             return [clean(item) for item in value]
         if isinstance(value, dict):
+            # Serialized parts carry AstrBot's turn-only mark as a key; the note keeps it.
+            note = {"type": "text", "text": UNAVAILABLE, **({"_no_save": True} if value.get("_no_save") else {})}
+            if value.get("type") == "think" and token in json.dumps(value, ensure_ascii=False, default=str):
+                # A signed thinking block cannot be edited and still verify; drop it whole.
+                return note
             for kind in ("audio_url", "image_url"):
                 url = value.get(kind)
                 url = url.get("url") if isinstance(url, dict) else url
                 if isinstance(url, str) and token in url:
                     # A URL fetched with the token is not a usable attachment once redacted.
-                    return {"type": "text", "text": UNAVAILABLE}
+                    return note
             return {clean(key): clean(item) for key, item in value.items()}
         if isinstance(value, (ImageURLPart, AudioURLPart)):
             target = getattr(value, value.type)
@@ -34,8 +41,9 @@ def _cleaner(token):
             target.id = clean(target.id)
         if isinstance(value, TextPart):
             value.text = clean(value.text)
-        elif isinstance(value, ThinkPart):
-            value.think = clean(value.think)
+        elif isinstance(value, ThinkPart) and (token in (value.think or "") or token in (value.encrypted or "")):
+            # A signed thinking block cannot be edited and still verify; drop it whole.
+            return unavailable(value)
         if isinstance(value, ContentPart) and token in value.model_dump_json():
             # Any other field still naming the token (a signature, a new field) makes the part unusable.
             return unavailable(value)
