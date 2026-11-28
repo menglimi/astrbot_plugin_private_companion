@@ -15,6 +15,8 @@ from astrbot.core.message.components import (
 )
 from astrbot.core.message.message_event_result import MessageChain
 
+from companion_v2.adapters.astrbot.telegram_wire import telegram_voice
+
 _DECORATION = (Reply, At, AtAll)
 # meme_manager and similar expression hooks decorate outgoing text with
 # ``&&angry&&``-style tokens.  They are internal markers, never user-facing.
@@ -103,10 +105,11 @@ async def native_wire_message(event, message):
     """The SDK's Image conversion drops sub_type; keep it for owned QQ stickers."""
     getter = getattr(event, "get_platform_name", None)
     if callable(getter) and getter() in ("wechat_native", "telegram"):
+        telegram = getter() == "telegram"
         chain = getattr(message, "chain", ())
-        if any(isinstance(part, Face) for part in chain):
-            return _derive(message, [Plain(text=f"[QQ表情 {part.id}]") if isinstance(part, Face) else part
-                                     for part in chain])
+        if any(isinstance(part, Face) or telegram and type(part) is Record for part in chain):
+            return _derive(message, [Plain(text=f"[QQ表情 {part.id}]") if isinstance(part, Face)
+                                     else telegram_voice(part) if telegram else part for part in chain])
         return message
     if not callable(getter) or getter() != "aiocqhttp":
         return message

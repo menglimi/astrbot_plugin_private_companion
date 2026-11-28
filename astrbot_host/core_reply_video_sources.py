@@ -108,7 +108,7 @@ _VIDEO_FILE_SUFFIXES = frozenset({
 _EXCLUDED_VIDEO_FILE_SUFFIXES = frozenset({".ts", ".m2ts", ".mts"})
 
 
-def _file_is_video(part):
+def file_is_video(part):
     from pathlib import Path
     from urllib.parse import urlparse
 
@@ -145,7 +145,7 @@ def video_positions(event, *, video_type, component_reader=None):
     for position, part in enumerate(parts if isinstance(parts, (list, tuple)) else ()):
         kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
         is_native_video = (type(part) is video_type and kind == "Video")
-        is_video_file = (kind == "File" and _file_is_video(part))
+        is_video_file = (kind == "File" and file_is_video(part))
         if not (is_native_video or is_video_file):
             continue
         file_attr = "file_" if is_video_file and hasattr(part, "file_") else "file"

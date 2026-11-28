@@ -2,10 +2,14 @@
 
 import asyncio
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import io
 import ipaddress
+import os
 from pathlib import Path
+import stat
 from urllib.parse import urljoin
 import warnings
 
@@ -74,30 +78,117 @@ class PublicImageResolver(aiohttp.ThreadedResolver):
         return values
 
 
-async def fetch_image(value):
-    return await fetch_attachment(value, maximum_bytes=MAX_IMAGE_BYTES)
+async def fetch_image(value, *, maximum_bytes=MAX_IMAGE_BYTES):
+    return await fetch_attachment(value, maximum_bytes=maximum_bytes)
+
+
+class ReadMeter:
+    """Body bytes received by downloads in one ``metered`` block, including failed ones."""
+
+    def __init__(self):
+        self.bytes = 0
+
+
+_meter = ContextVar("companion_v2_attachment_meter", default=None)
+
+
+@contextmanager
+def metered():
+    """Count what downloads started in this block receive, through any loader in between."""
+    meter = ReadMeter()
+    token = _meter.set(meter)
+    try:
+        yield meter
+    finally:
+        _meter.reset(token)
+
+
+_trusted_endpoint = ContextVar("companion_v2_trusted_endpoint", default=None)
+
+
+@contextmanager
+def trusted_endpoint(prefix, *, local_files=False):
+    """Fetch URLs under ``prefix`` the way the host's own client does.
+
+    For a bot's Telegram file endpoint, including an operator's self-hosted Bot
+    API server: AstrBot's proxy setting applies, private addresses are allowed,
+    and redirects must stay under the prefix. With ``local_files``, an absolute
+    path is read from disk, as a local-mode Bot API server hands files over on a
+    shared disk. Byte limits and the meter apply throughout.
+    """
+    value = (prefix if isinstance(prefix, str) and prefix else None, bool(local_files))
+    token = _trusted_endpoint.set(value)
+    try:
+        yield
+    finally:
+        _trusted_endpoint.reset(token)
+
+
+def _under_prefix(value, prefix):
+    """Same origin as ``prefix`` and a path inside it, after URL normalization (so ``..`` cannot escape)."""
+    try:
+        url, base = URL(value), URL(prefix)
+    except (TypeError, ValueError):
+        return False
+    return (type(value) is str and not any(c.isspace() or ord(c) < 32 for c in value)
+            and (url.scheme, url.raw_host, url.port) == (base.scheme, base.raw_host, base.port)
+            and url.raw_user is None and url.raw_password is None and not url.fragment
+            and url.raw_path.startswith(base.raw_path.rstrip("/") + "/")
+            # Encoded separators survive normalization and would be decoded by the server.
+            and not any(sep in url.raw_path.lower() for sep in ("%2f", "%5c", "\\")))
+
+
+def _read_local_attachment(value, maximum_bytes):
+    # Non-blocking, so a FIFO cannot hold the read open before the regular-file check.
+    with os.fdopen(os.open(value, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise TaskError("host_image_fetch_failed", "original attachment is not a regular file")
+        if info.st_size > maximum_bytes:
+            raise TaskError("host_image_limit", "image exceeds the intake byte budget")
+        content = stream.read(maximum_bytes + 1)
+    if len(content) > maximum_bytes:
+        raise TaskError("host_image_limit", "image exceeds the intake byte budget")
+    return content
 
 
 async def fetch_attachment(value, *, maximum_bytes):
-    current = public_url(value)
-    resolver = PublicImageResolver()
+    prefix, local_files = _trusted_endpoint.get() or (None, False)
+    if local_files and type(value) is str and not value.startswith(("//", "\\")) and Path(value).is_absolute():
+        try:
+            return await asyncio.to_thread(_read_local_attachment, value, maximum_bytes)
+        except TaskError:
+            raise
+        except OSError:
+            raise TaskError("host_image_fetch_failed", "original attachment could not be read") from None
+    trusted = prefix is not None and _under_prefix(value, prefix)
+    current = value if trusted else public_url(value)
+    resolver = aiohttp.ThreadedResolver() if trusted else PublicImageResolver()
     try:
         connector = aiohttp.TCPConnector(resolver=resolver, limit=1)
-        async with aiohttp.ClientSession(connector=connector, trust_env=False,
+        # A trusted endpoint goes through AstrBot's proxy setting, as AstrBot's own downloads do.
+        async with aiohttp.ClientSession(connector=connector, trust_env=trusted,
                                         timeout=aiohttp.ClientTimeout(total=15), auto_decompress=False) as session:
             for redirect in range(4):
-                async with session.get(current, allow_redirects=False) as response:
+                async with session.get(current, allow_redirects=False,
+                                       headers={"Accept-Encoding": "identity"}) as response:
                     if response.status in (301, 302, 303, 307, 308):
                         if redirect == 3 or "Location" not in response.headers:
                             raise TaskError("host_image_fetch_failed", "image redirect could not be resolved")
-                        current = public_url(urljoin(current, response.headers["Location"]))
+                        target = urljoin(current, response.headers["Location"])
+                        if trusted and not _under_prefix(target, prefix):
+                            raise TaskError("host_image_fetch_failed", "image redirect left the trusted endpoint")
+                        current = target if trusted else public_url(target)
                         continue
                     if response.status != 200 or response.headers.get("Content-Encoding", "identity") != "identity":
                         raise TaskError("host_image_fetch_failed", "original image could not be fetched")
                     if response.content_length is not None and response.content_length > maximum_bytes:
                         raise TaskError("host_image_limit", "image exceeds the intake byte budget")
                     content = bytearray()
+                    meter = _meter.get()
                     async for chunk in response.content.iter_chunked(65536):
+                        if meter is not None:
+                            meter.bytes += len(chunk)
                         if len(content) + len(chunk) > maximum_bytes:
                             raise TaskError("host_image_limit", "image exceeds the intake byte budget")
                         content.extend(chunk)
@@ -137,7 +228,7 @@ def inspect_image(content, position):
         raise TaskError("host_image_invalid", "image bytes could not be verified") from None
 
 
-def _read_host_resolved_image(value):
+def _read_host_resolved_image(value, maximum_bytes=MAX_IMAGE_BYTES):
     """Read a local file the trusted host already vouched for.
 
     Two producers set ``host_resolved``: the quote resolver, and the adapter's
@@ -148,27 +239,31 @@ def _read_host_resolved_image(value):
     if not path.is_absolute() or value.startswith(("\\\\", "//")) or not path.is_file():
         raise TaskError("host_image_location_invalid", "resolved image cache must be a local absolute file")
     with path.open("rb") as stream:
-        content = stream.read(MAX_IMAGE_BYTES + 1)
-    if len(content) > MAX_IMAGE_BYTES:
+        content = stream.read(maximum_bytes + 1)
+    if len(content) > maximum_bytes:
         raise TaskError("host_image_limit", "image exceeds the intake byte budget")
     return content
 
 
-async def load_native_image(locator):
+async def load_native_image(locator, *, maximum_bytes=MAX_IMAGE_BYTES):
+    """``maximum_bytes`` can only lower the image ceiling, e.g. to what a turn has left."""
     if not isinstance(locator, NativeImageLocator):
         raise TaskError("host_image_location_invalid", "image intake needs a frozen host component")
+    maximum_bytes = min(maximum_bytes, MAX_IMAGE_BYTES)
     try:
         value = locator.locator
         if value.startswith("base64://"):
             encoded = value[len("base64://"):]
-            if len(encoded) > (MAX_IMAGE_BYTES + 2) // 3 * 4:
+            if len(encoded) > (maximum_bytes + 2) // 3 * 4:
                 raise TaskError("host_image_limit", "image exceeds the intake byte budget")
             content = base64.b64decode(encoded, validate=True)
         elif locator.host_resolved is True and Path(value).is_absolute():
-            content = await asyncio.to_thread(_read_host_resolved_image, value)
+            content = await asyncio.to_thread(_read_host_resolved_image, value, maximum_bytes)
         else:
             # Do not interpret a network message's file/path field as local disk authority.
-            content = await fetch_image(value)
+            content = await fetch_image(value, maximum_bytes=maximum_bytes)
+        if len(content) > maximum_bytes:
+            raise TaskError("host_image_limit", "image exceeds the intake byte budget")
         return await asyncio.to_thread(inspect_image, content, locator.position)
     except TaskError:
         raise

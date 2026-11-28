@@ -157,8 +157,11 @@ class MultiPrivateBridge(NativePrivateBridge):
         """Extract private baseline text (Plain, stickers, Face/Mface, trusted STT) without forwards."""
         from companion_v2.adapters.astrbot.voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_transcript
 
+        from .telegram_private_media import redact, sticker_label
+
         message = getattr(event, "message_obj", None)
         stt_text = trusted_stt_transcript(event)
+        sticker = sticker_label(event)
         stt_used = False
         pieces = []
         for part in getattr(message, "message", ()):
@@ -167,6 +170,8 @@ class MultiPrivateBridge(NativePrivateBridge):
                 if stt_text and part.text.strip() == "[语音消息]" and not stt_used:
                     pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
                     stt_used = True
+                elif sticker and part.text.startswith("Sticker: "):
+                    continue
                 else:
                     if stt_text and stt_text in part.text:
                         stt_used = True
@@ -184,7 +189,9 @@ class MultiPrivateBridge(NativePrivateBridge):
             for segment in raw_segments:
                 if _is_sticker_segment(segment):
                     pieces.append("[表情包]")
-        return "".join(pieces)
+        if sticker:
+            pieces.append(sticker)
+        return redact(event, "".join(pieces))
 
     async def capture_core_reply(self, event):
         """Authenticate a private route for AstrBot's reply path without reading attachments."""
@@ -1233,6 +1240,22 @@ class MultiHostSession:
             logger.warning("[CompanionV2] 华为健康感知读取降级 error_type=%s", type(error).__name__)
             return None
 
+    async def _prepare_telegram_media(self, event, context):
+        """Read Telegram attachments within the turn limits before AstrBot collects them."""
+        from companion_v2.conversation.media.understanding import settings as understanding_settings
+        from .telegram_private_media import needs_preparation, prepare_private_media
+
+        if not needs_preparation(event):
+            return
+        try:
+            settings = (self.bridge.file_settings(context.scope, context.role_binding.role)
+                        if self.bridge.file_settings is not None else understanding_settings({}))
+        except Exception as error:
+            # Unreadable settings must not open documents or quoted videos.
+            logger.warning("[CompanionV2] Telegram 附件设置暂不可读 error_type=%s", type(error).__name__)
+            settings = None
+        await prepare_private_media(event, context.scope, settings)
+
     async def prepare_core_reply(self, event, target, *, group_admission=None, plan=None):
         """Prepare only V2 identity and prompt data for AstrBot's normal reply pipeline."""
         async with self._intake[target.target_id]:
@@ -1261,6 +1284,9 @@ class MultiHostSession:
                     context = self._select_core_reply_context(target, captured)
                 self.bridge.connections.assert_current(connection_lease)
                 self._validate_core_group_admission(group_admission, context, captured)
+                if context.scope.kind is ScopeKind.PRIVATE:
+                    await self._prepare_telegram_media(event, context)
+                    self.bridge.connections.assert_current(connection_lease)
                 turn_id = "core-reply:" + digest([context.key, captured.event_id])
                 from companion_v2.conversation.native_turns import begin_inflight_turn
                 begin_inflight_turn(self.runtime, context.key, turn_id)
