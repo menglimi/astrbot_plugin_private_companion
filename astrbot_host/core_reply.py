@@ -215,6 +215,7 @@ def prepare_core_reply_event(
     prepare_send: PrepareSend | None = None,
     media_submit: Callable | None = None,
     owner: Any = None,
+    application: Any = None,
     assert_connection_current: Callable[[], Any] | None = None,
     wait_connection_changed: Callable[[], Awaitable[Any]] | None = None,
 ) -> None:
@@ -274,11 +275,19 @@ def prepare_core_reply_event(
                 if message is None:
                     return None
             if not state.get("delivery_guard_active"):
+                external_meta = getattr(message, "_companion_generated_image_meta", None)
                 from .core_reply_presentation import strip_internal_expression_message
                 message = strip_internal_expression_message(message)
                 if message is None:
                     return None
-                return await state["_original_send"](message, *args, **kwargs)
+                send_result = await state["_original_send"](message, *args, **kwargs)
+                if send_result is not False:
+                    try:
+                        from .core_reply_external_images import observe_external_tool_send_returned
+                        observe_external_tool_send_returned(event, message, message_meta=external_meta)
+                    except Exception:
+                        pass
+                return send_result
             if state.get("silent_suppressed") or state.get("group_participation", {}).get("mode") == "skip":
                 return None
             if state["send_unknown"]:
@@ -583,6 +592,7 @@ def prepare_core_reply_event(
         prepare_send=prepare_send,
         media_submit=media_submit,
         owner=owner,
+        application=application,
         assert_connection_current=assert_connection_current,
         wait_connection_changed=wait_connection_changed,
         delivery_guard_active=False,
@@ -635,6 +645,7 @@ def adopt_core_reply_event(
     on_reply_end: Callable[[], Any] | None = None,
     prepare_send: PrepareSend | None = None,
     media_submit: Callable | None = None,
+    application: Any = None,
     assert_connection_current: Callable[[], Any] | None = None,
     wait_connection_changed: Callable[[], Awaitable[Any]] | None = None,
 ) -> bool:
@@ -679,6 +690,7 @@ def adopt_core_reply_event(
         on_reply_end=on_reply_end,
         prepare_send=prepare_send,
         media_submit=media_submit,
+        application=application if application is not None else state.get("application"),
         assert_connection_current=assert_connection_current,
         wait_connection_changed=wait_connection_changed,
     )
@@ -703,6 +715,11 @@ def activate_core_reply_delivery_guard(event: Any) -> None:
     """Guard only AstrBot's final response, after result decorators have run."""
     state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     if isinstance(state, dict) and _is_core_reply_result(event):
+        try:
+            from .core_reply_external_images import clear_active_external_tools
+            clear_active_external_tools(event)
+        except Exception:
+            pass
         state["delivery_guard_active"] = True
         # A native agent can yield several results around tool calls. AstrBot's
         # after-send hook restores methods after each result, so re-arm here.
@@ -718,6 +735,11 @@ def restore_core_reply_event(event: Any) -> None:
     state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     if not isinstance(state, dict):
         return
+    try:
+        from .core_reply_external_images import clear_active_external_tools
+        clear_active_external_tools(event)
+    except Exception:
+        pass
     state["delivery_guard_active"] = False
     state.pop("_prepared_decoration", None)
     state.pop("_deferred_t2i", None)

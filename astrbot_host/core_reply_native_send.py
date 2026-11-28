@@ -151,6 +151,11 @@ class _CurrentReplyContext:
             observe_core_media_send_returned(tool._event, message_chain, submit=tool._submit)
         except Exception:
             pass
+        try:
+            from .core_reply_external_images import observe_external_media_send_returned
+            observe_external_media_send_returned(tool._event, message_chain, submit=tool._submit)
+        except Exception:
+            pass
         tool.observe("finished")
         return result
 

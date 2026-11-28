@@ -76,6 +76,11 @@ def observe_core_tool_dispatch_begin(event, run_context):
         # Release deferred input and unwind the instance wrappers from outside in.
         from .core_reply_turn_gate import _finish_gate, turn_gate
         from .core_reply_tool_guard import close_core_reply_tool_guard
+        try:
+            from .core_reply_external_images import clear_active_external_tools
+            clear_active_external_tools(event)
+        except Exception:
+            pass
         resolve = getattr(runner, "_resolve_unconsumed_follow_ups", None)
         if callable(resolve):
             resolve()
@@ -111,6 +116,14 @@ def observe_core_tool_dispatch_begin(event, run_context):
                         from .core_reply_reactions import observe_core_cached_image
                         observe_generated_image_cache(event, item.cached_image)
                         observe_core_cached_image(event, item.cached_image)
+                        from .core_reply_external_images import observe_external_cached_image
+                        observe_external_cached_image(event, item.cached_image)
+                    if (
+                        getattr(item, "kind", None) == "tool_call_result_blocks"
+                        or getattr(getattr(item, "message_chain", None), "type", None) == "tool_call_result"
+                    ):
+                        from .core_reply_external_images import clear_active_external_tools
+                        clear_active_external_tools(event)
                 except Exception:
                     pass
                 yield item
@@ -142,6 +155,11 @@ def observe_core_tool_dispatch_begin(event, run_context):
                 resolve()
             raise
         finally:
+            try:
+                from .core_reply_external_images import clear_active_external_tools
+                clear_active_external_tools(event)
+            except Exception:
+                pass
             state["batch_active"] = False
 
     async def complete_skipped_turn():
