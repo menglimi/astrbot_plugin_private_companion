@@ -115,10 +115,11 @@ def _telegram_hosted(url):
     """Whether ``url`` is on Telegram's own Bot API host, however the operator spelled it."""
     try:
         parsed = URL(url)
+        return (parsed.scheme == "https" and (parsed.host or "").lower().rstrip(".") == _TELEGRAM_API_HOST
+                and parsed.port == 443)
     except (TypeError, ValueError):
+        # UnicodeError (a bad punycode host) is a ValueError: not Telegram's server.
         return False
-    return (parsed.scheme == "https" and (parsed.host or "").lower().rstrip(".") == _TELEGRAM_API_HOST
-            and parsed.port == 443)
 
 
 def _file_endpoint(event):
@@ -235,18 +236,24 @@ class _TurnReader:
         settings = self.settings
         return settings is not None and all(settings.get(key) is True for key in keys)
 
+    def _charge(self, meter):
+        """Spend what a failed read received, once, wherever it failed (download, checks, saving)."""
+        if meter is not None and not getattr(meter, "charged", False):
+            meter.charged = True
+            self.remaining = max(0, self.remaining - meter.bytes)
+
     async def _bounded(self, awaitable, meter, deadline=None):
         deadline = self.deadline if deadline is None else min(deadline, self.deadline)
         try:
             return await asyncio.wait_for(awaitable, max(0, deadline - asyncio.get_running_loop().time()))
         except asyncio.TimeoutError:
             # A cancelled download still spent what it received.
-            self.remaining = max(0, self.remaining - meter.bytes)
+            self._charge(meter)
             if deadline == self.deadline:
                 self.timed_out = True
             raise
         except Exception:
-            self.remaining = max(0, self.remaining - meter.bytes)
+            self._charge(meter)
             raise
 
     async def _photo(self, part, meter):
@@ -255,7 +262,7 @@ class _TurnReader:
             locator, maximum_bytes=min(self.remaining, MAX_IMAGE_BYTES)), meter)
         size = image.descriptor.retained_bytes
         if size > self.remaining or not fits_budget((*self.photos, image.descriptor)):
-            self.remaining = max(0, self.remaining - meter.bytes)
+            self._charge(meter)
             raise TaskError("host_image_limit", "photo exceeds the turn image limits")
         self.photos.append(image.descriptor)
         if locator.host_resolved:
@@ -339,6 +346,7 @@ class _TurnReader:
             return Plain(TIMED_OUT)
         if kind is not File and (self.counts[kind] >= _LIMITS[kind] or self.remaining <= 0):
             return Plain(LIMITED)
+        meter = None
         try:
             if kind is File:
                 return await self._document(part)
@@ -350,11 +358,15 @@ class _TurnReader:
                 else:
                     replacement, size = await self._recording(part, meter)
         except asyncio.TimeoutError:
+            self._charge(meter)
             return Plain(TIMED_OUT)
         except TaskError as error:
+            self._charge(meter)
             logger.info("[CompanionV2] Telegram 附件未读取 reason=%s", error.code)
             return Plain(LIMITED if error.code.endswith("_limit") else UNAVAILABLE)
         except Exception as error:
+            # e.g. a full disk while saving the copy: the download itself still counts.
+            self._charge(meter)
             logger.warning("[CompanionV2] Telegram 附件未读取 error_type=%s", type(error).__name__)
             return Plain(UNAVAILABLE)
         self.remaining -= size

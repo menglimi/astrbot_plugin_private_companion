@@ -305,6 +305,18 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
         self.assertIn("附件超过读取上限", text(payload))
         self.assert_no_token(" ".join(logs.output))
 
+    async def test_download_that_cannot_be_saved_still_spends_the_turn_allowance(self):
+        clip = dict(width=64, height=48, duration=1)
+        event = await self.album(dict(video=dict(clip, file_id="v1", file_unique_id="v1"), caption="clips"),
+                                 dict(video=dict(clip, file_id="v2", file_unique_id="v2")))
+        server = FileServer({"v1": b"x" * 10, "v2": b"y" * 10})
+        # The disk fills up while the first download is saved; the second would still fit otherwise.
+        with patch("companion_v2.conversation.media.models.MAX_TURN_BYTES", 15), \
+                patch("astrbot_host.telegram_private_media._temporary_path", side_effect=OSError("disk full")):
+            _, payload = await self.collect(event, server)
+        self.assertIn("附件不可用", text(payload))
+        self.assertIn("附件超过读取上限", text(payload))
+
     async def test_document_follows_the_window_file_setting(self):
         document = dict(document=dict(file_id="d1", file_unique_id="d1", file_name="notes.txt"), caption="please read")
         for name, values, body, expected in (
