@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 from astrbot.core.message.components import File, Image, Plain, Record, Reply, Video
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from yarl import URL
 
 from companion_v2.adapters.astrbot.files import MAX_FILES, file_locator
 from companion_v2.adapters.astrbot.native import MEDIA_PREPARE_TIMEOUT, NativeVideoLocator
@@ -44,7 +45,7 @@ QUOTED_VIDEO_OFF = "[引用视频理解未启用，本轮未读取]"
 _MEDIA = (Image, Record, Video, File)
 _LIMITS = {Image: MAX_INPUT_IMAGES, Record: MAX_INPUT_AUDIOS, Video: MAX_VIDEOS, File: MAX_FILES}
 _PREPARED = "_companion_v2_telegram_media_prepared"
-_PUBLIC_FILE_ENDPOINT = "https://api.telegram.org/"
+_TELEGRAM_API_HOST = "api.telegram.org"
 
 
 def _private(event):
@@ -110,17 +111,31 @@ def _unbounded_voice(raw, part):
     return type(part) is Record and getattr(raw, "voice", None) is not None
 
 
+def _telegram_hosted(url):
+    """Whether ``url`` is on Telegram's own Bot API host, however the operator spelled it."""
+    try:
+        parsed = URL(url)
+    except (TypeError, ValueError):
+        return False
+    return (parsed.scheme == "https" and (parsed.host or "").lower().rstrip(".") == _TELEGRAM_API_HOST
+            and parsed.port == 443)
+
+
 def _file_endpoint(event):
-    """The bot's own file URL prefix (it ends in the token), and whether the operator runs that server.
+    """The bot's own file URL prefix (it ends in the token), and whether the operator runs the server.
 
     AstrBot downloads these through its proxy setting, including from a
     ``telegram_file_base_url`` the operator pointed at a self-hosted Bot API
-    server; a local-mode server hands over paths on a shared disk instead.
+    server. A local-mode server answers ``getFile`` (``telegram_api_base_url``)
+    with paths on a shared disk, so either endpoint being self-hosted counts.
     """
-    base = getattr(getattr(event, "client", None), "base_file_url", None)
+    client = getattr(event, "client", None)
+    base = getattr(client, "base_file_url", None)
     if not isinstance(base, str) or not base or private_token(event) is None:
         return None, False
-    return base, not base.startswith(_PUBLIC_FILE_ENDPOINT)
+    api = getattr(client, "base_url", None)
+    self_hosted = not _telegram_hosted(base) or isinstance(api, str) and not _telegram_hosted(api)
+    return base, self_hosted
 
 
 def needs_preparation(event):

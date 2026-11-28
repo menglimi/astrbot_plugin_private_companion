@@ -133,11 +133,14 @@ def _under_prefix(value, prefix):
     return (type(value) is str and not any(c.isspace() or ord(c) < 32 for c in value)
             and (url.scheme, url.raw_host, url.port) == (base.scheme, base.raw_host, base.port)
             and url.raw_user is None and url.raw_password is None and not url.fragment
-            and url.raw_path.startswith(base.raw_path.rstrip("/") + "/"))
+            and url.raw_path.startswith(base.raw_path.rstrip("/") + "/")
+            # Encoded separators survive normalization and would be decoded by the server.
+            and not any(sep in url.raw_path.lower() for sep in ("%2f", "%5c", "\\")))
 
 
 def _read_local_attachment(value, maximum_bytes):
-    with Path(value).open("rb") as stream:
+    # Non-blocking, so a FIFO cannot hold the read open before the regular-file check.
+    with os.fdopen(os.open(value, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)), "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise TaskError("host_image_fetch_failed", "original attachment is not a regular file")

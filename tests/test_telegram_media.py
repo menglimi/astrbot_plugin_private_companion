@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
@@ -221,8 +222,11 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
 
     async def test_local_mode_bot_api_server_files_are_read_from_disk(self):
         # A local-mode Bot API server hands over absolute paths on a disk it shares with AstrBot.
+        # getFile goes to telegram_api_base_url, so that alone can point at the server.
         bot = self.platform.client
-        bot.base_file_url = f"http://127.0.0.1:8081/file/bot{bot.token}"
+        public_file, public_api = bot.base_file_url, f"https://api.telegram.org/bot{bot.token}"
+        configs = {"file endpoint": (f"http://127.0.0.1:8081/file/bot{bot.token}", public_api),
+                   "api endpoint": (public_file, f"http://127.0.0.1:8081/bot{bot.token}")}
         with TemporaryDirectory() as shared:
             files = {"p1": image_bytes("red"), "v1": b"movie", "d1": b"body"}
             for name, body in files.items():
@@ -230,8 +234,12 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
             bot.get_file = AsyncMock(side_effect=lambda file_id, **_: NS(file_path=str(Path(shared, file_id))))
             clip = dict(file_id="v1", file_unique_id="v1", width=64, height=48, duration=1)
             document = dict(document=dict(file_id="d1", file_unique_id="d1", file_name="notes.txt"))
-            for kind, fields in (("photo", dict(photo=photo("p1"))), ("video", dict(video=clip)), ("document", document)):
-                with self.subTest(kind=kind):
+            cases = [(config, kind, fields) for config in configs
+                     for kind, fields in (("photo", dict(photo=photo("p1"))), ("video", dict(video=clip)),
+                                          ("document", document))]
+            for config, kind, fields in cases:
+                bot.base_file_url, bot.base_url = configs[config]
+                with self.subTest(config=config, kind=kind):
                     event = self.event(await self.convert(**fields, caption="look"))
                     server = FileServer({})
                     with self.settings(file_understanding_enabled=True):
@@ -241,6 +249,28 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
                     self.assertNotIn("文件读取失败", text(payload))
                     if kind == "photo":
                         self.assertEqual(images(payload), [image_bytes("red")])
+
+    async def test_local_files_stay_closed_for_telegram_own_server(self):
+        from astrbot_host.telegram_private_media import _file_endpoint
+
+        bot = self.platform.client
+        event = self.event(await self.convert(text="hello"))
+        # The same public host, however the operator spelled it, never reads local paths.
+        for spelling in ("https://api.telegram.org", "https://API.telegram.org", "https://api.telegram.org:443"):
+            bot.base_file_url, bot.base_url = f"{spelling}/file/bot{bot.token}", f"{spelling}/bot{bot.token}"
+            with self.subTest(spelling=spelling):
+                self.assertEqual(_file_endpoint(event), (bot.base_file_url, False))
+
+    async def test_local_read_refuses_a_fifo_without_blocking(self):
+        from astrbot_host.media import fetch_attachment, trusted_endpoint
+        from companion_v2.execution.models import TaskError
+
+        with TemporaryDirectory() as shared:
+            fifo = Path(shared, "pipe")
+            os.mkfifo(fifo)
+            with trusted_endpoint("http://127.0.0.1:8081/file/bot1:x", local_files=True):
+                with self.assertRaises(TaskError):
+                    await asyncio.wait_for(fetch_attachment(str(fifo), maximum_bytes=1024), 5)
 
     async def test_album_beyond_the_turn_limit_keeps_the_caption_and_admitted_photo(self):
         red, blue = image_bytes("red"), image_bytes("blue")
