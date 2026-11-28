@@ -588,20 +588,28 @@ class TelegramPrivateMediaTests(TelegramMediaFixture, unittest.IsolatedAsyncioTe
                              (await request.assemble_context())["content"])
 
     async def test_messages_assembled_after_the_request_hooks_are_cleaned(self):
-        from astrbot.core.agent.message import Message, TextPart
+        from astrbot.core.agent.message import Message, TextPart, ThinkPart, dump_messages_with_checkpoints
         from tests.test_main_no_reply import ENTRY
 
         event = self.event(await self.convert(text="hello"))
         # A local-mode Bot API server keeps files under a directory named by the token; AstrBot
         # rebuilds its image notice from that cached path after every request hook has run.
         notice = f"[Image Attachment: original path /srv/telegram-bot-api/{self.token}/photos/f.jpg; not included]"
-        run_context = NS(messages=[Message(role="system", content="be kind"),
-                                   Message(role="user", content=[TextPart(text="hello"), TextPart(text=notice)])])
+        turn_only = TextPart(text="<companion_v2_native_memory>this turn only</companion_v2_native_memory>")
+        user = Message(role="user", content=[TextPart(text="hello"), turn_only.mark_as_temp(),
+                                             TextPart(text=notice).mark_as_temp()])
+        signed = Message(role="assistant", content=[ThinkPart(think="ok", encrypted=f"sig-{self.token}")])
+        run_context = NS(messages=[Message(role="system", content="be kind"), user, signed])
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         await plugin.protect_companion_telegram_messages(event, run_context)
-        self.assertTrue(all(isinstance(message, Message) for message in run_context.messages))
         self.assertEqual(run_context.messages[0].content, "be kind")
         self.assert_no_token(run_context.messages, [message.model_dump_json() for message in run_context.messages])
+        # Cleaned in place: AstrBot's turn-only marks still keep this turn's context out of history.
+        self.assertIs(run_context.messages[1], user)
+        self.assertEqual([getattr(part, "_no_save", False) for part in user.content], [False, True, True])
+        saved = json.dumps(dump_messages_with_checkpoints(run_context.messages), ensure_ascii=False)
+        self.assertNotIn("this turn only", saved)
+        self.assertEqual([type(part).__name__ for part in run_context.messages[2].content], ["TextPart"])
 
 
 if __name__ == "__main__":
